@@ -1,0 +1,30 @@
+#!/bin/bash
+# PlanSync MCP Server wrapper script
+# Designed for use with Claude Code / Genie
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Activate Node 18
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+export PATH="/home/$(whoami)/.nvm/versions/node/v18.20.8/bin:$PATH"
+
+# NFS-safe npm cache
+export npm_config_cache="/tmp/npm-cache-$(whoami)"
+
+# Ensure MCP server is built
+if [ ! -f "$PROJECT_DIR/packages/mcp-server/dist/index.js" ]; then
+  echo "Building MCP server..." >&2
+  cd "$PROJECT_DIR"
+  npm run build --workspace=@plansync/mcp-server >&2
+fi
+
+# Default config (can be overridden by environment)
+export PLANSYNC_API_URL="${PLANSYNC_API_URL:-http://localhost:3000}"
+export PLANSYNC_SECRET="${PLANSYNC_SECRET:-dev-secret}"
+export PLANSYNC_USER="${PLANSYNC_USER:-${USER}}"
+export LOG_LEVEL="${LOG_LEVEL:-warn}"
+
+exec node "$PROJECT_DIR/packages/mcp-server/dist/index.js"
