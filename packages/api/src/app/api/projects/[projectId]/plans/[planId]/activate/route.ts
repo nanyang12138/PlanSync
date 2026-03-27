@@ -4,6 +4,7 @@ import { authenticate, requireProjectRole } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { AppError, ErrorCode } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
+import { runDriftScan, persistDriftAlerts } from '@/lib/drift-engine';
 
 type Params = { params: { projectId: string; planId: string } };
 
@@ -29,13 +30,13 @@ export async function POST(req: NextRequest, { params }: Params) {
       }
     }
 
-    const activated = await prisma.$transaction(async (tx) => {
+    const { activated, driftAlerts } = await prisma.$transaction(async (tx) => {
       await tx.plan.updateMany({
         where: { projectId: params.projectId, status: 'active' },
         data: { status: 'superseded' },
       });
 
-      return tx.plan.update({
+      const a = await tx.plan.update({
         where: { id: params.planId },
         data: {
           status: 'active',
@@ -43,6 +44,11 @@ export async function POST(req: NextRequest, { params }: Params) {
           activatedBy: auth.userName,
         },
       });
+
+      const scanResult = await runDriftScan(tx, params.projectId, a.version);
+      const alerts = await persistDriftAlerts(tx, params.projectId, scanResult.alerts);
+
+      return { activated: a, driftAlerts: alerts };
     });
 
     await createActivity({
@@ -50,11 +56,22 @@ export async function POST(req: NextRequest, { params }: Params) {
       type: 'plan_activated',
       actorName: auth.userName,
       actorType: 'human',
-      summary: `Plan v${activated.version} "${activated.title}" activated`,
-      metadata: { planId: activated.id, version: activated.version },
+      summary: `Plan v${activated.version} "${activated.title}" activated${driftAlerts.length > 0 ? ` (${driftAlerts.length} drift alerts)` : ''}`,
+      metadata: { planId: activated.id, version: activated.version, driftCount: driftAlerts.length },
     });
 
-    return NextResponse.json({ data: activated });
+    if (driftAlerts.length > 0) {
+      await createActivity({
+        projectId: params.projectId,
+        type: 'drift_detected',
+        actorName: 'system',
+        actorType: 'system',
+        summary: `${driftAlerts.length} drift alert(s) detected after plan activation`,
+        metadata: { alertIds: driftAlerts.map((a) => a.id) },
+      });
+    }
+
+    return NextResponse.json({ data: { ...activated, driftAlerts } });
   } catch (error) {
     return handleApiError(error);
   }
