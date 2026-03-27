@@ -1,0 +1,61 @@
+import { McpConfig } from './config';
+import { logger } from './logger';
+
+export class ApiClient {
+  constructor(private config: McpConfig) {}
+
+  private get headers(): Record<string, string> {
+    return {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${this.config.apiToken}`,
+      'X-User-Name': this.config.userName,
+    };
+  }
+
+  private url(path: string): string {
+    return `${this.config.apiBaseUrl}${path}`;
+  }
+
+  async get<T = unknown>(path: string): Promise<T> {
+    const res = await fetch(this.url(path), { headers: this.headers });
+    return this.handleResponse<T>(res, 'GET', path);
+  }
+
+  async post<T = unknown>(path: string, body?: unknown): Promise<T> {
+    const res = await fetch(this.url(path), {
+      method: 'POST',
+      headers: this.headers,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return this.handleResponse<T>(res, 'POST', path);
+  }
+
+  async patch<T = unknown>(path: string, body: unknown): Promise<T> {
+    const res = await fetch(this.url(path), {
+      method: 'PATCH',
+      headers: this.headers,
+      body: JSON.stringify(body),
+    });
+    return this.handleResponse<T>(res, 'PATCH', path);
+  }
+
+  async delete<T = unknown>(path: string): Promise<T> {
+    const res = await fetch(this.url(path), {
+      method: 'DELETE',
+      headers: this.headers,
+    });
+    return this.handleResponse<T>(res, 'DELETE', path);
+  }
+
+  private async handleResponse<T>(res: Response, method: string, path: string): Promise<T> {
+    const json = await res.json();
+
+    if (!res.ok) {
+      const errMsg = json?.error?.message || `API error ${res.status}`;
+      logger.error({ method, path, status: res.status, error: json?.error }, 'API request failed');
+      throw new Error(errMsg);
+    }
+
+    return json as T;
+  }
+}
