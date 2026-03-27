@@ -1,0 +1,214 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Project {
+  id            String   @id @default(cuid())
+  name          String   @unique
+  description   String?
+  phase         String   @default("planning") // planning | active | completed
+  repoUrl       String?  @map("repo_url")
+  defaultBranch String?  @map("default_branch")
+  createdBy     String   @map("created_by")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  members    ProjectMember[]
+  plans      Plan[]
+  tasks      Task[]
+  driftAlerts DriftAlert[]
+  activities Activity[]
+
+  @@map("projects")
+}
+
+model ProjectMember {
+  id        String   @id @default(cuid())
+  projectId String   @map("project_id")
+  name      String
+  role      String   @default("developer") // owner | developer
+  type      String   @default("human") // human | agent
+  createdAt DateTime @default(now()) @map("created_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, name])
+  @@map("project_members")
+}
+
+model Plan {
+  id                String    @id @default(cuid())
+  projectId         String    @map("project_id")
+  version           Int
+  status            String    @default("draft") // draft | proposed | active | superseded
+  title             String
+  goal              String
+  scope             String
+  constraints       String[]
+  standards         String[]
+  deliverables      String[]
+  openQuestions     String[]  @map("open_questions")
+  changeSummary     String?   @map("change_summary")
+  why               String?
+  requiredReviewers String[]  @map("required_reviewers")
+  createdBy         String    @map("created_by")
+  activatedAt       DateTime? @map("activated_at")
+  activatedBy       String?   @map("activated_by")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  project     Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  reviews     PlanReview[]
+  suggestions PlanSuggestion[]
+  comments    PlanComment[]
+
+  @@unique([projectId, version])
+  @@index([projectId, status])
+  @@map("plans")
+}
+
+model PlanReview {
+  id           String   @id @default(cuid())
+  planId       String   @map("plan_id")
+  reviewerName String   @map("reviewer_name")
+  status       String   @default("pending") // pending | approved | rejected
+  comment      String?
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, reviewerName])
+  @@map("plan_reviews")
+}
+
+model PlanSuggestion {
+  id              String    @id @default(cuid())
+  planId          String    @map("plan_id")
+  suggestedBy     String    @map("suggested_by")
+  suggestedByType String    @map("suggested_by_type") // human | agent
+  field           String    // goal | scope | constraints | standards | deliverables | openQuestions
+  action          String    // set | append | remove
+  value           String
+  reason          String
+  status          String    @default("pending") // pending | accepted | rejected | conflict
+  resolvedBy      String?   @map("resolved_by")
+  resolvedComment String?   @map("resolved_comment")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  resolvedAt      DateTime? @map("resolved_at")
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@map("plan_suggestions")
+}
+
+model PlanComment {
+  id         String   @id @default(cuid())
+  planId     String   @map("plan_id")
+  authorName String   @map("author_name")
+  authorType String   @map("author_type") // human | agent
+  content    String
+  parentId   String?  @map("parent_id")
+  isDeleted  Boolean  @default(false) @map("is_deleted")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  plan   Plan         @relation(fields: [planId], references: [id], onDelete: Cascade)
+  parent PlanComment? @relation("CommentReplies", fields: [parentId], references: [id])
+  replies PlanComment[] @relation("CommentReplies")
+
+  @@map("plan_comments")
+}
+
+model Task {
+  id               String   @id @default(cuid())
+  projectId        String   @map("project_id")
+  title            String
+  description      String?
+  type             String   // code | research | design | bug | refactor
+  priority         String   @default("p1") // p0 | p1 | p2
+  status           String   @default("todo") // todo | in_progress | blocked | done | cancelled
+  assignee         String?
+  assigneeType     String   @default("unassigned") @map("assignee_type") // human | agent | unassigned
+  boundPlanVersion Int      @map("bound_plan_version")
+  branchName       String?  @map("branch_name")
+  prUrl            String?  @map("pr_url")
+  agentContext     String?  @map("agent_context")
+  expectedOutput   String?  @map("expected_output")
+  agentConstraints String[] @map("agent_constraints")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  executionRuns ExecutionRun[]
+  driftAlerts   DriftAlert[]
+
+  @@map("tasks")
+}
+
+model ExecutionRun {
+  id                String    @id @default(cuid())
+  taskId            String    @map("task_id")
+  executorType      String    @map("executor_type") // human | agent
+  executorName      String    @map("executor_name")
+  boundPlanVersion  Int       @map("bound_plan_version")
+  status            String    @default("running") // running | completed | failed | cancelled | stale
+  taskPackSnapshot  Json      @map("task_pack_snapshot")
+  lastHeartbeatAt   DateTime? @map("last_heartbeat_at")
+  outputSummary     String?   @map("output_summary")
+  filesChanged      String[]  @map("files_changed")
+  branchName        String?   @map("branch_name")
+  blockers          String[]
+  driftSignals      String[]  @map("drift_signals")
+  startedAt         DateTime  @default(now()) @map("started_at")
+  endedAt           DateTime? @map("ended_at")
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@map("execution_runs")
+}
+
+model DriftAlert {
+  id                  String    @id @default(cuid())
+  projectId           String    @map("project_id")
+  taskId              String    @map("task_id")
+  type                String    @default("version_mismatch") // version_mismatch
+  severity            String    // high | medium | low
+  reason              String
+  status              String    @default("open") // open | resolved
+  resolvedAction      String?   @map("resolved_action") // rebind | cancel | no_impact
+  currentPlanVersion  Int       @map("current_plan_version")
+  taskBoundVersion    Int       @map("task_bound_version")
+  compatibilityScore  Float?    @map("compatibility_score")
+  impactAnalysis      String?   @map("impact_analysis")
+  suggestedAction     String?   @map("suggested_action")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  resolvedAt          DateTime? @map("resolved_at")
+  resolvedBy          String?   @map("resolved_by")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  task    Task    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@map("drift_alerts")
+}
+
+model Activity {
+  id        String   @id @default(cuid())
+  projectId String   @map("project_id")
+  type      String
+  actorName String   @map("actor_name")
+  actorType String   @map("actor_type") // human | agent | system
+  summary   String
+  metadata  Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt(sort: Desc)])
+  @@map("activities")
+}
