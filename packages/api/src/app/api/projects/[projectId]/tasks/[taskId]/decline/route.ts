@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { authenticate, requireProjectRole } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
-import { validateBody } from '@/lib/validate';
-import { claimTaskSchema, AppError, ErrorCode } from '@plansync/shared';
+import { AppError, ErrorCode } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
@@ -14,48 +13,49 @@ export async function POST(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);
-    const body = await validateBody(req, claimTaskSchema);
 
     const task = await prisma.task.findUnique({ where: { id: params.taskId } });
     if (!task) throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
     if (task.projectId !== params.projectId) {
       throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
     }
-    if (task.status !== 'todo') {
-      throw new AppError(ErrorCode.STATE_CONFLICT, 'Only todo tasks can be claimed');
+
+    if (task.assignee !== auth.userName) {
+      throw new AppError(ErrorCode.FORBIDDEN, 'Only the current assignee can decline a task');
     }
-    if (task.assignee) {
-      throw new AppError(ErrorCode.CONFLICT, 'Task is already assigned', {
-        code: 'TASK_ALREADY_CLAIMED',
-        currentAssignee: task.assignee,
-      });
+
+    if (task.status !== 'todo') {
+      throw new AppError(
+        ErrorCode.STATE_CONFLICT,
+        'Only tasks in todo status can be declined',
+      );
     }
 
     const updated = await prisma.task.update({
       where: { id: params.taskId },
       data: {
-        assignee: auth.userName,
-        assigneeType: body.assigneeType,
-        ...(body.startImmediately ? { status: 'in_progress' } : {}),
+        assignee: null,
+        assigneeType: 'unassigned',
       },
     });
 
     await createActivity({
       projectId: params.projectId,
-      type: 'task_claimed',
+      type: 'task_created',
       actorName: auth.userName,
-      actorType: body.assigneeType === 'agent' ? 'agent' : 'human',
-      summary: `Task "${task.title}" claimed by ${auth.userName}`,
+      actorType: 'human',
+      summary: `Task "${task.title}" declined by ${auth.userName}`,
       metadata: { taskId: task.id },
     });
 
-    eventBus.publish(params.projectId, 'task_assigned', {
+    eventBus.publish(params.projectId, 'task_unassigned', {
       taskId: task.id,
-      assignee: auth.userName,
+      previousAssignee: task.assignee,
     });
-    dispatchWebhooks(params.projectId, 'task_assigned', {
+    dispatchWebhooks(params.projectId, 'task_unassigned', {
       taskId: task.id,
-      assignee: auth.userName,
+      title: task.title,
+      previousAssignee: task.assignee,
     });
 
     return NextResponse.json({ data: updated });

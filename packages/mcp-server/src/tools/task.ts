@@ -59,7 +59,7 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
 
   server.tool(
     'plansync_task_update',
-    'Update a task',
+    'Update a task (supports reassignment via assignee/assigneeType)',
     {
       projectId: z.string(),
       taskId: z.string(),
@@ -67,6 +67,8 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
       description: z.string().optional(),
       status: z.enum(['todo', 'in_progress', 'blocked', 'done', 'cancelled']).optional(),
       priority: z.enum(['p0', 'p1', 'p2']).optional(),
+      assignee: z.string().nullable().optional().describe('Set assignee name, or null to unassign'),
+      assigneeType: z.enum(['human', 'agent', 'unassigned']).optional(),
     },
     async (args) => {
       const { projectId, taskId, ...body } = args;
@@ -77,16 +79,36 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
 
   server.tool(
     'plansync_task_claim',
-    'Claim an unassigned task',
+    'Claim an unassigned task (set startImmediately=false to accept without starting)',
     {
       projectId: z.string(),
       taskId: z.string(),
       assigneeType: z.enum(['human', 'agent']).optional(),
+      startImmediately: z.boolean().optional().describe('If false, accept assignment but keep status as todo. Default: true'),
     },
     async (args) => {
       const result = await api.post(
         `/api/projects/${args.projectId}/tasks/${args.taskId}/claim`,
-        { assigneeType: args.assigneeType || 'agent' },
+        {
+          assigneeType: args.assigneeType || 'agent',
+          ...(args.startImmediately !== undefined ? { startImmediately: args.startImmediately } : {}),
+        },
+      );
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'plansync_task_decline',
+    'Decline an assigned task (only the current assignee can decline)',
+    {
+      projectId: z.string(),
+      taskId: z.string(),
+    },
+    async (args) => {
+      const result = await api.post(
+        `/api/projects/${args.projectId}/tasks/${args.taskId}/decline`,
+        {},
       );
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },

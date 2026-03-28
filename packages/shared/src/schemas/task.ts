@@ -35,7 +35,10 @@ export const updateTaskSchema = z.object({
 
 export const claimTaskSchema = z.object({
   assigneeType: assigneeTypeSchema.default('agent'),
+  startImmediately: z.boolean().default(true),
 });
+
+export const declineTaskSchema = z.object({});
 
 export const taskSchema = z.object({
   id: z.string(),

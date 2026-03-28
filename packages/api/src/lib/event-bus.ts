@@ -9,6 +9,7 @@ export type PlanSyncEventType =
   | 'drift_resolved'
   | 'task_created'
   | 'task_assigned'
+  | 'task_unassigned'
   | 'task_started'
   | 'task_completed'
   | 'execution_stale'

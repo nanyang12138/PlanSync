@@ -55,6 +55,18 @@ export async function POST(req: NextRequest, { params }: Params) {
       );
     }
 
+    if (body.assignee) {
+      const member = await prisma.projectMember.findUnique({
+        where: { projectId_name: { projectId: params.projectId, name: body.assignee } },
+      });
+      if (!member) {
+        throw new AppError(
+          ErrorCode.BAD_REQUEST,
+          `Assignee "${body.assignee}" is not a member of this project`,
+        );
+      }
+    }
+
     const task = await prisma.task.create({
       data: {
         ...body,
@@ -84,6 +96,19 @@ export async function POST(req: NextRequest, { params }: Params) {
       assignee: task.assignee,
       boundPlanVersion: activePlan.version,
     });
+
+    if (task.assignee) {
+      eventBus.publish(params.projectId, 'task_assigned', {
+        taskId: task.id,
+        title: task.title,
+        assignee: task.assignee,
+      });
+      dispatchWebhooks(params.projectId, 'task_assigned', {
+        taskId: task.id,
+        title: task.title,
+        assignee: task.assignee,
+      });
+    }
 
     return NextResponse.json({ data: task }, { status: 201 });
   } catch (error) {

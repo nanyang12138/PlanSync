@@ -29,6 +29,12 @@ export async function GET(req: NextRequest, { params }: Params) {
   }
 }
 
+const VALID_STATUS_TRANSITIONS: Record<string, string[]> = {
+  todo: ['in_progress', 'cancelled'],
+  in_progress: ['done', 'blocked', 'cancelled'],
+  blocked: ['in_progress'],
+};
+
 export async function PATCH(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
@@ -41,21 +47,55 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
     }
 
+    if (body.status && body.status !== task.status) {
+      const allowed = VALID_STATUS_TRANSITIONS[task.status];
+      if (!allowed || !allowed.includes(body.status)) {
+        throw new AppError(
+          ErrorCode.STATE_CONFLICT,
+          `Invalid status transition: ${task.status} → ${body.status}`,
+        );
+      }
+    }
+
+    if (body.assignee !== undefined && body.assignee !== null && body.assignee !== task.assignee) {
+      const member = await prisma.projectMember.findUnique({
+        where: { projectId_name: { projectId: params.projectId, name: body.assignee } },
+      });
+      if (!member) {
+        throw new AppError(
+          ErrorCode.BAD_REQUEST,
+          `Assignee "${body.assignee}" is not a member of this project`,
+        );
+      }
+    }
+
     const updated = await prisma.task.update({
       where: { id: params.taskId },
       data: body,
     });
 
-    if (body.assignee && body.assignee !== task.assignee) {
-      eventBus.publish(params.projectId, 'task_assigned', {
-        taskId: params.taskId,
-        assignee: body.assignee,
-      });
-      dispatchWebhooks(params.projectId, 'task_assigned', {
-        taskId: params.taskId,
-        title: updated.title,
-        assignee: body.assignee,
-      });
+    if (body.assignee !== undefined && body.assignee !== task.assignee) {
+      if (body.assignee === null) {
+        eventBus.publish(params.projectId, 'task_unassigned', {
+          taskId: params.taskId,
+          previousAssignee: task.assignee,
+        });
+        dispatchWebhooks(params.projectId, 'task_unassigned', {
+          taskId: params.taskId,
+          title: updated.title,
+          previousAssignee: task.assignee,
+        });
+      } else {
+        eventBus.publish(params.projectId, 'task_assigned', {
+          taskId: params.taskId,
+          assignee: body.assignee,
+        });
+        dispatchWebhooks(params.projectId, 'task_assigned', {
+          taskId: params.taskId,
+          title: updated.title,
+          assignee: body.assignee,
+        });
+      }
     }
 
     return NextResponse.json({ data: updated });
