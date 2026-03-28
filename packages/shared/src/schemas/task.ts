@@ -66,7 +66,7 @@ export const executionRunStatusSchema = z.enum([
 ]);
 
 export const createExecutionRunSchema = z.object({
-  taskId: z.string(),
+  taskId: z.string().optional(),
   executorType: z.enum(['human', 'agent']),
   executorName: z.string(),
 });

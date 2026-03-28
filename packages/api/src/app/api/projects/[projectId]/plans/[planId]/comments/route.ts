@@ -4,6 +4,9 @@ import { authenticate, requireProjectRole } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { validateBody, validateSearchParams } from '@/lib/validate';
 import { createCommentSchema, paginationSchema } from '@plansync/shared';
+import { eventBus } from '@/lib/event-bus';
+import { createActivity } from '@/lib/activity';
+import { dispatchWebhooks } from '@/lib/webhook';
 
 type Params = { params: { projectId: string; planId: string } };
 
@@ -50,6 +53,28 @@ export async function POST(req: NextRequest, { params }: Params) {
         authorName: auth.userName,
         authorType: member?.type === 'agent' ? 'agent' : 'human',
       },
+    });
+
+    eventBus.publish(params.projectId, 'comment_added', {
+      commentId: comment.id,
+      planId: params.planId,
+      authorName: auth.userName,
+      content: (body.content || '').slice(0, 100),
+    });
+    dispatchWebhooks(params.projectId, 'comment_added', {
+      commentId: comment.id,
+      planId: params.planId,
+      authorName: auth.userName,
+      content: (body.content || '').slice(0, 100),
+    });
+
+    await createActivity({
+      projectId: params.projectId,
+      type: 'comment_added',
+      actorName: auth.userName,
+      actorType: member?.type === 'agent' ? 'agent' : 'human',
+      summary: `Comment on plan`,
+      metadata: { commentId: comment.id, planId: params.planId },
     });
 
     return NextResponse.json({ data: comment }, { status: 201 });

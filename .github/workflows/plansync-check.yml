@@ -1,0 +1,11 @@
+name: PlanSync Drift Check
+on: [pull_request]
+jobs:
+  drift-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: plansync/drift-check-action@v1
+        with:
+          api-url: ${{ secrets.PLANSYNC_API_URL }}
+          api-key: ${{ secrets.PLANSYNC_API_KEY }}
+          project: ${{ secrets.PLANSYNC_PROJECT_ID }}

@@ -5,6 +5,8 @@ import { handleApiError } from '@/lib/errors';
 import { validateBody } from '@/lib/validate';
 import { claimTaskSchema, AppError, ErrorCode } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
+import { eventBus } from '@/lib/event-bus';
+import { dispatchWebhooks } from '@/lib/webhook';
 
 type Params = { params: { projectId: string; taskId: string } };
 
@@ -16,6 +18,9 @@ export async function POST(req: NextRequest, { params }: Params) {
 
     const task = await prisma.task.findUnique({ where: { id: params.taskId } });
     if (!task) throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+    if (task.projectId !== params.projectId) {
+      throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+    }
     if (task.status !== 'todo') {
       throw new AppError(ErrorCode.STATE_CONFLICT, 'Only todo tasks can be claimed');
     }
@@ -36,6 +41,15 @@ export async function POST(req: NextRequest, { params }: Params) {
       actorType: body.assigneeType === 'agent' ? 'agent' : 'human',
       summary: `Task "${task.title}" claimed by ${auth.userName}`,
       metadata: { taskId: task.id },
+    });
+
+    eventBus.publish(params.projectId, 'task_assigned', {
+      taskId: task.id,
+      assignee: auth.userName,
+    });
+    dispatchWebhooks(params.projectId, 'task_assigned', {
+      taskId: task.id,
+      assignee: auth.userName,
     });
 
     return NextResponse.json({ data: updated });

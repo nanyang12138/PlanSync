@@ -26,6 +26,32 @@ export function registerStatusTools(server: McpServer, api: ApiClient) {
   );
 
   server.tool(
+    'plansync_who',
+    'List active executors: who is currently working on what',
+    { projectId: z.string() },
+    async (args) => {
+      const dashboard = await api.get<{ data: Record<string, unknown> }>(
+        `/api/projects/${args.projectId}/dashboard`,
+      );
+      const data = dashboard.data as Record<string, unknown>;
+      const tasks = (data.tasks || []) as Array<Record<string, unknown>>;
+      const active = tasks.filter((t) => t.status === 'in_progress' && t.assignee);
+      const executors = active.map((t) => ({
+        assignee: t.assignee,
+        assigneeType: t.assigneeType,
+        taskId: t.id,
+        taskTitle: t.title,
+        boundPlanVersion: t.boundPlanVersion,
+      }));
+      return {
+        content: [
+          { type: 'text', text: JSON.stringify({ executors, count: executors.length }, null, 2) },
+        ],
+      };
+    },
+  );
+
+  server.tool(
     'plansync_activity_list',
     'List recent project activities',
     {
@@ -38,7 +64,9 @@ export function registerStatusTools(server: McpServer, api: ApiClient) {
       if (args.page) params.set('page', String(args.page));
       if (args.pageSize) params.set('pageSize', String(args.pageSize));
       const qs = params.toString();
-      const result = await api.get(`/api/projects/${args.projectId}/activities${qs ? `?${qs}` : ''}`);
+      const result = await api.get(
+        `/api/projects/${args.projectId}/activities${qs ? `?${qs}` : ''}`,
+      );
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   );
@@ -59,7 +87,11 @@ export function registerStatusTools(server: McpServer, api: ApiClient) {
     {
       projectId: z.string(),
       driftId: z.string(),
-      action: z.enum(['rebind', 'cancel', 'no_impact']).describe('rebind: update task to new plan, cancel: cancel the task, no_impact: mark as non-issue'),
+      action: z
+        .enum(['rebind', 'cancel', 'no_impact'])
+        .describe(
+          'rebind: update task to new plan, cancel: cancel the task, no_impact: mark as non-issue',
+        ),
     },
     async (args) => {
       const result = await api.post(`/api/projects/${args.projectId}/drifts/${args.driftId}`, {

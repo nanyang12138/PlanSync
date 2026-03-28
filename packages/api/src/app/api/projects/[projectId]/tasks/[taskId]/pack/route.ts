@@ -13,6 +13,9 @@ export async function GET(req: NextRequest, { params }: Params) {
 
     const task = await prisma.task.findUnique({ where: { id: params.taskId } });
     if (!task) throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+    if (task.projectId !== params.projectId) {
+      throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+    }
 
     const plan = await prisma.plan.findFirst({
       where: { projectId: params.projectId, version: task.boundPlanVersion },
@@ -38,9 +41,7 @@ export async function GET(req: NextRequest, { params }: Params) {
             openQuestions: plan.openQuestions,
           }
         : null,
-      project: project
-        ? { id: project.id, name: project.name, phase: project.phase }
-        : null,
+      project: project ? { id: project.id, name: project.name, phase: project.phase } : null,
       driftAlerts: openDrifts,
     };
 

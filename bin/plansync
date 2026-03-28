@@ -1,30 +1,234 @@
 #!/bin/bash
-# PlanSync MCP Server wrapper script
-# Designed for use with Claude Code / Genie
-set -e
+# PlanSync — 一键启动增强版 AI 编码工具
+# 自动注入 MCP 配置 + CLAUDE.md 指令 → 启动 Genie/Claude Code
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+GENIE_BIN="${GENIE_BIN:-/proj/verif_release_ro/genie/current/bin/genie}"
+CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.npm-global/bin/claude")}"
 
-# Activate Node 18
+die() { echo "❌ $*" >&2; exit 1; }
+
+require_arg() {
+  [[ -n "${2:-}" && "${2:-}" != --* ]] || die "Option $1 requires a value. See --help."
+}
+
+# ─── Parse arguments ───
+HOST="genie"
+PLANSYNC_PROJ=""
+WORK_DIR="$(pwd)"
+PASSTHROUGH_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --host)       require_arg "$1" "${2:-}"; HOST="$2"; shift 2 ;;
+    --project)    require_arg "$1" "${2:-}"; PLANSYNC_PROJ="$2"; shift 2 ;;
+    --dir)        require_arg "$1" "${2:-}"; WORK_DIR="$2"; shift 2 ;;
+    --help|-h)
+      cat <<'USAGE'
+Usage: plansync [OPTIONS] [-- HOST_ARGS...]
+
+  Launch your AI coding tool with PlanSync MCP integrated.
+
+Options:
+  --host genie|claude|cursor   AI coding tool to use (default: genie)
+  --project PROJECT_ID         PlanSync project ID (optional, auto-detected)
+  --dir PATH                   Working directory (default: current dir)
+  --help                       Show this help
+
+Environment:
+  PLANSYNC_API_URL   API server URL (default: http://localhost:3001)
+  PLANSYNC_SECRET    API auth token (default: dev-secret)
+  PLANSYNC_USER      Your username (default: $USER)
+
+AI (pick one):
+  LLM_API_KEY        AMD internal LLM API subscription key
+  LLM_API_BASE       AMD LLM API base URL (default: https://llm-api.amd.com)
+  LLM_MODEL_NAME     Model name (default: Claude-Sonnet-4.5)
+  ANTHROPIC_API_KEY   Anthropic API key (external users)
+
+Examples:
+  plansync                          # Launch Genie with PlanSync
+  plansync --host claude            # Launch Claude Code with PlanSync
+  plansync --host cursor            # Configure Cursor (writes .cursor/mcp.json)
+  plansync --project clxyz123       # Specify project ID
+  plansync -- --resume              # Pass args to underlying tool
+USAGE
+      exit 0
+      ;;
+    --)           shift; PASSTHROUGH_ARGS=("$@"); break ;;
+    *)            PASSTHROUGH_ARGS+=("$1"); shift ;;
+  esac
+done
+
+# ─── Activate Node 18 ───
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 export PATH="/home/$(whoami)/.nvm/versions/node/v18.20.8/bin:$PATH"
-
-# NFS-safe npm cache
 export npm_config_cache="/tmp/npm-cache-$(whoami)"
 
-# Ensure MCP server is built
-if [ ! -f "$PROJECT_DIR/packages/mcp-server/dist/index.js" ]; then
-  echo "Building MCP server..." >&2
-  cd "$PROJECT_DIR"
-  npm run build --workspace=@plansync/mcp-server >&2
+NODE_MAJOR=$(node -v 2>/dev/null | cut -d. -f1 | tr -d 'v')
+if [ "${NODE_MAJOR:-0}" -lt 18 ]; then
+  echo "❌ Node.js 18+ required (got $(node -v 2>/dev/null || echo 'none'))" >&2
+  exit 1
 fi
 
-# Default config (can be overridden by environment)
-export PLANSYNC_API_URL="${PLANSYNC_API_URL:-http://localhost:3000}"
+# ─── Config ───
+export PLANSYNC_API_URL="${PLANSYNC_API_URL:-http://localhost:3001}"
 export PLANSYNC_SECRET="${PLANSYNC_SECRET:-dev-secret}"
 export PLANSYNC_USER="${PLANSYNC_USER:-${USER}}"
-export LOG_LEVEL="${LOG_LEVEL:-warn}"
+export PLANSYNC_PROJECT="${PLANSYNC_PROJ}"
 
-exec node "$PROJECT_DIR/packages/mcp-server/dist/index.js"
+MCP_SERVER="$PROJECT_DIR/packages/mcp-server/dist/index.js"
+
+# ─── Validate working directory ───
+if [ ! -d "$WORK_DIR" ]; then
+  echo "📁 Creating working directory: $WORK_DIR" >&2
+  mkdir -p "$WORK_DIR"
+fi
+WORK_DIR_ABS="$(cd "$WORK_DIR" && pwd)"
+
+# ─── Build MCP server if needed ───
+if [ ! -f "$MCP_SERVER" ]; then
+  echo "📦 Building MCP server..." >&2
+  (cd "$PROJECT_DIR" && npm run build --workspace=@plansync/mcp-server >&2)
+fi
+
+# ─── Check API is reachable ───
+if curl -s --connect-timeout 2 "$PLANSYNC_API_URL/api/health" >/dev/null 2>&1; then
+  echo "✅ PlanSync API reachable at $PLANSYNC_API_URL" >&2
+else
+  echo "⚠️  PlanSync API not reachable at $PLANSYNC_API_URL" >&2
+  echo "   Start it first: cd $PROJECT_DIR && PORT=3001 npm run dev" >&2
+  echo "   Or set PLANSYNC_API_URL to the correct URL." >&2
+  echo "" >&2
+  if [[ -t 0 ]]; then
+    read -p "   Continue anyway? [y/N] " -n 1 -r
+    echo >&2
+    [[ $REPLY =~ ^[Yy]$ ]] || exit 1
+  else
+    die "API not reachable. Start the API server first."
+  fi
+fi
+
+# ─── Inject CLAUDE.md / AGENTS.md into working directory ───
+INSTRUCTIONS_SRC="$PROJECT_DIR/claude-md/plansync-instructions.md"
+inject_instructions() {
+  local target_dir="$1"
+
+  if [ -f "$INSTRUCTIONS_SRC" ]; then
+    if [ -f "$target_dir/CLAUDE.md" ]; then
+      if ! grep -q "PlanSync" "$target_dir/CLAUDE.md" 2>/dev/null; then
+        printf '\n---\n\n' >> "$target_dir/CLAUDE.md"
+        cat "$INSTRUCTIONS_SRC" >> "$target_dir/CLAUDE.md"
+        echo "📝 PlanSync instructions appended to CLAUDE.md" >&2
+      fi
+    else
+      cp "$INSTRUCTIONS_SRC" "$target_dir/CLAUDE.md"
+      echo "📝 CLAUDE.md created with PlanSync instructions" >&2
+    fi
+  fi
+}
+
+# ─── Inject MCP config (uses node with env vars to avoid shell injection) ───
+export _PS_MCP_SERVER="$MCP_SERVER"
+export _PS_API_URL="$PLANSYNC_API_URL"
+export _PS_SECRET="$PLANSYNC_SECRET"
+export _PS_USER="$PLANSYNC_USER"
+export _PS_PROJECT="$PLANSYNC_PROJ"
+export _PS_WORK_DIR="$WORK_DIR_ABS"
+
+inject_claude_settings() {
+  local settings_file="$HOME/.claude/settings.json"
+  mkdir -p "$HOME/.claude"
+
+  node -e '
+    const fs = require("fs");
+    const sf = process.env.HOME + "/.claude/settings.json";
+    let settings = {};
+    try { settings = JSON.parse(fs.readFileSync(sf, "utf8")); } catch {}
+    if (!settings.projects) settings.projects = {};
+    const key = process.env._PS_WORK_DIR;
+    if (!settings.projects[key]) settings.projects[key] = {};
+    const proj = settings.projects[key];
+    if (!proj.mcpServers) proj.mcpServers = {};
+    proj.mcpServers.plansync = {
+      command: "node",
+      args: [process.env._PS_MCP_SERVER],
+      env: {
+        PLANSYNC_API_URL: process.env._PS_API_URL,
+        PLANSYNC_SECRET: process.env._PS_SECRET,
+        PLANSYNC_USER: process.env._PS_USER,
+        PLANSYNC_PROJECT: process.env._PS_PROJECT || "",
+        LOG_LEVEL: "warn",
+      },
+    };
+    proj.hasTrustDialogAccepted = true;
+    fs.writeFileSync(sf, JSON.stringify(settings, null, 2));
+  '
+  echo "🔧 MCP config injected into Claude settings for $WORK_DIR_ABS" >&2
+}
+
+inject_cursor_settings() {
+  local target_dir="$1"
+  local cursor_mcp="$target_dir/.cursor/mcp.json"
+  mkdir -p "$target_dir/.cursor"
+
+  _PS_CURSOR_MCP="$cursor_mcp" node -e '
+    const fs = require("fs");
+    const fp = process.env._PS_CURSOR_MCP;
+    let conf = {};
+    try { conf = JSON.parse(fs.readFileSync(fp, "utf8")); } catch {}
+    if (!conf.mcpServers) conf.mcpServers = {};
+    conf.mcpServers.plansync = {
+      command: "node",
+      args: [process.env._PS_MCP_SERVER],
+      env: {
+        PLANSYNC_API_URL: process.env._PS_API_URL,
+        PLANSYNC_SECRET: process.env._PS_SECRET,
+        PLANSYNC_USER: process.env._PS_USER,
+        PLANSYNC_PROJECT: process.env._PS_PROJECT || "",
+        LOG_LEVEL: "warn",
+      },
+    };
+    fs.writeFileSync(fp, JSON.stringify(conf, null, 2));
+  '
+}
+
+# ─── Host-specific launch ───
+case "$HOST" in
+
+  genie|claude)
+    inject_claude_settings
+    inject_instructions "$WORK_DIR_ABS"
+
+    echo "" >&2
+    echo "🚀 Launching ${HOST} with PlanSync MCP..." >&2
+    echo "   User: $PLANSYNC_USER | API: $PLANSYNC_API_URL" >&2
+    echo "   Working dir: $WORK_DIR_ABS" >&2
+    echo "" >&2
+
+    cd "$WORK_DIR_ABS"
+    if [ "$HOST" = "genie" ]; then
+      exec "$GENIE_BIN" "${PASSTHROUGH_ARGS[@]}"
+    else
+      exec "$CLAUDE_BIN" "${PASSTHROUGH_ARGS[@]}"
+    fi
+    ;;
+
+  cursor)
+    inject_cursor_settings "$WORK_DIR_ABS"
+    inject_instructions "$WORK_DIR_ABS"
+
+    echo "✅ Cursor MCP config written to $WORK_DIR_ABS/.cursor/mcp.json" >&2
+    echo "   Restart Cursor or reload the window to activate PlanSync." >&2
+    echo "" >&2
+    echo "   PlanSync is now available in Cursor's AI chat." >&2
+    echo "   Try asking: '查看项目状态' or '创建一个认证系统方案'" >&2
+    ;;
+
+  *)
+    die "Unknown host: $HOST (supported: genie, claude, cursor)"
+    ;;
+esac

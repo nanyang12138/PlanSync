@@ -1,0 +1,20 @@
+name: 'PlanSync Drift Check'
+description: 'Check if PR tasks are aligned with the active plan'
+inputs:
+  api-url:
+    description: 'PlanSync API URL'
+    required: true
+  api-key:
+    description: 'PlanSync API Key'
+    required: true
+  project:
+    description: 'Project ID'
+    required: true
+outputs:
+  drift-count:
+    description: 'Number of open drift alerts'
+  has-drift:
+    description: 'Whether any open drifts were found'
+runs:
+  using: 'node20'
+  main: 'dist/index.js'

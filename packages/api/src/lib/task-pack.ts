@@ -23,6 +23,8 @@ export async function buildTaskPack(taskId: string, projectId: string) {
       priority: task.priority,
       status: task.status,
       boundPlanVersion: task.boundPlanVersion,
+      branchName: task.branchName,
+      prUrl: task.prUrl,
       agentContext: task.agentContext,
       expectedOutput: task.expectedOutput,
       agentConstraints: task.agentConstraints,
@@ -39,9 +41,7 @@ export async function buildTaskPack(taskId: string, projectId: string) {
           openQuestions: plan.openQuestions,
         }
       : null,
-    project: project
-      ? { id: project.id, name: project.name, phase: project.phase }
-      : null,
+    project: project ? { id: project.id, name: project.name, phase: project.phase } : null,
     driftAlerts: openDrifts.map((d) => ({
       id: d.id,
       severity: d.severity,

@@ -8,13 +8,19 @@ import { createActivity } from '@/lib/activity';
 
 export async function GET(req: NextRequest) {
   try {
-    await authenticate(req);
+    const auth = await authenticate(req);
     const { page, pageSize } = validateSearchParams(req, paginationSchema);
     const skip = (page - 1) * pageSize;
 
+    const memberFilter = { members: { some: { name: auth.userName } } };
     const [projects, total] = await Promise.all([
-      prisma.project.findMany({ skip, take: pageSize, orderBy: { createdAt: 'desc' } }),
-      prisma.project.count(),
+      prisma.project.findMany({
+        where: memberFilter,
+        skip,
+        take: pageSize,
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.project.count({ where: memberFilter }),
     ]);
 
     return NextResponse.json({
@@ -43,7 +49,7 @@ export async function POST(req: NextRequest) {
 
     await createActivity({
       projectId: project.id,
-      type: 'plan_created',
+      type: 'project_created',
       actorName: auth.userName,
       actorType: 'human',
       summary: `Project "${project.name}" created`,

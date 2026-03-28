@@ -1,8 +1,14 @@
 import { NextRequest } from 'next/server';
 import { ZodSchema } from 'zod';
+import { AppError, ErrorCode } from '@plansync/shared';
 
 export async function validateBody<T>(req: NextRequest, schema: ZodSchema<T>): Promise<T> {
-  const body = await req.json();
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    throw new AppError(ErrorCode.BAD_REQUEST, 'Request body must be valid JSON');
+  }
   return schema.parse(body);
 }
 

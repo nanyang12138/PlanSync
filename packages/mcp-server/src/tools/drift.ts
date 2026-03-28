@@ -18,4 +18,16 @@ export function registerDriftTools(server: McpServer, api: ApiClient) {
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   );
+
+  server.tool(
+    'plansync_check_task_conflicts',
+    'Predict potential task conflicts (scope overlap, dependencies, resources) for active/todo/blocked tasks using AI.',
+    {
+      projectId: z.string(),
+    },
+    async (args) => {
+      const result = await api.get(`/api/projects/${args.projectId}/tasks/conflicts`);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    },
+  );
 }

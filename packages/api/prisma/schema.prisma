@@ -23,6 +23,9 @@ model Project {
   tasks      Task[]
   driftAlerts DriftAlert[]
   activities Activity[]
+  apiKeys     ApiKey[]
+  webhooks    Webhook[]
+  planDiffs   PlanDiff[]
 
   @@map("projects")
 }
@@ -187,6 +190,8 @@ model DriftAlert {
   compatibilityScore  Float?    @map("compatibility_score")
   impactAnalysis      String?   @map("impact_analysis")
   suggestedAction     String?   @map("suggested_action")
+  affectedAreas       String[]  @default([]) @map("affected_areas")
+  planDiffId          String?   @map("plan_diff_id")
   createdAt           DateTime  @default(now()) @map("created_at")
   resolvedAt          DateTime? @map("resolved_at")
   resolvedBy          String?   @map("resolved_by")
@@ -211,4 +216,63 @@ model Activity {
 
   @@index([projectId, createdAt(sort: Desc)])
   @@map("activities")
+}
+
+model ApiKey {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name        String
+  keyHash     String
+  keyPrefix   String
+  permissions String[]
+  createdBy   String
+  lastUsedAt  DateTime?
+  createdAt   DateTime @default(now())
+
+  @@map("api_keys")
+}
+
+model Webhook {
+  id         String   @id @default(cuid())
+  projectId  String
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  url        String
+  events     String[]
+  secret     String?
+  active     Boolean  @default(true)
+  createdBy  String
+  createdAt  DateTime @default(now())
+
+  deliveries WebhookDelivery[]
+
+  @@map("webhooks")
+}
+
+model WebhookDelivery {
+  id           String   @id @default(cuid())
+  webhookId    String
+  webhook      Webhook  @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+  event        String
+  requestBody  Json
+  responseCode Int
+  success      Boolean
+  errorMessage String?
+  attempt      Int
+  createdAt    DateTime @default(now())
+
+  @@map("webhook_deliveries")
+}
+
+model PlanDiff {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  fromPlanId  String
+  toPlanId    String
+  changes     Json
+  generatedAt DateTime @default(now())
+
+  @@unique([fromPlanId, toPlanId])
+  @@map("plan_diffs")
 }

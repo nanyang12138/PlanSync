@@ -2,6 +2,12 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { ApiClient } from '../api-client';
 
+let activeProjectId: string | undefined;
+
+export function getActiveProjectId(): string | undefined {
+  return activeProjectId;
+}
+
 export function registerProjectTools(server: McpServer, api: ApiClient) {
   server.tool(
     'plansync_project_list',
@@ -38,6 +44,25 @@ export function registerProjectTools(server: McpServer, api: ApiClient) {
     async (args) => {
       const result = await api.get(`/api/projects/${args.projectId}`);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'plansync_project_switch',
+    'Switch the active project context (local MCP state only, no API call)',
+    {
+      projectId: z.string().describe('Project ID to switch to'),
+    },
+    async (args) => {
+      activeProjectId = args.projectId;
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({ switched: true, activeProjectId: args.projectId }),
+          },
+        ],
+      };
     },
   );
 

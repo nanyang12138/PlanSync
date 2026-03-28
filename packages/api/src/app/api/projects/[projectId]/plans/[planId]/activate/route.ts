@@ -4,7 +4,10 @@ import { authenticate, requireProjectRole } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { AppError, ErrorCode } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
-import { runDriftScan, persistDriftAlerts } from '@/lib/drift-engine';
+import { runDriftScan, persistDriftAlerts, enrichDriftAlertsWithAi } from '@/lib/drift-engine';
+import { eventBus } from '@/lib/event-bus';
+import { dispatchWebhooks } from '@/lib/webhook';
+import { logger } from '@/lib/logger';
 
 type Params = { params: { projectId: string; planId: string } };
 
@@ -18,6 +21,9 @@ export async function POST(req: NextRequest, { params }: Params) {
       include: { reviews: true },
     });
     if (!plan) throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
+    if (plan.projectId !== params.projectId) {
+      throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
+    }
 
     if (plan.status !== 'draft' && plan.status !== 'proposed') {
       throw new AppError(ErrorCode.STATE_CONFLICT, 'Plan must be draft or proposed to activate');
@@ -51,13 +57,23 @@ export async function POST(req: NextRequest, { params }: Params) {
       return { activated: a, driftAlerts: alerts };
     });
 
+    if (driftAlerts.length > 0) {
+      enrichDriftAlertsWithAi(params.projectId, activated.id, driftAlerts).catch((err) =>
+        logger.error({ err }, 'Background AI drift enrichment failed'),
+      );
+    }
+
     await createActivity({
       projectId: params.projectId,
       type: 'plan_activated',
       actorName: auth.userName,
       actorType: 'human',
       summary: `Plan v${activated.version} "${activated.title}" activated${driftAlerts.length > 0 ? ` (${driftAlerts.length} drift alerts)` : ''}`,
-      metadata: { planId: activated.id, version: activated.version, driftCount: driftAlerts.length },
+      metadata: {
+        planId: activated.id,
+        version: activated.version,
+        driftCount: driftAlerts.length,
+      },
     });
 
     if (driftAlerts.length > 0) {
@@ -68,6 +84,36 @@ export async function POST(req: NextRequest, { params }: Params) {
         actorType: 'system',
         summary: `${driftAlerts.length} drift alert(s) detected after plan activation`,
         metadata: { alertIds: driftAlerts.map((a) => a.id) },
+      });
+    }
+
+    eventBus.publish(params.projectId, 'plan_activated', {
+      planId: activated.id,
+      version: activated.version,
+      title: activated.title,
+      activatedBy: auth.userName,
+    });
+    dispatchWebhooks(params.projectId, 'plan_activated', {
+      planId: activated.id,
+      version: activated.version,
+      title: activated.title,
+      activatedBy: auth.userName,
+    });
+
+    if (driftAlerts.length > 0) {
+      eventBus.publish(params.projectId, 'drift_detected', {
+        alerts: driftAlerts.map((a: any) => ({
+          alertId: a.id,
+          taskId: a.taskId,
+          severity: a.severity,
+        })),
+      });
+      dispatchWebhooks(params.projectId, 'drift_detected', {
+        alerts: driftAlerts.map((a: any) => ({
+          alertId: a.id,
+          taskId: a.taskId,
+          severity: a.severity,
+        })),
       });
     }
 

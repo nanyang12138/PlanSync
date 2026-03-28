@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { eventBus } from '@/lib/event-bus';
 
 export async function GET() {
   try {
@@ -8,6 +9,7 @@ export async function GET() {
       status: 'ok',
       timestamp: new Date().toISOString(),
       database: 'connected',
+      sseClients: eventBus.getClientCount(),
     });
   } catch {
     return NextResponse.json(

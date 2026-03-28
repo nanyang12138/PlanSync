@@ -5,6 +5,7 @@ import { handleApiError } from '@/lib/errors';
 import { validateBody, validateSearchParams } from '@/lib/validate';
 import { createPlanSchema, paginationSchema } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
+import { eventBus } from '@/lib/event-bus';
 
 type Params = { params: { projectId: string } };
 
@@ -62,6 +63,13 @@ export async function POST(req: NextRequest, { params }: Params) {
       actorType: 'human',
       summary: `Plan v${plan.version} "${plan.title}" created as draft`,
       metadata: { planId: plan.id, version: plan.version },
+    });
+
+    eventBus.publish(params.projectId, 'plan_created', {
+      planId: plan.id,
+      version: plan.version,
+      title: plan.title,
+      createdBy: auth.userName,
     });
 
     return NextResponse.json({ data: plan }, { status: 201 });

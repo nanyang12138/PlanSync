@@ -1,0 +1,20 @@
+{
+  "name": "@plansync/cli",
+  "version": "0.1.0",
+  "private": true,
+  "bin": {
+    "plansync-cli": "dist/index.js"
+  },
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node18 --outfile=dist/index.js --format=cjs",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "commander": "~12.1.0"
+  },
+  "devDependencies": {
+    "typescript": "~5.7.3",
+    "@types/node": "~20.17.12",
+    "esbuild": "~0.24.2"
+  }
+}

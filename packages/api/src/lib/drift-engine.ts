@@ -1,5 +1,9 @@
 import { PrismaClient, Prisma } from '@prisma/client';
 import { logger } from './logger';
+import { prisma } from './prisma';
+import { aiClient } from './ai/client';
+import { getOrCreatePlanDiff } from './ai/plan-diff';
+import { analyzeTaskImpact } from './ai/impact-analysis';
 
 export interface DriftScanResult {
   alerts: Array<{
@@ -77,4 +81,59 @@ export async function persistDriftAlerts(
       taskBoundVersion: a.taskBoundVersion,
     })),
   });
+}
+
+/** Runs after drift alerts are persisted; uses AI when available to enrich DriftAlert rows. */
+export async function enrichDriftAlertsWithAi(
+  projectId: string,
+  activePlanId: string,
+  alerts: Array<{ id: string; taskId: string }>,
+): Promise<void> {
+  if (!aiClient.isAvailable || alerts.length === 0) return;
+
+  for (const alert of alerts) {
+    try {
+      const task = await prisma.task.findUnique({ where: { id: alert.taskId } });
+      if (!task) continue;
+
+      const boundPlan = await prisma.plan.findFirst({
+        where: { projectId, version: task.boundPlanVersion },
+      });
+      if (!boundPlan || boundPlan.id === activePlanId) continue;
+
+      const diff = await getOrCreatePlanDiff(projectId, boundPlan.id, activePlanId);
+      if (!diff) continue;
+
+      const impact = await analyzeTaskImpact(diff, task);
+      if (!impact) continue;
+
+      const planDiffRow = await prisma.planDiff.findUnique({
+        where: { fromPlanId_toPlanId: { fromPlanId: boundPlan.id, toPlanId: activePlanId } },
+      });
+
+      const highCompatibility = impact.compatibilityScore > 70;
+      const suggestedAction = highCompatibility ? 'no_impact' : impact.suggestedAction;
+
+      await prisma.driftAlert.update({
+        where: { id: alert.id },
+        data: {
+          compatibilityScore: impact.compatibilityScore,
+          impactAnalysis: impact.reasoning,
+          suggestedAction,
+          affectedAreas: impact.affectedAreas,
+          planDiffId: planDiffRow?.id ?? null,
+          ...(highCompatibility
+            ? {
+                status: 'resolved',
+                resolvedAction: 'no_impact',
+                resolvedAt: new Date(),
+                resolvedBy: 'system',
+              }
+            : {}),
+        },
+      });
+    } catch (err) {
+      logger.error({ err, alertId: alert.id }, 'Failed to enrich drift alert with AI');
+    }
+  }
 }

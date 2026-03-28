@@ -5,6 +5,8 @@ import { handleApiError } from '@/lib/errors';
 import { validateBody, validateSearchParams } from '@/lib/validate';
 import { createTaskSchema, paginationSchema, AppError, ErrorCode } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
+import { eventBus } from '@/lib/event-bus';
+import { dispatchWebhooks } from '@/lib/webhook';
 
 type Params = { params: { projectId: string } };
 
@@ -47,7 +49,10 @@ export async function POST(req: NextRequest, { params }: Params) {
       where: { projectId: params.projectId, status: 'active' },
     });
     if (!activePlan) {
-      throw new AppError(ErrorCode.STATE_CONFLICT, 'No active plan. Activate a plan before creating tasks.');
+      throw new AppError(
+        ErrorCode.STATE_CONFLICT,
+        'No active plan. Activate a plan before creating tasks.',
+      );
     }
 
     const task = await prisma.task.create({
@@ -65,6 +70,19 @@ export async function POST(req: NextRequest, { params }: Params) {
       actorType: 'human',
       summary: `Task "${task.title}" created (bound to plan v${activePlan.version})`,
       metadata: { taskId: task.id, boundPlanVersion: activePlan.version },
+    });
+
+    eventBus.publish(params.projectId, 'task_created', {
+      taskId: task.id,
+      title: task.title,
+      assignee: task.assignee,
+      boundPlanVersion: activePlan.version,
+    });
+    dispatchWebhooks(params.projectId, 'task_created', {
+      taskId: task.id,
+      title: task.title,
+      assignee: task.assignee,
+      boundPlanVersion: activePlan.version,
     });
 
     return NextResponse.json({ data: task }, { status: 201 });

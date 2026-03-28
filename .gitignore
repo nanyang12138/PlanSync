@@ -22,8 +22,10 @@ out/
 .DS_Store
 Thumbs.db
 
-# Prisma
-packages/api/prisma/migrations/**/migration_lock.toml
+# Temp / build cache
+packages/api/tmp/
+tmp/
+*.nfs*
 
 # Logs
 *.log

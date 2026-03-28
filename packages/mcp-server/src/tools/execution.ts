@@ -13,8 +13,8 @@ export function registerExecutionTools(server: McpServer, api: ApiClient) {
       executorName: z.string(),
     },
     async (args) => {
-      const { projectId, taskId, ...body } = args;
-      const result = await api.post(`/api/projects/${projectId}/tasks/${taskId}/runs`, body);
+      const { projectId, ...body } = args;
+      const result = await api.post(`/api/projects/${projectId}/tasks/${args.taskId}/runs`, body);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   );

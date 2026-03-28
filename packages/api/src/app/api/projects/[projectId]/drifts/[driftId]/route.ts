@@ -5,6 +5,8 @@ import { handleApiError } from '@/lib/errors';
 import { validateBody } from '@/lib/validate';
 import { resolveDriftSchema, AppError, ErrorCode } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
+import { eventBus } from '@/lib/event-bus';
+import { dispatchWebhooks } from '@/lib/webhook';
 
 type Params = { params: { projectId: string; driftId: string } };
 
@@ -19,6 +21,9 @@ export async function POST(req: NextRequest, { params }: Params) {
       include: { task: true },
     });
     if (!drift) throw new AppError(ErrorCode.NOT_FOUND, 'Drift alert not found');
+    if (drift.projectId !== params.projectId) {
+      throw new AppError(ErrorCode.NOT_FOUND, 'Drift alert not found');
+    }
     if (drift.status !== 'open') {
       throw new AppError(ErrorCode.STATE_CONFLICT, 'Drift alert already resolved');
     }
@@ -38,6 +43,9 @@ export async function POST(req: NextRequest, { params }: Params) {
         },
       });
 
+      if (body.action === 'rebind' && !activePlan) {
+        throw new AppError(ErrorCode.STATE_CONFLICT, 'No active plan to rebind to');
+      }
       if (body.action === 'rebind' && activePlan) {
         await tx.task.update({
           where: { id: drift.taskId },
@@ -62,6 +70,17 @@ export async function POST(req: NextRequest, { params }: Params) {
       actorType: 'human',
       summary: `Drift alert resolved: ${body.action} for "${drift.task.title}"`,
       metadata: { driftId: drift.id, action: body.action, taskId: drift.taskId },
+    });
+
+    eventBus.publish(params.projectId, 'drift_resolved', {
+      alertId: drift.id,
+      action: body.action,
+      resolvedBy: auth.userName,
+    });
+    dispatchWebhooks(params.projectId, 'drift_resolved', {
+      alertId: drift.id,
+      action: body.action,
+      resolvedBy: auth.userName,
     });
 
     return NextResponse.json({ data: { resolved: true, action: body.action } });

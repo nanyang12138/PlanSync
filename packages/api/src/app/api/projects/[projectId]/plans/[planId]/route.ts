@@ -4,6 +4,8 @@ import { authenticate, requireProjectRole } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { validateBody } from '@/lib/validate';
 import { updatePlanSchema, AppError, ErrorCode } from '@plansync/shared';
+import { eventBus } from '@/lib/event-bus';
+import { dispatchWebhooks } from '@/lib/webhook';
 
 type Params = { params: { projectId: string; planId: string } };
 
@@ -17,6 +19,9 @@ export async function GET(req: NextRequest, { params }: Params) {
       include: { reviews: true },
     });
     if (!plan) throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
+    if (plan.projectId !== params.projectId) {
+      throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
+    }
 
     return NextResponse.json({ data: plan });
   } catch (error) {
@@ -32,6 +37,9 @@ export async function PATCH(req: NextRequest, { params }: Params) {
 
     const plan = await prisma.plan.findUnique({ where: { id: params.planId } });
     if (!plan) throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
+    if (plan.projectId !== params.projectId) {
+      throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
+    }
     if (plan.status !== 'draft') {
       throw new AppError(ErrorCode.STATE_CONFLICT, 'Only draft plans can be edited');
     }
@@ -39,6 +47,17 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     const updated = await prisma.plan.update({
       where: { id: params.planId },
       data: body,
+    });
+
+    eventBus.publish(params.projectId, 'plan_draft_updated', {
+      planId: updated.id,
+      updatedBy: auth.userName,
+      fields: Object.keys(body),
+    });
+    dispatchWebhooks(params.projectId, 'plan_draft_updated', {
+      planId: updated.id,
+      updatedBy: auth.userName,
+      fields: Object.keys(body),
     });
 
     return NextResponse.json({ data: updated });
@@ -54,6 +73,9 @@ export async function DELETE(req: NextRequest, { params }: Params) {
 
     const plan = await prisma.plan.findUnique({ where: { id: params.planId } });
     if (!plan) throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
+    if (plan.projectId !== params.projectId) {
+      throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
+    }
     if (plan.status !== 'draft') {
       throw new AppError(ErrorCode.STATE_CONFLICT, 'Only draft plans can be deleted');
     }

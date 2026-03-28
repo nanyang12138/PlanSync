@@ -5,6 +5,8 @@ import { handleApiError } from '@/lib/errors';
 import { validateBody } from '@/lib/validate';
 import { completeExecutionRunSchema, AppError, ErrorCode } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
+import { eventBus } from '@/lib/event-bus';
+import { dispatchWebhooks } from '@/lib/webhook';
 
 type Params = { params: { projectId: string; taskId: string; runId: string } };
 
@@ -15,8 +17,14 @@ export async function POST(req: NextRequest, { params }: Params) {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);
 
-    const run = await prisma.executionRun.findUnique({ where: { id: params.runId } });
+    const run = await prisma.executionRun.findUnique({
+      where: { id: params.runId },
+      include: { task: true },
+    });
     if (!run) throw new AppError(ErrorCode.NOT_FOUND, 'ExecutionRun not found');
+    if (run.taskId !== params.taskId || run.task.projectId !== params.projectId) {
+      throw new AppError(ErrorCode.NOT_FOUND, 'ExecutionRun not found');
+    }
 
     if (action === 'heartbeat') {
       if (run.status !== 'running') {
@@ -47,6 +55,16 @@ export async function POST(req: NextRequest, { params }: Params) {
           where: { id: params.taskId },
           data: { status: 'done' },
         });
+      } else if (body.status === 'failed') {
+        const otherRunning = await prisma.executionRun.count({
+          where: { taskId: params.taskId, status: 'running', id: { not: params.runId } },
+        });
+        if (otherRunning === 0) {
+          await prisma.task.update({
+            where: { id: params.taskId },
+            data: { status: 'blocked' },
+          });
+        }
       }
 
       const activityType = body.status === 'completed' ? 'execution_completed' : 'execution_failed';
@@ -58,6 +76,23 @@ export async function POST(req: NextRequest, { params }: Params) {
         summary: `Execution ${body.status} for task`,
         metadata: { runId: run.id, taskId: params.taskId },
       });
+
+      if (body.status === 'completed') {
+        eventBus.publish(params.projectId, 'task_completed', {
+          taskId: params.taskId,
+          title: run.task.title,
+          completedBy: run.executorName,
+          summary: body.outputSummary || '',
+          filesChanged: body.filesChanged || [],
+        });
+        dispatchWebhooks(params.projectId, 'task_completed', {
+          taskId: params.taskId,
+          title: run.task.title,
+          completedBy: run.executorName,
+          summary: body.outputSummary || '',
+          filesChanged: body.filesChanged || [],
+        });
+      }
 
       return NextResponse.json({ data: updated });
     }

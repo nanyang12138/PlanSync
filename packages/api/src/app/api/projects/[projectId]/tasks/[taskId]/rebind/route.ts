@@ -14,6 +14,9 @@ export async function POST(req: NextRequest, { params }: Params) {
 
     const task = await prisma.task.findUnique({ where: { id: params.taskId } });
     if (!task) throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+    if (task.projectId !== params.projectId) {
+      throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+    }
 
     const activePlan = await prisma.plan.findFirst({
       where: { projectId: params.projectId, status: 'active' },

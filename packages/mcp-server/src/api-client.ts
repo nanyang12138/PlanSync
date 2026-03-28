@@ -48,7 +48,14 @@ export class ApiClient {
   }
 
   private async handleResponse<T>(res: Response, method: string, path: string): Promise<T> {
-    const json = await res.json();
+    const text = await res.text();
+    let json: any;
+    try {
+      json = text ? JSON.parse(text) : {};
+    } catch {
+      if (!res.ok) throw new Error(`API error ${res.status}: ${text.slice(0, 200)}`);
+      return {} as T;
+    }
 
     if (!res.ok) {
       const errMsg = json?.error?.message || `API error ${res.status}`;

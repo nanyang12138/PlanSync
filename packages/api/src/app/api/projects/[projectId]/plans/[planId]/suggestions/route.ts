@@ -5,6 +5,8 @@ import { handleApiError } from '@/lib/errors';
 import { validateBody, validateSearchParams } from '@/lib/validate';
 import { createSuggestionSchema, paginationSchema, AppError, ErrorCode } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
+import { eventBus } from '@/lib/event-bus';
+import { dispatchWebhooks } from '@/lib/webhook';
 
 type Params = { params: { projectId: string; planId: string } };
 
@@ -43,7 +45,10 @@ export async function POST(req: NextRequest, { params }: Params) {
     const plan = await prisma.plan.findUnique({ where: { id: params.planId } });
     if (!plan) throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
     if (plan.status !== 'draft' && plan.status !== 'proposed') {
-      throw new AppError(ErrorCode.STATE_CONFLICT, 'Suggestions only accepted on draft or proposed plans');
+      throw new AppError(
+        ErrorCode.STATE_CONFLICT,
+        'Suggestions only accepted on draft or proposed plans',
+      );
     }
 
     const member = await prisma.projectMember.findUnique({
@@ -66,6 +71,19 @@ export async function POST(req: NextRequest, { params }: Params) {
       actorType: member?.type === 'agent' ? 'agent' : 'human',
       summary: `Suggestion: ${body.action} "${body.field}" on Plan v${plan.version}`,
       metadata: { suggestionId: suggestion.id, planId: params.planId },
+    });
+
+    eventBus.publish(params.projectId, 'suggestion_created', {
+      suggestionId: suggestion.id,
+      suggestedBy: auth.userName,
+      field: body.field,
+      value: body.value,
+    });
+    dispatchWebhooks(params.projectId, 'suggestion_created', {
+      suggestionId: suggestion.id,
+      suggestedBy: auth.userName,
+      field: body.field,
+      value: body.value,
     });
 
     return NextResponse.json({ data: suggestion }, { status: 201 });

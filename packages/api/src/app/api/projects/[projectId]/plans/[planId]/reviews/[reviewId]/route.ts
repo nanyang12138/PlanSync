@@ -17,7 +17,13 @@ async function handleReviewAction(
   await requireProjectRole(auth, params.projectId);
   const body = await validateBody(req, reviewActionSchema);
 
-  const review = await prisma.planReview.findUnique({ where: { id: params.reviewId } });
+  const review = await prisma.planReview.findFirst({
+    where: {
+      id: params.reviewId,
+      planId: params.planId,
+      plan: { projectId: params.projectId },
+    },
+  });
   if (!review) throw new AppError(ErrorCode.NOT_FOUND, 'Review not found');
   if (review.reviewerName !== auth.userName) {
     throw new AppError(ErrorCode.FORBIDDEN, 'Only the assigned reviewer can approve/reject');

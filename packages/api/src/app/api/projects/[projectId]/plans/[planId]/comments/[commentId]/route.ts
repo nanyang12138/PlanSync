@@ -13,7 +13,13 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     await requireProjectRole(auth, params.projectId);
     const body = await validateBody(req, updateCommentSchema);
 
-    const comment = await prisma.planComment.findUnique({ where: { id: params.commentId } });
+    const comment = await prisma.planComment.findFirst({
+      where: {
+        id: params.commentId,
+        planId: params.planId,
+        plan: { projectId: params.projectId },
+      },
+    });
     if (!comment) throw new AppError(ErrorCode.NOT_FOUND, 'Comment not found');
     if (comment.authorName !== auth.userName) {
       throw new AppError(ErrorCode.FORBIDDEN, 'Only the author can edit this comment');
@@ -36,12 +42,21 @@ export async function PATCH(req: NextRequest, { params }: Params) {
 export async function DELETE(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
-    await requireProjectRole(auth, params.projectId);
+    const authCtx = await requireProjectRole(auth, params.projectId);
 
-    const comment = await prisma.planComment.findUnique({ where: { id: params.commentId } });
+    const comment = await prisma.planComment.findFirst({
+      where: {
+        id: params.commentId,
+        planId: params.planId,
+        plan: { projectId: params.projectId },
+      },
+    });
     if (!comment) throw new AppError(ErrorCode.NOT_FOUND, 'Comment not found');
-    if (comment.authorName !== auth.userName) {
-      throw new AppError(ErrorCode.FORBIDDEN, 'Only the author can delete this comment');
+    if (comment.authorName !== auth.userName && authCtx.projectRole !== 'owner') {
+      throw new AppError(
+        ErrorCode.FORBIDDEN,
+        'Only the author or a project owner can delete this comment',
+      );
     }
 
     const updated = await prisma.planComment.update({
