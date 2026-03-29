@@ -1,6 +1,6 @@
 #!/bin/bash
-# PlanSync — 一键启动增强版 AI 编码工具
-# 自动注入 MCP 配置 + CLAUDE.md 指令 → 启动 Genie/Claude Code
+# PlanSync — Launch your AI coding tool with MCP integration
+# Injects MCP config + CLAUDE.md instructions, then starts Genie/Claude Code/Cursor
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -74,7 +74,19 @@ if [ "${NODE_MAJOR:-0}" -lt 18 ]; then
   exit 1
 fi
 
-# ─── Config ───
+# ─── Load .env (existing env vars take precedence) ───
+_load_env() {
+  [ -f "$1" ] || return 0
+  while IFS= read -r _line; do
+    [[ "$_line" =~ ^[[:space:]]*($|#) ]] && continue
+    local _key="${_line%%=*}"
+    _key="${_key// /}"
+    [ -n "${!_key+set}" ] || export "$_line"
+  done < "$1"
+}
+_load_env "$PROJECT_DIR/.env"
+
+# ─── Config (env > .env > defaults) ───
 export PLANSYNC_API_URL="${PLANSYNC_API_URL:-http://localhost:3001}"
 export PLANSYNC_SECRET="${PLANSYNC_SECRET:-dev-secret}"
 export PLANSYNC_USER="${PLANSYNC_USER:-${USER}}"
@@ -225,7 +237,7 @@ case "$HOST" in
     echo "   Restart Cursor or reload the window to activate PlanSync." >&2
     echo "" >&2
     echo "   PlanSync is now available in Cursor's AI chat." >&2
-    echo "   Try asking: '查看项目状态' or '创建一个认证系统方案'" >&2
+    echo "   Try asking: 'show project status' or 'create a plan for auth system'" >&2
     ;;
 
   *)
