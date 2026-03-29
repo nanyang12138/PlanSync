@@ -2,9 +2,8 @@
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { Trash2, Users } from 'lucide-react';
+import { Trash2 } from 'lucide-react';
 import type { ProjectMember } from '@prisma/client';
-import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
 export type MemberListProps = {
@@ -14,15 +13,11 @@ export type MemberListProps = {
 };
 
 function roleBadgeClass(role: string) {
-  return role === 'owner'
-    ? 'border-violet-500/40 bg-violet-500/10 text-violet-900 dark:text-violet-200'
-    : 'border-border bg-muted text-foreground';
+  return role === 'owner' ? 'badge-violet' : 'badge-neutral';
 }
 
 function typeBadgeClass(type: string) {
-  return type === 'agent'
-    ? 'border-sky-500/40 bg-sky-500/10 text-sky-900 dark:text-sky-200'
-    : 'border-border bg-muted/80 text-muted-foreground';
+  return type === 'agent' ? 'badge-brand' : 'badge-neutral';
 }
 
 function formatJoined(d: Date) {
@@ -66,87 +61,61 @@ export function MemberList({ members, projectId, className }: MemberListProps) {
 
   if (members.length === 0) {
     return (
-      <p className="rounded-lg border border-dashed border-border bg-muted/30 px-4 py-8 text-center text-sm text-muted-foreground">
-        No members yet.
-      </p>
+      <div className="p-10 text-center">
+        <p className="text-sm text-slate-400">No members yet.</p>
+      </div>
     );
   }
 
   return (
-    <div className={cn('space-y-3', className)}>
-      <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
-        <table className="w-full text-left text-sm">
-          <thead className="border-b border-border bg-muted/40">
-            <tr>
-              <th className="px-4 py-3 font-medium text-muted-foreground">Name</th>
-              <th className="px-4 py-3 font-medium text-muted-foreground">Role</th>
-              <th className="px-4 py-3 font-medium text-muted-foreground">Type</th>
-              <th className="px-4 py-3 font-medium text-muted-foreground">Joined</th>
-              <th className="px-4 py-3 font-medium text-muted-foreground w-28">Actions</th>
+    <div className={cn('', className)}>
+      <table className="w-full text-left text-sm">
+        <thead className="border-b border-slate-100 bg-slate-50/80">
+          <tr>
+            <th className="px-5 py-3 font-medium text-xs text-slate-500 uppercase tracking-wider">
+              Name
+            </th>
+            <th className="px-5 py-3 font-medium text-xs text-slate-500 uppercase tracking-wider">
+              Role
+            </th>
+            <th className="px-5 py-3 font-medium text-xs text-slate-500 uppercase tracking-wider">
+              Type
+            </th>
+            <th className="px-5 py-3 font-medium text-xs text-slate-500 uppercase tracking-wider">
+              Joined
+            </th>
+            <th className="px-5 py-3 font-medium text-xs text-slate-500 uppercase tracking-wider w-24"></th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100">
+          {members.map((m) => (
+            <tr key={m.id} className="hover:bg-slate-50/80 transition-colors">
+              <td className="px-5 py-3.5 align-middle font-medium text-slate-700">{m.name}</td>
+              <td className="px-5 py-3.5 align-middle">
+                <span className={cn('badge capitalize', roleBadgeClass(m.role))}>{m.role}</span>
+              </td>
+              <td className="px-5 py-3.5 align-middle">
+                <span className={cn('badge capitalize', typeBadgeClass(m.type))}>{m.type}</span>
+              </td>
+              <td className="px-5 py-3.5 align-middle text-slate-500 text-xs">
+                {formatJoined(m.createdAt)}
+              </td>
+              <td className="px-5 py-3.5 align-middle">
+                <button
+                  type="button"
+                  className="btn-danger !py-1 !px-2.5"
+                  disabled={pendingId !== null}
+                  onClick={() => void removeMember(m.id)}
+                  aria-label={`Remove ${m.name}`}
+                >
+                  {pendingId === m.id ? '...' : <Trash2 className="h-3.5 w-3.5" />}
+                </button>
+              </td>
             </tr>
-          </thead>
-          <tbody className="divide-y divide-border">
-            {members.map((m) => (
-              <tr key={m.id} className="bg-card transition-colors hover:bg-muted/30">
-                <td className="px-4 py-3 align-middle font-medium">{m.name}</td>
-                <td className="px-4 py-3 align-middle">
-                  <span
-                    className={cn(
-                      'inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-semibold capitalize',
-                      roleBadgeClass(m.role),
-                    )}
-                  >
-                    {m.role}
-                  </span>
-                </td>
-                <td className="px-4 py-3 align-middle">
-                  <span
-                    className={cn(
-                      'inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-semibold capitalize',
-                      typeBadgeClass(m.type),
-                    )}
-                  >
-                    {m.type}
-                  </span>
-                </td>
-                <td className="px-4 py-3 align-middle text-muted-foreground">
-                  {formatJoined(m.createdAt)}
-                </td>
-                <td className="px-4 py-3 align-middle">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    className="text-destructive hover:bg-destructive/10"
-                    disabled={pendingId !== null}
-                    onClick={() => void removeMember(m.id)}
-                    aria-label={`Remove ${m.name}`}
-                  >
-                    {pendingId === m.id ? (
-                      '…'
-                    ) : (
-                      <>
-                        <Trash2 className="h-4 w-4" />
-                        <span className="sr-only sm:not-sr-only sm:ml-1">Remove</span>
-                      </>
-                    )}
-                  </Button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {error && <p className="text-sm text-destructive">{error}</p>}
-    </div>
-  );
-}
-
-export function MemberListHeader({ className }: { className?: string }) {
-  return (
-    <div className={cn('mb-3 flex items-center gap-2', className)}>
-      <Users className="h-5 w-5 text-primary" />
-      <h2 className="text-lg font-semibold">Members</h2>
+          ))}
+        </tbody>
+      </table>
+      {error && <p className="text-sm text-rose-600 px-5 py-2">{error}</p>}
     </div>
   );
 }

@@ -1,9 +1,9 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { ArrowLeft, GitBranch } from 'lucide-react';
+import { ArrowLeft, GitBranch, Users } from 'lucide-react';
 import { prisma } from '@/lib/prisma';
 import { MemberInvite } from '@/components/member/member-invite';
-import { MemberList, MemberListHeader } from '@/components/member/member-list';
+import { MemberList } from '@/components/member/member-list';
 import { RealtimeWrapper } from '@/components/realtime-wrapper';
 
 export default async function ProjectMembersPage({ params }: { params: { id: string } }) {
@@ -17,30 +17,39 @@ export default async function ProjectMembersPage({ params }: { params: { id: str
 
   return (
     <RealtimeWrapper projectId={params.id}>
-      <div className="min-h-screen bg-background">
-        <header className="border-b bg-card">
-          <div className="mx-auto flex max-w-7xl items-center gap-4 px-6 py-4">
-            <Link
-              href={`/projects/${params.id}`}
-              className="inline-flex items-center gap-2 text-muted-foreground transition-colors hover:text-foreground"
-            >
-              <ArrowLeft className="h-5 w-5" />
-              <span className="text-sm font-medium">Back to dashboard</span>
+      <div className="page-shell">
+        <header className="page-header">
+          <div className="mx-auto flex max-w-7xl items-center gap-4 px-6 py-3">
+            <Link href={`/projects/${params.id}`} className="btn-ghost !px-2 !py-1.5">
+              <ArrowLeft className="h-4 w-4" />
+              <span className="hidden sm:inline">Back</span>
             </Link>
-            <div className="flex min-w-0 flex-1 items-center gap-2">
-              <GitBranch className="h-5 w-5 shrink-0 text-primary" />
-              <h1 className="truncate text-xl font-bold">{project.name}</h1>
-              <span className="text-sm text-muted-foreground">· Members</span>
+            <div className="flex min-w-0 flex-1 items-center gap-3">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-600 to-violet-600 shadow-sm shrink-0">
+                <GitBranch className="h-3.5 w-3.5 text-white" />
+              </div>
+              <h1 className="truncate text-base font-bold text-slate-900">{project.name}</h1>
+              <span className="badge badge-neutral">Members</span>
+            </div>
+            <div className="flex items-center gap-1.5 text-xs text-slate-400">
+              <Users className="h-3.5 w-3.5" />
+              {members.length} members
             </div>
           </div>
         </header>
 
-        <main className="mx-auto max-w-7xl space-y-8 px-6 py-6">
+        <main className="page-container space-y-6">
           <MemberInvite projectId={params.id} />
-          <section>
-            <MemberListHeader />
+
+          <div className="panel overflow-hidden">
+            <div className="panel-header">
+              <div className="flex items-center gap-2">
+                <Users className="h-4 w-4 text-blue-500" />
+                <span className="text-sm font-semibold text-slate-700">Team Members</span>
+              </div>
+            </div>
             <MemberList members={members} projectId={params.id} />
-          </section>
+          </div>
         </main>
       </div>
     </RealtimeWrapper>

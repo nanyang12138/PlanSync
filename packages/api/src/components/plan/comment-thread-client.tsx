@@ -3,41 +3,20 @@
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import type { PlanComment } from '@prisma/client';
-import { cn } from '@/lib/utils';
-import { Button } from '@/components/ui/button';
+import { Bot, User, Send } from 'lucide-react';
 
 export type CommentNode = PlanComment & { replies: CommentNode[] };
 
 function formatRelativeTime(date: Date): string {
-  const now = Date.now();
-  const diffMs = now - date.getTime();
-  const sec = Math.floor(diffMs / 1000);
-  const min = Math.floor(sec / 60);
+  const ms = Date.now() - date.getTime();
+  const min = Math.floor(ms / 60000);
   const hr = Math.floor(min / 60);
   const day = Math.floor(hr / 24);
-  if (day > 7) {
-    return date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-  }
+  if (day > 7) return date.toLocaleDateString(undefined, { dateStyle: 'medium' });
   if (day > 0) return `${day}d ago`;
   if (hr > 0) return `${hr}h ago`;
   if (min > 0) return `${min}m ago`;
   return 'just now';
-}
-
-function AuthorBadge({ type }: { type: string }) {
-  const isAgent = type === 'agent';
-  return (
-    <span
-      className={cn(
-        'rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
-        isAgent
-          ? 'border-violet-500/40 bg-violet-500/10 text-violet-800 dark:text-violet-300'
-          : 'border-border bg-muted text-muted-foreground',
-      )}
-    >
-      {isAgent ? 'agent' : 'human'}
-    </span>
-  );
 }
 
 function CommentComposer({
@@ -99,31 +78,49 @@ function CommentComposer({
     }
   }
 
+  if (parentId) {
+    return (
+      <form onSubmit={submit} className="space-y-2 mt-2">
+        <textarea
+          autoFocus={autoFocus}
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+          rows={2}
+          placeholder="Write a reply..."
+          className="input-field !h-auto py-2 text-sm resize-y"
+        />
+        <div className="flex items-center gap-2">
+          <button
+            type="submit"
+            disabled={pending || !content.trim()}
+            className="btn-primary !text-xs"
+          >
+            {pending ? '...' : 'Reply'}
+          </button>
+          {onCancel && (
+            <button type="button" onClick={onCancel} className="btn-secondary !text-xs">
+              Cancel
+            </button>
+          )}
+        </div>
+        {error && <p className="text-xs text-rose-600">{error}</p>}
+      </form>
+    );
+  }
+
   return (
-    <form onSubmit={submit} className="space-y-2">
-      <textarea
-        autoFocus={autoFocus}
+    <form onSubmit={submit} className="flex gap-2">
+      <input
+        type="text"
         value={content}
         onChange={(e) => setContent(e.target.value)}
-        rows={parentId ? 3 : 4}
-        placeholder={parentId ? 'Write a reply…' : 'Add a comment…'}
-        className={cn(
-          'w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm',
-          'ring-offset-background placeholder:text-muted-foreground',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-        )}
+        placeholder="Add a comment..."
+        className="input-field flex-1"
       />
-      <div className="flex flex-wrap items-center gap-2">
-        <Button type="submit" size="sm" disabled={pending || !content.trim()}>
-          {pending ? '…' : parentId ? 'Reply' : 'Comment'}
-        </Button>
-        {onCancel && (
-          <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
-            Cancel
-          </Button>
-        )}
-      </div>
-      {error && <p className="text-xs text-destructive">{error}</p>}
+      <button type="submit" disabled={pending || !content.trim()} className="btn-primary !px-2.5">
+        <Send className="h-3.5 w-3.5" />
+      </button>
+      {error && <p className="text-xs text-rose-600 ml-2">{error}</p>}
     </form>
   );
 }
@@ -140,24 +137,33 @@ function CommentBlock({
   depth: number;
 }) {
   const [replyOpen, setReplyOpen] = useState(false);
-  const created = new Date(node.createdAt);
+  const isAgent = node.authorType === 'agent';
 
   return (
-    <li className="rounded-lg border border-border bg-background/50">
-      <div className={cn('space-y-2 p-4', depth > 0 && 'border-l-2 border-primary/20 pl-4')}>
-        <div className="flex flex-wrap items-baseline gap-2">
-          <span className="font-medium">{node.authorName}</span>
-          <AuthorBadge type={node.authorType} />
-          <time className="text-xs text-muted-foreground" dateTime={created.toISOString()}>
-            {formatRelativeTime(created)}
-          </time>
+    <div className={depth > 0 ? 'ml-5 border-l-2 border-slate-100 pl-4' : ''}>
+      <div>
+        <div className="flex items-center gap-2 mb-1">
+          <div className="flex h-5 w-5 items-center justify-center rounded-md bg-slate-100 shrink-0">
+            {isAgent ? (
+              <Bot className="h-3 w-3 text-violet-400" />
+            ) : (
+              <User className="h-3 w-3 text-slate-400" />
+            )}
+          </div>
+          <span className="text-sm font-medium text-slate-700">{node.authorName}</span>
+          <span className="text-xs text-slate-400">
+            {formatRelativeTime(new Date(node.createdAt))}
+          </span>
         </div>
-        <p className="whitespace-pre-wrap text-sm text-muted-foreground">{node.content}</p>
-        <div>
+        <p className="text-sm text-slate-600 leading-relaxed pl-7">{node.content}</p>
+        <div className="pl-7 mt-1.5">
           {!replyOpen ? (
-            <Button type="button" variant="ghost" size="sm" onClick={() => setReplyOpen(true)}>
+            <button
+              onClick={() => setReplyOpen(true)}
+              className="text-xs text-slate-400 hover:text-blue-600 transition-colors font-medium"
+            >
               Reply
-            </Button>
+            </button>
           ) : (
             <CommentComposer
               projectId={projectId}
@@ -171,7 +177,7 @@ function CommentBlock({
         </div>
       </div>
       {node.replies.length > 0 && (
-        <ul className="space-y-2 border-t border-border/60 p-2 pl-4">
+        <div className="space-y-3 mt-3">
           {node.replies.map((r: CommentNode) => (
             <CommentBlock
               key={r.id}
@@ -181,9 +187,9 @@ function CommentBlock({
               depth={depth + 1}
             />
           ))}
-        </ul>
+        </div>
       )}
-    </li>
+    </div>
   );
 }
 
@@ -195,11 +201,11 @@ type CommentThreadClientProps = {
 
 export function CommentThreadClient({ roots, projectId, planId }: CommentThreadClientProps) {
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {roots.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No comments yet.</p>
+        <p className="text-sm text-slate-400 italic">No comments yet.</p>
       ) : (
-        <ul className="space-y-3">
+        <div className="space-y-3 max-h-56 overflow-y-auto mb-4">
           {roots.map((node) => (
             <CommentBlock
               key={node.id}
@@ -209,13 +215,10 @@ export function CommentThreadClient({ roots, projectId, planId }: CommentThreadC
               depth={0}
             />
           ))}
-        </ul>
+        </div>
       )}
 
-      <div className="border-t border-border pt-4">
-        <h3 className="mb-2 text-sm font-semibold">Add comment</h3>
-        <CommentComposer projectId={projectId} planId={planId} onDone={() => {}} />
-      </div>
+      <CommentComposer projectId={projectId} planId={planId} onDone={() => {}} />
     </div>
   );
 }

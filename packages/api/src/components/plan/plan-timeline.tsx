@@ -15,28 +15,28 @@ function statusStyles(status: string) {
   switch (status) {
     case 'active':
       return {
-        dot: 'border-emerald-600 bg-emerald-500 shadow-[0_0_0_3px_rgba(16,185,129,0.25)]',
-        label: 'text-emerald-700 dark:text-emerald-400',
+        dot: 'border-emerald-600 bg-emerald-500 shadow-[0_0_0_3px_rgba(16,185,129,0.2)]',
+        label: 'text-emerald-700',
       };
     case 'superseded':
       return {
-        dot: 'border-border bg-muted-foreground/35',
-        label: 'text-muted-foreground',
+        dot: 'border-slate-300 bg-slate-300',
+        label: 'text-slate-400',
       };
     case 'draft':
       return {
-        dot: 'border-blue-600 bg-blue-500 shadow-[0_0_0_3px_rgba(59,130,246,0.2)]',
-        label: 'text-blue-700 dark:text-blue-400',
+        dot: 'border-blue-500 bg-blue-500 shadow-[0_0_0_3px_rgba(59,130,246,0.15)]',
+        label: 'text-blue-600',
       };
     case 'proposed':
       return {
-        dot: 'border-amber-500 bg-amber-400 shadow-[0_0_0_3px_rgba(251,191,36,0.25)]',
-        label: 'text-amber-800 dark:text-amber-300',
+        dot: 'border-amber-500 bg-amber-400 shadow-[0_0_0_3px_rgba(251,191,36,0.2)]',
+        label: 'text-amber-700',
       };
     default:
       return {
-        dot: 'border-border bg-muted',
-        label: 'text-muted-foreground',
+        dot: 'border-slate-300 bg-slate-200',
+        label: 'text-slate-400',
       };
   }
 }
@@ -53,22 +53,23 @@ export function PlanTimeline({ projectId, plans, selectedPlanId }: PlanTimelineP
 
           return (
             <Fragment key={plan.id}>
-              {index > 0 && <div className="h-0.5 w-8 shrink-0 bg-border sm:w-12" aria-hidden />}
+              {index > 0 && (
+                <div className="h-0.5 w-10 shrink-0 bg-slate-200 sm:w-14" aria-hidden />
+              )}
               <Link
                 href={`${base}?plan=${plan.id}`}
                 scroll={false}
                 className={cn(
-                  'group flex flex-col items-center gap-2 rounded-lg px-2 py-1 transition-colors',
-                  'outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-                  isSelected && 'bg-accent/60',
+                  'group flex flex-col items-center gap-2 rounded-lg px-3 py-2 transition-all',
+                  'outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2',
+                  isSelected && 'bg-blue-50/60',
                 )}
               >
                 <span
                   className={cn(
                     'relative flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 transition-transform',
                     styles.dot,
-                    isSelected &&
-                      'scale-110 ring-2 ring-primary ring-offset-2 ring-offset-background',
+                    isSelected && 'scale-125 ring-2 ring-blue-500 ring-offset-2 ring-offset-white',
                   )}
                   title={`v${plan.version} · ${plan.status}`}
                 >

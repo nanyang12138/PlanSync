@@ -1,10 +1,12 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
+    --background: 220 20% 97%;
     --foreground: 222.2 84% 4.9%;
     --card: 0 0% 100%;
     --card-foreground: 222.2 84% 4.9%;
@@ -21,15 +23,139 @@
     --border: 214.3 31.8% 91.4%;
     --input: 214.3 31.8% 91.4%;
     --ring: 221.2 83.2% 53.3%;
-    --radius: 0.5rem;
+    --radius: 0.625rem;
   }
 
   * {
     @apply border-border;
   }
 
+  html {
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
   body {
     @apply bg-background text-foreground;
-    font-family: system-ui, -apple-system, sans-serif;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+
+  ::selection {
+    background-color: hsl(221.2 83.2% 53.3% / 0.15);
+  }
+}
+
+@layer components {
+  .section-label {
+    @apply text-[11px] font-semibold uppercase tracking-wider text-slate-400;
+  }
+
+  .panel {
+    @apply rounded-xl border border-slate-200/80 bg-white shadow-sm;
+  }
+
+  .panel-header {
+    @apply flex items-center justify-between px-5 py-3 border-b border-slate-100;
+  }
+
+  .page-shell {
+    @apply min-h-screen bg-[#f8f9fb];
+  }
+
+  .page-header {
+    @apply sticky top-0 z-30 border-b border-slate-200/60 bg-white/80 backdrop-blur-lg;
+  }
+
+  .page-container {
+    @apply mx-auto max-w-7xl px-6 py-6;
+  }
+
+  .badge {
+    @apply inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-semibold;
+  }
+
+  .badge-brand {
+    @apply bg-blue-50 text-blue-700 border border-blue-200/60;
+  }
+
+  .badge-success {
+    @apply bg-emerald-50 text-emerald-700 border border-emerald-200/60;
+  }
+
+  .badge-warning {
+    @apply bg-amber-50 text-amber-700 border border-amber-200/60;
+  }
+
+  .badge-danger {
+    @apply bg-rose-50 text-rose-700 border border-rose-200/60;
+  }
+
+  .badge-neutral {
+    @apply bg-slate-100 text-slate-500 border border-slate-200/60;
+  }
+
+  .badge-violet {
+    @apply bg-violet-50 text-violet-700 border border-violet-200/60;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm shadow-blue-600/20 transition-all hover:bg-blue-700 hover:shadow-md hover:shadow-blue-600/25 active:scale-[0.97] disabled:opacity-50 disabled:pointer-events-none;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-semibold text-slate-600 shadow-sm transition-all hover:bg-slate-50 hover:border-slate-300 active:scale-[0.97] disabled:opacity-50 disabled:pointer-events-none;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-slate-500 transition-all hover:bg-slate-100 hover:text-slate-700 disabled:opacity-50;
+  }
+
+  .btn-danger {
+    @apply inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-white px-3.5 py-1.5 text-xs font-semibold text-rose-600 shadow-sm transition-all hover:bg-rose-50 hover:border-rose-300 active:scale-[0.97] disabled:opacity-50;
+  }
+
+  .input-field {
+    @apply h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm shadow-sm transition-colors placeholder:text-slate-400 focus:outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .select-field {
+    @apply h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm shadow-sm transition-colors focus:outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+}
+
+@layer utilities {
+  .text-gradient {
+    @apply bg-clip-text text-transparent;
+    background-image: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 50%, #06b6d4 100%);
+  }
+
+  .bg-grid {
+    background-image:
+      linear-gradient(to right, rgba(0,0,0,0.02) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(0,0,0,0.02) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+
+  .bg-radial-glow {
+    background-image: radial-gradient(ellipse 60% 50% at 50% 0%, rgba(59,130,246,0.04), transparent);
+  }
+
+  .animate-pulse-slow {
+    animation: pulse-slow 3s ease-in-out infinite;
+  }
+
+  @keyframes pulse-slow {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
+  }
+
+  .fade-in {
+    animation: fadeIn 0.3s ease-out;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
   }
 }

@@ -1,6 +1,5 @@
 import type { Plan, PlanReview } from '@prisma/client';
-import { cn } from '@/lib/utils';
-import { Badge } from '@/components/ui/badge';
+import { CheckCircle2, X } from 'lucide-react';
 
 type PlanWithReviews = Plan & { reviews: PlanReview[] };
 
@@ -9,30 +8,18 @@ type PlanDetailProps = {
   previousPlan: Plan | null;
 };
 
-function statusBadgeClass(status: string) {
+function statusStyle(status: string) {
   switch (status) {
     case 'active':
-      return 'border-emerald-600/30 bg-emerald-500/15 text-emerald-700 dark:text-emerald-400';
+      return 'badge-brand';
     case 'superseded':
-      return 'border-border bg-muted text-muted-foreground';
+      return 'badge-neutral';
     case 'draft':
-      return 'border-blue-600/30 bg-blue-500/15 text-blue-700 dark:text-blue-400';
+      return 'badge-violet';
     case 'proposed':
-      return 'border-amber-500/40 bg-amber-400/15 text-amber-900 dark:text-amber-300';
+      return 'badge-warning';
     default:
-      return 'border-border bg-muted';
-  }
-}
-
-function reviewBadgeClass(status: string) {
-  switch (status) {
-    case 'approved':
-      return 'border-emerald-600/30 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300';
-    case 'rejected':
-      return 'border-destructive/30 bg-destructive/10 text-destructive';
-    case 'pending':
-    default:
-      return 'border-border bg-muted text-muted-foreground';
+      return 'badge-neutral';
   }
 }
 
@@ -40,10 +27,16 @@ function ListSection({ title, items }: { title: string; items: string[] }) {
   if (items.length === 0) return null;
   return (
     <div>
-      <h3 className="mb-2 text-sm font-semibold text-foreground">{title}</h3>
-      <ul className="list-inside list-disc space-y-1 text-sm text-muted-foreground">
+      <h3 className="section-label mb-2">{title}</h3>
+      <ul className="space-y-1.5">
         {items.map((item) => (
-          <li key={item}>{item}</li>
+          <li
+            key={item}
+            className="flex items-start gap-2.5 text-sm text-slate-600 leading-relaxed"
+          >
+            <span className="mt-2 h-1.5 w-1.5 rounded-full bg-slate-300 shrink-0" />
+            {item}
+          </li>
         ))}
       </ul>
     </div>
@@ -57,49 +50,35 @@ export function PlanDetail({ plan, previousPlan }: PlanDetailProps) {
       : null;
 
   return (
-    <section
-      className={cn('rounded-xl border border-border bg-card p-6 text-card-foreground shadow-sm')}
-    >
-      <div className="space-y-6">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="space-y-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-xl font-semibold leading-tight">{plan.title}</h2>
-              <span
-                className={cn(
-                  'inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-semibold uppercase tracking-wide',
-                  statusBadgeClass(plan.status),
-                )}
-              >
-                {plan.status}
-              </span>
-              <Badge variant="outline" className="font-mono text-xs">
-                v{plan.version}
-              </Badge>
-            </div>
-            {titleChanged && (
-              <p className="text-sm text-muted-foreground">
-                <span className="font-medium text-foreground">Change from previous version:</span>{' '}
-                title updated from &ldquo;{titleChanged.from}&rdquo; to &ldquo;{titleChanged.to}
-                &rdquo;
-              </p>
-            )}
-            {plan.changeSummary && (
-              <p className="text-sm text-muted-foreground">
-                <span className="font-medium text-foreground">Summary:</span> {plan.changeSummary}
-              </p>
-            )}
-          </div>
+    <div className="panel p-6">
+      <div className="space-y-5">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <h2 className="text-lg font-semibold text-slate-900">{plan.title}</h2>
+          <span className={`badge ${statusStyle(plan.status)} uppercase`}>{plan.status}</span>
+          <span className="badge badge-neutral font-mono">v{plan.version}</span>
         </div>
 
-        <div className="space-y-4 border-t border-border pt-4">
+        {titleChanged && (
+          <p className="text-sm text-slate-500">
+            Title changed from &ldquo;{titleChanged.from}&rdquo;
+          </p>
+        )}
+        {plan.changeSummary && (
+          <p className="text-sm text-slate-500">
+            <span className="font-medium text-slate-700">Summary:</span> {plan.changeSummary}
+          </p>
+        )}
+
+        <div className="space-y-4 border-t border-slate-100 pt-4">
           <div>
-            <h3 className="mb-1 text-sm font-semibold">Goal</h3>
-            <p className="text-sm text-muted-foreground">{plan.goal}</p>
+            <h3 className="section-label mb-1.5">Goal</h3>
+            <p className="text-sm text-slate-700 leading-relaxed">{plan.goal}</p>
           </div>
           <div>
-            <h3 className="mb-1 text-sm font-semibold">Scope</h3>
-            <p className="text-sm whitespace-pre-wrap text-muted-foreground">{plan.scope}</p>
+            <h3 className="section-label mb-1.5">Scope</h3>
+            <p className="text-sm whitespace-pre-wrap text-slate-600 leading-relaxed">
+              {plan.scope}
+            </p>
           </div>
           <ListSection title="Constraints" items={plan.constraints} />
           <ListSection title="Standards" items={plan.standards} />
@@ -107,37 +86,44 @@ export function PlanDetail({ plan, previousPlan }: PlanDetailProps) {
           <ListSection title="Open questions" items={plan.openQuestions} />
           {plan.why && (
             <div>
-              <h3 className="mb-1 text-sm font-semibold">Why</h3>
-              <p className="text-sm text-muted-foreground">{plan.why}</p>
+              <h3 className="section-label mb-1.5">Why</h3>
+              <p className="text-sm text-slate-600 leading-relaxed">{plan.why}</p>
             </div>
           )}
         </div>
 
         {plan.reviews.length > 0 && (
-          <div className="border-t border-border pt-4">
-            <h3 className="mb-3 text-sm font-semibold">Reviews</h3>
-            <ul className="space-y-2">
+          <div className="border-t border-slate-100 pt-4">
+            <h3 className="section-label mb-3">Reviews</h3>
+            <div className="space-y-2">
               {plan.reviews.map((r) => (
-                <li
+                <div
                   key={r.id}
-                  className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm"
+                  className="flex items-center gap-2.5 rounded-lg border border-slate-200 bg-slate-50/50 px-4 py-2.5 text-sm"
                 >
-                  <span className="font-medium">{r.reviewerName}</span>
-                  <span
-                    className={cn(
-                      'inline-flex rounded-md border px-2 py-0.5 text-xs font-semibold capitalize',
-                      reviewBadgeClass(r.status),
-                    )}
-                  >
-                    {r.status}
-                  </span>
-                  {r.comment && <p className="w-full text-xs text-muted-foreground">{r.comment}</p>}
-                </li>
+                  <span className="font-medium text-slate-700">{r.reviewerName}</span>
+                  {r.status === 'approved' ? (
+                    <span className="flex items-center gap-1 text-emerald-600 font-medium text-xs">
+                      <CheckCircle2 className="h-3.5 w-3.5" /> Approved
+                    </span>
+                  ) : r.status === 'rejected' ? (
+                    <span className="flex items-center gap-1 text-rose-600 font-medium text-xs">
+                      <X className="h-3.5 w-3.5" /> Rejected
+                    </span>
+                  ) : (
+                    <span className="text-slate-400 text-xs">Pending</span>
+                  )}
+                  {r.comment && (
+                    <span className="text-slate-500 ml-auto truncate max-w-[200px] text-xs">
+                      {r.comment}
+                    </span>
+                  )}
+                </div>
               ))}
-            </ul>
+            </div>
           </div>
         )}
       </div>
-    </section>
+    </div>
   );
 }

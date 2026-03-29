@@ -2,7 +2,6 @@
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
 type TaskActionsProps = {
@@ -76,36 +75,32 @@ export function TaskActions({
   }
 
   return (
-    <div className={cn('space-y-3', className)}>
-      <div className="flex flex-wrap items-end gap-3">
+    <div
+      className={cn('space-y-3 rounded-xl border border-slate-200 bg-slate-50/50 p-4', className)}
+    >
+      <div className="flex flex-wrap items-end gap-4">
         {canRebind && (
-          <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground">Plan alignment</p>
-            <Button
+          <div className="space-y-1.5">
+            <p className="section-label">Plan alignment</p>
+            <button
               type="button"
-              size="sm"
               disabled={pending !== null}
               onClick={() => void rebind()}
+              className="btn-primary"
             >
-              {pending === 'rebind' ? '…' : 'Rebind to active plan'}
-            </Button>
+              {pending === 'rebind' ? '...' : 'Rebind to active plan'}
+            </button>
           </div>
         )}
         {canClaim && (
-          <div className="flex flex-wrap items-end gap-2">
-            <div className="space-y-1">
-              <label
-                htmlFor="claim-assignee-type"
-                className="text-xs font-medium text-muted-foreground"
-              >
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="space-y-1.5">
+              <label htmlFor="claim-assignee-type" className="section-label">
                 Claim as
               </label>
               <select
                 id="claim-assignee-type"
-                className={cn(
-                  'flex h-8 rounded-md border border-input bg-background px-2 text-sm',
-                  'ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                )}
+                className="select-field w-auto"
                 value={claimAssigneeType}
                 onChange={(e) => setClaimAssigneeType(e.target.value as 'human' | 'agent')}
                 disabled={pending !== null}
@@ -114,19 +109,18 @@ export function TaskActions({
                 <option value="agent">Agent</option>
               </select>
             </div>
-            <Button
+            <button
               type="button"
-              size="sm"
-              variant="secondary"
               disabled={pending !== null}
               onClick={() => void claim()}
+              className="btn-secondary"
             >
-              {pending === 'claim' ? '…' : 'Claim task'}
-            </Button>
+              {pending === 'claim' ? '...' : 'Claim task'}
+            </button>
           </div>
         )}
       </div>
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      {error && <p className="text-sm text-rose-600">{error}</p>}
     </div>
   );
 }

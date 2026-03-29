@@ -3,10 +3,18 @@ import { ZodError } from 'zod';
 import { AppError, ErrorCode, formatZodError } from '@plansync/shared';
 import { logger } from './logger';
 
-const PRISMA_ERROR_MAP: Record<string, { status: number; message: string }> = {
-  P2002: { status: 409, message: 'A record with that unique value already exists' },
-  P2025: { status: 404, message: 'Record not found' },
-  P2003: { status: 400, message: 'Related record not found (foreign key constraint)' },
+const PRISMA_ERROR_MAP: Record<string, { status: number; code: string; message: string }> = {
+  P2002: {
+    status: 409,
+    code: ErrorCode.CONFLICT,
+    message: 'A record with that unique value already exists',
+  },
+  P2025: { status: 404, code: ErrorCode.NOT_FOUND, message: 'Record not found' },
+  P2003: {
+    status: 400,
+    code: ErrorCode.BAD_REQUEST,
+    message: 'Related record not found (foreign key constraint)',
+  },
 };
 
 export function handleApiError(error: unknown): NextResponse {
@@ -28,7 +36,7 @@ export function handleApiError(error: unknown): NextResponse {
     const mapped = PRISMA_ERROR_MAP[prismaCode];
     logger.warn({ code: prismaCode, meta: (error as any)?.meta }, 'Prisma error');
     return NextResponse.json(
-      { error: { code: prismaCode, message: mapped.message } },
+      { error: { code: mapped.code, message: mapped.message } },
       { status: mapped.status },
     );
   }

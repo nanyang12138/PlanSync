@@ -5,7 +5,7 @@ import { PlanTimeline } from '@/components/plan/plan-timeline';
 import { PlanDetail } from '@/components/plan/plan-detail';
 import { SuggestionPanel } from '@/components/plan/suggestion-panel';
 import { CommentThread } from '@/components/plan/comment-thread';
-import { ArrowLeft, GitBranch } from 'lucide-react';
+import { ArrowLeft, GitBranch, Clock } from 'lucide-react';
 import { RealtimeWrapper } from '@/components/realtime-wrapper';
 
 export default async function ProjectPlansPage({
@@ -49,56 +49,65 @@ export default async function ProjectPlansPage({
 
   return (
     <RealtimeWrapper projectId={params.id}>
-      <div className="min-h-screen bg-background">
-        <header className="border-b bg-card">
-          <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-4 px-6 py-4">
-            <Link
-              href={`/projects/${params.id}`}
-              className="inline-flex items-center gap-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
-            >
+      <div className="page-shell">
+        <header className="page-header">
+          <div className="mx-auto flex max-w-7xl items-center gap-4 px-6 py-3">
+            <Link href={`/projects/${params.id}`} className="btn-ghost !px-2 !py-1.5">
               <ArrowLeft className="h-4 w-4" />
-              Back to project
+              <span className="hidden sm:inline">Back</span>
             </Link>
-            <div className="flex min-w-0 flex-1 items-center gap-2">
-              <GitBranch className="h-5 w-5 shrink-0 text-primary" />
-              <h1 className="text-xl font-bold">{project.name}</h1>
-              <span className="text-sm text-muted-foreground">Plans</span>
+            <div className="flex min-w-0 flex-1 items-center gap-3">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-600 to-violet-600 shadow-sm shrink-0">
+                <GitBranch className="h-3.5 w-3.5 text-white" />
+              </div>
+              <h1 className="text-base font-bold text-slate-900 truncate">{project.name}</h1>
+              <span className="badge badge-neutral">Plans</span>
             </div>
           </div>
         </header>
 
-        <main className="mx-auto max-w-7xl space-y-8 px-6 py-6">
+        <main className="page-container">
           {plans.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No plans yet for this project.</p>
+            <div className="panel p-16 text-center">
+              <p className="text-sm text-slate-400">No plans yet for this project.</p>
+            </div>
           ) : (
-            <>
-              <section aria-label="Plan versions">
-                <h2 className="mb-4 text-lg font-semibold">Version timeline</h2>
+            <div className="space-y-6">
+              <div className="panel p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-2">
+                    <Clock className="h-4 w-4 text-slate-400" />
+                    <span className="section-label">Version Timeline</span>
+                  </div>
+                  <span className="text-xs text-slate-400">{plans.length} versions</span>
+                </div>
                 <PlanTimeline
                   projectId={params.id}
                   plans={timelinePlans}
                   selectedPlanId={selectedPlanId ?? ''}
                 />
-              </section>
+              </div>
 
               {selectedPlan && (
-                <>
-                  <PlanDetail plan={selectedPlan} previousPlan={previousPlan} />
-
-                  <SuggestionPanel
-                    projectId={params.id}
-                    plan={selectedPlan}
-                    suggestions={selectedPlan.suggestions}
-                  />
-
-                  <CommentThread
-                    projectId={params.id}
-                    planId={selectedPlan.id}
-                    comments={selectedPlan.comments}
-                  />
-                </>
+                <div className="grid lg:grid-cols-12 gap-6">
+                  <div className="lg:col-span-7">
+                    <PlanDetail plan={selectedPlan} previousPlan={previousPlan} />
+                  </div>
+                  <div className="lg:col-span-5 space-y-6">
+                    <SuggestionPanel
+                      projectId={params.id}
+                      plan={selectedPlan}
+                      suggestions={selectedPlan.suggestions}
+                    />
+                    <CommentThread
+                      projectId={params.id}
+                      planId={selectedPlan.id}
+                      comments={selectedPlan.comments}
+                    />
+                  </div>
+                </div>
               )}
-            </>
+            </div>
           )}
         </main>
       </div>

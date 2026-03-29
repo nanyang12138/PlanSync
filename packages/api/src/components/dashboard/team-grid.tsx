@@ -1,13 +1,10 @@
 import type { ProjectMember, Task } from '@prisma/client';
-import { Bot, User } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { Bot, User, Users } from 'lucide-react';
 
 type TeamGridProps = {
   members: ProjectMember[];
   tasks: Task[];
-  /** When set, tasks bound to a different version are treated as version drift for that member. */
   activePlanVersion?: number;
-  /** Task IDs with an open drift alert (takes precedence for status). */
   driftTaskIds?: readonly string[];
 };
 
@@ -20,86 +17,84 @@ function memberStatus(
   driftTaskIdSet: Set<string>,
 ): MemberStatus {
   const mine = tasks.filter((t) => t.assignee === member.name);
-  const driftTasks = mine.filter((t) => driftTaskIdSet.has(t.id));
-  if (driftTasks.length > 0) return 'drift';
-
-  if (activePlanVersion !== undefined) {
-    const versionDrift = mine.filter((t) => t.boundPlanVersion !== activePlanVersion);
-    if (versionDrift.length > 0) return 'drift';
-  }
-
-  const busy = mine.filter((t) => t.status === 'in_progress' || t.status === 'blocked');
-  if (busy.length > 0) return 'active';
-
+  if (mine.some((t) => driftTaskIdSet.has(t.id))) return 'drift';
+  if (activePlanVersion !== undefined && mine.some((t) => t.boundPlanVersion !== activePlanVersion))
+    return 'drift';
+  if (mine.some((t) => t.status === 'in_progress' || t.status === 'blocked')) return 'active';
   return 'idle';
 }
 
-function statusLabel(status: MemberStatus) {
-  switch (status) {
-    case 'drift':
-      return { label: 'Drift', className: 'bg-amber-500/15 text-amber-900 dark:text-amber-200' };
-    case 'active':
-      return { label: 'Active', className: 'bg-primary/15 text-primary' };
-    default:
-      return { label: 'Idle', className: 'bg-muted text-muted-foreground' };
-  }
+function StatusDot({ status }: { status: MemberStatus }) {
+  if (status === 'active')
+    return (
+      <span className="relative flex h-2 w-2">
+        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-50" />
+        <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+      </span>
+    );
+  if (status === 'drift') return <span className="inline-flex rounded-full h-2 w-2 bg-amber-500" />;
+  return <span className="inline-flex rounded-full h-2 w-2 bg-slate-300" />;
 }
 
 export function TeamGrid({ members, tasks, activePlanVersion, driftTaskIds = [] }: TeamGridProps) {
   const driftTaskIdSet = new Set(driftTaskIds);
 
-  if (members.length === 0) {
-    return (
-      <p className="rounded-lg border border-dashed border-border bg-muted/30 px-4 py-8 text-center text-sm text-muted-foreground">
-        No team members yet.
-      </p>
-    );
-  }
-
   return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-      {members.map((member) => {
-        const status = memberStatus(member, tasks, activePlanVersion, driftTaskIdSet);
-        const badge = statusLabel(status);
-        const isAgent = member.type === 'agent';
+    <div className="panel p-5">
+      <div className="flex items-center gap-2 mb-3">
+        <Users className="h-4 w-4 text-slate-400" />
+        <span className="section-label">Team Status</span>
+      </div>
 
-        return (
-          <div
-            key={member.id}
-            className={cn(
-              'flex flex-col gap-3 rounded-xl border border-border bg-card p-4 text-card-foreground shadow-sm',
-            )}
-          >
-            <div className="flex items-start justify-between gap-2">
-              <div className="flex min-w-0 items-center gap-2">
-                <span
-                  className={cn(
-                    'flex h-9 w-9 shrink-0 items-center justify-center rounded-full',
-                    'bg-muted text-muted-foreground',
+      {members.length === 0 ? (
+        <p className="text-sm text-slate-400 italic">No team members yet.</p>
+      ) : (
+        <div className="space-y-3">
+          {members.map((member) => {
+            const status = memberStatus(member, tasks, activePlanVersion, driftTaskIdSet);
+            const isAgent = member.type === 'agent';
+            const currentTask = tasks.find(
+              (t) =>
+                t.assignee === member.name &&
+                (t.status === 'in_progress' || t.status === 'blocked'),
+            );
+
+            return (
+              <div key={member.id} className="flex items-center gap-3">
+                <div className="w-7 h-7 rounded-lg bg-slate-100 flex items-center justify-center flex-shrink-0">
+                  {isAgent ? (
+                    <Bot className="h-3.5 w-3.5 text-violet-400" />
+                  ) : (
+                    <User className="h-3.5 w-3.5 text-slate-400" />
                   )}
-                  aria-hidden
-                >
-                  {isAgent ? <Bot className="h-5 w-5" /> : <User className="h-5 w-5" />}
-                </span>
-                <div className="min-w-0">
-                  <p className="truncate font-medium">{member.name}</p>
-                  <p className="text-xs capitalize text-muted-foreground">
-                    {member.role} · {isAgent ? 'Agent' : 'Human'}
-                  </p>
                 </div>
+                <div className="flex-1 min-w-0">
+                  <span className="text-sm font-medium text-slate-700 block truncate">
+                    {member.name}
+                  </span>
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <StatusDot status={status} />
+                    <span
+                      className={`text-xs ${status === 'drift' ? 'text-amber-600 font-medium' : 'text-slate-500'}`}
+                    >
+                      {status === 'drift'
+                        ? 'Drift — paused'
+                        : status === 'active' && currentTask
+                          ? currentTask.title
+                          : status === 'active'
+                            ? 'Working'
+                            : 'Idle'}
+                    </span>
+                  </div>
+                </div>
+                <span className={`badge text-[10px] ${isAgent ? 'badge-violet' : 'badge-neutral'}`}>
+                  {isAgent ? 'Agent' : member.role}
+                </span>
               </div>
-              <span
-                className={cn(
-                  'shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold',
-                  badge.className,
-                )}
-              >
-                {badge.label}
-              </span>
-            </div>
-          </div>
-        );
-      })}
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

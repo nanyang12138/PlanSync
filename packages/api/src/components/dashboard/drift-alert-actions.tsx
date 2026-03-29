@@ -2,18 +2,15 @@
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { Button } from '@/components/ui/button';
-import { cn } from '@/lib/utils';
 
 type Action = 'rebind' | 'cancel' | 'no_impact';
 
 type DriftAlertActionsProps = {
   projectId: string;
   driftId: string;
-  className?: string;
 };
 
-export function DriftAlertActions({ projectId, driftId, className }: DriftAlertActionsProps) {
+export function DriftAlertActions({ projectId, driftId }: DriftAlertActionsProps) {
   const router = useRouter();
   const [pending, setPending] = useState<Action | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -50,37 +47,31 @@ export function DriftAlertActions({ projectId, driftId, className }: DriftAlertA
   }
 
   return (
-    <div className={cn('space-y-2', className)}>
-      <div className="flex flex-wrap gap-2">
-        <Button
-          type="button"
-          size="sm"
-          variant="default"
-          disabled={pending !== null}
+    <div>
+      <div className="flex gap-2 mt-1.5">
+        <button
           onClick={() => resolve('rebind')}
-        >
-          {pending === 'rebind' ? '…' : 'Rebind'}
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
           disabled={pending !== null}
-          onClick={() => resolve('no_impact')}
+          className="btn-primary !py-1 !px-2.5 !text-[11px]"
         >
-          {pending === 'no_impact' ? '…' : 'No impact'}
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="destructive"
-          disabled={pending !== null}
+          {pending === 'rebind' ? '...' : 'Rebind'}
+        </button>
+        <button
           onClick={() => resolve('cancel')}
+          disabled={pending !== null}
+          className="btn-secondary !py-1 !px-2.5 !text-[11px]"
         >
-          {pending === 'cancel' ? '…' : 'Cancel task'}
-        </Button>
+          {pending === 'cancel' ? '...' : 'Cancel'}
+        </button>
+        <button
+          onClick={() => resolve('no_impact')}
+          disabled={pending !== null}
+          className="btn-secondary !py-1 !px-2.5 !text-[11px]"
+        >
+          {pending === 'no_impact' ? '...' : 'No Impact'}
+        </button>
       </div>
-      {error && <p className="text-xs text-destructive">{error}</p>}
+      {error && <p className="text-xs text-rose-600 mt-1.5">{error}</p>}
     </div>
   );
 }

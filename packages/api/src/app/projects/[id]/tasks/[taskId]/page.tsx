@@ -35,49 +35,58 @@ export default async function TaskDetailPage({
 
   return (
     <RealtimeWrapper projectId={params.id}>
-      <div className="min-h-screen bg-background">
-        <header className="border-b bg-card">
-          <div className="mx-auto flex max-w-7xl items-center gap-4 px-6 py-4">
-            <Link
-              href={`/projects/${params.id}`}
-              className="inline-flex items-center gap-2 text-muted-foreground transition-colors hover:text-foreground"
-            >
-              <ArrowLeft className="h-5 w-5" />
-              <span className="text-sm font-medium">Back to {project.name}</span>
+      <div className="page-shell">
+        <header className="page-header">
+          <div className="mx-auto flex max-w-7xl items-center gap-4 px-6 py-3">
+            <Link href={`/projects/${params.id}`} className="btn-ghost !px-2 !py-1.5">
+              <ArrowLeft className="h-4 w-4" />
+              <span className="hidden sm:inline">Back to {project.name}</span>
             </Link>
           </div>
         </header>
 
-        <main className="mx-auto max-w-7xl space-y-6 px-6 py-6">
-          <div className="flex flex-wrap items-center gap-2">
-            <ClipboardList className="h-6 w-6 text-primary" />
-            <h2 className="text-lg font-semibold text-muted-foreground">Task</h2>
-          </div>
-
-          <TaskDetail task={task} activePlan={activePlan} />
-
-          <TaskActions
-            projectId={params.id}
-            taskId={params.taskId}
-            canRebind={canRebind}
-            canClaim={canClaim}
-          />
-
-          {task.driftAlerts.length > 0 && (
-            <section>
-              <h2 className="mb-3 text-lg font-semibold">Drift alerts</h2>
-              <div className="space-y-3">
-                {task.driftAlerts.map((alert) => (
-                  <DriftAlertCard key={alert.id} alert={alert} task={task} projectId={params.id} />
-                ))}
+        <main className="page-container">
+          <div className="panel overflow-hidden">
+            <div className="panel-header">
+              <div className="flex items-center gap-2">
+                <ClipboardList className="h-4 w-4 text-blue-500" />
+                <span className="text-sm font-semibold text-slate-700">Task Detail</span>
               </div>
-            </section>
-          )}
+              <span className="text-xs text-slate-400 font-mono">{task.id.slice(-8)}</span>
+            </div>
 
-          <section>
-            <h2 className="mb-3 text-lg font-semibold">Execution history</h2>
-            <ExecutionHistory runs={task.executionRuns} />
-          </section>
+            <div className="p-6 space-y-6">
+              <TaskDetail task={task} activePlan={activePlan} />
+
+              <TaskActions
+                projectId={params.id}
+                taskId={params.taskId}
+                canRebind={canRebind}
+                canClaim={canClaim}
+              />
+
+              {task.driftAlerts.length > 0 && (
+                <section>
+                  <h2 className="section-label mb-3">Drift Alerts</h2>
+                  <div className="space-y-2.5">
+                    {task.driftAlerts.map((alert) => (
+                      <DriftAlertCard
+                        key={alert.id}
+                        alert={alert}
+                        task={task}
+                        projectId={params.id}
+                      />
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              <section>
+                <h2 className="section-label mb-3">Execution History</h2>
+                <ExecutionHistory runs={task.executionRuns} />
+              </section>
+            </div>
+          </div>
         </main>
       </div>
     </RealtimeWrapper>

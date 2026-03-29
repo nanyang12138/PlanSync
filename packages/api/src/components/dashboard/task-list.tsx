@@ -1,7 +1,6 @@
 import Link from 'next/link';
 import type { Task } from '@prisma/client';
-import { AlertTriangle, CheckCircle2, Circle, CircleSlash, Loader2, XCircle } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { AlertTriangle, Bot, User, ListChecks, ArrowUpRight } from 'lucide-react';
 
 type TaskListProps = {
   tasks: Task[];
@@ -9,98 +8,84 @@ type TaskListProps = {
   projectId: string;
 };
 
-function StatusIcon({ status }: { status: string }) {
-  switch (status) {
+function statusLabel(task: Task, drift: boolean) {
+  if (drift) return { text: 'Drifted', cls: 'badge-warning' };
+  switch (task.status) {
     case 'in_progress':
-      return <Loader2 className="h-4 w-4 animate-spin text-primary" aria-hidden />;
+      return { text: 'In Progress', cls: 'badge-brand' };
     case 'done':
-      return (
-        <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" aria-hidden />
-      );
+      return { text: 'Complete', cls: 'badge-success' };
     case 'cancelled':
-      return <XCircle className="h-4 w-4 text-muted-foreground" aria-hidden />;
+      return { text: 'Cancelled', cls: 'badge-danger' };
     case 'blocked':
-      return <CircleSlash className="h-4 w-4 text-amber-600" aria-hidden />;
-    case 'todo':
+      return { text: 'Blocked', cls: 'badge-warning' };
     default:
-      return <Circle className="h-4 w-4 text-muted-foreground" aria-hidden />;
+      return { text: 'Todo', cls: 'badge-neutral' };
   }
-}
-
-function assigneeLabel(task: Task) {
-  if (!task.assignee || task.assigneeType === 'unassigned') return '—';
-  return task.assigneeType === 'agent' ? `${task.assignee} (agent)` : task.assignee;
 }
 
 export function TaskList({ tasks, activePlanVersion, projectId }: TaskListProps) {
   if (tasks.length === 0) {
     return (
-      <p className="rounded-lg border border-dashed border-border bg-muted/30 px-4 py-8 text-center text-sm text-muted-foreground">
-        No tasks yet.
-      </p>
+      <div className="panel overflow-hidden">
+        <div className="panel-header">
+          <div className="flex items-center gap-2">
+            <ListChecks className="h-4 w-4 text-slate-400" />
+            <span className="section-label">Tasks</span>
+          </div>
+        </div>
+        <p className="px-5 py-10 text-sm text-slate-400 italic text-center">No tasks yet.</p>
+      </div>
     );
   }
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
-      <table className="w-full text-left text-sm">
-        <thead className="border-b border-border bg-muted/40">
-          <tr>
-            <th className="px-4 py-3 font-medium text-muted-foreground">Status</th>
-            <th className="px-4 py-3 font-medium text-muted-foreground">Task</th>
-            <th className="px-4 py-3 font-medium text-muted-foreground">Assignee</th>
-            <th className="px-4 py-3 font-medium text-muted-foreground">Bound plan</th>
-            <th className="px-4 py-3 font-medium text-muted-foreground">Drift</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-border">
-          {tasks.map((task) => {
-            const drift =
-              activePlanVersion !== undefined && task.boundPlanVersion !== activePlanVersion;
+    <div className="panel overflow-hidden">
+      <div className="panel-header">
+        <div className="flex items-center gap-2">
+          <ListChecks className="h-4 w-4 text-slate-400" />
+          <span className="section-label">Tasks</span>
+        </div>
+        <span className="text-xs text-slate-400">{tasks.length} total</span>
+      </div>
+      <div className="divide-y divide-slate-100">
+        {tasks.map((t) => {
+          const drift = activePlanVersion !== undefined && t.boundPlanVersion !== activePlanVersion;
+          const label = statusLabel(t, drift);
+          const isAgent = t.assigneeType === 'agent';
 
-            return (
-              <tr key={task.id} className="bg-card transition-colors hover:bg-muted/30">
-                <td className="px-4 py-3 align-middle">
-                  <span className="inline-flex items-center justify-center" title={task.status}>
-                    <StatusIcon status={task.status} />
-                  </span>
-                </td>
-                <td className="px-4 py-3 align-middle">
-                  <Link
-                    href={`/projects/${projectId}/tasks/${task.id}`}
-                    className="font-medium text-foreground hover:underline"
-                  >
-                    {task.title}
-                  </Link>
-                </td>
-                <td className="px-4 py-3 align-middle text-muted-foreground">
-                  {assigneeLabel(task)}
-                </td>
-                <td className="px-4 py-3 align-middle">
-                  <span className="rounded-md bg-muted px-2 py-0.5 font-mono text-xs">
-                    v{task.boundPlanVersion}
-                  </span>
-                </td>
-                <td className="px-4 py-3 align-middle">
-                  {drift ? (
-                    <span
-                      className={cn(
-                        'inline-flex items-center gap-1 rounded-md border border-amber-500/40',
-                        'bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-900 dark:text-amber-200',
-                      )}
-                    >
-                      <AlertTriangle className="h-3.5 w-3.5" />
-                      Out of sync
-                    </span>
-                  ) : (
-                    <span className="text-xs text-muted-foreground">—</span>
-                  )}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+          return (
+            <Link
+              key={t.id}
+              href={`/projects/${projectId}/tasks/${t.id}`}
+              className="group flex items-center px-5 py-3 gap-4 text-sm hover:bg-slate-50/80 transition-colors"
+            >
+              <span className="font-mono text-slate-400 w-12 flex-shrink-0 text-xs">
+                {t.id.slice(-6)}
+              </span>
+              <span
+                className={`font-medium flex-1 min-w-0 truncate ${t.status === 'cancelled' ? 'text-slate-400 line-through' : 'text-slate-700'}`}
+              >
+                {t.title}
+              </span>
+              <div className="flex items-center gap-1.5 w-28 flex-shrink-0">
+                {isAgent ? (
+                  <Bot className="h-3.5 w-3.5 text-violet-400" />
+                ) : t.assignee ? (
+                  <User className="h-3.5 w-3.5 text-slate-400" />
+                ) : null}
+                <span className="text-slate-500 truncate text-xs">{t.assignee || '—'}</span>
+              </div>
+              <span className="badge badge-brand font-mono text-[10px]">v{t.boundPlanVersion}</span>
+              {drift && <AlertTriangle className="h-3.5 w-3.5 text-amber-500 flex-shrink-0" />}
+              <span className={`badge text-[10px] whitespace-nowrap ${label.cls}`}>
+                {label.text}
+              </span>
+              <ArrowUpRight className="h-3.5 w-3.5 text-slate-300 group-hover:text-blue-500 transition-colors shrink-0" />
+            </Link>
+          );
+        })}
+      </div>
     </div>
   );
 }

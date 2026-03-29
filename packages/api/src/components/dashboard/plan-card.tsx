@@ -1,75 +1,50 @@
 import Link from 'next/link';
 import type { Plan } from '@prisma/client';
-import { Calendar, ExternalLink, GitBranch, PlusCircle } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { GitBranch, Calendar, ArrowUpRight } from 'lucide-react';
 
 type PlanCardProps = {
   plan: Plan;
   projectId: string;
 };
 
-function formatDateTime(d: Date | null) {
+function formatRelative(d: Date | null) {
   if (!d) return '—';
-  return d.toLocaleString(undefined, {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  });
+  const ms = Date.now() - d.getTime();
+  const min = Math.floor(ms / 60000);
+  const hr = Math.floor(min / 60);
+  const day = Math.floor(hr / 24);
+  if (day > 7) return d.toLocaleDateString(undefined, { dateStyle: 'medium' });
+  if (day > 0) return `${day}d ago`;
+  if (hr > 0) return `${hr}h ago`;
+  if (min > 0) return `${min}m ago`;
+  return 'just now';
 }
 
 export function PlanCard({ plan, projectId }: PlanCardProps) {
   return (
-    <section
-      className={cn('rounded-xl border border-border bg-card p-6 text-card-foreground shadow-sm')}
-    >
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-lg font-semibold leading-tight">{plan.title}</h2>
-            <span className="inline-flex items-center rounded-md border border-emerald-600/30 bg-emerald-500/15 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
-              ACTIVE
-            </span>
-            <span className="rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-              v{plan.version}
-            </span>
-          </div>
-          <p className="text-sm text-muted-foreground">{plan.goal}</p>
-          <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
-            <Calendar className="h-3.5 w-3.5 shrink-0" />
-            <span>
-              Activated {formatDateTime(plan.activatedAt)}
-              {plan.activatedBy && (
-                <>
-                  {' '}
-                  by <span className="font-medium text-foreground">{plan.activatedBy}</span>
-                </>
-              )}
-            </span>
-          </div>
+    <div className="panel p-5 group/plan">
+      <div className="flex items-center gap-2 mb-3">
+        <div className="flex h-6 w-6 items-center justify-center rounded-md bg-blue-50">
+          <GitBranch className="h-3 w-3 text-blue-500" />
         </div>
-        <div className="flex shrink-0 flex-wrap gap-2">
-          <Link
-            href={`/projects/${projectId}/plans?plan=${plan.id}`}
-            className={cn(
-              'inline-flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm font-medium',
-              'text-foreground shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground',
-            )}
-          >
-            <GitBranch className="h-4 w-4" />
-            Plan details
-            <ExternalLink className="h-3.5 w-3.5 opacity-60" />
-          </Link>
-          <Link
-            href={`/projects/${projectId}/plans`}
-            className={cn(
-              'inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium',
-              'text-primary-foreground shadow transition-colors hover:bg-primary/90',
-            )}
-          >
-            <PlusCircle className="h-4 w-4" />
-            Plan history
-          </Link>
-        </div>
+        <span className="section-label">Active Plan</span>
       </div>
-    </section>
+      <Link href={`/projects/${projectId}/plans?plan=${plan.id}`} className="block">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-semibold text-slate-900 group-hover/plan:text-blue-600 transition-colors">
+            {plan.title}
+          </span>
+          <ArrowUpRight className="h-3.5 w-3.5 text-slate-300 group-hover/plan:text-blue-500 transition-colors" />
+        </div>
+        <div className="flex items-center gap-2 mt-2">
+          <span className="badge badge-brand font-mono">v{plan.version}</span>
+          <span className="flex items-center gap-1 text-xs text-slate-400">
+            <Calendar className="h-3 w-3" />
+            {formatRelative(plan.activatedAt)}
+          </span>
+        </div>
+      </Link>
+      <p className="mt-3 text-xs text-slate-500 leading-relaxed line-clamp-2">{plan.goal}</p>
+    </div>
   );
 }

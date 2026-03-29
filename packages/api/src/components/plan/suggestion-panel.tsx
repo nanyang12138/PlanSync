@@ -3,8 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
 import type { Plan, PlanSuggestion } from '@prisma/client';
-import { cn } from '@/lib/utils';
-import { Button } from '@/components/ui/button';
+import { Bot, User, Lightbulb, Check, X } from 'lucide-react';
 
 const FIELD_LABELS: Record<string, string> = {
   goal: 'Goal',
@@ -20,21 +19,6 @@ type SuggestionPanelProps = {
   plan: Plan;
   suggestions: PlanSuggestion[];
 };
-
-function statusBadgeClass(status: string) {
-  switch (status) {
-    case 'pending':
-      return 'border-amber-500/40 bg-amber-400/10 text-amber-900 dark:text-amber-200';
-    case 'accepted':
-      return 'border-emerald-600/30 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300';
-    case 'rejected':
-      return 'border-destructive/30 bg-destructive/10 text-destructive';
-    case 'conflict':
-      return 'border-orange-500/40 bg-orange-400/10 text-orange-900 dark:text-orange-200';
-    default:
-      return 'border-border bg-muted text-muted-foreground';
-  }
-}
 
 function SuggestionResolveButtons({
   projectId,
@@ -84,28 +68,24 @@ function SuggestionResolveButtons({
   }
 
   return (
-    <div className="space-y-1">
-      <div className="flex flex-wrap gap-2">
-        <Button
-          type="button"
-          size="sm"
-          variant="default"
-          disabled={pending !== null}
+    <div>
+      <div className="flex gap-2">
+        <button
           onClick={() => resolve('accept')}
-        >
-          {pending === 'accept' ? '…' : 'Accept'}
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
           disabled={pending !== null}
-          onClick={() => resolve('reject')}
+          className="btn-primary !py-1 !px-3 !text-[11px]"
         >
-          {pending === 'reject' ? '…' : 'Reject'}
-        </Button>
+          <Check className="h-3 w-3" /> Accept
+        </button>
+        <button
+          onClick={() => resolve('reject')}
+          disabled={pending !== null}
+          className="btn-secondary !py-1 !px-3 !text-[11px]"
+        >
+          <X className="h-3 w-3" /> Reject
+        </button>
       </div>
-      {error && <p className="text-xs text-destructive">{error}</p>}
+      {error && <p className="text-xs text-rose-600 mt-1.5">{error}</p>}
     </div>
   );
 }
@@ -125,105 +105,78 @@ export function SuggestionPanel({ projectId, plan, suggestions }: SuggestionPane
     return { pending, accepted, rejected };
   }, [suggestions]);
 
-  if (!isDraftLike) {
-    return null;
-  }
+  if (!isDraftLike) return null;
 
   return (
-    <section className="rounded-xl border border-border bg-card p-6 shadow-sm">
-      <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="text-lg font-semibold">Suggestions</h2>
-        <p className="text-sm text-muted-foreground">
-          <span className="font-medium text-foreground">{counts.pending}</span> pending ·{' '}
-          <span className="font-medium text-foreground">{counts.accepted}</span> accepted ·{' '}
-          <span className="font-medium text-foreground">{counts.rejected}</span> rejected
-        </p>
+    <div className="panel border-violet-200/80 bg-violet-50/20 p-5">
+      <div className="flex items-center gap-2 mb-4">
+        <div className="flex h-6 w-6 items-center justify-center rounded-md bg-violet-100">
+          <Lightbulb className="h-3.5 w-3.5 text-violet-500" />
+        </div>
+        <span className="section-label !text-violet-600">Suggestions</span>
+        <span className="ml-auto text-xs text-violet-500">
+          {counts.pending} pending · {counts.accepted} accepted · {counts.rejected} rejected
+        </span>
       </div>
 
       {suggestions.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No suggestions yet.</p>
+        <p className="text-sm text-slate-400 italic">No suggestions yet.</p>
       ) : (
-        <ul className="space-y-4">
+        <div className="space-y-3">
           {suggestions.map((s) => {
             const fieldLabel = FIELD_LABELS[s.field] ?? s.field;
-            const resolved = s.status !== 'pending';
+            const isAgent = s.suggestedByType === 'agent';
 
             return (
-              <li
+              <div
                 key={s.id}
-                className={cn(
-                  'rounded-lg border border-border bg-background p-4 text-sm',
-                  resolved && 'opacity-90',
-                )}
+                className="bg-white rounded-lg p-4 border border-violet-200/60 shadow-sm"
               >
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div className="space-y-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium">{s.suggestedBy}</span>
-                      <span className="text-xs text-muted-foreground">({s.suggestedByType})</span>
-                      <span
-                        className={cn(
-                          'inline-flex rounded-md border px-2 py-0.5 text-xs font-semibold capitalize',
-                          statusBadgeClass(s.status),
-                        )}
-                      >
-                        {s.status}
-                      </span>
-                    </div>
-                    <p className="text-muted-foreground">
-                      <span className="font-medium text-foreground">{fieldLabel}</span> ·{' '}
-                      <span className="capitalize">{s.action}</span>
-                      {s.value && (
-                        <>
-                          {' '}
-                          <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
-                            {s.value}
-                          </span>
-                        </>
-                      )}
-                    </p>
-                    <p className="text-muted-foreground">
-                      <span className="font-medium text-foreground">Reason:</span> {s.reason}
-                    </p>
-                    {resolved && (s.resolvedBy || s.resolvedComment) && (
-                      <p className="text-xs text-muted-foreground">
-                        {s.resolvedBy && (
-                          <>
-                            Resolved by <span className="font-medium">{s.resolvedBy}</span>
-                            {s.resolvedAt && (
-                              <>
-                                {' '}
-                                ·{' '}
-                                {new Date(s.resolvedAt).toLocaleString(undefined, {
-                                  dateStyle: 'medium',
-                                  timeStyle: 'short',
-                                })}
-                              </>
-                            )}
-                          </>
-                        )}
-                        {s.resolvedComment && (
-                          <>
-                            <br />
-                            {s.resolvedComment}
-                          </>
-                        )}
-                      </p>
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="flex h-5 w-5 items-center justify-center rounded-md bg-slate-100 shrink-0">
+                    {isAgent ? (
+                      <Bot className="h-3 w-3 text-violet-400" />
+                    ) : (
+                      <User className="h-3 w-3 text-slate-400" />
                     )}
                   </div>
+                  <span className="text-sm font-medium text-slate-700">{s.suggestedBy}</span>
                   {s.status === 'pending' && (
-                    <SuggestionResolveButtons
-                      projectId={projectId}
-                      planId={plan.id}
-                      suggestionId={s.id}
-                    />
+                    <span className="badge badge-violet text-[10px]">Open</span>
+                  )}
+                  {s.status === 'accepted' && (
+                    <span className="badge badge-success text-[10px]">
+                      <Check className="h-2.5 w-2.5" /> Accepted
+                    </span>
+                  )}
+                  {s.status === 'rejected' && (
+                    <span className="badge badge-danger text-[10px]">
+                      <X className="h-2.5 w-2.5" /> Rejected
+                    </span>
                   )}
                 </div>
-              </li>
+                <p className="text-sm text-slate-600 leading-relaxed mb-1.5">
+                  <span className="font-medium text-slate-700">{fieldLabel}</span> ·{' '}
+                  <span className="capitalize">{s.action}</span>
+                  {s.value && (
+                    <span className="ml-1.5 rounded-md bg-slate-100 px-1.5 py-0.5 font-mono text-xs">
+                      {s.value}
+                    </span>
+                  )}
+                </p>
+                <p className="text-xs text-slate-500 mb-3">{s.reason}</p>
+                {s.status === 'pending' && (
+                  <SuggestionResolveButtons
+                    projectId={projectId}
+                    planId={plan.id}
+                    suggestionId={s.id}
+                  />
+                )}
+              </div>
             );
           })}
-        </ul>
+        </div>
       )}
-    </section>
+    </div>
   );
 }

@@ -11,7 +11,16 @@ const ALLOWED_ORIGINS = [
 
 export function middleware(request: NextRequest) {
   const origin = request.headers.get('origin');
-  const response = NextResponse.next();
+
+  const userName = request.cookies.get('plansync-user')?.value;
+  const requestHeaders = new Headers(request.headers);
+  if (userName && !requestHeaders.get('x-user-name')) {
+    requestHeaders.set('x-user-name', userName);
+  }
+
+  const response = NextResponse.next({
+    request: { headers: requestHeaders },
+  });
 
   if (origin && ALLOWED_ORIGINS.includes(origin)) {
     response.headers.set('Access-Control-Allow-Origin', origin);

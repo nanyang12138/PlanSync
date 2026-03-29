@@ -1,4 +1,5 @@
 import type { PlanComment } from '@prisma/client';
+import { MessageSquare } from 'lucide-react';
 import { CommentThreadClient, type CommentNode } from './comment-thread-client';
 
 function buildCommentTree(comments: PlanComment[]): CommentNode[] {
@@ -35,9 +36,17 @@ export function CommentThread({ projectId, planId, comments }: CommentThreadProp
   const tree = buildCommentTree(comments);
 
   return (
-    <section className="rounded-xl border border-border bg-card p-6 shadow-sm">
-      <h2 className="mb-4 text-lg font-semibold">Discussion</h2>
+    <div className="panel p-5">
+      <div className="flex items-center gap-2 mb-4">
+        <div className="flex h-6 w-6 items-center justify-center rounded-md bg-slate-100">
+          <MessageSquare className="h-3.5 w-3.5 text-slate-400" />
+        </div>
+        <span className="section-label">Discussion</span>
+        <span className="ml-auto text-xs text-slate-400">
+          {comments.filter((c) => !c.isDeleted).length} comments
+        </span>
+      </div>
       <CommentThreadClient roots={tree} projectId={projectId} planId={planId} />
-    </section>
+    </div>
   );
 }
