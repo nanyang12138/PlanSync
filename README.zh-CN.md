@@ -1,8 +1,8 @@
+<p align="right"><a href="./README.md">English</a></p>
+
 # PlanSync
 
 **让 AI Agent 和人类开发者在同一份计划下协作，计划变了，所有人立刻知道。**
-
-[English](./README.md)
 
 ---
 

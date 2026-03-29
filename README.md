@@ -1,8 +1,8 @@
+<p align="right"><a href="./README.zh-CN.md">简体中文</a></p>
+
 # PlanSync
 
 **Keep AI Agents and human developers in sync when plans change.**
-
-[中文文档](./README.zh-CN.md)
 
 ---
 
