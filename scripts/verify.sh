@@ -2,7 +2,7 @@
 # PlanSync Phase 1 Acceptance Verification Script
 set -e
 
-API="http://localhost:3000"
+API="http://localhost:3001"
 SECRET="dev-secret"
 USER="alice"
 

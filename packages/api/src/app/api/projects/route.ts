@@ -9,7 +9,7 @@ import { createActivity } from '@/lib/activity';
 export async function GET(req: NextRequest) {
   try {
     const auth = await authenticate(req);
-    const { page, pageSize } = validateSearchParams(req, paginationSchema);
+    const { page = 1, pageSize = 20 } = validateSearchParams(req, paginationSchema);
     const skip = (page - 1) * pageSize;
 
     const memberFilter = { members: { some: { name: auth.userName } } };

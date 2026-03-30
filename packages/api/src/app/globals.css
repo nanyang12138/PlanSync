@@ -48,7 +48,7 @@
 
 @layer components {
   .section-label {
-    @apply text-[11px] font-semibold uppercase tracking-wider text-slate-400;
+    @apply text-xs font-semibold uppercase tracking-wider text-slate-500;
   }
 
   .panel {
@@ -56,7 +56,7 @@
   }
 
   .panel-header {
-    @apply flex items-center justify-between px-5 py-3 border-b border-slate-100;
+    @apply flex items-center justify-between px-5 py-4 border-b border-slate-100;
   }
 
   .page-shell {
@@ -68,11 +68,11 @@
   }
 
   .page-container {
-    @apply mx-auto max-w-7xl px-6 py-6;
+    @apply mx-auto max-w-7xl px-6 py-8;
   }
 
   .badge {
-    @apply inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-semibold;
+    @apply inline-flex items-center rounded-md px-2.5 py-0.5 text-xs font-medium;
   }
 
   .badge-brand {

@@ -1,11 +1,14 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 PG_BIN=/tool/pandora64/bin
 PG_PORT=${PG_PORT:-15432}
 PG_DATA="/tmp/plansync-pgdata-$(whoami)"
+
+# shellcheck source=scripts/local-node-runtime.sh
+. "$SCRIPT_DIR/local-node-runtime.sh"
 
 cd "$PROJECT_DIR"
 
@@ -14,32 +17,22 @@ echo "  PlanSync Dev Environment Setup"
 echo "========================================="
 
 echo ""
-echo "[1/7] Checking Node.js version..."
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-NODE_MAJOR=$(node -v 2>/dev/null | cut -d. -f1 | tr -d 'v')
-if [ "$NODE_MAJOR" -lt 18 ] 2>/dev/null; then
-  echo "  Current Node $(node -v), switching to Node 18..."
-  nvm use 18
-fi
-echo "  ✓ Node $(node -v), npm $(npm -v)"
-
-# Fix npm cache path (NFS is incompatible with npm cache, must use local disk)
-echo ""
-echo "[2/7] Fixing npm cache path..."
-NPM_CACHE_DIR="/tmp/npm-cache-$(whoami)"
-mkdir -p "$NPM_CACHE_DIR"
-npm config set cache "$NPM_CACHE_DIR"
-echo "cache=/tmp/npm-cache-\${USER}" > "$PROJECT_DIR/.npmrc"
-echo "  ✓ npm cache set to $NPM_CACHE_DIR (avoids NFS cache corruption)"
+echo "[1/8] Installing local Node.js runtime..."
+install_local_node_runtime
+use_local_node_runtime
+echo "  ✓ Node $(run_local_node -v), npm $(run_local_npm -v)"
 
 echo ""
-echo "[3/7] Installing dependencies (npm workspaces)..."
-npm install --cache "$NPM_CACHE_DIR"
+echo "[2/8] Preparing npm cache..."
+echo "  ✓ npm cache set to $LOCAL_NPM_CACHE"
+
+echo ""
+echo "[3/8] Installing dependencies (npm workspaces)..."
+run_local_npm install --cache "$LOCAL_NPM_CACHE"
 echo "  ✓ Dependencies installed"
 
 echo ""
-echo "[4/7] Configuring environment variables..."
+echo "[4/8] Configuring environment variables..."
 if [ ! -f .env ]; then
   cp .env.example .env
   echo "  ✓ .env created from template (defaults work for local dev)"
@@ -48,8 +41,8 @@ else
 fi
 
 echo ""
-echo "[5/7] Starting PostgreSQL..."
-export PATH="$PG_BIN:$PATH"
+echo "[5/8] Starting PostgreSQL..."
+export PATH="$LOCAL_NODE_DIR/bin:$PG_BIN:$PATH"
 if pg_isready -p "$PG_PORT" -q 2>/dev/null; then
   echo "  ✓ PostgreSQL already running on port $PG_PORT"
 else
@@ -64,23 +57,47 @@ createdb -p "$PG_PORT" plansync_dev 2>/dev/null || true
 echo "  ✓ Database plansync_dev ready"
 
 echo ""
-echo "[6/7] Initializing database schema..."
-cd packages/api
-npx prisma migrate deploy
-npx prisma db seed 2>/dev/null || echo "  (seed is optional, skipping)"
-cd "$PROJECT_DIR"
+echo "[6/8] Building local workspace packages..."
+if [ ! -f "$PROJECT_DIR/packages/shared/package.json" ]; then
+  echo "  ✗ Shared workspace not found"
+  exit 1
+fi
+run_local_npm run --workspace=@plansync/shared build
+run_local_npm run --workspace=@plansync/mcp-server build
+echo "  ✓ Shared and MCP packages built"
+
+echo ""
+echo "[7/8] Initializing database schema..."
+if [ ! -f "$PROJECT_DIR/node_modules/prisma/build/index.js" ]; then
+  echo "  ✗ Prisma CLI not found in local dependencies"
+  exit 1
+fi
+run_local_prisma generate --schema "$PROJECT_DIR/packages/api/prisma/schema.prisma"
+run_local_prisma migrate deploy --schema "$PROJECT_DIR/packages/api/prisma/schema.prisma"
+(
+  cd "$PROJECT_DIR/packages/api"
+  set -a
+  . "$PROJECT_DIR/.env"
+  set +a
+  export PATH="$LOCAL_NODE_DIR/bin:$PATH"
+  export npm_config_cache="$LOCAL_NPM_CACHE"
+  run_local_prisma db seed --schema "$PROJECT_DIR/packages/api/prisma/schema.prisma"
+) 2>/dev/null || echo "  (seed is optional, skipping)"
 echo "  ✓ Database schema ready"
 
 echo ""
-echo "[7/7] Initializing Git hooks..."
-npx husky 2>/dev/null || true
+echo "[8/8] Initializing Git hooks..."
+if [ -x "$PROJECT_DIR/node_modules/.bin/husky" ]; then
+  "$PROJECT_DIR/node_modules/.bin/husky" 2>/dev/null || true
+fi
 echo "  ✓ Git hooks configured"
 
 echo ""
 echo "========================================="
 echo "  ✓ Setup complete!"
 echo ""
-echo "  Start dev server:  npm run dev"
-echo "  Stop database:     npm run db:stop"
-echo "  Interactive SQL:   npm run db:psql"
+echo "  Preferred start:   ./bin/ps-admin start"
+echo "  Direct API start:  bash scripts/dev.sh"
+echo "  Stop database:     bash scripts/pg-stop.sh"
+echo "  Interactive SQL:   bash scripts/db-psql.sh"
 echo "========================================="

@@ -20,29 +20,30 @@ PlanSync 的做法：
 
 ---
 
-## 快速开始（5 分钟）
+## 快速开始
 
 ```bash
-# ① 初始化（首次执行，安装依赖 + 启动数据库 + 建表）
+# Owner：启动本地 PlanSync 服务
 cd /path/to/PlanSync
-npm run setup
+./bin/ps-admin start
+```
 
-# ② 启动 API 服务
-npm run dev
-
-# ③ 连接你的 AI 工具
+```bash
+# 成员：连接你的 AI 工具
 ./bin/plansync --host cursor    # Cursor
 ./bin/plansync --host claude    # Claude Code
 ./bin/plansync --host genie     # Genie（默认）
 ```
 
-本机单人使用**零配置**，直接在 AI 对话里开始工作。
+本机单人使用**不需要全局安装 Node / npm**。`./bin/ps-admin` 和 `./bin/plansync` 都会自动准备仓库内的固定运行时 `.local-runtime/node`，不会依赖 `home` 目录里的 Node。
+
+`./bin/ps-admin start` 会自动补齐服务端所需内容（runtime、依赖、数据库、migration）再启动 API。`./bin/plansync --host ...` 会自动补齐客户端所需内容（runtime、依赖、MCP 构建产物）再连接 AI 工具。
 
 ---
 
 ## 配置
 
-所有配置集中在项目根目录的 **`.env`** 文件中。首次 `npm run setup` 会自动从 `.env.example` 生成。
+所有配置集中在项目根目录的 **`.env`** 文件中。首次执行 `./bin/ps-admin` 或 `./bin/plansync` 时，如果 `.env` 不存在，会自动从 `.env.example` 生成。
 
 ### 本机单人
 
@@ -68,9 +69,12 @@ PLANSYNC_SECRET=your-team-secret           # 认证密钥（向 Owner 获取）
 
 ### Owner 做什么
 
-1. 在服务器上运行 `npm run setup` → `npm run dev`
+1. 在服务器上运行 `./bin/ps-admin start`
 2. 在 `.env` 中设置一个 `PLANSYNC_SECRET`，把 **API 地址** 和 **密钥** 告诉团队
-3. 在 AI 对话中创建项目和成员：
+3. Owner 现在有两条可选工作流：
+   - 网页：打开浏览器进入 `Plans` 页，直接创建 draft、编辑、propose、activate、reactivate
+   - AI：运行 `./bin/plansync --user <owner-name> --host cursor`，然后通过 `plansync_plan_*` MCP 工具推进计划
+4. 在 AI 对话或网页里创建项目和成员：
 
 ```
 > 创建项目 "登录系统"
@@ -78,7 +82,7 @@ PLANSYNC_SECRET=your-team-secret           # 认证密钥（向 Owner 获取）
 > 添加成员 bob（developer）
 ```
 
-4. 分配任务：
+5. 分配任务：
 
 ```
 > 创建任务 "实现登录 API"，分配给 alice
@@ -123,7 +127,7 @@ PLANSYNC_SECRET=your-team-secret           # 认证密钥（向 Owner 获取）
 | **服务端（API 服务使用）**        |                                                   |                         |
 | `DATABASE_URL`                    | `postgresql://$USER@localhost:15432/plansync_dev` | PostgreSQL 连接串       |
 | `PG_PORT`                         | `15432`                                           | PostgreSQL 端口         |
-| `PORT`                            | `3000`                                            | API 服务端口            |
+| `PORT`                            | `3001`                                            | API 服务端口            |
 | `AUTH_DISABLED`                   | `false`                                           | 跳过认证（仅本地开发）  |
 | `LOG_LEVEL`                       | `info`                                            | 日志级别                |
 | **AI 功能（可选）**               |                                                   |                         |
@@ -136,13 +140,21 @@ PLANSYNC_SECRET=your-team-secret           # 认证密钥（向 Owner 获取）
 
 ## 常用命令
 
-| 命令               | 说明                                 |
-| ------------------ | ------------------------------------ |
-| `npm run setup`    | 首次初始化（依赖 + 数据库 + 迁移）   |
-| `npm run dev`      | 启动 API 服务（自动启动 PostgreSQL） |
-| `npm run db:reset` | 清空数据库重新开始                   |
-| `npm run db:psql`  | 进入 PostgreSQL 命令行               |
-| `npm run test`     | 运行测试                             |
+| 命令                           | 说明                                  |
+| ------------------------------ | ------------------------------------- |
+| `./bin/ps-admin start`         | 自动补齐服务端依赖并启动 PlanSync API |
+| `./bin/plansync --host cursor` | 自动补齐客户端依赖并接入 Cursor       |
+| `bash scripts/build.sh`        | 用仓库本地运行时构建所有 workspace 包 |
+| `bash scripts/npm.sh test`     | 通过仓库本地 npm 运行测试             |
+| `bash scripts/lint.sh`         | 通过仓库本地运行时执行 eslint         |
+| `bash scripts/format.sh`       | 通过仓库本地运行时执行 prettier       |
+| `bash scripts/db-reset.sh`     | 清空数据库重新开始                    |
+| `bash scripts/db-psql.sh`      | 进入 PostgreSQL 命令行                |
+
+高级 / 手动入口：
+
+- `bash scripts/setup.sh`：显式执行完整 Owner 初始化
+- `bash scripts/dev.sh`：环境已就绪时直接启动 API
 
 ---
 
@@ -182,7 +194,7 @@ PlanSync/
 | `assignee is not a project member` | 先让 Owner 添加成员，或核对拼写                             |
 | `permission denied`                | `.env` 中 `PLANSYNC_SECRET` 和服务端不匹配                  |
 | 忘了有哪些成员                     | AI 对话中输入"列出项目成员"                                 |
-| 想重新开始                         | `npm run db:reset`                                          |
+| 想重新开始                         | `bash scripts/db-reset.sh`                                  |
 
 ---
 
@@ -192,4 +204,5 @@ PlanSync/
 
 - PostgreSQL 数据存在 `/tmp`（本地磁盘，规避 NFS 文件锁）
 - npm 缓存重定向到 `/tmp/npm-cache-$USER`
+- Node 运行时安装到仓库内的 `.local-runtime/node`
 - MCP Server 用 esbuild 打包（避免 tsc 在 NFS 上 OOM）

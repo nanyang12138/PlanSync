@@ -41,24 +41,24 @@ function activityIcon(type: string) {
 
 export function ActivityFeed({ activities }: ActivityFeedProps) {
   if (activities.length === 0) {
-    return <p className="text-sm text-slate-400 italic">No activity yet.</p>;
+    return <p className="text-sm text-slate-500 italic text-center py-4">No activity yet.</p>;
   }
 
   return (
-    <div className="space-y-2 max-h-64 overflow-y-auto">
+    <div className="space-y-3 max-h-80 overflow-y-auto pr-2">
       {activities.map((a) => {
         const { Icon, cls } = activityIcon(a.type);
         return (
-          <div key={a.id} className="flex items-start gap-2.5 text-xs">
+          <div key={a.id} className="flex items-start gap-3">
             <div
-              className={`flex h-5 w-5 items-center justify-center rounded-md shrink-0 mt-0.5 ${cls}`}
+              className={`flex h-6 w-6 items-center justify-center rounded-md shrink-0 mt-0.5 ${cls}`}
             >
-              <Icon className="h-3 w-3" />
+              <Icon className="h-3.5 w-3.5" />
             </div>
-            <span className="text-slate-600 leading-relaxed flex-1 line-clamp-2">{a.summary}</span>
-            <span className="text-slate-400 flex-shrink-0 whitespace-nowrap tabular-nums">
-              {formatRelativeTime(a.createdAt)}
-            </span>
+            <div className="flex-1 min-w-0">
+              <p className="text-xs text-slate-600 leading-relaxed line-clamp-2">{a.summary}</p>
+              <p className="text-[10px] text-slate-400 mt-0.5">{formatRelativeTime(a.createdAt)}</p>
+            </div>
           </div>
         );
       })}

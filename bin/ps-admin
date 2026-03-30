@@ -1,0 +1,68 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+# shellcheck source=scripts/local-node-runtime.sh
+. "$PROJECT_DIR/scripts/local-node-runtime.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: ps-admin [start|setup|reset|help]
+
+Commands:
+  start   Prepare server dependencies if needed, then start PlanSync API
+  setup   Run the full explicit owner bootstrap flow
+  reset   Reset the local PostgreSQL data and rerun setup
+  help    Show this help
+EOF
+}
+
+print_header() {
+  echo "PlanSync Admin"
+  echo "--------------"
+}
+
+command="${1:-start}"
+shift || true
+
+case "$command" in
+  start)
+    api_url="${PLANSYNC_API_URL:-$(plansync_api_url "${PORT:-3001}")}"
+    print_header
+    echo "Preparing owner environment and starting the API..."
+    if is_plansync_api_reachable "$api_url"; then
+      echo "==> PlanSync API is already running at $api_url"
+      exit 0
+    fi
+    if port_in_use "${PORT:-3001}"; then
+      echo "==> Port ${PORT:-3001} is already in use by another process"
+      echo "    Stop the process using that port, or rerun with PORT=<new-port> PLANSYNC_API_URL=http://localhost:<new-port>"
+      exit 1
+    fi
+    ensure_owner_runtime_ready
+    if [ "${OWNER_RUNTIME_FRESH_DB:-0}" -ne 0 ]; then
+      seed_demo_if_requested
+    fi
+    echo "==> Starting PlanSync API"
+    exec env PORT="${PORT:-3001}" bash "$PROJECT_DIR/scripts/dev.sh" "$@"
+    ;;
+  setup)
+    print_header
+    exec bash "$PROJECT_DIR/scripts/setup.sh" "$@"
+    ;;
+  reset)
+    print_header
+    exec bash "$PROJECT_DIR/scripts/db-reset.sh" "$@"
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    echo "Unknown command: $command" >&2
+    echo >&2
+    usage >&2
+    exit 1
+    ;;
+esac

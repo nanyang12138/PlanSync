@@ -7,14 +7,14 @@
   "scripts": {
     "setup": "bash scripts/setup.sh",
     "dev": "bash scripts/dev.sh",
-    "build": "npm run build --workspaces",
-    "test": "npm run test --workspaces --if-present",
-    "lint": "eslint packages/*/src",
-    "format": "prettier --write 'packages/*/src/**/*.{ts,tsx}'",
+    "build": "bash scripts/build.sh",
+    "test": "bash scripts/test.sh",
+    "lint": "bash scripts/lint.sh",
+    "format": "bash scripts/format.sh",
     "db:start": "bash scripts/pg-start.sh",
     "db:stop": "bash scripts/pg-stop.sh",
-    "db:reset": "bash scripts/pg-stop.sh; rm -rf /tmp/plansync-pgdata-$(whoami) && npm run setup",
-    "db:psql": "bash -c 'export PATH=/tool/pandora64/bin:$PATH && psql -p ${PG_PORT:-15432} plansync_dev'",
+    "db:reset": "bash scripts/db-reset.sh",
+    "db:psql": "bash scripts/db-psql.sh",
     "prepare": "husky"
   },
   "devDependencies": {
@@ -30,7 +30,12 @@
     "typescript": "~5.7.3"
   },
   "lint-staged": {
-    "*.{ts,tsx}": ["eslint --fix", "prettier --write"],
-    "*.{json,md}": ["prettier --write"]
+    "*.{ts,tsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md}": [
+      "prettier --write"
+    ]
   }
 }

@@ -20,29 +20,30 @@ Everything happens through AI chat. No context switching required.
 
 ---
 
-## Quick Start (5 minutes)
+## Quick Start
 
 ```bash
-# ① Initialize (first time: install deps + start database + run migrations)
+# Owner: start the local PlanSync service
 cd /path/to/PlanSync
-npm run setup
+./bin/ps-admin start
+```
 
-# ② Start the API server
-npm run dev
-
-# ③ Connect your AI tool
+```bash
+# Member: connect your AI tool
 ./bin/plansync --host cursor    # Cursor
 ./bin/plansync --host claude    # Claude Code
 ./bin/plansync --host genie     # Genie (default)
 ```
 
-For single-user local development, **zero configuration** is needed. Start chatting with your AI tool right away.
+For single-user local development, **zero global Node/npm setup** is needed. Both commands auto-prepare the fixed project-local runtime in `.local-runtime/node`, so nothing needs to be installed into your home directory first.
+
+`./bin/ps-admin start` auto-prepares the server side (runtime, dependencies, database, migrations) before starting the API. `./bin/plansync --host ...` auto-prepares the client side (runtime, dependencies, MCP build output) before connecting your AI tool.
 
 ---
 
 ## Configuration
 
-All settings live in a single **`.env`** file at the project root. The first `npm run setup` generates it from `.env.example`.
+All settings live in a single **`.env`** file at the project root. Both `./bin/ps-admin` and `./bin/plansync` create it automatically from `.env.example` on first run if it does not exist.
 
 ### Single user (local)
 
@@ -68,9 +69,12 @@ The `bin/plansync` launcher reads `.env` automatically — no need to pass envir
 
 ### What the Owner does
 
-1. Run `npm run setup` → `npm run dev` on the server
+1. Run `./bin/ps-admin start` on the server
 2. Set a `PLANSYNC_SECRET` in `.env`, share the **API address** and **secret** with the team
-3. In AI chat, create the project and members:
+3. Choose either Owner workflow:
+   - Web: open the dashboard in your browser, then manage plans directly from the `Plans` page (create draft, edit, propose, activate, reactivate)
+   - AI: run `./bin/plansync --user <owner-name> --host cursor`, then use the `plansync_plan_*` MCP tools
+4. In AI chat or via the web UI, create the project and members:
 
 ```
 > Create project "Login System"
@@ -78,7 +82,7 @@ The `bin/plansync` launcher reads `.env` automatically — no need to pass envir
 > Add member bob (developer)
 ```
 
-4. Assign tasks:
+5. Assign tasks:
 
 ```
 > Create task "Implement login API", assign to alice
@@ -122,7 +126,7 @@ The `bin/plansync` launcher reads `.env` automatically — no need to pass envir
 | **Server (API)**            |                                                   |                                  |
 | `DATABASE_URL`              | `postgresql://$USER@localhost:15432/plansync_dev` | PostgreSQL connection string     |
 | `PG_PORT`                   | `15432`                                           | PostgreSQL port                  |
-| `PORT`                      | `3000`                                            | API server port                  |
+| `PORT`                      | `3001`                                            | API server port                  |
 | `AUTH_DISABLED`             | `false`                                           | Skip auth (local dev only)       |
 | `LOG_LEVEL`                 | `info`                                            | Log level                        |
 | **AI features (optional)**  |                                                   |                                  |
@@ -135,13 +139,21 @@ The `bin/plansync` launcher reads `.env` automatically — no need to pass envir
 
 ## Commands
 
-| Command            | Description                                    |
-| ------------------ | ---------------------------------------------- |
-| `npm run setup`    | First-time init (deps + database + migrations) |
-| `npm run dev`      | Start the API server (auto-starts PostgreSQL)  |
-| `npm run db:reset` | Wipe the database and start fresh              |
-| `npm run db:psql`  | Open a PostgreSQL shell                        |
-| `npm run test`     | Run tests                                      |
+| Command                        | Description                                                 |
+| ------------------------------ | ----------------------------------------------------------- |
+| `./bin/ps-admin start`         | Auto-prepare server dependencies and start the PlanSync API |
+| `./bin/plansync --host cursor` | Auto-prepare client dependencies and connect Cursor         |
+| `bash scripts/build.sh`        | Build all workspace packages using the local runtime        |
+| `bash scripts/npm.sh test`     | Run tests through the project-local npm                     |
+| `bash scripts/lint.sh`         | Run eslint through the project-local runtime                |
+| `bash scripts/format.sh`       | Run prettier through the project-local runtime              |
+| `bash scripts/db-reset.sh`     | Wipe the database and start fresh                           |
+| `bash scripts/db-psql.sh`      | Open a PostgreSQL shell                                     |
+
+Advanced / manual entry points:
+
+- `bash scripts/setup.sh` for a full explicit owner bootstrap
+- `bash scripts/dev.sh` to start the API directly once the environment is ready
 
 ---
 
@@ -181,7 +193,7 @@ For detailed design docs, see [PLAN.md](./PLAN.md).
 | `assignee is not a project member` | Have the Owner add the member first, or check spelling                          |
 | `permission denied`                | `PLANSYNC_SECRET` in `.env` doesn't match the server                            |
 | Forgot which members exist         | Ask in AI chat: "list project members"                                          |
-| Want to start over                 | `npm run db:reset`                                                              |
+| Want to start over                 | `bash scripts/db-reset.sh`                                                      |
 
 ---
 
@@ -191,4 +203,5 @@ This project is adapted for NFS-mounted filesystems:
 
 - PostgreSQL data stored in `/tmp` (local disk, avoids NFS file-locking issues)
 - npm cache redirected to `/tmp/npm-cache-$USER`
+- Node runtime installed under `.local-runtime/node` inside the repository
 - MCP Server bundled with esbuild (avoids tsc OOM on NFS)

@@ -92,7 +92,6 @@ export function TaskDetail({ task, activePlan }: TaskDetailProps) {
               {task.createdAt.toLocaleDateString(undefined, { dateStyle: 'medium' })}
             </p>
           </div>
-          {task.createdBy && <p className="text-xs text-slate-400 mt-1">by {task.createdBy}</p>}
         </div>
       </div>
     </div>

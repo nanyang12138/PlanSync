@@ -8,6 +8,9 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 GENIE_BIN="${GENIE_BIN:-/proj/verif_release_ro/genie/current/bin/genie}"
 CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.npm-global/bin/claude")}"
 
+# shellcheck source=scripts/local-node-runtime.sh
+. "$PROJECT_DIR/scripts/local-node-runtime.sh"
+
 die() { echo "❌ $*" >&2; exit 1; }
 
 require_arg() {
@@ -17,6 +20,7 @@ require_arg() {
 # ─── Parse arguments ───
 HOST="genie"
 PLANSYNC_PROJ=""
+PLANSYNC_USER_ARG=""
 WORK_DIR="$(pwd)"
 PASSTHROUGH_ARGS=()
 
@@ -24,6 +28,7 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     --host)       require_arg "$1" "${2:-}"; HOST="$2"; shift 2 ;;
     --project)    require_arg "$1" "${2:-}"; PLANSYNC_PROJ="$2"; shift 2 ;;
+    --user)       require_arg "$1" "${2:-}"; PLANSYNC_USER_ARG="$2"; shift 2 ;;
     --dir)        require_arg "$1" "${2:-}"; WORK_DIR="$2"; shift 2 ;;
     --help|-h)
       cat <<'USAGE'
@@ -34,6 +39,7 @@ Usage: plansync [OPTIONS] [-- HOST_ARGS...]
 Options:
   --host genie|claude|cursor   AI coding tool to use (default: genie)
   --project PROJECT_ID         PlanSync project ID (optional, auto-detected)
+  --user USER_NAME             Identity to use for this session (overrides PLANSYNC_USER)
   --dir PATH                   Working directory (default: current dir)
   --help                       Show this help
 
@@ -49,7 +55,8 @@ AI (pick one):
   ANTHROPIC_API_KEY   Anthropic API key (external users)
 
 Examples:
-  plansync                          # Launch Genie with PlanSync
+  plansync                          # Auto-prepare local client runtime, then launch Genie
+  plansync --user alice --host cursor
   plansync --host claude            # Launch Claude Code with PlanSync
   plansync --host cursor            # Configure Cursor (writes .cursor/mcp.json)
   plansync --project clxyz123       # Specify project ID
@@ -62,17 +69,8 @@ USAGE
   esac
 done
 
-# ─── Activate Node 18 ───
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-export PATH="/home/$(whoami)/.nvm/versions/node/v18.20.8/bin:$PATH"
-export npm_config_cache="/tmp/npm-cache-$(whoami)"
-
-NODE_MAJOR=$(node -v 2>/dev/null | cut -d. -f1 | tr -d 'v')
-if [ "${NODE_MAJOR:-0}" -lt 18 ]; then
-  echo "❌ Node.js 18+ required (got $(node -v 2>/dev/null || echo 'none'))" >&2
-  exit 1
-fi
+# ─── Prepare project-local runtime for end users ───
+ensure_user_runtime_ready
 
 # ─── Load .env (existing env vars take precedence) ───
 _load_env() {
@@ -87,9 +85,9 @@ _load_env() {
 _load_env "$PROJECT_DIR/.env"
 
 # ─── Config (env > .env > defaults) ───
-export PLANSYNC_API_URL="${PLANSYNC_API_URL:-http://localhost:3001}"
+export PLANSYNC_API_URL="${PLANSYNC_API_URL:-$(plansync_api_url 3001)}"
 export PLANSYNC_SECRET="${PLANSYNC_SECRET:-dev-secret}"
-export PLANSYNC_USER="${PLANSYNC_USER:-${USER}}"
+export PLANSYNC_USER="${PLANSYNC_USER_ARG:-${PLANSYNC_USER:-${USER}}}"
 export PLANSYNC_PROJECT="${PLANSYNC_PROJ}"
 
 MCP_SERVER="$PROJECT_DIR/packages/mcp-server/dist/index.js"
@@ -101,18 +99,12 @@ if [ ! -d "$WORK_DIR" ]; then
 fi
 WORK_DIR_ABS="$(cd "$WORK_DIR" && pwd)"
 
-# ─── Build MCP server if needed ───
-if [ ! -f "$MCP_SERVER" ]; then
-  echo "📦 Building MCP server..." >&2
-  (cd "$PROJECT_DIR" && npm run build --workspace=@plansync/mcp-server >&2)
-fi
-
 # ─── Check API is reachable ───
 if curl -s --connect-timeout 2 "$PLANSYNC_API_URL/api/health" >/dev/null 2>&1; then
   echo "✅ PlanSync API reachable at $PLANSYNC_API_URL" >&2
 else
   echo "⚠️  PlanSync API not reachable at $PLANSYNC_API_URL" >&2
-  echo "   Start it first: cd $PROJECT_DIR && PORT=3001 npm run dev" >&2
+  echo "   Start it first: cd $PROJECT_DIR && ./bin/ps-admin start" >&2
   echo "   Or set PLANSYNC_API_URL to the correct URL." >&2
   echo "" >&2
   if [[ -t 0 ]]; then
@@ -145,6 +137,7 @@ inject_instructions() {
 
 # ─── Inject MCP config (uses node with env vars to avoid shell injection) ───
 export _PS_MCP_SERVER="$MCP_SERVER"
+export _PS_NODE_BIN="$LOCAL_NODE_BIN"
 export _PS_API_URL="$PLANSYNC_API_URL"
 export _PS_SECRET="$PLANSYNC_SECRET"
 export _PS_USER="$PLANSYNC_USER"
@@ -155,7 +148,7 @@ inject_claude_settings() {
   local settings_file="$HOME/.claude/settings.json"
   mkdir -p "$HOME/.claude"
 
-  node -e '
+  "$LOCAL_NODE_BIN" -e '
     const fs = require("fs");
     const sf = process.env.HOME + "/.claude/settings.json";
     let settings = {};
@@ -166,7 +159,7 @@ inject_claude_settings() {
     const proj = settings.projects[key];
     if (!proj.mcpServers) proj.mcpServers = {};
     proj.mcpServers.plansync = {
-      command: "node",
+      command: process.env._PS_NODE_BIN,
       args: [process.env._PS_MCP_SERVER],
       env: {
         PLANSYNC_API_URL: process.env._PS_API_URL,
@@ -187,14 +180,14 @@ inject_cursor_settings() {
   local cursor_mcp="$target_dir/.cursor/mcp.json"
   mkdir -p "$target_dir/.cursor"
 
-  _PS_CURSOR_MCP="$cursor_mcp" node -e '
+  _PS_CURSOR_MCP="$cursor_mcp" "$LOCAL_NODE_BIN" -e '
     const fs = require("fs");
     const fp = process.env._PS_CURSOR_MCP;
     let conf = {};
     try { conf = JSON.parse(fs.readFileSync(fp, "utf8")); } catch {}
     if (!conf.mcpServers) conf.mcpServers = {};
     conf.mcpServers.plansync = {
-      command: "node",
+      command: process.env._PS_NODE_BIN,
       args: [process.env._PS_MCP_SERVER],
       env: {
         PLANSYNC_API_URL: process.env._PS_API_URL,

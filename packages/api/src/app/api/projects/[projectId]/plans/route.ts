@@ -13,7 +13,7 @@ export async function GET(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);
-    const { page, pageSize } = validateSearchParams(req, paginationSchema);
+    const { page = 1, pageSize = 20 } = validateSearchParams(req, paginationSchema);
     const skip = (page - 1) * pageSize;
 
     const [plans, total] = await Promise.all([

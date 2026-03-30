@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { prisma } from './prisma';
 
 export async function createActivity(params: {
@@ -6,7 +7,7 @@ export async function createActivity(params: {
   actorName: string;
   actorType: 'human' | 'agent' | 'system';
   summary: string;
-  metadata?: Record<string, unknown>;
+  metadata?: Prisma.InputJsonValue;
 }) {
   return prisma.activity.create({ data: params });
 }

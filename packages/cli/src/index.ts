@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 
-const API_URL = (process.env.PLANSYNC_API_URL || 'http://localhost:3000').replace(/\/$/, '');
+const API_URL = (process.env.PLANSYNC_API_URL || 'http://localhost:3001').replace(/\/$/, '');
 const API_KEY = process.env.PLANSYNC_API_KEY || process.env.PLANSYNC_SECRET || 'dev-secret';
 const USER = process.env.PLANSYNC_USER || process.env.USER || 'anonymous';
 const PROJECT = process.env.PLANSYNC_PROJECT || '';

@@ -296,7 +296,7 @@ h "MODULE U: Environment Variable Validation"
 pass "U3: PLANSYNC_SECRET defaults to 'dev-secret' (server started with it)"
 
 # U5: PORT default
-pass "U5: PORT default 3000 (we overrode to 3001, confirming PORT env works)"
+pass "U5: PORT default 3001 (owner/user entrypoints now align on 3001)"
 
 # U1: Missing DATABASE_URL (test with subprocess)
 RESULT=$(DATABASE_URL="" node -e "

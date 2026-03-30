@@ -6,7 +6,7 @@ export function isSlackUrl(url: string): boolean {
 }
 
 function dashboardUrl(projectId: string): string {
-  const base = (process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000').replace(/\/$/, '');
+  const base = (process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001').replace(/\/$/, '');
   return `${base}/projects/${projectId}`;
 }
 

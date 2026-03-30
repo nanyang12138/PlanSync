@@ -28,7 +28,8 @@
     "**/*.tsx",
     ".next/types/**/*.ts",
     "/tmp/plansync-next-nanyang2/types/**/*.ts",
-    "/tmp/ps-next-build-nanyang2/types/**/*.ts"
+    "/tmp/ps-next-build-nanyang2/types/**/*.ts",
+    "tmp/ps-next-build-nanyang2/types/**/*.ts"
   ],
   "exclude": ["node_modules"]
 }

@@ -1,6 +1,8 @@
 # Dependencies
 node_modules/
 .npm/
+.local-runtime/
+.cache/
 
 # Build outputs
 dist/
