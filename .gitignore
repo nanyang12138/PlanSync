@@ -38,3 +38,10 @@ coverage/
 
 # Misc
 *.tsbuildinfo
+
+# AI tool local configs (contain absolute machine-specific paths, never commit)
+.cursor/mcp.json
+.cline_storage/
+claude.local.md
+*.local.md
+.claude/settings.local.json

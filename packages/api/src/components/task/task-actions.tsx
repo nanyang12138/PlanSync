@@ -9,6 +9,7 @@ type TaskActionsProps = {
   taskId: string;
   canRebind: boolean;
   canClaim: boolean;
+  canDecline?: boolean;
   className?: string;
 };
 
@@ -27,10 +28,11 @@ export function TaskActions({
   taskId,
   canRebind,
   canClaim,
+  canDecline,
   className,
 }: TaskActionsProps) {
   const router = useRouter();
-  const [pending, setPending] = useState<'rebind' | 'claim' | null>(null);
+  const [pending, setPending] = useState<'rebind' | 'claim' | 'decline' | null>(null);
   const [claimAssigneeType, setClaimAssigneeType] = useState<'human' | 'agent'>('human');
   const [error, setError] = useState<string | null>(null);
 
@@ -70,7 +72,24 @@ export function TaskActions({
     }
   }
 
-  if (!canRebind && !canClaim) {
+  async function decline() {
+    setError(null);
+    setPending('decline');
+    try {
+      const res = await fetch(`/api/projects/${projectId}/tasks/${taskId}/decline`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error(await parseError(res));
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Decline failed');
+    } finally {
+      setPending(null);
+    }
+  }
+
+  if (!canRebind && !canClaim && !canDecline) {
     return null;
   }
 
@@ -116,6 +135,19 @@ export function TaskActions({
               className="btn-secondary"
             >
               {pending === 'claim' ? '...' : 'Claim task'}
+            </button>
+          </div>
+        )}
+        {canDecline && (
+          <div className="space-y-1.5">
+            <p className="section-label">Decline assignment</p>
+            <button
+              type="button"
+              disabled={pending !== null}
+              onClick={() => void decline()}
+              className="btn-danger"
+            >
+              {pending === 'decline' ? '...' : 'Decline task'}
             </button>
           </div>
         )}

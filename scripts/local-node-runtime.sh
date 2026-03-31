@@ -12,7 +12,7 @@ LOCAL_NPX_BIN="$LOCAL_NODE_DIR/bin/npx"
 LOCAL_NPM_CACHE="/tmp/npm-cache-$(whoami)"
 LOCAL_CACHE_DIR="$PROJECT_DIR/.cache"
 LOCAL_DEPS_STAMP="$LOCAL_CACHE_DIR/deps-installed.stamp"
-PG_BIN=/tool/pandora64/bin
+PG_BIN="${PG_BIN:-/tool/pandora64/bin}"
 PG_PORT=${PG_PORT:-15432}
 PG_DATA="/tmp/plansync-pgdata-$(whoami)"
 

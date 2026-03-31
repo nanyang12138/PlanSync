@@ -156,28 +156,31 @@
 
 event-bus.ts 定义 17 种事件类型: plan_created, plan_proposed, plan_activated, plan_draft_updated, drift_detected, drift_resolved, task_created, task_assigned, task_unassigned, task_started, task_completed, execution_stale, suggestion_created, suggestion_resolved, comment_added, member_added, member_removed
 
-| ID  | Test Case                 | 输入                                | 预期输出                                  | 边界/异常 |
-| --- | ------------------------- | ----------------------------------- | ----------------------------------------- | --------- |
-| I1  | SSE 连接                  | GET /projects/:id/events            | 200, text/event-stream                    |           |
-| I2  | plan_activated 事件       | 激活 plan 后                        | SSE 推送 plan_activated                   |           |
-| I3  | drift_detected 事件       | drift 扫描后                        | SSE 推送 drift_detected                   |           |
-| I4  | task_created 事件         | 创建 task 后                        | SSE 推送 task_created                     |           |
-| I5  | task_started 事件         | 创建 ExecutionRun 后                | SSE 推送 task_started                     |           |
-| I6  | task_completed 事件       | 完成 ExecutionRun 后                | SSE 推送 task_completed                   |           |
-| I7  | task_assigned 事件        | claim task 后                       | SSE 推送 task_assigned                    |           |
-| I8  | suggestion_created 事件   | 提交 suggestion 后                  | SSE 推送 suggestion_created               |           |
-| I9  | suggestion_resolved 事件  | accept/reject suggestion 后         | SSE 推送 suggestion_resolved              |           |
-| I10 | comment_added 事件        | 发表评论后                          | SSE 推送 comment_added                    |           |
-| I11 | member_added 事件         | 添加成员后                          | SSE 推送 member_added                     |           |
-| I12 | execution_stale 事件      | 心跳扫描标记 stale 后               | SSE 推送 execution_stale                  |           |
-| I13 | SSE 连接上限              | 超过 MAX_SSE_CLIENTS=1000 个连接    | 503 拒绝新连接                            |           |
-| I14 | SSE query param 认证      | GET /events?token=xxx&user=Alice    | 200, 正常连接 (EventSource 不支持 header) |           |
-| I15 | SSE 项目隔离              | 项目 A 的 SSE 客户端                | 不收到项目 B 的事件                       |           |
-| I16 | plan_draft_updated 事件   | 编辑 draft plan 后                  | SSE 推送 plan_draft_updated               |           |
-| I17 | drift_resolved 事件       | 解决 drift alert 后                 | SSE 推送 drift_resolved                   |           |
-| I18 | member_removed 事件       | 移除成员后                          | SSE 推送 member_removed                   |           |
-| I19 | task_unassigned 事件      | decline task 或 PATCH assignee=null | SSE 推送 task_unassigned                  |           |
-| I20 | 创建时 task_assigned 事件 | POST /tasks 带 assignee             | SSE 推送 task_assigned（创建时）          |           |
+| ID  | Test Case                 | 输入                                   | 预期输出                                  | 边界/异常 |
+| --- | ------------------------- | -------------------------------------- | ----------------------------------------- | --------- |
+| I1  | SSE 连接                  | GET /projects/:id/events               | 200, text/event-stream                    |           |
+| I2  | plan_activated 事件       | 激活 plan 后                           | SSE 推送 plan_activated                   |           |
+| I3  | drift_detected 事件       | drift 扫描后                           | SSE 推送 drift_detected                   |           |
+| I4  | task_created 事件         | 创建 task 后                           | SSE 推送 task_created                     |           |
+| I5  | task_started 事件         | 创建 ExecutionRun 后                   | SSE 推送 task_started                     |           |
+| I6  | task_completed 事件       | 完成 ExecutionRun 后                   | SSE 推送 task_completed                   |           |
+| I7  | task_assigned 事件        | claim task 后                          | SSE 推送 task_assigned                    |           |
+| I8  | suggestion_created 事件   | 提交 suggestion 后                     | SSE 推送 suggestion_created               |           |
+| I9  | suggestion_resolved 事件  | accept/reject suggestion 后            | SSE 推送 suggestion_resolved              |           |
+| I10 | comment_added 事件        | 发表评论后                             | SSE 推送 comment_added                    |           |
+| I11 | member_added 事件         | 添加成员后                             | SSE 推送 member_added                     |           |
+| I12 | execution_stale 事件      | 心跳扫描标记 stale 后                  | SSE 推送 execution_stale                  |           |
+| I13 | SSE 连接上限              | 超过 MAX_SSE_CLIENTS=1000 个连接       | 503 拒绝新连接                            |           |
+| I14 | SSE query param 认证      | GET /events?token=xxx&user=Alice       | 200, 正常连接 (EventSource 不支持 header) |           |
+| I15 | SSE 项目隔离              | 项目 A 的 SSE 客户端                   | 不收到项目 B 的事件                       |           |
+| I16 | plan_draft_updated 事件   | 编辑 draft plan 后                     | SSE 推送 plan_draft_updated               |           |
+| I17 | drift_resolved 事件       | 解决 drift alert 后                    | SSE 推送 drift_resolved                   |           |
+| I18 | member_removed 事件       | 移除成员后                             | SSE 推送 member_removed                   |           |
+| I19 | task_unassigned 事件      | decline task 或 PATCH assignee=null    | SSE 推送 task_unassigned                  |           |
+| I20 | 创建时 task_assigned 事件 | POST /tasks 带 assignee                | SSE 推送 task_assigned（创建时）          |           |
+| I21 | MCP Push: plan_activated  | MCP EventListener 收到 plan_activated  | server.sendLoggingMessage level=warning   |           |
+| I22 | MCP Push: drift_detected  | MCP EventListener 收到 drift_detected  | server.sendLoggingMessage level=warning   |           |
+| I23 | MCP Push: execution_stale | MCP EventListener 收到 execution_stale | server.sendLoggingMessage level=warning   |           |
 
 ## 模块 J: Webhook 系统
 
@@ -227,7 +230,7 @@ event-bus.ts 定义 17 种事件类型: plan_created, plan_proposed, plan_activa
 
 ## 模块 M: MCP Server Tools
 
-当前 MCP Server 注册 43 个工具（含新增 plansync_task_decline），按功能分组验证。
+当前 MCP Server 注册 44 个工具（含新增 plansync_task_decline + plansync_execution_heartbeat），按功能分组验证。
 
 ### M-Project: 项目管理工具
 
@@ -293,43 +296,44 @@ event-bus.ts 定义 17 种事件类型: plan_created, plan_proposed, plan_activa
 
 ### M-Execution: 执行工具
 
-| ID  | Test Case | MCP Tool                    | 预期                 | 边界 |
-| --- | --------- | --------------------------- | -------------------- | ---- |
-| M33 | 开始执行  | plansync_execution_start    | run 创建 + task pack |      |
-| M34 | 完成执行  | plansync_execution_complete | run→completed        |      |
+| ID  | Test Case | MCP Tool                     | 预期                                             | 边界 |
+| --- | --------- | ---------------------------- | ------------------------------------------------ | ---- |
+| M33 | 开始执行  | plansync_execution_start     | run 创建 + task pack；自动启动 30s 心跳 interval |      |
+| M34 | 完成执行  | plansync_execution_complete  | run→completed                                    |      |
+| M35 | 手动心跳  | plansync_execution_heartbeat | POST ?action=heartbeat；lastHeartbeatAt 更新     |      |
 
 ### M-Status: 状态查看工具
 
 | ID  | Test Case  | MCP Tool               | 预期                   | 边界 |
 | --- | ---------- | ---------------------- | ---------------------- | ---- |
-| M35 | 项目状态   | plansync_status        | 完整状态返回           |      |
-| M36 | 活跃执行人 | plansync_who           | 返回正在执行的人/agent |      |
-| M37 | 活动日志   | plansync_activity_list | 返回最近活动           |      |
+| M36 | 项目状态   | plansync_status        | 完整状态返回           |      |
+| M37 | 活跃执行人 | plansync_who           | 返回正在执行的人/agent |      |
+| M38 | 活动日志   | plansync_activity_list | 返回最近活动           |      |
 
 ### M-Drift: Drift 工具
 
 | ID  | Test Case                    | MCP Tool                      | 预期                                 | 边界 |
 | --- | ---------------------------- | ----------------------------- | ------------------------------------ | ---- |
-| M38 | Drift 列表                   | plansync_drift_list           | 返回 drift alerts                    |      |
-| M39 | 解决 drift                   | plansync_drift_resolve        | alert→resolved                       |      |
-| M40 | Rebind 任务                  | plansync_task_rebind          | version 更新                         |      |
-| M41 | 冲突检查                     | plansync_check_task_conflicts | 返回冲突预测                         |      |
-| M42 | 重新分配 assignee            | plansync_task_update          | assignee 已更新 + task_assigned 事件 |      |
-| M43 | 拒绝分配                     | plansync_task_decline         | assignee 清空 + task_unassigned 事件 |      |
-| M44 | Claim startImmediately=false | plansync_task_claim           | assignee 已设置但 status=todo        |      |
+| M39 | Drift 列表                   | plansync_drift_list           | 返回 drift alerts                    |      |
+| M40 | 解决 drift                   | plansync_drift_resolve        | alert→resolved                       |      |
+| M41 | Rebind 任务                  | plansync_task_rebind          | version 更新                         |      |
+| M42 | 冲突检查                     | plansync_check_task_conflicts | 返回冲突预测                         |      |
+| M43 | 重新分配 assignee            | plansync_task_update          | assignee 已更新 + task_assigned 事件 |      |
+| M44 | 拒绝分配                     | plansync_task_decline         | assignee 清空 + task_unassigned 事件 |      |
+| M45 | Claim startImmediately=false | plansync_task_claim           | assignee 已设置但 status=todo        |      |
 
 ## 模块 N: Wrapper 脚本 (bin/plansync)
 
-| ID  | Test Case           | 输入           | 预期输出                     | 边界/异常 |
-| --- | ------------------- | -------------- | ---------------------------- | --------- |
-| N1  | 帮助                | --help         | 显示用法                     |           |
-| N2  | 未知 host           | --host unknown | 错误退出                     |           |
-| N3  | 缺少参数值          | --host (无值)  | 错误: requires a value       |           |
-| N4  | Genie 配置注入      | --host genie   | genie scheme 配置写入        |           |
-| N5  | Cursor 配置注入     | --host cursor  | .cursor/mcp.json 写入        |           |
-| N6  | CLAUDE.md 注入      | 启动           | CLAUDE.md 包含 PlanSync 指令 |           |
-| N7  | API 不可达提示      | API 未启动     | 警告 + 确认                  |           |
-| N8  | MCP server 自动构建 | dist/ 不存在   | 自动 npm run build           |           |
+| ID  | Test Case           | 输入           | 预期输出                     | 边界/异常         |
+| --- | ------------------- | -------------- | ---------------------------- | ----------------- |
+| N1  | 帮助                | --help         | 显示用法                     |                   |
+| N2  | 未知 host           | --host unknown | 错误退出                     |                   |
+| N3  | 缺少参数值          | --host (无值)  | 错误: requires a value       |                   |
+| N4  | Genie 配置注入      | --host genie   | genie scheme 配置写入        | 需要 runtime 环境 |
+| N5  | Cursor 配置注入     | --host cursor  | .cursor/mcp.json 写入        | 需要 runtime 环境 |
+| N6  | CLAUDE.md 注入      | 启动           | CLAUDE.md 包含 PlanSync 指令 | 需要 runtime 环境 |
+| N7  | API 不可达提示      | API 未启动     | 警告 + 确认                  | 需要运行中的 API  |
+| N8  | MCP server 自动构建 | dist/ 不存在   | 自动 npm run build           | 需要 runtime 环境 |
 
 ## 模块 O: CLI 工具 (plansync-cli)
 
@@ -352,15 +356,16 @@ event-bus.ts 定义 17 种事件类型: plan_created, plan_proposed, plan_activa
 
 PLAN.md 定义了 Activity 数据模型 + `GET /api/projects/:id/activities?limit=` 端点 + 16 种事件类型。
 
-| ID  | Test Case               | 输入                               | 预期输出                                         | 边界/异常 |
-| --- | ----------------------- | ---------------------------------- | ------------------------------------------------ | --------- |
-| Q1  | plan 操作写入 Activity  | 创建/激活 plan                     | Activity 记录 type=plan_created/plan_activated   |           |
-| Q2  | task 操作写入 Activity  | 创建/完成 task                     | Activity 记录 type=task_created/task_completed   |           |
-| Q3  | drift 操作写入 Activity | drift 扫描/解决                    | Activity 记录 type=drift_detected/drift_resolved |           |
-| Q4  | 列出 Activity           | GET /activities                    | 200, 返回 Activity 列表                          |           |
-| Q5  | limit 参数              | GET /activities?limit=5            | 最多返回 5 条                                    |           |
-| Q6  | actorType 正确性        | 人类操作 vs agent 操作 vs 系统操作 | actorType 分别为 human/agent/system              |           |
-| Q7  | Activity 数据完整性     | 查看单条 Activity                  | 含 type, actorName, summary, metadata            |           |
+| ID   | Test Case               | 输入                               | 预期输出                                         | 边界/异常 |
+| ---- | ----------------------- | ---------------------------------- | ------------------------------------------------ | --------- |
+| Q1   | plan 操作写入 Activity  | 创建/激活 plan                     | Activity 记录 type=plan_created/plan_activated   |           |
+| Q2   | task 操作写入 Activity  | 创建/完成 task                     | Activity 记录 type=task_created/task_completed   |           |
+| Q2.1 | task_declined Activity  | POST /decline                      | Activity 记录 type=task_declined                 |           |
+| Q3   | drift 操作写入 Activity | drift 扫描/解决                    | Activity 记录 type=drift_detected/drift_resolved |           |
+| Q4   | 列出 Activity           | GET /activities                    | 200, 返回 Activity 列表                          |           |
+| Q5   | limit 参数              | GET /activities?limit=5            | 最多返回 5 条                                    |           |
+| Q6   | actorType 正确性        | 人类操作 vs agent 操作 vs 系统操作 | actorType 分别为 human/agent/system              |           |
+| Q7   | Activity 数据完整性     | 查看单条 Activity                  | 含 type, actorName, summary, metadata            |           |
 
 ## 模块 R: Health Check
 
@@ -431,7 +436,7 @@ API 启动时通过 Zod schema 校验环境变量。
 | J: Webhook      | 11         | ✓        | ✓        | ✓        |
 | K: API Key      | 7          | ✓        | ✓        | ✓        |
 | L: AI           | 13         | ✓        | ✓        | ✓        |
-| M: MCP Server   | 44         | ✓        | ✓        | ✓        |
+| M: MCP Server   | 45         | ✓        | ✓        | ✓        |
 | N: Wrapper      | 8          | ✓        | ✓        | ✓        |
 | O: CLI          | 6          | ✓        | ✓        | ✓        |
 | P: OpenAPI      | 1          | ✓        |          |          |
@@ -440,7 +445,7 @@ API 启动时通过 Zod schema 校验环境变量。
 | S: Auth 中间件  | 11         | ✓        | ✓        | ✓        |
 | T: 错误响应格式 | 6          | ✓        | ✓        | ✓        |
 | U: 环境变量校验 | 5          | ✓        | ✓        | ✓        |
-| **总计**        | **244**    |          |          |          |
+| **总计**        | **249**    |          |          |          |
 
 ---
 

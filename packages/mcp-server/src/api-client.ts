@@ -54,7 +54,8 @@ export class ApiClient {
       json = text ? JSON.parse(text) : {};
     } catch {
       if (!res.ok) throw new Error(`API error ${res.status}: ${text.slice(0, 200)}`);
-      return {} as T;
+      // 2xx but unparseable body — surface the error instead of silently returning empty object
+      throw new Error(`API returned non-JSON response (${res.status}): ${text.slice(0, 200)}`);
     }
 
     if (!res.ok) {

@@ -1,5 +1,5 @@
 #!/bin/bash
-PG_BIN=/tool/pandora64/bin
+PG_BIN="${PG_BIN:-/tool/pandora64/bin}"
 PG_DATA="/tmp/plansync-pgdata-$(whoami)"
 export PATH="$PG_BIN:$PATH"
 if [ -d "$PG_DATA" ]; then

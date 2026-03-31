@@ -24,6 +24,7 @@ type PlanWorkspaceClientProps = {
   previousPlan: Plan | null;
   memberNames: string[];
   isOwner: boolean;
+  currentUser: string;
   nextVersion: number;
 };
 
@@ -117,6 +118,7 @@ export function PlanWorkspaceClient({
   previousPlan,
   memberNames,
   isOwner,
+  currentUser,
   nextVersion,
 }: PlanWorkspaceClientProps) {
   const router = useRouter();
@@ -283,6 +285,32 @@ export function PlanWorkspaceClient({
       setError(err instanceof Error ? err.message : 'Failed to delete draft');
     } finally {
       setPendingAction(null);
+    }
+  }
+
+  async function handleReviewAction(
+    reviewId: string,
+    action: 'approve' | 'reject',
+    comment?: string,
+  ) {
+    if (!selectedPlan) return;
+    try {
+      const res = await fetch(
+        `/api/projects/${projectId}/plans/${selectedPlan.id}/reviews/${reviewId}?action=${action}`,
+        {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ comment }),
+        },
+      );
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as unknown;
+        throw new Error(requestErrorMessage(body, res.status));
+      }
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to submit review');
     }
   }
 
@@ -515,7 +543,12 @@ export function PlanWorkspaceClient({
           </div>
         </div>
       ) : selectedPlan ? (
-        <PlanDetail plan={selectedPlan} previousPlan={previousPlan} />
+        <PlanDetail
+          plan={selectedPlan}
+          previousPlan={previousPlan}
+          currentUser={currentUser}
+          onReviewAction={handleReviewAction}
+        />
       ) : (
         <div className="panel p-16 text-center">
           <p className="text-base font-semibold text-slate-700">No plan selected</p>

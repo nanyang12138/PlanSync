@@ -89,7 +89,8 @@ export class EventListener {
           if (line.startsWith('event: ')) {
             currentEvent = line.slice(7);
           } else if (line.startsWith('data: ')) {
-            currentData = line.slice(6);
+            // SSE spec: multiple data lines are concatenated with newline
+            currentData = currentData ? currentData + '\n' + line.slice(6) : line.slice(6);
           } else if (line === '' && currentEvent && currentData) {
             this.handleEvent(currentEvent, currentData);
             currentEvent = '';
@@ -102,10 +103,15 @@ export class EventListener {
       logger.warn({ err, projectId: this.projectId }, 'SSE connection error');
     }
 
+    // Re-check this.running after async operations to avoid scheduling a reconnect
+    // after stop() has already been called (race condition between catch block and stop())
     if (this.running) {
-      logger.info({ delay: this.reconnectDelay }, 'SSE reconnecting');
-      this.reconnectTimeout = setTimeout(() => this.connect(), this.reconnectDelay);
+      const delay = this.reconnectDelay;
       this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
+      logger.info({ delay }, 'SSE reconnecting');
+      this.reconnectTimeout = setTimeout(() => {
+        if (this.running) this.connect();
+      }, delay);
     }
   }
 

@@ -194,6 +194,7 @@ export default async function ProjectPlansPage({
                   previousPlan={previousPlan}
                   memberNames={memberNames}
                   isOwner={isOwner}
+                  currentUser={currentUser}
                   nextVersion={nextVersion}
                 />
               </div>

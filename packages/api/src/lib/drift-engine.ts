@@ -4,6 +4,7 @@ import { prisma } from './prisma';
 import { aiClient } from './ai/client';
 import { getOrCreatePlanDiff } from './ai/plan-diff';
 import { analyzeTaskImpact } from './ai/impact-analysis';
+import { eventBus } from './event-bus';
 
 export interface DriftScanResult {
   alerts: Array<{
@@ -132,6 +133,17 @@ export async function enrichDriftAlertsWithAi(
             : {}),
         },
       });
+
+      // Publish event so connected clients know the alert was auto-resolved by AI
+      if (highCompatibility) {
+        eventBus.publish(projectId, 'drift_resolved', {
+          alertId: alert.id,
+          taskId: alert.taskId,
+          resolvedBy: 'system',
+          resolvedAction: 'no_impact',
+          compatibilityScore: impact.compatibilityScore,
+        });
+      }
     } catch (err) {
       logger.error({ err, alertId: alert.id }, 'Failed to enrich drift alert with AI');
     }

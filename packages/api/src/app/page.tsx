@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { cookies } from 'next/headers';
 import { prisma } from '@/lib/prisma';
 import {
   GitBranch,
@@ -13,8 +14,9 @@ import {
 import { PageHeader } from '@/components/shared/page-header';
 import { SummaryStrip } from '@/components/shared/summary-strip';
 
-async function getHomeProjects() {
+async function getHomeProjects(currentUser: string) {
   return prisma.project.findMany({
+    where: currentUser !== 'anonymous' ? { members: { some: { name: currentUser } } } : undefined,
     include: {
       _count: { select: { members: true, plans: true, tasks: true, driftAlerts: true } },
       plans: { where: { status: 'active' }, take: 1 },
@@ -28,7 +30,8 @@ async function getHomeProjects() {
 type HomeProject = Awaited<ReturnType<typeof getHomeProjects>>[number];
 
 export default async function HomePage() {
-  const projects = await getHomeProjects();
+  const currentUser = cookies().get('plansync-user')?.value ?? 'anonymous';
+  const projects = await getHomeProjects(currentUser);
 
   const totalProjects = projects.length;
   const totalOpenDrifts = projects.reduce((s, p) => s + p.driftAlerts.length, 0);

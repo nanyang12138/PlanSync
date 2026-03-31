@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
 
-export PATH="/tool/pandora64/bin:$PATH"
+PG_BIN="${PG_BIN:-/tool/pandora64/bin}"
+export PATH="$PG_BIN:$PATH"
 exec psql -p "${PG_PORT:-15432}" plansync_dev

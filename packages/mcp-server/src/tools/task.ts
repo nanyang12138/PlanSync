@@ -8,7 +8,10 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
     'List tasks for a project with optional filters',
     {
       projectId: z.string(),
-      status: z.string().optional().describe('Filter by status: todo, in_progress, blocked, done, cancelled'),
+      status: z
+        .string()
+        .optional()
+        .describe('Filter by status: todo, in_progress, blocked, done, cancelled'),
       assignee: z.string().optional().describe('Filter by assignee name'),
       page: z.number().optional(),
       pageSize: z.number().optional(),
@@ -27,10 +30,11 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
 
   server.tool(
     'plansync_task_show',
-    'Get task details including recent execution runs',
+    'Get task details including drift alert status and recent execution runs',
     { projectId: z.string(), taskId: z.string() },
     async (args) => {
-      const result = await api.get(`/api/projects/${args.projectId}/tasks/${args.taskId}`);
+      // Use pack endpoint to include drift alerts alongside task data
+      const result = await api.get(`/api/projects/${args.projectId}/tasks/${args.taskId}/pack`);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   );
@@ -84,16 +88,16 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
       projectId: z.string(),
       taskId: z.string(),
       assigneeType: z.enum(['human', 'agent']).optional(),
-      startImmediately: z.boolean().optional().describe('If false, accept assignment but keep status as todo. Default: true'),
+      startImmediately: z
+        .boolean()
+        .optional()
+        .describe('If false, accept assignment but keep status as todo. Default: true'),
     },
     async (args) => {
-      const result = await api.post(
-        `/api/projects/${args.projectId}/tasks/${args.taskId}/claim`,
-        {
-          assigneeType: args.assigneeType || 'agent',
-          ...(args.startImmediately !== undefined ? { startImmediately: args.startImmediately } : {}),
-        },
-      );
+      const result = await api.post(`/api/projects/${args.projectId}/tasks/${args.taskId}/claim`, {
+        assigneeType: args.assigneeType || 'agent',
+        ...(args.startImmediately !== undefined ? { startImmediately: args.startImmediately } : {}),
+      });
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   );

@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-PG_BIN=/tool/pandora64/bin
+PG_BIN="${PG_BIN:-/tool/pandora64/bin}"
 PORT="${PORT:-3001}"
 PG_PORT=${PG_PORT:-15432}
 PG_DATA="/tmp/plansync-pgdata-$(whoami)"
@@ -23,6 +23,14 @@ if ! pg_isready -p "$PG_PORT" -q 2>/dev/null; then
   fi
   echo "Starting PostgreSQL..."
   pg_ctl -D "$PG_DATA" -l "$PG_DATA/logfile" -o "-p $PG_PORT" start > /dev/null 2>&1
+fi
+
+# Load environment variables from root .env (bash expands ${USER} etc.)
+if [ -f "$PROJECT_DIR/.env" ]; then
+  set -a
+  # shellcheck source=../.env
+  . "$PROJECT_DIR/.env"
+  set +a
 fi
 
 # Ensure migrations are up to date

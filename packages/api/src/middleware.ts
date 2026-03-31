@@ -5,6 +5,7 @@ const ALLOWED_ORIGINS = [
   'http://localhost:3000',
   'http://localhost:3001',
   process.env.NEXT_PUBLIC_APP_URL,
+  ...(process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : []),
 ]
   .filter(Boolean)
   .map((o) => o!.replace(/\/$/, ''));
@@ -12,7 +13,11 @@ const ALLOWED_ORIGINS = [
 export function middleware(request: NextRequest) {
   const origin = request.headers.get('origin');
 
-  const userName = request.cookies.get('plansync-user')?.value;
+  // Use existing cookie, or fall back to PLANSYNC_USER / system USER
+  const existingUser = request.cookies.get('plansync-user')?.value;
+  const defaultUser = process.env.PLANSYNC_USER || process.env.USER || 'anonymous';
+  const userName = existingUser ?? defaultUser;
+
   const requestHeaders = new Headers(request.headers);
   if (userName && !requestHeaders.get('x-user-name')) {
     requestHeaders.set('x-user-name', userName);
@@ -21,6 +26,15 @@ export function middleware(request: NextRequest) {
   const response = NextResponse.next({
     request: { headers: requestHeaders },
   });
+
+  // Auto-set cookie on first visit so browser identity matches server identity
+  if (!existingUser && defaultUser !== 'anonymous') {
+    response.cookies.set('plansync-user', defaultUser, {
+      path: '/',
+      maxAge: 31536000,
+      sameSite: 'lax',
+    });
+  }
 
   if (origin && ALLOWED_ORIGINS.includes(origin)) {
     response.headers.set('Access-Control-Allow-Origin', origin);
@@ -40,5 +54,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: '/api/:path*',
+  matcher: '/((?!_next/static|_next/image|favicon.ico).*)',
 };

@@ -30,11 +30,39 @@ while [[ $# -gt 0 ]]; do
     --project)    require_arg "$1" "${2:-}"; PLANSYNC_PROJ="$2"; shift 2 ;;
     --user)       require_arg "$1" "${2:-}"; PLANSYNC_USER_ARG="$2"; shift 2 ;;
     --dir)        require_arg "$1" "${2:-}"; WORK_DIR="$2"; shift 2 ;;
+    install)
+      # Explicitly install PlanSync into ~/.claude/settings.json for persistent MCP access.
+      # Run this once so PlanSync tools are available in all future Claude/Genie sessions.
+      # Normal `plansync` launch does NOT modify ~/.claude/ — MCP is session-scoped via --mcp-config.
+      ensure_user_runtime_ready
+      _load_env "$PROJECT_DIR/.env"
+      export PLANSYNC_API_URL="${PLANSYNC_API_URL:-$(plansync_api_url 3001)}"
+      export PLANSYNC_SECRET="${PLANSYNC_SECRET:-dev-secret}"
+      export PLANSYNC_USER="${PLANSYNC_USER:-${USER}}"
+      export _PS_MCP_SERVER="$PROJECT_DIR/packages/mcp-server/dist/index.js"
+      export _PS_NODE_BIN="$LOCAL_NODE_BIN"
+      export _PS_API_URL="$PLANSYNC_API_URL"
+      export _PS_SECRET="$PLANSYNC_SECRET"
+      export _PS_USER="$PLANSYNC_USER"
+      export _PS_PROJECT=""
+      export _PS_WORK_DIR="$(pwd)"
+      inject_claude_settings
+      echo "" >&2
+      echo "✅ PlanSync installed into ~/.claude/settings.json" >&2
+      echo "   MCP tools will be available in all future Claude/Genie sessions." >&2
+      echo "   To uninstall: remove the 'plansync' entry from ~/.claude/settings.json" >&2
+      exit 0
+      ;;
     --help|-h)
       cat <<'USAGE'
-Usage: plansync [OPTIONS] [-- HOST_ARGS...]
+Usage: plansync [COMMAND] [OPTIONS] [-- HOST_ARGS...]
 
   Launch your AI coding tool with PlanSync MCP integrated.
+
+Commands:
+  install                      Install PlanSync into ~/.claude/settings.json for persistent
+                               MCP access across all Claude/Genie sessions. Run once after
+                               cloning. Normal launch does NOT modify ~/.claude/.
 
 Options:
   --host genie|claude|cursor   AI coding tool to use (default: genie)
@@ -47,6 +75,9 @@ Environment:
   PLANSYNC_API_URL   API server URL (default: http://localhost:3001)
   PLANSYNC_SECRET    API auth token (default: dev-secret)
   PLANSYNC_USER      Your username (default: $USER)
+  PG_BIN             PostgreSQL binary directory (default: /tool/pandora64/bin)
+  GENIE_BIN          Path to Genie binary (default: /proj/verif_release_ro/...)
+  CORS_ORIGINS       Additional CORS origins, comma-separated
 
 AI (pick one):
   LLM_API_KEY        AMD internal LLM API subscription key
@@ -55,6 +86,7 @@ AI (pick one):
   ANTHROPIC_API_KEY   Anthropic API key (external users)
 
 Examples:
+  plansync install                  # Install PlanSync MCP into ~/.claude/settings.json
   plansync                          # Auto-prepare local client runtime, then launch Genie
   plansync --user alice --host cursor
   plansync --host claude            # Launch Claude Code with PlanSync
@@ -145,20 +177,11 @@ export _PS_PROJECT="$PLANSYNC_PROJ"
 export _PS_WORK_DIR="$WORK_DIR_ABS"
 
 inject_claude_settings() {
-  local settings_file="$HOME/.claude/settings.json"
   mkdir -p "$HOME/.claude"
 
   "$LOCAL_NODE_BIN" -e '
     const fs = require("fs");
-    const sf = process.env.HOME + "/.claude/settings.json";
-    let settings = {};
-    try { settings = JSON.parse(fs.readFileSync(sf, "utf8")); } catch {}
-    if (!settings.projects) settings.projects = {};
-    const key = process.env._PS_WORK_DIR;
-    if (!settings.projects[key]) settings.projects[key] = {};
-    const proj = settings.projects[key];
-    if (!proj.mcpServers) proj.mcpServers = {};
-    proj.mcpServers.plansync = {
+    const mcpEntry = {
       command: process.env._PS_NODE_BIN,
       args: [process.env._PS_MCP_SERVER],
       env: {
@@ -169,7 +192,28 @@ inject_claude_settings() {
         LOG_LEVEL: "warn",
       },
     };
-    proj.hasTrustDialogAccepted = true;
+
+    const sf = process.env.HOME + "/.claude/settings.json";
+    let settings = {};
+    try { settings = JSON.parse(fs.readFileSync(sf, "utf8")); } catch {}
+
+    // Top-level mcpServers: Claude Code 2.x reads from here for interactive sessions
+    if (!settings.mcpServers) settings.mcpServers = {};
+    settings.mcpServers.plansync = mcpEntry;
+
+    // Auto-allow all plansync MCP tools (no permission prompts)
+    if (!settings.permissions) settings.permissions = {};
+    if (!settings.permissions.allow) settings.permissions.allow = [];
+    if (!settings.permissions.allow.includes("mcp__plansync__*")) {
+      settings.permissions.allow.push("mcp__plansync__*");
+    }
+
+    // Per-project trust dialog acceptance
+    if (!settings.projects) settings.projects = {};
+    const key = process.env._PS_WORK_DIR;
+    if (!settings.projects[key]) settings.projects[key] = {};
+    settings.projects[key].hasTrustDialogAccepted = true;
+
     fs.writeFileSync(sf, JSON.stringify(settings, null, 2));
   '
   echo "🔧 MCP config injected into Claude settings for $WORK_DIR_ABS" >&2
@@ -205,7 +249,6 @@ inject_cursor_settings() {
 case "$HOST" in
 
   genie|claude)
-    inject_claude_settings
     inject_instructions "$WORK_DIR_ABS"
 
     echo "" >&2
@@ -214,11 +257,31 @@ case "$HOST" in
     echo "   Working dir: $WORK_DIR_ABS" >&2
     echo "" >&2
 
+    # Build --mcp-config JSON inline (same mechanism that works for genie -p in E2E tests)
+    MCP_CONFIG_JSON="$("$LOCAL_NODE_BIN" -e '
+      const cfg = {
+        mcpServers: {
+          plansync: {
+            command: process.env._PS_NODE_BIN,
+            args: [process.env._PS_MCP_SERVER],
+            env: {
+              PLANSYNC_API_URL: process.env._PS_API_URL,
+              PLANSYNC_SECRET: process.env._PS_SECRET,
+              PLANSYNC_USER: process.env._PS_USER,
+              PLANSYNC_PROJECT: process.env._PS_PROJECT || "",
+              LOG_LEVEL: "warn",
+            },
+          },
+        },
+      };
+      process.stdout.write(JSON.stringify(cfg));
+    ')"
+
     cd "$WORK_DIR_ABS"
     if [ "$HOST" = "genie" ]; then
-      exec "$GENIE_BIN" "${PASSTHROUGH_ARGS[@]}"
+      exec "$GENIE_BIN" --mcp-config "$MCP_CONFIG_JSON" "${PASSTHROUGH_ARGS[@]}"
     else
-      exec "$CLAUDE_BIN" "${PASSTHROUGH_ARGS[@]}"
+      exec "$CLAUDE_BIN" --mcp-config "$MCP_CONFIG_JSON" "${PASSTHROUGH_ARGS[@]}"
     fi
     ;;
 

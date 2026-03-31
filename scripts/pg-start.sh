@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-PG_BIN=/tool/pandora64/bin
+PG_BIN="${PG_BIN:-/tool/pandora64/bin}"
 PG_PORT=${PG_PORT:-15432}
 PG_DATA="/tmp/plansync-pgdata-$(whoami)"
 

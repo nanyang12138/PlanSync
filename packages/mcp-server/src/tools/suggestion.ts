@@ -10,7 +10,9 @@ export function registerSuggestionTools(server: McpServer, api: ApiClient) {
       projectId: z.string(),
       planId: z.string(),
       field: z.enum(['goal', 'scope', 'constraints', 'standards', 'deliverables', 'openQuestions']),
-      action: z.enum(['set', 'append', 'remove']).describe('set: replace field value, append: add to array, remove: remove from array'),
+      action: z
+        .enum(['set', 'append', 'remove'])
+        .describe('set: replace field value, append: add to array, remove: remove from array'),
       value: z.string().describe('The suggested content'),
       reason: z.string().describe('Why this change is needed'),
     },
@@ -26,7 +28,9 @@ export function registerSuggestionTools(server: McpServer, api: ApiClient) {
     'List suggestions for a plan',
     { projectId: z.string(), planId: z.string() },
     async (args) => {
-      const result = await api.get(`/api/projects/${args.projectId}/plans/${args.planId}/suggestions`);
+      const result = await api.get(
+        `/api/projects/${args.projectId}/plans/${args.planId}/suggestions`,
+      );
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   );
@@ -42,8 +46,9 @@ export function registerSuggestionTools(server: McpServer, api: ApiClient) {
       comment: z.string().optional(),
     },
     async (args) => {
+      const params = new URLSearchParams({ action: args.action });
       const result = await api.post(
-        `/api/projects/${args.projectId}/plans/${args.planId}/suggestions/${args.suggestionId}?action=${args.action}`,
+        `/api/projects/${args.projectId}/plans/${args.planId}/suggestions/${args.suggestionId}?${params}`,
         { comment: args.comment },
       );
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };

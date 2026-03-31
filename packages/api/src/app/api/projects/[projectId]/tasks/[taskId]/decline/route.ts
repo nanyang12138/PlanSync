@@ -25,10 +25,7 @@ export async function POST(req: NextRequest, { params }: Params) {
     }
 
     if (task.status !== 'todo') {
-      throw new AppError(
-        ErrorCode.STATE_CONFLICT,
-        'Only tasks in todo status can be declined',
-      );
+      throw new AppError(ErrorCode.STATE_CONFLICT, 'Only tasks in todo status can be declined');
     }
 
     const updated = await prisma.task.update({
@@ -41,7 +38,7 @@ export async function POST(req: NextRequest, { params }: Params) {
 
     await createActivity({
       projectId: params.projectId,
-      type: 'task_created',
+      type: 'task_declined',
       actorName: auth.userName,
       actorType: 'human',
       summary: `Task "${task.title}" declined by ${auth.userName}`,

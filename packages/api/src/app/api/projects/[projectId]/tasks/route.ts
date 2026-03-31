@@ -45,34 +45,36 @@ export async function POST(req: NextRequest, { params }: Params) {
     await requireProjectRole(auth, params.projectId);
     const body = await validateBody(req, createTaskSchema);
 
-    const activePlan = await prisma.plan.findFirst({
-      where: { projectId: params.projectId, status: 'active' },
-    });
-    if (!activePlan) {
-      throw new AppError(
-        ErrorCode.STATE_CONFLICT,
-        'No active plan. Activate a plan before creating tasks.',
-      );
-    }
-
-    if (body.assignee) {
-      const member = await prisma.projectMember.findUnique({
-        where: { projectId_name: { projectId: params.projectId, name: body.assignee } },
+    const task = await prisma.$transaction(async (tx) => {
+      const activePlan = await tx.plan.findFirst({
+        where: { projectId: params.projectId, status: 'active' },
       });
-      if (!member) {
+      if (!activePlan) {
         throw new AppError(
-          ErrorCode.BAD_REQUEST,
-          `Assignee "${body.assignee}" is not a member of this project`,
+          ErrorCode.STATE_CONFLICT,
+          'No active plan. Activate a plan before creating tasks.',
         );
       }
-    }
 
-    const task = await prisma.task.create({
-      data: {
-        ...body,
-        projectId: params.projectId,
-        boundPlanVersion: activePlan.version,
-      },
+      if (body.assignee) {
+        const member = await tx.projectMember.findUnique({
+          where: { projectId_name: { projectId: params.projectId, name: body.assignee } },
+        });
+        if (!member) {
+          throw new AppError(
+            ErrorCode.BAD_REQUEST,
+            `Assignee "${body.assignee}" is not a member of this project`,
+          );
+        }
+      }
+
+      return tx.task.create({
+        data: {
+          ...body,
+          projectId: params.projectId,
+          boundPlanVersion: activePlan.version,
+        },
+      });
     });
 
     await createActivity({
@@ -80,21 +82,21 @@ export async function POST(req: NextRequest, { params }: Params) {
       type: 'task_created',
       actorName: auth.userName,
       actorType: 'human',
-      summary: `Task "${task.title}" created (bound to plan v${activePlan.version})`,
-      metadata: { taskId: task.id, boundPlanVersion: activePlan.version },
+      summary: `Task "${task.title}" created (bound to plan v${task.boundPlanVersion})`,
+      metadata: { taskId: task.id, boundPlanVersion: task.boundPlanVersion },
     });
 
     eventBus.publish(params.projectId, 'task_created', {
       taskId: task.id,
       title: task.title,
       assignee: task.assignee,
-      boundPlanVersion: activePlan.version,
+      boundPlanVersion: task.boundPlanVersion,
     });
     dispatchWebhooks(params.projectId, 'task_created', {
       taskId: task.id,
       title: task.title,
       assignee: task.assignee,
-      boundPlanVersion: activePlan.version,
+      boundPlanVersion: task.boundPlanVersion,
     });
 
     if (task.assignee) {

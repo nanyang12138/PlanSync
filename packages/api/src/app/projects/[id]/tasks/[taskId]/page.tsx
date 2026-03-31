@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { cookies } from 'next/headers';
 import { ArrowLeft, ClipboardList } from 'lucide-react';
 import { prisma } from '@/lib/prisma';
 import { TaskDetail } from '@/components/task/task-detail';
@@ -30,8 +31,10 @@ export default async function TaskDetailPage({
     where: { projectId: params.id, status: 'active' },
   });
 
+  const currentUser = cookies().get('plansync-user')?.value ?? 'anonymous';
   const canRebind = !!activePlan && task.boundPlanVersion !== activePlan.version;
-  const canClaim = task.status === 'todo';
+  const canClaim = task.status === 'todo' && !task.assignee;
+  const canDecline = task.status === 'todo' && task.assignee === currentUser;
 
   return (
     <RealtimeWrapper projectId={params.id}>
@@ -63,6 +66,7 @@ export default async function TaskDetailPage({
                 taskId={params.taskId}
                 canRebind={canRebind}
                 canClaim={canClaim}
+                canDecline={canDecline}
               />
 
               {task.driftAlerts.length > 0 && (
