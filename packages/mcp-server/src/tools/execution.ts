@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { ApiClient } from '../api-client';
+import { ApiClient, ApiError } from '../api-client';
 import { logger } from '../logger';
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
@@ -55,12 +55,39 @@ export function registerExecutionTools(server: McpServer, api: ApiClient) {
     },
     async (args) => {
       const { projectId, ...body } = args;
-      const result = await api.post(`/api/projects/${projectId}/tasks/${args.taskId}/runs`, body);
-      const runId = (result as { data?: { id?: string } })?.data?.id;
-      if (runId) {
-        heartbeatManager.start(runId, projectId, args.taskId, api);
+      try {
+        const result = await api.post(`/api/projects/${projectId}/tasks/${args.taskId}/runs`, body);
+        const runId = (result as { data?: { id?: string } })?.data?.id;
+        if (runId) {
+          heartbeatManager.start(runId, projectId, args.taskId, api);
+        }
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      } catch (err) {
+        if (err instanceof ApiError && err.code === 'DRIFT_UNRESOLVED') {
+          const drifts =
+            (err.details as { drifts?: Array<{ id: string; severity: string; reason: string }> })
+              ?.drifts ?? [];
+          const driftLines = drifts
+            .map(
+              (d) =>
+                `  [${d.severity.toUpperCase()}] ${d.reason}  →  plansync_drift_resolve ${d.id} action=rebind`,
+            )
+            .join('\n');
+          const guidance = [
+            '⚠ Execution blocked — unresolved drifts on this task',
+            '',
+            'Drift alerts:',
+            driftLines || '  (see plansync_drift_list for details)',
+            '',
+            'Resolve each alert before starting execution:',
+            '  plansync_drift_resolve <driftId> action=rebind     → accept new plan, continue',
+            '  plansync_drift_resolve <driftId> action=no_impact  → change does not affect this task',
+            '  plansync_drift_resolve <driftId> action=cancel     → release the task',
+          ].join('\n');
+          return { content: [{ type: 'text', text: guidance }] };
+        }
+        throw err;
       }
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   );
 

@@ -114,13 +114,23 @@ export async function POST(req: NextRequest, { params }: Params) {
         }
       }
 
+      const { deliverablesMet, ...bodyWithoutDeliverablesMet } = body;
       const updated = await prisma.executionRun.update({
         where: { id: params.runId },
         data: {
-          ...body,
+          ...bodyWithoutDeliverablesMet,
           endedAt: new Date(),
         },
       });
+      // Persist deliverablesMet via raw SQL to avoid Prisma client version mismatch
+      // (the Prisma client binary may be older than the schema; raw SQL bypasses client validation)
+      if (deliverablesMet && deliverablesMet.length > 0) {
+        await prisma.$executeRaw`
+          UPDATE execution_runs
+          SET deliverables_met = ${deliverablesMet}
+          WHERE id = ${params.runId}
+        `;
+      }
 
       if (body.status === 'completed') {
         await prisma.task.update({

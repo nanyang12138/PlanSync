@@ -56,6 +56,19 @@ export async function POST(req: NextRequest, { params }: Params) {
 
     const taskPack = await buildTaskPack(params.taskId, params.projectId);
 
+    if (taskPack && taskPack.driftAlerts.length > 0) {
+      return NextResponse.json(
+        {
+          error: {
+            code: 'DRIFT_UNRESOLVED',
+            message: `Task has ${taskPack.driftAlerts.length} unresolved drift alert(s). Resolve them before starting execution.`,
+            details: { drifts: taskPack.driftAlerts },
+          },
+        },
+        { status: 409 },
+      );
+    }
+
     const run = await prisma.executionRun.create({
       data: {
         taskId: params.taskId,

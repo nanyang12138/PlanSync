@@ -1,6 +1,18 @@
 import { McpConfig } from './config';
 import { logger } from './logger';
 
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string,
+    public readonly status: number,
+    public readonly details?: unknown,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 export class ApiClient {
   constructor(private config: McpConfig) {}
 
@@ -65,8 +77,10 @@ export class ApiClient {
 
     if (!res.ok) {
       const errMsg = json?.error?.message || `API error ${res.status}`;
+      const errCode = json?.error?.code || 'UNKNOWN';
+      const errDetails = json?.error?.details;
       logger.error({ method, path, status: res.status, error: json?.error }, 'API request failed');
-      throw new Error(errMsg);
+      throw new ApiError(errMsg, errCode, res.status, errDetails);
     }
 
     return json as T;

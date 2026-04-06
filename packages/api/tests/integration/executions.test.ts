@@ -5,6 +5,7 @@ import {
   GET as runsGet,
 } from '@/app/api/projects/[projectId]/tasks/[taskId]/runs/route';
 import { POST as runActionPost } from '@/app/api/projects/[projectId]/tasks/[taskId]/runs/[runId]/route';
+import { POST as driftPost } from '@/app/api/projects/[projectId]/drifts/[driftId]/route';
 import {
   makeReq,
   createTestProject,
@@ -254,5 +255,61 @@ describe('G: Execution Management', () => {
     expect(res.status).toBe(201);
     const body = await res.json();
     expect(body.data.taskPackSnapshot).not.toBeNull();
+  });
+
+  it('G11: drift → 409 DRIFT_UNRESOLVED → resolve → 201 (核心链路)', async () => {
+    // Reset task to a state where it can start execution
+    await testPrisma.task.update({ where: { id: taskId }, data: { status: 'in_progress' } });
+
+    // Inject an open drift alert directly to simulate plan version change
+    const drift = await testPrisma.driftAlert.create({
+      data: {
+        projectId,
+        taskId,
+        type: 'version_mismatch',
+        severity: 'high',
+        reason: 'Plan updated while task was running',
+        status: 'open',
+        currentPlanVersion: planVersion + 1,
+        taskBoundVersion: planVersion,
+      },
+    });
+
+    // Attempt execution start — must be blocked
+    const blockedRes = await runsPost(
+      makeReq(`/api/projects/${projectId}/tasks/${taskId}/runs`, {
+        method: 'POST',
+        userName: owner,
+        body: { executorType: 'human', executorName: owner },
+      }),
+      { params: { projectId, taskId } },
+    );
+    expect(blockedRes.status).toBe(409);
+    const blockedBody = await blockedRes.json();
+    expect(blockedBody.error.code).toBe('DRIFT_UNRESOLVED');
+    expect(blockedBody.error.details.drifts).toHaveLength(1);
+    expect(blockedBody.error.details.drifts[0].id).toBe(drift.id);
+
+    // Resolve the drift
+    const resolveRes = await driftPost(
+      makeReq(`/api/projects/${projectId}/drifts/${drift.id}`, {
+        method: 'POST',
+        userName: owner,
+        body: { action: 'no_impact' },
+      }),
+      { params: { projectId, driftId: drift.id } },
+    );
+    expect(resolveRes.status).toBe(200);
+
+    // Now execution start must succeed
+    const successRes = await runsPost(
+      makeReq(`/api/projects/${projectId}/tasks/${taskId}/runs`, {
+        method: 'POST',
+        userName: owner,
+        body: { executorType: 'human', executorName: owner },
+      }),
+      { params: { projectId, taskId } },
+    );
+    expect(successRes.status).toBe(201);
   });
 });
