@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { PageHeader } from '@/components/shared/page-header';
 import { SummaryStrip } from '@/components/shared/summary-strip';
+import { NewProjectButton } from '@/components/shared/new-project-button';
 
 async function getHomeProjects(currentUser: string) {
   return prisma.project.findMany({
@@ -55,6 +56,7 @@ export default async function HomePage() {
             </div>
           </div>
         }
+        actions={<NewProjectButton />}
       />
 
       <main className="page-container space-y-8">
@@ -88,9 +90,10 @@ export default async function HomePage() {
               <Zap className="h-7 w-7 text-slate-400" />
             </div>
             <p className="text-base font-semibold text-slate-700">No projects yet</p>
-            <p className="text-sm text-slate-500 mt-1.5">
-              Create one via the API or CLI to get started
+            <p className="text-sm text-slate-500 mt-1.5 mb-4">
+              Click <strong>New Project</strong> to create your first project
             </p>
+            <NewProjectButton />
           </div>
         ) : (
           <div className="space-y-8">

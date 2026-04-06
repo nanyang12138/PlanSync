@@ -44,4 +44,4 @@ coverage/
 .cline_storage/
 claude.local.md
 *.local.md
-.claude/settings.local.json
+.claude/

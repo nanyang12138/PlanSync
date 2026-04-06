@@ -4,6 +4,11 @@ import { logger } from './logger';
 export class ApiClient {
   constructor(private config: McpConfig) {}
 
+  /** Return a new ApiClient that sends a different X-User-Name header (for delegation). */
+  withUser(userName: string): ApiClient {
+    return new ApiClient({ ...this.config, userName });
+  }
+
   private get headers(): Record<string, string> {
     return {
       'Content-Type': 'application/json',

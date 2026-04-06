@@ -69,7 +69,12 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
       taskId: z.string(),
       title: z.string().optional(),
       description: z.string().optional(),
-      status: z.enum(['todo', 'in_progress', 'blocked', 'done', 'cancelled']).optional(),
+      status: z
+        .enum(['todo', 'in_progress', 'blocked', 'cancelled'])
+        .optional()
+        .describe(
+          '"done" cannot be set directly — use plansync_execution_complete instead (requires deliverablesMet and AI verification for agents)',
+        ),
       priority: z.enum(['p0', 'p1', 'p2']).optional(),
       assignee: z.string().nullable().optional().describe('Set assignee name, or null to unassign'),
       assigneeType: z.enum(['human', 'agent', 'unassigned']).optional(),
@@ -83,7 +88,7 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
 
   server.tool(
     'plansync_task_claim',
-    'Claim an unassigned task (set startImmediately=false to accept without starting)',
+    'Claim an unassigned task. After claiming, call plansync_task_pack to receive your task brief and plan context.',
     {
       projectId: z.string(),
       taskId: z.string(),
@@ -104,7 +109,7 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
 
   server.tool(
     'plansync_task_decline',
-    'Decline an assigned task (only the current assignee can decline)',
+    'Release a task you cannot complete. Task returns to unassigned and can be reassigned.',
     {
       projectId: z.string(),
       taskId: z.string(),
@@ -120,7 +125,7 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
 
   server.tool(
     'plansync_task_pack',
-    'Get full task context pack (plan + project + drift alerts) for execution',
+    'Must call before starting any task. Returns your task brief: goal, plan context (constraints, standards, deliverables), and any drift alerts that must be resolved first.',
     { projectId: z.string(), taskId: z.string() },
     async (args) => {
       const result = await api.get(`/api/projects/${args.projectId}/tasks/${args.taskId}/pack`);

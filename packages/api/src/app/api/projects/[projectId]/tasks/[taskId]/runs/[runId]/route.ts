@@ -7,6 +7,11 @@ import { completeExecutionRunSchema, AppError, ErrorCode } from '@plansync/share
 import { createActivity } from '@/lib/activity';
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
+import { aiClient } from '@/lib/ai/client';
+import {
+  COMPLETION_VERIFY_SYSTEM,
+  buildCompletionVerifyUser,
+} from '@/lib/ai/prompts/completion-verify.prompt';
 
 type Params = { params: { projectId: string; taskId: string; runId: string } };
 
@@ -42,6 +47,73 @@ export async function POST(req: NextRequest, { params }: Params) {
         throw new AppError(ErrorCode.STATE_CONFLICT, 'Can only complete running executions');
       }
       const body = await validateBody(req, completeExecutionRunSchema);
+
+      if (body.status === 'completed') {
+        // Layer 2: deliverablesMet required for all executors
+        if (!body.deliverablesMet || body.deliverablesMet.length === 0) {
+          throw new AppError(
+            ErrorCode.VALIDATION_ERROR,
+            'deliverablesMet is required when completing a task. List each plan deliverable and confirm it was met.',
+          );
+        }
+
+        // Layer 3: AI verification for agent executors only
+        if (run.executorType === 'agent') {
+          const task = run.task;
+          const plan = await prisma.plan.findFirst({
+            where: { projectId: params.projectId, version: task.boundPlanVersion },
+          });
+          const planDeliverables = plan?.deliverables ?? [];
+
+          if (!plan) {
+            console.warn(
+              `[completion-verify] Plan v${task.boundPlanVersion} not found for task ${params.taskId} — skipping AI verification`,
+            );
+          }
+
+          if (planDeliverables.length > 0) {
+            try {
+              const raw = await aiClient.complete(
+                COMPLETION_VERIFY_SYSTEM,
+                buildCompletionVerifyUser(
+                  body.deliverablesMet,
+                  task.title,
+                  planDeliverables,
+                  task.expectedOutput,
+                ),
+              );
+              if (raw) {
+                const result = JSON.parse(raw) as {
+                  verified: boolean;
+                  score: number;
+                  gaps: string[];
+                  feedback: string;
+                };
+                if (!result.verified || result.score < 75) {
+                  return NextResponse.json(
+                    {
+                      error: 'COMPLETION_VERIFICATION_FAILED',
+                      message: 'deliverablesMet does not cover all plan deliverables.',
+                      gaps: result.gaps,
+                      feedback: result.feedback,
+                      score: result.score,
+                    },
+                    { status: 422 },
+                  );
+                }
+              }
+              // raw === null: AI unavailable, allow through
+            } catch (err) {
+              // AI error: allow through, don't block on infra failure
+              console.warn(
+                `[completion-verify] AI verification failed for task ${params.taskId}, run ${params.runId} — allowing through:`,
+                err instanceof Error ? err.message : err,
+              );
+            }
+          }
+        }
+      }
+
       const updated = await prisma.executionRun.update({
         where: { id: params.runId },
         data: {

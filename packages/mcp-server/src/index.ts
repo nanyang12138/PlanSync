@@ -21,15 +21,19 @@ function pushNotification(
   message: string,
   data?: Record<string, unknown>,
 ): void {
-  try {
-    server.server.sendLoggingMessage({
-      level,
-      logger: 'plansync',
-      data: { message, ...data },
+  // sendLoggingMessage is async — use .catch() to handle rejected promises
+  // (synchronous try/catch cannot catch async throws)
+  Promise.resolve()
+    .then(() =>
+      server.server.sendLoggingMessage({
+        level,
+        logger: 'plansync',
+        data: { message, ...data },
+      }),
+    )
+    .catch((err: unknown) => {
+      logger.warn({ err }, 'Failed to send MCP logging message');
     });
-  } catch (err) {
-    logger.warn({ err }, 'Failed to send MCP logging message');
-  }
 }
 
 async function main() {
@@ -39,6 +43,7 @@ async function main() {
   const server = new McpServer({
     name: 'plansync',
     version: '0.1.0',
+    capabilities: { logging: {} },
   });
 
   registerProjectTools(server, api);
@@ -49,11 +54,11 @@ async function main() {
   registerTaskTools(server, api);
   registerExecutionTools(server, api);
   registerDriftTools(server, api);
-  registerStatusTools(server, api);
+  registerStatusTools(server, api, config);
 
   logger.info({ apiUrl: config.apiBaseUrl, user: config.userName }, 'PlanSync MCP Server starting');
 
-  const projectId = process.env.PLANSYNC_PROJECT_ID;
+  const projectId = process.env.PLANSYNC_PROJECT;
   if (projectId) {
     const listener = new EventListener(config, projectId, (eventType, data) => {
       switch (eventType) {

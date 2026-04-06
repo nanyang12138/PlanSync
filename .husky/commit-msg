@@ -1,1 +1,7 @@
+#\!/bin/sh
+# Use local Node runtime if available (system node may be too old for commitlint)
+LOCAL_NODE="$(git rev-parse --show-toplevel)/.local-runtime/node/bin"
+if [ -d "$LOCAL_NODE" ]; then
+  PATH="$LOCAL_NODE:$PATH"
+fi
 npx --no -- commitlint --edit "$1"

@@ -13,6 +13,8 @@ import {
   Trash2,
   ShieldCheck,
   AlertTriangle,
+  Sparkles,
+  Loader2,
 } from 'lucide-react';
 import { PlanDetail } from './plan-detail';
 
@@ -128,6 +130,10 @@ export function PlanWorkspaceClient({
   const [form, setForm] = useState<PlanFormState>(buildFormState(selectedPlan));
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [aiDraftDesc, setAiDraftDesc] = useState('');
+  const [aiDraftLoading, setAiDraftLoading] = useState(false);
+  const [aiDraftError, setAiDraftError] = useState('');
+  const [aiFieldLoading, setAiFieldLoading] = useState<keyof PlanFormState | null>(null);
 
   useEffect(() => {
     setMode(isOwner && selectedPlan?.status === 'draft' ? 'edit' : 'view');
@@ -320,6 +326,73 @@ export function PlanWorkspaceClient({
     setError(null);
   }
 
+  async function handleAiDraft() {
+    if (!form.title.trim()) return;
+    setAiDraftLoading(true);
+    setAiDraftError('');
+    try {
+      const res = await fetch(`/api/projects/${projectId}/plans/ai-draft`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: form.title.trim(),
+          description: aiDraftDesc.trim() || undefined,
+        }),
+        credentials: 'include',
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAiDraftError(data?.error || 'AI generation failed');
+        return;
+      }
+      const d = data.draft as Partial<Record<keyof PlanFormState, unknown>>;
+      setForm((prev) => ({
+        ...prev,
+        ...(typeof d.goal === 'string' ? { goal: d.goal } : {}),
+        ...(typeof d.scope === 'string' ? { scope: d.scope } : {}),
+        ...(Array.isArray(d.constraints)
+          ? { constraints: (d.constraints as string[]).join('\n') }
+          : {}),
+        ...(Array.isArray(d.standards) ? { standards: (d.standards as string[]).join('\n') } : {}),
+        ...(Array.isArray(d.deliverables)
+          ? { deliverables: (d.deliverables as string[]).join('\n') }
+          : {}),
+        ...(Array.isArray(d.openQuestions)
+          ? { openQuestions: (d.openQuestions as string[]).join('\n') }
+          : {}),
+      }));
+    } catch {
+      setAiDraftError('Network error');
+    } finally {
+      setAiDraftLoading(false);
+    }
+  }
+
+  async function handleAiField(field: keyof PlanFormState) {
+    setAiFieldLoading(field);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/plans/ai-field`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          field,
+          currentValue: form[field],
+          title: form.title,
+          goal: form.goal,
+        }),
+        credentials: 'include',
+      });
+      const data = await res.json();
+      if (res.ok && data.suggestion) {
+        setForm((prev) => ({ ...prev, [field]: data.suggestion }));
+      }
+    } catch {
+      // silently ignore field-level errors
+    } finally {
+      setAiFieldLoading(null);
+    }
+  }
+
   function renderField(
     label: string,
     key: keyof PlanFormState,
@@ -328,14 +401,40 @@ export function PlanWorkspaceClient({
       multiline = false,
       rows = 4,
       helper,
-    }: { placeholder?: string; multiline?: boolean; rows?: number; helper?: string } = {},
+      aiAssist = false,
+    }: {
+      placeholder?: string;
+      multiline?: boolean;
+      rows?: number;
+      helper?: string;
+      aiAssist?: boolean;
+    } = {},
   ) {
     const sharedClassName =
       'w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 shadow-sm transition-colors placeholder:text-slate-400 focus:outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-100';
+    const isLoadingThis = aiFieldLoading === key;
 
     return (
-      <label className="block">
-        <span className="mb-1.5 block text-sm font-medium text-slate-700">{label}</span>
+      <div className="block">
+        <div className="mb-1.5 flex items-center justify-between">
+          <span className="text-sm font-medium text-slate-700">{label}</span>
+          {aiAssist && (
+            <button
+              type="button"
+              onClick={() => handleAiField(key)}
+              disabled={isLoadingThis || !form.title.trim()}
+              className="flex items-center gap-1 rounded-lg px-2 py-0.5 text-xs font-medium text-violet-600 hover:bg-violet-50 disabled:opacity-40 transition-colors"
+              title="AI rewrite this field"
+            >
+              {isLoadingThis ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Sparkles className="h-3 w-3" />
+              )}
+              AI
+            </button>
+          )}
+        </div>
         {multiline ? (
           <textarea
             rows={rows}
@@ -354,7 +453,7 @@ export function PlanWorkspaceClient({
           />
         )}
         {helper && <span className="mt-1.5 block text-xs text-slate-500">{helper}</span>}
-      </label>
+      </div>
     );
   }
 
@@ -458,6 +557,42 @@ export function PlanWorkspaceClient({
             )}
           </div>
 
+          {/* AI Draft Section */}
+          <div className="mt-5 rounded-xl border border-violet-200 bg-violet-50/40 p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Sparkles className="h-4 w-4 text-violet-500" />
+              <span className="text-sm font-medium text-violet-800">PlanSync AI Assistant</span>
+            </div>
+            <p className="text-xs text-violet-600 mb-3">
+              Fill in the title, then use AI to generate a full draft in one click; or click the{' '}
+              <strong>AI</strong> button next to each field to rewrite individually.
+            </p>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                className="flex-1 rounded-lg border border-violet-200 bg-white px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
+                placeholder="One-line description of the plan's purpose (optional)"
+                value={aiDraftDesc}
+                onChange={(e) => setAiDraftDesc(e.target.value)}
+                disabled={aiDraftLoading}
+              />
+              <button
+                type="button"
+                onClick={handleAiDraft}
+                disabled={aiDraftLoading || !form.title.trim()}
+                className="flex items-center gap-1.5 rounded-lg bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50 transition-colors whitespace-nowrap"
+              >
+                {aiDraftLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Sparkles className="h-4 w-4" />
+                )}
+                {aiDraftLoading ? 'Generating...' : 'Generate Full Draft'}
+              </button>
+            </div>
+            {aiDraftError && <p className="mt-2 text-xs text-rose-600">{aiDraftError}</p>}
+          </div>
+
           <div className="mt-6 grid gap-5">
             {renderField('Title', 'title', {
               placeholder: 'Example: MVP Backend + MCP Integration (v3)',
@@ -466,31 +601,37 @@ export function PlanWorkspaceClient({
               placeholder: 'What is this version trying to achieve?',
               multiline: true,
               rows: 3,
+              aiAssist: true,
             })}
             {renderField('Scope', 'scope', {
               placeholder: 'Describe the scope and boundaries for this plan version.',
               multiline: true,
               rows: 4,
+              aiAssist: true,
             })}
             {renderField('Constraints', 'constraints', {
               multiline: true,
               rows: 5,
               helper: 'One item per line.',
+              aiAssist: true,
             })}
             {renderField('Standards', 'standards', {
               multiline: true,
               rows: 5,
               helper: 'One item per line.',
+              aiAssist: true,
             })}
             {renderField('Deliverables', 'deliverables', {
               multiline: true,
               rows: 5,
               helper: 'One item per line.',
+              aiAssist: true,
             })}
             {renderField('Open Questions', 'openQuestions', {
               multiline: true,
               rows: 4,
               helper: 'One item per line.',
+              aiAssist: true,
             })}
             {renderField('Change Summary', 'changeSummary', {
               multiline: true,

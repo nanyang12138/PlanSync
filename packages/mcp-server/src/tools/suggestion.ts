@@ -5,7 +5,7 @@ import { ApiClient } from '../api-client';
 export function registerSuggestionTools(server: McpServer, api: ApiClient) {
   server.tool(
     'plansync_plan_suggest',
-    'Suggest a modification to a plan. Any member can suggest changes to draft or proposed plans.',
+    'Formally propose a plan change. Use this instead of mentioning issues verbally — Owner receives a notification and decides. Any member can suggest.',
     {
       projectId: z.string(),
       planId: z.string(),

@@ -14,7 +14,7 @@ async function handleReviewAction(
   action: 'approved' | 'rejected',
 ) {
   const auth = await authenticate(req);
-  await requireProjectRole(auth, params.projectId);
+  const member = await requireProjectRole(auth, params.projectId);
   const body = await validateBody(req, reviewActionSchema);
 
   const review = await prisma.planReview.findFirst({
@@ -25,8 +25,21 @@ async function handleReviewAction(
     },
   });
   if (!review) throw new AppError(ErrorCode.NOT_FOUND, 'Review not found');
+
   if (review.reviewerName !== auth.userName) {
-    throw new AppError(ErrorCode.FORBIDDEN, 'Only the assigned reviewer can approve/reject');
+    // Owner may act on behalf of agent reviewers only — not human reviewers
+    if (member.projectRole !== 'owner') {
+      throw new AppError(ErrorCode.FORBIDDEN, 'Only the assigned reviewer can approve/reject');
+    }
+    const reviewerMember = await prisma.projectMember.findUnique({
+      where: { projectId_name: { projectId: params.projectId, name: review.reviewerName } },
+    });
+    if (!reviewerMember || reviewerMember.type !== 'agent') {
+      throw new AppError(
+        ErrorCode.FORBIDDEN,
+        'Owners can only act on behalf of agent reviewers, not human reviewers',
+      );
+    }
   }
   if (review.status !== 'pending') {
     throw new AppError(ErrorCode.STATE_CONFLICT, 'Review already resolved');
@@ -55,8 +68,8 @@ export async function POST(req: NextRequest, props: Params) {
     const url = new URL(req.url);
     const action = url.searchParams.get('action');
 
-    if (action === 'approve') return handleReviewAction(req, props, 'approved');
-    if (action === 'reject') return handleReviewAction(req, props, 'rejected');
+    if (action === 'approve') return await handleReviewAction(req, props, 'approved');
+    if (action === 'reject') return await handleReviewAction(req, props, 'rejected');
 
     throw new AppError(ErrorCode.BAD_REQUEST, 'Action must be "approve" or "reject"');
   } catch (error) {

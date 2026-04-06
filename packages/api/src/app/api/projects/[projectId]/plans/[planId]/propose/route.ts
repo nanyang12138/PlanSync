@@ -13,7 +13,8 @@ export async function POST(req: NextRequest, { params }: Params) {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId, 'owner');
 
-    let body: { reviewers?: string[] } = {};
+    type ReviewerSpec = string | { name: string; focusNotes?: string };
+    let body: { reviewers?: ReviewerSpec[] } = {};
     try {
       body = await req.json();
     } catch {
@@ -29,20 +30,28 @@ export async function POST(req: NextRequest, { params }: Params) {
       throw new AppError(ErrorCode.STATE_CONFLICT, 'Only draft plans can be proposed');
     }
 
-    const reviewers =
-      body.reviewers && body.reviewers.length > 0 ? body.reviewers : plan.requiredReviewers;
+    // Normalize reviewer specs to {name, focusNotes} objects
+    const reviewerSpecs: Array<{ name: string; focusNotes?: string }> =
+      body.reviewers && body.reviewers.length > 0
+        ? body.reviewers.map((r) =>
+            typeof r === 'string' ? { name: r } : { name: r.name, focusNotes: r.focusNotes },
+          )
+        : plan.requiredReviewers.map((r) => ({ name: r }));
+
+    const reviewerNames = reviewerSpecs.map((r) => r.name);
 
     const updated = await prisma.$transaction(async (tx) => {
       const p = await tx.plan.update({
         where: { id: params.planId },
-        data: { status: 'proposed', requiredReviewers: reviewers },
+        data: { status: 'proposed', requiredReviewers: reviewerNames },
       });
 
-      if (reviewers.length > 0) {
+      if (reviewerSpecs.length > 0) {
         await tx.planReview.createMany({
-          data: reviewers.map((reviewer: string) => ({
+          data: reviewerSpecs.map((r) => ({
             planId: plan.id,
-            reviewerName: reviewer,
+            reviewerName: r.name,
+            focusNotes: r.focusNotes,
             status: 'pending',
           })),
         });

@@ -21,29 +21,56 @@ interface ProviderConfig {
   parseResponse: (data: any) => string | null;
 }
 
+// AMD internal LLM uses the same Anthropic messages API format,
+// just with a different base URL and Ocp-Apim-Subscription-Key header.
+// LLM_API_BASE should point to the Anthropic-compatible endpoint,
+// e.g. https://llm-api.amd.com/Anthropic
+const AMD_BASE = (process.env.LLM_API_BASE || 'https://llm-api.amd.com/Anthropic').replace(
+  /\/$/,
+  '',
+);
+
 const AMD_PROVIDER: Omit<ProviderConfig, 'apiKey'> = {
   name: 'amd',
-  buildUrl: (model) =>
-    `${process.env.LLM_API_BASE || 'https://llm-api.amd.com'}/AnthropicVertex/deployments/${model}/chat/completions`,
+  buildUrl: () => `${AMD_BASE}/v1/messages`,
   buildHeaders: (apiKey) => ({
     'Content-Type': 'application/json',
+    'x-api-key': 'dummy',
+    'anthropic-version': '2023-06-01',
     'Ocp-Apim-Subscription-Key': apiKey,
   }),
   buildBody: (model, system, user) => ({
-    messages: [{ role: 'user', content: [{ type: 'text', text: `${system}\n\n${user}` }] }],
-    max_tokens: 8192,
-    temperature: 0.2,
+    model,
+    max_tokens: 4096,
+    system,
+    messages: [{ role: 'user', content: user }],
   }),
   parseResponse: (data) => data?.content?.[0]?.text || null,
 };
 
+function parseCustomHeaders(raw: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const line of (raw || '').split('\n')) {
+    const idx = line.indexOf(':');
+    if (idx > 0) result[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+  }
+  return result;
+}
+
+const ANTHROPIC_BASE = (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(
+  /\/$/,
+  '',
+);
+const ANTHROPIC_CUSTOM_HEADERS = parseCustomHeaders(process.env.ANTHROPIC_CUSTOM_HEADERS || '');
+
 const ANTHROPIC_PROVIDER: Omit<ProviderConfig, 'apiKey'> = {
   name: 'anthropic',
-  buildUrl: () => 'https://api.anthropic.com/v1/messages',
+  buildUrl: () => `${ANTHROPIC_BASE}/v1/messages`,
   buildHeaders: (apiKey) => ({
     'Content-Type': 'application/json',
     'x-api-key': apiKey,
     'anthropic-version': '2023-06-01',
+    ...ANTHROPIC_CUSTOM_HEADERS,
   }),
   buildBody: (model, system, user) => ({
     model,
@@ -70,7 +97,7 @@ class AiClient {
       logger.info({ provider: 'amd', model: this.model }, 'AI client using AMD internal LLM API');
     } else if (anthropicKey) {
       this.provider = { ...ANTHROPIC_PROVIDER, apiKey: anthropicKey };
-      this.model = 'claude-sonnet-4-20250514';
+      this.model = process.env.ANTHROPIC_DEFAULT_SONNET_MODEL || 'claude-sonnet-4-20250514';
       logger.info({ provider: 'anthropic' }, 'AI client using Anthropic API');
     } else {
       this.model = '';

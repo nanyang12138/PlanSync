@@ -1,6 +1,7 @@
 #!/bin/bash
-# PlanSync — Launch your AI coding tool with MCP integration
-# Injects MCP config + CLAUDE.md instructions, then starts Genie/Claude Code/Cursor
+# PlanSync — PlanSync Terminal with AI and /code coding mode
+# Default: launches PlanSync Terminal REPL (AI chat + /code for Genie/Claude)
+# --host genie|claude: launch AI coding tool directly with MCP (advanced/CI use)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -18,7 +19,7 @@ require_arg() {
 }
 
 # ─── Parse arguments ───
-HOST="genie"
+HOST="terminal"
 PLANSYNC_PROJ=""
 PLANSYNC_USER_ARG=""
 WORK_DIR="$(pwd)"
@@ -26,6 +27,7 @@ PASSTHROUGH_ARGS=()
 
 while [[ $# -gt 0 ]]; do
   case $1 in
+    --run)        HOST="run"; shift ;;
     --host)       require_arg "$1" "${2:-}"; HOST="$2"; shift 2 ;;
     --project)    require_arg "$1" "${2:-}"; PLANSYNC_PROJ="$2"; shift 2 ;;
     --user)       require_arg "$1" "${2:-}"; PLANSYNC_USER_ARG="$2"; shift 2 ;;
@@ -55,9 +57,9 @@ while [[ $# -gt 0 ]]; do
       ;;
     --help|-h)
       cat <<'USAGE'
-Usage: plansync [COMMAND] [OPTIONS] [-- HOST_ARGS...]
+Usage: plansync [COMMAND] [OPTIONS]
 
-  Launch your AI coding tool with PlanSync MCP integrated.
+  PlanSync Terminal — AI assistant with /code coding mode.
 
 Commands:
   install                      Install PlanSync into ~/.claude/settings.json for persistent
@@ -65,9 +67,16 @@ Commands:
                                cloning. Normal launch does NOT modify ~/.claude/.
 
 Options:
-  --host genie|claude|cursor   AI coding tool to use (default: genie)
-  --project PROJECT_ID         PlanSync project ID (optional, auto-detected)
-  --user USER_NAME             Identity to use for this session (overrides PLANSYNC_USER)
+  --run                        Run as an autonomous agent: process all pending work
+                               (reviews, tasks, drift alerts) for PLANSYNC_USER, then exit.
+                               Idempotent — safe to call from cron; exits 0 if no work.
+  --host terminal|genie|claude|cursor
+                               Interface to use (default: terminal)
+                               terminal: PlanSync Terminal REPL (recommended)
+                               genie/claude: launch AI tool directly with MCP (CI/advanced)
+                               cursor: configure Cursor MCP integration
+  --project PROJECT_ID         PlanSync project ID (optional)
+  --user USER_NAME             Identity for this session (overrides PLANSYNC_USER)
   --dir PATH                   Working directory (default: current dir)
   --help                       Show this help
 
@@ -83,16 +92,17 @@ AI (pick one):
   LLM_API_KEY        AMD internal LLM API subscription key
   LLM_API_BASE       AMD LLM API base URL (default: https://llm-api.amd.com)
   LLM_MODEL_NAME     Model name (default: Claude-Sonnet-4.5)
-  ANTHROPIC_API_KEY   Anthropic API key (external users)
+  ANTHROPIC_API_KEY  Anthropic API key (external users)
 
 Examples:
   plansync install                  # Install PlanSync MCP into ~/.claude/settings.json
-  plansync                          # Auto-prepare local client runtime, then launch Genie
-  plansync --user alice --host cursor
-  plansync --host claude            # Launch Claude Code with PlanSync
+  plansync                          # Launch PlanSync Terminal (default)
+  plansync --project clxyz123       # Specify project, then launch terminal
+  plansync --user alice             # Set identity for this session
+  plansync --host genie             # Launch Genie directly with PlanSync MCP (no terminal)
+  plansync --host claude            # Launch Claude Code with PlanSync MCP
   plansync --host cursor            # Configure Cursor (writes .cursor/mcp.json)
-  plansync --project clxyz123       # Specify project ID
-  plansync -- --resume              # Pass args to underlying tool
+  plansync --run --project <id>     # Run as agent: process all pending work, then exit
 USAGE
       exit 0
       ;;
@@ -248,6 +258,26 @@ inject_cursor_settings() {
 # ─── Host-specific launch ───
 case "$HOST" in
 
+  terminal)
+    echo "" >&2
+    echo "🚀 Starting PlanSync Terminal..." >&2
+    echo "   User: $PLANSYNC_USER | API: $PLANSYNC_API_URL" >&2
+    [[ -n "$PLANSYNC_PROJECT" ]] && echo "   Project: $PLANSYNC_PROJECT" >&2 || true
+    echo "" >&2
+
+    CLI_DIST="$PROJECT_DIR/packages/cli/dist/index.js"
+    if [ ! -f "$CLI_DIST" ]; then
+      echo "❌ PlanSync Terminal not built. Run:" >&2
+      echo "   cd $PROJECT_DIR/packages/cli && node ../../node_modules/.bin/esbuild src/index.ts --bundle --platform=node --target=node18 --outfile=dist/index.js --format=cjs" >&2
+      exit 1
+    fi
+
+    PLANSYNC_MCP_SERVER="$MCP_SERVER" \
+    PLANSYNC_NODE_BIN="$LOCAL_NODE_BIN" \
+    GENIE_BIN="$GENIE_BIN" \
+    exec "$LOCAL_NODE_BIN" "$CLI_DIST"
+    ;;
+
   genie|claude)
     inject_instructions "$WORK_DIR_ABS"
 
@@ -296,7 +326,65 @@ case "$HOST" in
     echo "   Try asking: 'show project status' or 'create a plan for auth system'" >&2
     ;;
 
+  run)
+    [[ -n "$PLANSYNC_PROJECT" ]] || die "--run requires --project <id> or PLANSYNC_PROJECT env var"
+
+    echo "" >&2
+    echo "🤖 PlanSync agent run — user: $PLANSYNC_USER | project: $PLANSYNC_PROJECT" >&2
+    echo "" >&2
+
+    inject_instructions "$WORK_DIR_ABS"
+
+    MCP_CONFIG_JSON="$("$LOCAL_NODE_BIN" -e '
+      const cfg = {
+        mcpServers: {
+          plansync: {
+            command: process.env._PS_NODE_BIN,
+            args: [process.env._PS_MCP_SERVER],
+            env: {
+              PLANSYNC_API_URL: process.env._PS_API_URL,
+              PLANSYNC_SECRET: process.env._PS_SECRET,
+              PLANSYNC_USER: process.env._PS_USER,
+              PLANSYNC_PROJECT: process.env._PS_PROJECT || "",
+              LOG_LEVEL: "warn",
+            },
+          },
+        },
+      };
+      process.stdout.write(JSON.stringify(cfg));
+    ')"
+
+    # Construct the agent prompt — explicit work queue + required tool sequence
+    RUN_PROMPT="You are PlanSync agent ${PLANSYNC_USER}. Your job is to process all pending work assigned to you.
+
+Step 1: Call plansync_my_work { projectId: \"${PLANSYNC_PROJECT}\" }
+
+If hasWork=false: output \"${PLANSYNC_USER}: no pending work.\" and exit immediately.
+
+If hasWork=true, process all work items in priority order:
+
+[P0 Drift Alerts] For each:
+  → plansync_task_pack { taskId } to inspect the drift
+  → plansync_drift_resolve { driftId, action: rebind|no_impact|cancel }
+
+[P1 Plan Reviews] For each, strictly in this order:
+  1. plansync_plan_show { planId } — read the full plan content
+  2. plansync_comment_create — write your review analysis (state what you support/oppose and why)
+  3. plansync_review_approve or plansync_review_reject
+
+[P2 Assigned Tasks] For each:
+  → plansync_task_pack { taskId } — check for drift (resolve if present)
+  → plansync_comment_create — describe your execution plan
+  → plansync_execution_start → do the work → plansync_execution_complete
+
+Rule: always call plansync_comment_create before approve/reject/complete — keeps work auditable.
+Output a summary when all work is done, then exit."
+
+    cd "$WORK_DIR_ABS"
+    exec "$GENIE_BIN" --mcp-config "$MCP_CONFIG_JSON" -p "$RUN_PROMPT"
+    ;;
+
   *)
-    die "Unknown host: $HOST (supported: genie, claude, cursor)"
+    die "Unknown host: $HOST (supported: terminal, genie, claude, cursor, --run)"
     ;;
 esac

@@ -41,12 +41,45 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
     }
     if (plan.status !== 'draft') {
-      throw new AppError(ErrorCode.STATE_CONFLICT, 'Only draft plans can be edited');
+      // Proposed plans: only requiredReviewers can be updated (adding reviewers mid-review is safe)
+      const bodyKeys = Object.keys(body);
+      if (
+        plan.status === 'proposed' &&
+        bodyKeys.length > 0 &&
+        bodyKeys.every((k) => k === 'requiredReviewers')
+      ) {
+        // allowed — fall through to update
+      } else {
+        throw new AppError(ErrorCode.STATE_CONFLICT, 'Only draft plans can be edited');
+      }
     }
 
-    const updated = await prisma.plan.update({
-      where: { id: params.planId },
-      data: body,
+    const updated = await prisma.$transaction(async (tx) => {
+      const p = await tx.plan.update({
+        where: { id: params.planId },
+        data: body,
+      });
+
+      // For proposed plans: create review records for newly added reviewers
+      if (plan.status === 'proposed' && body.requiredReviewers) {
+        const existing = await tx.planReview.findMany({
+          where: { planId: params.planId },
+          select: { reviewerName: true },
+        });
+        const existingNames = new Set(existing.map((r) => r.reviewerName));
+        const newReviewers = body.requiredReviewers.filter((r) => !existingNames.has(r));
+        if (newReviewers.length > 0) {
+          await tx.planReview.createMany({
+            data: newReviewers.map((reviewerName) => ({
+              planId: params.planId,
+              reviewerName,
+              status: 'pending',
+            })),
+          });
+        }
+      }
+
+      return p;
     });
 
     eventBus.publish(params.projectId, 'plan_draft_updated', {

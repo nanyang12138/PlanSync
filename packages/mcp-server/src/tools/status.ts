@@ -1,11 +1,18 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { ApiClient } from '../api-client';
+import { McpConfig } from '../config';
 
-export function registerStatusTools(server: McpServer, api: ApiClient) {
+let activeDelegationAgent: string | undefined;
+
+export function getDelegationAgent(): string | undefined {
+  return activeDelegationAgent;
+}
+
+export function registerStatusTools(server: McpServer, api: ApiClient, config: McpConfig) {
   server.tool(
     'plansync_status',
-    'Get comprehensive project status: active plan, task counts, open drifts',
+    'Get project alignment status: active plan version, task breakdown, drift alerts, recent activity. Call at session start.',
     { projectId: z.string() },
     async (args) => {
       const [project, drifts, activities] = await Promise.all([
@@ -27,7 +34,7 @@ export function registerStatusTools(server: McpServer, api: ApiClient) {
 
   server.tool(
     'plansync_who',
-    'List active executors: who is currently working on what',
+    'Show who is currently executing tasks and which plan version they are bound to.',
     { projectId: z.string() },
     async (args) => {
       const dashboard = await api.get<{ data: Record<string, unknown> }>(
@@ -83,7 +90,7 @@ export function registerStatusTools(server: McpServer, api: ApiClient) {
 
   server.tool(
     'plansync_drift_resolve',
-    'Resolve a drift alert (owner only)',
+    'Resolve a drift alert. Choose: rebind (accept new plan and continue) / no_impact (change does not affect this task) / cancel (release the task).',
     {
       projectId: z.string(),
       driftId: z.string(),
@@ -98,6 +105,117 @@ export function registerStatusTools(server: McpServer, api: ApiClient) {
         action: args.action,
       });
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'plansync_my_work',
+    'View all pending work assigned to you (or a named agent): plans awaiting review, assigned tasks, drift alerts. Call at session start. Returns items sorted by priority: drifts (P0) > reviews (P1) > tasks (P2). Use agentName to query work on behalf of an agent member.',
+    {
+      projectId: z.string(),
+      agentName: z
+        .string()
+        .optional()
+        .describe('Query work for this agent instead of the current user (agent delegation)'),
+    },
+    async (args) => {
+      const targetUser = args.agentName ?? config.userName;
+
+      // Enter/exit delegation mode based on whether agentName is provided
+      if (args.agentName) {
+        activeDelegationAgent = args.agentName;
+      } else {
+        activeDelegationAgent = undefined;
+      }
+
+      // P2: tasks assigned to targetUser with pending status
+      const tasksRes = await api.get<{ data: Array<Record<string, unknown>> }>(
+        `/api/projects/${args.projectId}/tasks?assignee=${encodeURIComponent(targetUser)}`,
+      );
+      const pendingTasks = (tasksRes.data || [])
+        .filter((t) => ['todo', 'in_progress', 'blocked'].includes(t.status as string))
+        .map((t) => ({ id: t.id, title: t.title, status: t.status, priority: t.priority }));
+
+      // P1: plans proposed for review by targetUser
+      const plansRes = await api.get<{ data: Array<Record<string, unknown>> }>(
+        `/api/projects/${args.projectId}/plans?pageSize=50`,
+      );
+      const proposedForMe = (plansRes.data || []).filter(
+        (p) =>
+          p.status === 'proposed' &&
+          (p.requiredReviewers as string[] | undefined)?.includes(targetUser),
+      );
+      const pendingReviews: Array<Record<string, unknown>> = [];
+      for (const plan of proposedForMe) {
+        const reviewsRes = await api.get<{ data: Array<Record<string, unknown>> }>(
+          `/api/projects/${args.projectId}/plans/${plan.id}/reviews`,
+        );
+        const myReview = (reviewsRes.data || []).find(
+          (r) => r.reviewerName === targetUser && r.status === 'pending',
+        );
+        if (myReview) {
+          pendingReviews.push({
+            planId: plan.id,
+            planTitle: plan.title,
+            version: plan.version,
+            proposedBy: plan.proposedBy,
+            reviewId: myReview.id,
+            focusNotes: myReview.focusNotes ?? null,
+          });
+        }
+      }
+
+      // P0: drift alerts on targetUser's tasks
+      const driftsRes = await api.get<{ data: Array<Record<string, unknown>> }>(
+        `/api/projects/${args.projectId}/drifts?status=open`,
+      );
+      const myTaskIds = new Set(pendingTasks.map((t) => t.id));
+      const driftAlerts = (driftsRes.data || [])
+        .filter((d) => myTaskIds.has(d.taskId as string))
+        .map((d) => ({
+          id: d.id,
+          taskId: d.taskId,
+          taskTitle: d.taskTitle,
+          severity: d.severity,
+          reason: d.reason,
+        }));
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                targetUser,
+                hasWork: pendingTasks.length + pendingReviews.length + driftAlerts.length > 0,
+                driftAlerts,
+                pendingReviews,
+                pendingTasks,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    'plansync_delegation_clear',
+    'Exit delegation mode (end "work as <agent>" session). Call this when finished processing an agent\'s work.',
+    {},
+    async () => {
+      const previous = activeDelegationAgent;
+      activeDelegationAgent = undefined;
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({ cleared: true, previousAgent: previous ?? null }),
+          },
+        ],
+      };
     },
   );
 }

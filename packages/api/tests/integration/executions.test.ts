@@ -22,7 +22,7 @@ describe('G: Execution Management', () => {
 
   beforeAll(async () => {
     ({ projectId } = await createTestProject(owner));
-    const { planId, version } = await createActivePlan(projectId, owner);
+    const { version } = await createActivePlan(projectId, owner);
     planVersion = version;
 
     const task = await testPrisma.task.create({
@@ -110,7 +110,11 @@ describe('G: Execution Management', () => {
       makeReq(`/api/projects/${projectId}/tasks/${taskId}/runs/${runId}?action=complete`, {
         method: 'POST',
         userName: owner,
-        body: { status: 'completed', outputSummary: 'done' },
+        body: {
+          status: 'completed',
+          outputSummary: 'done',
+          deliverablesMet: ['completed the required task work'],
+        },
       }),
       { params: { projectId, taskId, runId } },
     );
@@ -150,7 +154,11 @@ describe('G: Execution Management', () => {
       makeReq(`/api/projects/${projectId}/tasks/${taskId}/runs/${runId}?action=complete`, {
         method: 'POST',
         userName: owner,
-        body: { status: 'completed', outputSummary: 'all done' },
+        body: {
+          status: 'completed',
+          outputSummary: 'all done',
+          deliverablesMet: ['completed the required task work'],
+        },
       }),
       { params: { projectId, taskId, runId } },
     );

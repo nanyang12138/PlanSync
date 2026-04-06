@@ -1,7 +1,7 @@
 -- CreateTable
 CREATE TABLE "api_keys" (
     "id" TEXT NOT NULL,
-    "projectId" TEXT NOT NULL,
+    "projectId" TEXT,
     "name" TEXT NOT NULL,
     "keyHash" TEXT NOT NULL,
     "keyPrefix" TEXT NOT NULL,

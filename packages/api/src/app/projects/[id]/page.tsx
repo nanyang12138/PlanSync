@@ -16,12 +16,14 @@ import {
   FileText,
   LayoutDashboard,
   ListChecks,
+  Sparkles,
 } from 'lucide-react';
 import { RealtimeWrapper } from '@/components/realtime-wrapper';
 import { PageHeader } from '@/components/shared/page-header';
 import { SummaryStrip } from '@/components/shared/summary-strip';
 import { StatusBlock } from '@/components/shared/status-block';
 import { SectionShell } from '@/components/shared/section-shell';
+import { AiChatPanel } from '@/components/dashboard/ai-chat-panel';
 
 export default async function ProjectDashboard({ params }: { params: { id: string } }) {
   const project = await prisma.project.findUnique({
@@ -192,6 +194,10 @@ export default async function ProjectDashboard({ params }: { params: { id: strin
                   activePlanVersion={activePlan?.version}
                   driftTaskIds={driftAlerts.map((a) => a.taskId)}
                 />
+              </SectionShell>
+
+              <SectionShell title="PlanSync AI" icon={<Sparkles className="h-5 w-5" />}>
+                <AiChatPanel projectId={params.id} />
               </SectionShell>
 
               <SectionShell title="Recent Activity" icon={<Activity className="h-5 w-5" />}>

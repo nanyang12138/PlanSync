@@ -46,7 +46,7 @@ export const heartbeatManager = new HeartbeatManager();
 export function registerExecutionTools(server: McpServer, api: ApiClient) {
   server.tool(
     'plansync_execution_start',
-    'Start an execution run for a task. Automatically sends heartbeats every 30s to keep the run alive.',
+    'Register your execution. Binds your work to the current plan version so the team can see you are running. Auto-heartbeat every 30s.',
     {
       projectId: z.string(),
       taskId: z.string(),
@@ -83,7 +83,7 @@ export function registerExecutionTools(server: McpServer, api: ApiClient) {
 
   server.tool(
     'plansync_execution_complete',
-    'Complete an execution run with results. Stops the auto-heartbeat.',
+    'Complete or fail an execution run. When status=completed: (1) deliverablesMet is REQUIRED — list each plan deliverable you met (e.g. ["Implemented login API endpoint", "Added unit tests for auth module"]); (2) for agent executors, AI will verify your list against plan deliverables and return COMPLETION_VERIFICATION_FAILED with specific gaps if insufficient — improve your list and retry.',
     {
       projectId: z.string(),
       taskId: z.string(),
@@ -93,6 +93,12 @@ export function registerExecutionTools(server: McpServer, api: ApiClient) {
       filesChanged: z.array(z.string()).optional(),
       blockers: z.array(z.string()).optional(),
       driftSignals: z.array(z.string()).optional(),
+      deliverablesMet: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Required when status=completed. List each plan deliverable and confirm it was met. Will be AI-verified for agent executors.',
+        ),
     },
     async (args) => {
       const { projectId, taskId, runId, ...body } = args;

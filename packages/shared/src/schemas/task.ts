@@ -81,6 +81,7 @@ export const completeExecutionRunSchema = z.object({
   branchName: z.string().optional(),
   blockers: z.array(z.string()).default([]),
   driftSignals: z.array(z.string()).default([]),
+  deliverablesMet: z.array(z.string()).default([]),
 });
 
 export const executionRunSchema = z.object({
@@ -97,6 +98,7 @@ export const executionRunSchema = z.object({
   branchName: z.string().nullable(),
   blockers: z.array(z.string()),
   driftSignals: z.array(z.string()),
+  deliverablesMet: z.array(z.string()),
   startedAt: z.coerce.date(),
   endedAt: z.coerce.date().nullable(),
 });

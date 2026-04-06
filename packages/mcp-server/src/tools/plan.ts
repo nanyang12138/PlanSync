@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { ApiClient } from '../api-client';
 import { McpConfig } from '../config';
+import { getDelegationAgent } from './status';
 
 export function registerPlanTools(server: McpServer, api: ApiClient, config: McpConfig) {
   server.tool(
@@ -40,7 +41,7 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
 
   server.tool(
     'plansync_plan_create',
-    'Create a new plan draft',
+    'Create a new plan draft. OWNER ONLY. Do NOT call this when doing "work as <agent>" delegation — use plansync_plan_suggest instead.',
     {
       projectId: z.string(),
       title: z.string(),
@@ -51,17 +52,39 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
       deliverables: z.array(z.string()).optional(),
       openQuestions: z.array(z.string()).optional(),
       requiredReviewers: z.array(z.string()).optional(),
+      asAgent: z
+        .string()
+        .optional()
+        .describe(
+          "Delegation: act as this agent so the API enforces their role, not the session user's.",
+        ),
     },
     async (args) => {
-      const { projectId, ...body } = args;
-      const result = await api.post(`/api/projects/${projectId}/plans`, body);
+      const delegationAgent = getDelegationAgent();
+      if (delegationAgent) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                error: 'DELEGATION_BLOCKED',
+                message: `Delegation mode active (as: "${delegationAgent}") — this operation requires owner role and is blocked.`,
+                hint: 'Use plansync_plan_suggest to propose a change, or call plansync_delegation_clear and ask the owner to perform this action.',
+              }),
+            },
+          ],
+        };
+      }
+      const { projectId, asAgent, ...body } = args;
+      const effectiveApi = asAgent ? api.withUser(asAgent) : api;
+      const result = await effectiveApi.post(`/api/projects/${projectId}/plans`, body);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   );
 
   server.tool(
     'plansync_plan_update',
-    'Update a draft plan (owner only)',
+    'Update a draft plan. OWNER ONLY. Do NOT call this when doing "work as <agent>" delegation.',
     {
       projectId: z.string(),
       planId: z.string(),
@@ -72,30 +95,75 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
       standards: z.array(z.string()).optional(),
       deliverables: z.array(z.string()).optional(),
       openQuestions: z.array(z.string()).optional(),
+      requiredReviewers: z.array(z.string()).optional(),
       changeSummary: z.string().optional(),
       why: z.string().optional(),
+      asAgent: z
+        .string()
+        .optional()
+        .describe(
+          "Delegation: act as this agent so the API enforces their role, not the session user's.",
+        ),
     },
     async (args) => {
-      const { projectId, planId, ...body } = args;
-      const result = await api.patch(`/api/projects/${projectId}/plans/${planId}`, body);
+      const { projectId, planId, asAgent, ...body } = args;
+      const effectiveApi = asAgent ? api.withUser(asAgent) : api;
+      const result = await effectiveApi.patch(`/api/projects/${projectId}/plans/${planId}`, body);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   );
 
   server.tool(
     'plansync_plan_propose',
-    'Submit a draft plan for review (owner only). Optionally specify reviewers if not set at plan creation.',
+    'Submit a draft plan for review. OWNER ONLY. Do NOT call this when doing "work as <agent>" delegation.',
     {
       projectId: z.string(),
       planId: z.string().describe('Plan ID of the draft to propose'),
       reviewers: z
-        .array(z.string())
+        .array(
+          z.union([
+            z.string(),
+            z.object({
+              name: z.string(),
+              focusNotes: z
+                .string()
+                .optional()
+                .describe(
+                  'What this reviewer should focus on (e.g. "backend feasibility", "security constraints")',
+                ),
+            }),
+          ]),
+        )
         .optional()
-        .describe('Reviewer usernames; used when plan has no requiredReviewers'),
+        .describe(
+          'Reviewer names or {name, focusNotes} objects. Use focusNotes to tell each reviewer what aspect to focus on.',
+        ),
+      asAgent: z
+        .string()
+        .optional()
+        .describe(
+          "Delegation: act as this agent so the API enforces their role, not the session user's.",
+        ),
     },
     async (args) => {
-      const { projectId, planId, reviewers } = args;
-      const result = await api.post(`/api/projects/${projectId}/plans/${planId}/propose`, {
+      const delegationAgent = getDelegationAgent();
+      if (delegationAgent) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                error: 'DELEGATION_BLOCKED',
+                message: `Delegation mode active (as: "${delegationAgent}") — this operation requires owner role and is blocked.`,
+                hint: 'Use plansync_plan_suggest to propose a change, or call plansync_delegation_clear and ask the owner to perform this action.',
+              }),
+            },
+          ],
+        };
+      }
+      const { projectId, planId, reviewers, asAgent } = args;
+      const effectiveApi = asAgent ? api.withUser(asAgent) : api;
+      const result = await effectiveApi.post(`/api/projects/${projectId}/plans/${planId}/propose`, {
         reviewers,
       });
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
@@ -104,13 +172,35 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
 
   server.tool(
     'plansync_plan_activate',
-    'Activate a plan, superseding the current active plan and triggering drift scan (owner only). Use planId, not version number.',
+    'Activate a plan, superseding the current active plan and triggering drift scan. OWNER ONLY. Do NOT call this when doing "work as <agent>" delegation.',
     {
       projectId: z.string(),
       planId: z.string().describe('Plan ID (not version). Use plansync_plan_list to find it.'),
+      asAgent: z
+        .string()
+        .optional()
+        .describe(
+          "Delegation: act as this agent so the API enforces their role, not the session user's.",
+        ),
     },
     async (args) => {
-      const result = await api.post(
+      const delegationAgent = getDelegationAgent();
+      if (delegationAgent) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                error: 'DELEGATION_BLOCKED',
+                message: `Delegation mode active (as: "${delegationAgent}") — this operation requires owner role and is blocked.`,
+                hint: 'Use plansync_plan_suggest to propose a change, or call plansync_delegation_clear and ask the owner to perform this action.',
+              }),
+            },
+          ],
+        };
+      }
+      const effectiveApi = args.asAgent ? api.withUser(args.asAgent) : api;
+      const result = await effectiveApi.post(
         `/api/projects/${args.projectId}/plans/${args.planId}/activate`,
         {},
       );
@@ -120,13 +210,35 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
 
   server.tool(
     'plansync_plan_reactivate',
-    'Reactivate a superseded plan (rollback). Use planId, not version number.',
+    'Reactivate a superseded plan (rollback). OWNER ONLY. Do NOT call this when doing "work as <agent>" delegation.',
     {
       projectId: z.string(),
       planId: z.string().describe('Plan ID of the superseded plan to reactivate'),
+      asAgent: z
+        .string()
+        .optional()
+        .describe(
+          "Delegation: act as this agent so the API enforces their role, not the session user's.",
+        ),
     },
     async (args) => {
-      const result = await api.post(
+      const delegationAgent = getDelegationAgent();
+      if (delegationAgent) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                error: 'DELEGATION_BLOCKED',
+                message: `Delegation mode active (as: "${delegationAgent}") — this operation requires owner role and is blocked.`,
+                hint: 'Use plansync_plan_suggest to propose a change, or call plansync_delegation_clear and ask the owner to perform this action.',
+              }),
+            },
+          ],
+        };
+      }
+      const effectiveApi = args.asAgent ? api.withUser(args.asAgent) : api;
+      const result = await effectiveApi.post(
         `/api/projects/${args.projectId}/plans/${args.planId}/reactivate`,
         {},
       );
@@ -136,19 +248,26 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
 
   server.tool(
     'plansync_review_approve',
-    'Approve a plan review. Automatically finds your review by your username — no need to look up reviewId.',
+    'Approve a plan review. Automatically finds your review by your username — no need to look up reviewId. Use asUser to approve on behalf of an agent member (delegation).',
     {
       projectId: z.string(),
       planId: z.string(),
       comment: z.string().optional(),
+      asUser: z
+        .string()
+        .optional()
+        .describe(
+          'Approve on behalf of this user instead of the current session user (agent delegation)',
+        ),
     },
     async (args) => {
+      const targetUser = args.asUser ?? getDelegationAgent() ?? config.userName;
       const reviews = await api.get<{ data: Array<{ id: string; reviewerName: string }> }>(
         `/api/projects/${args.projectId}/plans/${args.planId}/reviews`,
       );
-      const myReview = reviews.data.find((r) => r.reviewerName === config.userName);
+      const myReview = reviews.data.find((r) => r.reviewerName === targetUser);
       if (!myReview) {
-        throw new Error(`No pending review found for user "${config.userName}" on this plan`);
+        throw new Error(`No pending review found for user "${targetUser}" on this plan`);
       }
       const result = await api.post(
         `/api/projects/${args.projectId}/plans/${args.planId}/reviews/${myReview.id}?action=approve`,
@@ -160,24 +279,45 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
 
   server.tool(
     'plansync_review_reject',
-    'Reject a plan review. Automatically finds your review by your username — no need to look up reviewId.',
+    'Reject a plan review. Automatically finds your review by your username — no need to look up reviewId. Use asUser to reject on behalf of an agent member (delegation).',
     {
       projectId: z.string(),
       planId: z.string(),
       comment: z.string().optional().describe('Required: reason for rejection'),
+      asUser: z
+        .string()
+        .optional()
+        .describe(
+          'Reject on behalf of this user instead of the current session user (agent delegation)',
+        ),
     },
     async (args) => {
+      const targetUser = args.asUser ?? getDelegationAgent() ?? config.userName;
       const reviews = await api.get<{ data: Array<{ id: string; reviewerName: string }> }>(
         `/api/projects/${args.projectId}/plans/${args.planId}/reviews`,
       );
-      const myReview = reviews.data.find((r) => r.reviewerName === config.userName);
+      const myReview = reviews.data.find((r) => r.reviewerName === targetUser);
       if (!myReview) {
-        throw new Error(`No pending review found for user "${config.userName}" on this plan`);
+        throw new Error(`No pending review found for user "${targetUser}" on this plan`);
       }
       const result = await api.post(
         `/api/projects/${args.projectId}/plans/${args.planId}/reviews/${myReview.id}?action=reject`,
         { comment: args.comment },
       );
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'plansync_plan_diff',
+    'Get AI-generated diff between this plan version and the previous one. Returns changes[], summary, and breakingChanges flag. ' +
+      'Call this when reviewing a proposed plan to understand what changed before deciding to approve or reject.',
+    {
+      projectId: z.string(),
+      planId: z.string().describe('Plan ID of the proposed plan to diff against its predecessor'),
+    },
+    async (args) => {
+      const result = await api.get(`/api/projects/${args.projectId}/plans/${args.planId}/diff`);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   );

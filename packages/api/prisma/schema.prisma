@@ -81,6 +81,7 @@ model PlanReview {
   reviewerName String   @map("reviewer_name")
   status       String   @default("pending") // pending | approved | rejected
   comment      String?
+  focusNotes   String?  @map("focus_notes") // owner-specified review focus for this reviewer
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
@@ -168,6 +169,7 @@ model ExecutionRun {
   branchName        String?   @map("branch_name")
   blockers          String[]
   driftSignals      String[]  @map("drift_signals")
+  deliverablesMet   String[]  @default([]) @map("deliverables_met")
   startedAt         DateTime  @default(now()) @map("started_at")
   endedAt           DateTime? @map("ended_at")
 
@@ -219,16 +221,16 @@ model Activity {
 }
 
 model ApiKey {
-  id          String   @id @default(cuid())
-  projectId   String
-  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  id          String    @id @default(cuid())
+  projectId   String?   // nullable: null for global web-session keys
+  project     Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   name        String
   keyHash     String
   keyPrefix   String
   permissions String[]
   createdBy   String
   lastUsedAt  DateTime?
-  createdAt   DateTime @default(now())
+  createdAt   DateTime  @default(now())
 
   @@map("api_keys")
 }

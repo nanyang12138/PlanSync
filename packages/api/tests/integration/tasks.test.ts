@@ -2,12 +2,13 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { POST as tasksPost, GET as tasksGet } from '@/app/api/projects/[projectId]/tasks/route';
 import {
-  GET as taskGet,
   PATCH as taskPatch,
   DELETE as taskDelete,
 } from '@/app/api/projects/[projectId]/tasks/[taskId]/route';
 import { POST as claimPost } from '@/app/api/projects/[projectId]/tasks/[taskId]/claim/route';
 import { POST as declinePost } from '@/app/api/projects/[projectId]/tasks/[taskId]/decline/route';
+import { POST as runsPost } from '@/app/api/projects/[projectId]/tasks/[taskId]/runs/route';
+import { POST as runActionPost } from '@/app/api/projects/[projectId]/tasks/[taskId]/runs/[runId]/route';
 import { POST as rebindPost } from '@/app/api/projects/[projectId]/tasks/[taskId]/rebind/route';
 import { GET as packGet } from '@/app/api/projects/[projectId]/tasks/[taskId]/pack/route';
 import {
@@ -449,7 +450,7 @@ describe('F: Task Management', () => {
     expect(task?.boundPlanVersion).toBe(activePlanVersion + 1);
   });
 
-  it('F10: todo→in_progress→done state transitions', async () => {
+  it('F10: todo→in_progress→done state transitions (via execution_complete)', async () => {
     const createRes = await tasksPost(
       makeReq(`/api/projects/${projectId}/tasks`, {
         method: 'POST',
@@ -460,27 +461,38 @@ describe('F: Task Management', () => {
     );
     const smId = (await createRes.json()).data.id;
 
-    const step1 = await taskPatch(
-      makeReq(`/api/projects/${projectId}/tasks/${smId}`, {
-        method: 'PATCH',
+    // Move to in_progress via execution start (creates run + sets status)
+    const runRes = await runsPost(
+      makeReq(`/api/projects/${projectId}/tasks/${smId}/runs`, {
+        method: 'POST',
         userName: owner,
-        body: { status: 'in_progress' },
+        body: { executorType: 'human', executorName: owner },
       }),
       { params: { projectId, taskId: smId } },
     );
-    expect(step1.status).toBe(200);
-    expect((await step1.json()).data.status).toBe('in_progress');
+    expect(runRes.status).toBe(201);
+    const runId = (await runRes.json()).data.id;
 
-    const step2 = await taskPatch(
-      makeReq(`/api/projects/${projectId}/tasks/${smId}`, {
-        method: 'PATCH',
+    const taskAfterRun = await testPrisma.task.findUnique({ where: { id: smId } });
+    expect(taskAfterRun?.status).toBe('in_progress');
+
+    // Complete via execution_complete → task auto-set to done
+    const completeRes = await runActionPost(
+      makeReq(`/api/projects/${projectId}/tasks/${smId}/runs/${runId}?action=complete`, {
+        method: 'POST',
         userName: owner,
-        body: { status: 'done' },
+        body: {
+          status: 'completed',
+          outputSummary: 'done',
+          deliverablesMet: ['completed the required task work'],
+        },
       }),
-      { params: { projectId, taskId: smId } },
+      { params: { projectId, taskId: smId, runId } },
     );
-    expect(step2.status).toBe(200);
-    expect((await step2.json()).data.status).toBe('done');
+    expect(completeRes.status).toBe(200);
+
+    const taskAfterComplete = await testPrisma.task.findUnique({ where: { id: smId } });
+    expect(taskAfterComplete?.status).toBe('done');
   });
 
   it('F11: todo→done (skip) → 409 STATE_CONFLICT', async () => {

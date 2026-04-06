@@ -55,6 +55,19 @@ export async function PATCH(req: NextRequest, { params }: Params) {
           `Invalid status transition: ${task.status} → ${body.status}`,
         );
       }
+
+      // Layer 1: direct status=done requires a completed ExecutionRun
+      if (body.status === 'done') {
+        const completedRun = await prisma.executionRun.findFirst({
+          where: { taskId: params.taskId, status: 'completed' },
+        });
+        if (!completedRun) {
+          throw new AppError(
+            ErrorCode.STATE_CONFLICT,
+            'Task cannot be marked done without a completed execution run. Use plansync_execution_complete.',
+          );
+        }
+      }
     }
 
     if (body.assignee !== undefined && body.assignee !== null && body.assignee !== task.assignee) {

@@ -87,16 +87,16 @@ describe('E2E: plansync', () => {
         expect(fs.existsSync(settingsPath)).toBe(true);
         const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
 
-        // The key in settings.projects is the absolute path resolved by the bash script
-        // (cd "$WORK_DIR" && pwd). Check for any project key that ends with tmpDir's basename.
+        // MCP config is written to top-level mcpServers (Claude Code 2.x reads from here)
+        expect(settings.mcpServers?.plansync).toBeDefined();
+        expect(settings.mcpServers.plansync.command).toContain('node');
+        expect(settings.mcpServers.plansync.args[0]).toContain('mcp-server');
+
+        // Per-project trust dialog acceptance is set in settings.projects[key]
         const baseName = path.basename(tmpDir);
         const projKey = Object.keys(settings.projects || {}).find((k) => k.endsWith(baseName));
         expect(projKey).toBeDefined();
-
-        const projSettings = settings.projects![projKey!];
-        expect(projSettings?.mcpServers?.plansync).toBeDefined();
-        expect(projSettings.mcpServers.plansync.command).toContain('node');
-        expect(projSettings.mcpServers.plansync.args[0]).toContain('mcp-server');
+        expect(settings.projects![projKey!]?.hasTrustDialogAccepted).toBe(true);
       } finally {
         // Always restore original settings.json
         if (backup) {

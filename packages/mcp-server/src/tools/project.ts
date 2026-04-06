@@ -81,4 +81,14 @@ export function registerProjectTools(server: McpServer, api: ApiClient) {
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   );
+
+  server.tool(
+    'plansync_project_delete',
+    'Permanently delete a project and all its data. OWNER ONLY. This is irreversible — confirm with the user before calling.',
+    { projectId: z.string().describe('Project ID to delete') },
+    async (args) => {
+      const result = await api.delete(`/api/projects/${args.projectId}`);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    },
+  );
 }
