@@ -55,6 +55,18 @@ export async function POST(req: NextRequest, { params }: Params) {
             status: 'pending',
           })),
         });
+
+        // Auto-add reviewers as project members if not already members.
+        // Reviewers must be members to pass requireProjectRole during review/approve.
+        await tx.projectMember.createMany({
+          data: reviewerNames.map((name) => ({
+            projectId: params.projectId,
+            name,
+            role: 'developer',
+            type: 'agent',
+          })),
+          skipDuplicates: true,
+        });
       }
 
       return p;

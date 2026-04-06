@@ -347,6 +347,52 @@ describe('C: Plan Lifecycle', () => {
     expect((await rejectRes.json()).data.status).toBe('rejected');
   });
 
+  it('C16: propose with non-member reviewer → auto-adds them as project member', async () => {
+    const newReviewer = 'auto-added-agent';
+    // Verify not yet a member
+    const before = await testPrisma.projectMember.findUnique({
+      where: { projectId_name: { projectId, name: newReviewer } },
+    });
+    expect(before).toBeNull();
+
+    const createRes = await plansPost(
+      makeReq(`/api/projects/${projectId}/plans`, {
+        method: 'POST',
+        userName: owner,
+        body: {
+          title: 'Auto-member Plan',
+          goal: 'g',
+          scope: 's',
+          constraints: [],
+          standards: [],
+          deliverables: [],
+          openQuestions: [],
+          requiredReviewers: [],
+        },
+      }),
+      { params: { projectId } },
+    );
+    const planId = (await createRes.json()).data.id;
+
+    const propRes = await proposePost(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/propose`, {
+        method: 'POST',
+        userName: owner,
+        body: { reviewers: [newReviewer] },
+      }),
+      { params: { projectId, planId } },
+    );
+    expect(propRes.status).toBe(200);
+
+    // Reviewer must now be a project member
+    const after = await testPrisma.projectMember.findUnique({
+      where: { projectId_name: { projectId, name: newReviewer } },
+    });
+    expect(after).not.toBeNull();
+    expect(after?.role).toBe('developer');
+    expect(after?.type).toBe('agent');
+  });
+
   it('C12: 连续创建 3 个 plan → version 递增', async () => {
     const versions: number[] = [];
     for (let i = 0; i < 3; i++) {
