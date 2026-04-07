@@ -74,7 +74,9 @@ export default function LoginPage() {
                 required
                 className="input-field w-full"
               />
-              <p className="text-xs text-slate-400 mt-1.5">First login: use the bootstrap secret</p>
+              <p className="text-xs text-slate-400 mt-1.5">
+                First login: choose any password to create your account
+              </p>
             </div>
 
             {error && (

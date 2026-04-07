@@ -46,12 +46,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Invalid username or password' }, { status: 401 });
       }
     } else {
-      // First login (bootstrap): verify against PLANSYNC_SECRET
-      const secret = process.env.PLANSYNC_SECRET;
-      if (!secret || password !== secret) {
-        return NextResponse.json({ error: 'Invalid username or password' }, { status: 401 });
-      }
-      // Create account with this password as initial password
+      // First login: open registration — create account with the chosen password
       const passwordHash = await hashPassword(password);
       await prisma.userAccount.create({ data: { userName: name, passwordHash } });
     }
