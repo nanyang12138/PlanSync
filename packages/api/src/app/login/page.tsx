@@ -65,9 +65,7 @@ export default function LoginPage() {
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1.5">
-                Linux Password
-              </label>
+              <label className="block text-xs font-medium text-slate-600 mb-1.5">Password</label>
               <input
                 type="password"
                 value={password}
@@ -76,7 +74,7 @@ export default function LoginPage() {
                 required
                 className="input-field w-full"
               />
-              <p className="text-xs text-slate-400 mt-1.5">Use your Linux system password</p>
+              <p className="text-xs text-slate-400 mt-1.5">First login: use the bootstrap secret</p>
             </div>
 
             {error && (

@@ -33,13 +33,6 @@ if [ -f "$PROJECT_DIR/.env" ]; then
   set +a
 fi
 
-# Compile PAM auth helper if not already built
-PAM_AUTH="$PROJECT_DIR/packages/api/pam_auth"
-if [ ! -f "$PAM_AUTH" ]; then
-  echo "Compiling PAM auth helper..."
-  gcc "$PROJECT_DIR/packages/api/pam_auth.c" -lpam -o "$PAM_AUTH"
-fi
-
 # Ensure migrations are up to date
 if [ ! -f "$PROJECT_DIR/node_modules/prisma/build/index.js" ]; then
   echo "Prisma CLI not found in local dependencies"

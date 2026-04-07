@@ -278,3 +278,13 @@ model PlanDiff {
   @@unique([fromPlanId, toPlanId])
   @@map("plan_diffs")
 }
+
+model UserAccount {
+  id           String   @id @default(cuid())
+  userName     String   @unique @map("user_name")
+  passwordHash String   @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("user_accounts")
+}

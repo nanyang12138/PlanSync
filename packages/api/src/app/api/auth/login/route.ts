@@ -1,16 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
-import { spawnSync } from 'child_process';
-import path from 'path';
 import { prisma } from '@/lib/prisma';
 
-function verifyLinuxPassword(userName: string, password: string): boolean {
-  const pamAuth = path.join(process.cwd(), 'pam_auth');
-  const result = spawnSync(pamAuth, [userName], {
-    input: password,
-    timeout: 5000,
+async function hashPassword(password: string): Promise<string> {
+  const salt = crypto.randomBytes(16);
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(password, salt, 64, (err, dk) => {
+      if (err) reject(err);
+      else resolve(`${salt.toString('hex')}:${dk.toString('hex')}`);
+    });
   });
-  return result.status === 0;
+}
+
+async function verifyPassword(password: string, stored: string): Promise<boolean> {
+  const [saltHex, hashHex] = stored.split(':');
+  if (!saltHex || !hashHex) return false;
+  const salt = Buffer.from(saltHex, 'hex');
+  const expected = Buffer.from(hashHex, 'hex');
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(password, salt, 64, (err, dk) => {
+      if (err) reject(err);
+      else resolve(crypto.timingSafeEqual(dk, expected));
+    });
+  });
 }
 
 export async function POST(req: NextRequest) {
@@ -24,8 +36,24 @@ export async function POST(req: NextRequest) {
 
     const name = userName.trim();
 
-    if (!verifyLinuxPassword(name, password)) {
-      return NextResponse.json({ error: 'Invalid username or password' }, { status: 401 });
+    // Look up user account
+    const account = await prisma.userAccount.findUnique({ where: { userName: name } });
+
+    if (account) {
+      // Existing account: verify password
+      const ok = await verifyPassword(password, account.passwordHash);
+      if (!ok) {
+        return NextResponse.json({ error: 'Invalid username or password' }, { status: 401 });
+      }
+    } else {
+      // First login (bootstrap): verify against PLANSYNC_SECRET
+      const secret = process.env.PLANSYNC_SECRET;
+      if (!secret || password !== secret) {
+        return NextResponse.json({ error: 'Invalid username or password' }, { status: 401 });
+      }
+      // Create account with this password as initial password
+      const passwordHash = await hashPassword(password);
+      await prisma.userAccount.create({ data: { userName: name, passwordHash } });
     }
 
     // Replace existing web-session key for this user (one active session at a time)
@@ -55,7 +83,8 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    const response = NextResponse.json({ success: true, userName: name });
+    const isFirstLogin = !account;
+    const response = NextResponse.json({ success: true, userName: name, isFirstLogin });
 
     // httpOnly: JS cannot read or tamper with this cookie
     response.cookies.set('plansync-apikey', rawKey, {
