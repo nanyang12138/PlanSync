@@ -34,6 +34,7 @@ case "$command" in
     echo "Preparing owner environment and starting the API..."
     if is_plansync_api_reachable "$api_url"; then
       echo "==> PlanSync API is already running at $api_url"
+      mkdir -p "$PROJECT_DIR/data" && hostname > "$PROJECT_DIR/data/server_host"
       exit 0
     fi
     if port_in_use "${PORT:-3001}"; then
@@ -45,6 +46,7 @@ case "$command" in
     if [ "${OWNER_RUNTIME_FRESH_DB:-0}" -ne 0 ]; then
       seed_demo_if_requested
     fi
+    mkdir -p "$PROJECT_DIR/data" && hostname > "$PROJECT_DIR/data/server_host"
     echo "==> Starting PlanSync API"
     exec env PORT="${PORT:-3001}" bash "$PROJECT_DIR/scripts/dev.sh" "$@"
     ;;

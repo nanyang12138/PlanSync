@@ -104,6 +104,39 @@ The `bin/plansync` launcher reads `.env` automatically — no need to pass envir
 > Mark TASK-42 as done
 ```
 
+### Shared server setup (NFS / cluster environment)
+
+If the Owner's machine is on a **shared filesystem** (e.g. `/proj/` on a cluster),
+members can connect without cloning the repo or editing any config file.
+
+**Owner** — run once on the server:
+
+```bash
+./bin/ps-admin start   # starts the API and records the server hostname in data/server_host
+```
+
+**Member** — from any machine with SSH access to the server:
+
+```bash
+/path/to/PlanSync/bin/ps-connect              # interactive terminal
+/path/to/PlanSync/bin/ps-connect --host cursor  # connect Cursor
+/path/to/PlanSync/bin/ps-connect --host claude  # connect Claude Code
+```
+
+`ps-connect` automatically:
+
+- Reads `data/server_host` to find where the API is running
+- SSHes into the server if you are on a different machine
+- Sets `PLANSYNC_USER` to your system `$USER` — no manual config needed
+
+> Add to your shell profile for convenience:
+>
+> ```bash
+> alias ps-connect='/proj/.../PlanSync/bin/ps-connect'
+> ```
+
+---
+
 ### Task lifecycle
 
 | Action               | Description                                                   |
@@ -142,6 +175,7 @@ The `bin/plansync` launcher reads `.env` automatically — no need to pass envir
 | Command                        | Description                                                 |
 | ------------------------------ | ----------------------------------------------------------- |
 | `./bin/ps-admin start`         | Auto-prepare server dependencies and start the PlanSync API |
+| `./bin/ps-connect`             | Connect to the shared PlanSync server (SSH if needed)       |
 | `./bin/plansync --host cursor` | Auto-prepare client dependencies and connect Cursor         |
 | `bash scripts/build.sh`        | Build all workspace packages using the local runtime        |
 | `bash scripts/npm.sh test`     | Run tests through the project-local npm                     |

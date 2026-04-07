@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# ps-connect — connect to the running PlanSync service on the central server
+#
+# Usage: ps-connect [plansync args...]
+#   ps-connect                        interactive terminal mode
+#   ps-connect --host cursor          connect Cursor IDE
+#   ps-connect --host claude          connect Claude Code
+#   ps-connect --project <id>         set active project
+#
+# No config needed. Requires SSH access to the server.
+# /proj/ is a shared filesystem — run this directly without cloning the repo.
+#
+# How it works:
+#   1. Reads data/server_host (written by "ps-admin start") to find the server
+#   2. If already on the server: runs bin/plansync directly
+#   3. If on a remote machine: SSHes into the server, then runs bin/plansync
+#   4. Sets PLANSYNC_USER to your system $USER automatically
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+SERVER_FILE="$PROJECT_DIR/data/server_host"
+
+if [ ! -f "$SERVER_FILE" ]; then
+  echo "✗ PlanSync server not configured."
+  echo "  Ask the owner to run: ps-admin start"
+  exit 1
+fi
+
+SERVER=$(tr -d '[:space:]' < "$SERVER_FILE")
+
+# Already on the server — run plansync directly
+if [ "$(hostname)" = "$SERVER" ]; then
+  export PLANSYNC_USER="${PLANSYNC_USER:-$USER}"
+  exec "$SCRIPT_DIR/plansync" "$@"
+fi
+
+# Remote machine — SSH into the server and run plansync there
+echo ""
+echo "  PlanSync Connect"
+echo "  ================"
+echo "  Server : $SERVER"
+echo "  User   : ${PLANSYNC_USER:-$USER}"
+echo ""
+
+# Build the remote command, preserving arguments with proper quoting
+REMOTE_CMD="PLANSYNC_USER=$(printf '%q' "${PLANSYNC_USER:-$USER}")"
+if [ -n "${PLANSYNC_PROJECT:-}" ]; then
+  REMOTE_CMD="$REMOTE_CMD PLANSYNC_PROJECT=$(printf '%q' "$PLANSYNC_PROJECT")"
+fi
+REMOTE_CMD="$REMOTE_CMD $(printf '%q ' "$SCRIPT_DIR/plansync" "$@")"
+
+exec ssh -t "$SERVER" "$REMOTE_CMD"

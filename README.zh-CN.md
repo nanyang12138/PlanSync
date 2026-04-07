@@ -105,6 +105,38 @@ PLANSYNC_SECRET=your-team-secret           # 认证密钥（向 Owner 获取）
 > 把 TASK-42 标记为完成
 ```
 
+### 共享服务器（NFS / 集群环境）
+
+如果 Owner 的机器在**共享文件系统**上（例如集群的 `/proj/`），成员无需克隆仓库或修改任何配置即可连接。
+
+**Owner** — 在服务器上运行一次：
+
+```bash
+./bin/ps-admin start   # 启动 API 并将服务器主机名写入 data/server_host
+```
+
+**成员** — 从任何有 SSH 访问权限的机器：
+
+```bash
+/path/to/PlanSync/bin/ps-connect              # 交互式终端
+/path/to/PlanSync/bin/ps-connect --host cursor  # 连接 Cursor
+/path/to/PlanSync/bin/ps-connect --host claude  # 连接 Claude Code
+```
+
+`ps-connect` 自动：
+
+- 读取 `data/server_host` 找到 API 所在的服务器
+- 如果你在不同机器上，SSH 进入服务器
+- 自动将 `PLANSYNC_USER` 设置为你的系统 `$USER`——无需手动配置
+
+> 为方便使用，添加到 shell 配置文件：
+>
+> ```bash
+> alias ps-connect='/proj/.../PlanSync/bin/ps-connect'
+> ```
+
+---
+
 ### 任务生命周期
 
 | 动作            | 说明                                            |
@@ -140,16 +172,17 @@ PLANSYNC_SECRET=your-team-secret           # 认证密钥（向 Owner 获取）
 
 ## 常用命令
 
-| 命令                           | 说明                                  |
-| ------------------------------ | ------------------------------------- |
-| `./bin/ps-admin start`         | 自动补齐服务端依赖并启动 PlanSync API |
-| `./bin/plansync --host cursor` | 自动补齐客户端依赖并接入 Cursor       |
-| `bash scripts/build.sh`        | 用仓库本地运行时构建所有 workspace 包 |
-| `bash scripts/npm.sh test`     | 通过仓库本地 npm 运行测试             |
-| `bash scripts/lint.sh`         | 通过仓库本地运行时执行 eslint         |
-| `bash scripts/format.sh`       | 通过仓库本地运行时执行 prettier       |
-| `bash scripts/db-reset.sh`     | 清空数据库重新开始                    |
-| `bash scripts/db-psql.sh`      | 进入 PostgreSQL 命令行                |
+| 命令                           | 说明                                         |
+| ------------------------------ | -------------------------------------------- |
+| `./bin/ps-admin start`         | 自动补齐服务端依赖并启动 PlanSync API        |
+| `./bin/ps-connect`             | 连接到共享 PlanSync 服务器（必要时通过 SSH） |
+| `./bin/plansync --host cursor` | 自动补齐客户端依赖并接入 Cursor              |
+| `bash scripts/build.sh`        | 用仓库本地运行时构建所有 workspace 包        |
+| `bash scripts/npm.sh test`     | 通过仓库本地 npm 运行测试                    |
+| `bash scripts/lint.sh`         | 通过仓库本地运行时执行 eslint                |
+| `bash scripts/format.sh`       | 通过仓库本地运行时执行 prettier              |
+| `bash scripts/db-reset.sh`     | 清空数据库重新开始                           |
+| `bash scripts/db-psql.sh`      | 进入 PostgreSQL 命令行                       |
 
 高级 / 手动入口：
 
@@ -178,6 +211,7 @@ PlanSync/
 │   ├── shared/       # 共享类型与 Zod 校验
 │   └── cli/          # CLI 工具
 ├── bin/plansync      # 一键启动脚本（自动注入 MCP 配置）
+├── bin/ps-connect    # 共享服务器连接工具（SSH 透明代理）
 ├── claude-md/        # AI Agent 行为指令
 └── scripts/          # 数据库与运维脚本
 ```

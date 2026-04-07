@@ -1,3 +1,6 @@
+# Runtime-generated server location (written by ps-admin start)
+data/server_host
+
 # Dependencies
 node_modules/
 .npm/
