@@ -6,7 +6,7 @@ export interface McpConfig {
 
 export function loadConfig(): McpConfig {
   const apiBaseUrl = process.env.PLANSYNC_API_URL || 'http://localhost:3001';
-  const apiToken = process.env.PLANSYNC_SECRET || 'dev-secret';
+  const apiToken = process.env.PLANSYNC_API_KEY || '';
   const userName = process.env.PLANSYNC_USER || process.env.USER || 'unknown';
 
   return { apiBaseUrl, apiToken, userName };

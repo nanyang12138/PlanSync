@@ -9,13 +9,14 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 usage() {
   cat <<'EOF'
-Usage: ps-admin [start|setup|reset|help]
+Usage: ps-admin [start|setup|reset|gen-key|help]
 
 Commands:
-  start   Prepare server dependencies if needed, then start PlanSync API
-  setup   Run the full explicit owner bootstrap flow
-  reset   Reset the local PostgreSQL data and rerun setup
-  help    Show this help
+  start     Prepare server dependencies if needed, then start PlanSync API
+  setup     Run the full explicit owner bootstrap flow
+  reset     Reset the local PostgreSQL data and rerun setup
+  gen-key   Log in and print an API key (PLANSYNC_API_KEY) for MCP/CLI use
+  help      Show this help
 EOF
 }
 
@@ -57,6 +58,42 @@ case "$command" in
   reset)
     print_header
     exec bash "$PROJECT_DIR/scripts/db-reset.sh" "$@"
+    ;;
+  gen-key)
+    # Log in and print the resulting API key for use as PLANSYNC_API_KEY.
+    # Usage: ps-admin gen-key [username]
+    require_local_node_runtime
+    api_url="${PLANSYNC_API_URL:-$(plansync_api_url "${PORT:-3001}")}"
+    _GK_USER="${1:-${PLANSYNC_USER:-${USER}}}"
+    if [ -t 0 ]; then
+      read -r -p "Password for $_GK_USER: " -s _GK_PASS
+      echo
+    else
+      read -r _GK_PASS
+    fi
+    # Pass credentials via env vars (avoids shell injection in the node script)
+    _GK_KEY=$(env _GK_API_URL="$api_url" _GK_USER="$_GK_USER" _GK_PASS="$_GK_PASS" "$LOCAL_NODE_BIN" -e '
+const proto = new URL(process.env._GK_API_URL).protocol === "https:" ? "https" : "http";
+const lib = require(proto);
+const url = new URL(process.env._GK_API_URL + "/api/auth/login");
+const body = JSON.stringify({ userName: process.env._GK_USER, password: process.env._GK_PASS });
+const req = lib.request({ hostname: url.hostname, port: url.port, path: url.pathname, method: "POST",
+  headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) } }, res => {
+  let d = ""; res.on("data", c => d += c);
+  res.on("end", () => {
+    try { const j = JSON.parse(d); if (j.key) { process.stdout.write(j.key); } else { process.stderr.write(j.error || d); process.exit(1); } }
+    catch { process.stderr.write(d); process.exit(1); }
+  });
+});
+req.on("error", e => { process.stderr.write(e.message); process.exit(1); });
+req.write(body); req.end();
+' 2>&1) || { echo "Login failed: $_GK_KEY" >&2; exit 1; }
+    echo ""
+    echo "API Key: $_GK_KEY"
+    echo ""
+    echo "Add to your shell config:"
+    echo "  export PLANSYNC_API_KEY=$_GK_KEY    # bash/zsh"
+    echo "  setenv PLANSYNC_API_KEY $_GK_KEY    # tcsh"
     ;;
   help|-h|--help)
     usage

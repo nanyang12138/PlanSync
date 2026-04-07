@@ -39,12 +39,11 @@ while [[ $# -gt 0 ]]; do
       ensure_user_runtime_ready
       _load_env "$PROJECT_DIR/.env"
       export PLANSYNC_API_URL="${PLANSYNC_API_URL:-$(plansync_api_url 3001)}"
-      export PLANSYNC_SECRET="${PLANSYNC_SECRET:-dev-secret}"
       export PLANSYNC_USER="${PLANSYNC_USER:-${USER}}"
       export _PS_MCP_SERVER="$PROJECT_DIR/packages/mcp-server/dist/index.js"
       export _PS_NODE_BIN="$LOCAL_NODE_BIN"
       export _PS_API_URL="$PLANSYNC_API_URL"
-      export _PS_SECRET="$PLANSYNC_SECRET"
+      export _PS_API_KEY="${PLANSYNC_API_KEY:-}"
       export _PS_USER="$PLANSYNC_USER"
       export _PS_PROJECT=""
       export _PS_WORK_DIR="$(pwd)"
@@ -82,7 +81,7 @@ Options:
 
 Environment:
   PLANSYNC_API_URL   API server URL (default: http://localhost:3001)
-  PLANSYNC_SECRET    API auth token (default: dev-secret)
+  PLANSYNC_API_KEY   API key (ps_key_...) — run: ps-admin gen-key
   PLANSYNC_USER      Your username (default: $USER)
   PG_BIN             PostgreSQL binary directory (default: /tool/pandora64/bin)
   GENIE_BIN          Path to Genie binary (default: /proj/verif_release_ro/...)
@@ -128,7 +127,7 @@ _load_env "$PROJECT_DIR/.env"
 
 # ─── Config (env > .env > defaults) ───
 export PLANSYNC_API_URL="${PLANSYNC_API_URL:-$(plansync_api_url 3001)}"
-export PLANSYNC_SECRET="${PLANSYNC_SECRET:-dev-secret}"
+export PLANSYNC_API_KEY="${PLANSYNC_API_KEY:-}"
 export PLANSYNC_USER="${PLANSYNC_USER_ARG:-${PLANSYNC_USER:-${USER}}}"
 export PLANSYNC_PROJECT="${PLANSYNC_PROJ}"
 
@@ -181,7 +180,7 @@ inject_instructions() {
 export _PS_MCP_SERVER="$MCP_SERVER"
 export _PS_NODE_BIN="$LOCAL_NODE_BIN"
 export _PS_API_URL="$PLANSYNC_API_URL"
-export _PS_SECRET="$PLANSYNC_SECRET"
+export _PS_API_KEY="$PLANSYNC_API_KEY"
 export _PS_USER="$PLANSYNC_USER"
 export _PS_PROJECT="$PLANSYNC_PROJ"
 export _PS_WORK_DIR="$WORK_DIR_ABS"
@@ -196,7 +195,7 @@ inject_claude_settings() {
       args: [process.env._PS_MCP_SERVER],
       env: {
         PLANSYNC_API_URL: process.env._PS_API_URL,
-        PLANSYNC_SECRET: process.env._PS_SECRET,
+        PLANSYNC_API_KEY: process.env._PS_API_KEY,
         PLANSYNC_USER: process.env._PS_USER,
         PLANSYNC_PROJECT: process.env._PS_PROJECT || "",
         LOG_LEVEL: "warn",
@@ -245,7 +244,7 @@ inject_cursor_settings() {
       args: [process.env._PS_MCP_SERVER],
       env: {
         PLANSYNC_API_URL: process.env._PS_API_URL,
-        PLANSYNC_SECRET: process.env._PS_SECRET,
+        PLANSYNC_API_KEY: process.env._PS_API_KEY,
         PLANSYNC_USER: process.env._PS_USER,
         PLANSYNC_PROJECT: process.env._PS_PROJECT || "",
         LOG_LEVEL: "warn",
@@ -296,7 +295,7 @@ case "$HOST" in
             args: [process.env._PS_MCP_SERVER],
             env: {
               PLANSYNC_API_URL: process.env._PS_API_URL,
-              PLANSYNC_SECRET: process.env._PS_SECRET,
+              PLANSYNC_API_KEY: process.env._PS_API_KEY,
               PLANSYNC_USER: process.env._PS_USER,
               PLANSYNC_PROJECT: process.env._PS_PROJECT || "",
               LOG_LEVEL: "warn",
@@ -343,7 +342,7 @@ case "$HOST" in
             args: [process.env._PS_MCP_SERVER],
             env: {
               PLANSYNC_API_URL: process.env._PS_API_URL,
-              PLANSYNC_SECRET: process.env._PS_SECRET,
+              PLANSYNC_API_KEY: process.env._PS_API_KEY,
               PLANSYNC_USER: process.env._PS_USER,
               PLANSYNC_PROJECT: process.env._PS_PROJECT || "",
               LOG_LEVEL: "warn",

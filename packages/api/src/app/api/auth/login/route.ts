@@ -79,7 +79,12 @@ export async function POST(req: NextRequest) {
     });
 
     const isFirstLogin = !account;
-    const response = NextResponse.json({ success: true, userName: name, isFirstLogin });
+    const response = NextResponse.json({
+      success: true,
+      userName: name,
+      isFirstLogin,
+      key: rawKey,
+    });
 
     // httpOnly: JS cannot read or tamper with this cookie
     response.cookies.set('plansync-apikey', rawKey, {
