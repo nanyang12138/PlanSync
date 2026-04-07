@@ -44,8 +44,8 @@ echo "  Server : $SERVER"
 echo "  User   : ${PLANSYNC_USER:-$USER}"
 echo ""
 
-# Build the remote command, preserving arguments with proper quoting
-REMOTE_CMD="PLANSYNC_USER=$(printf '%q' "${PLANSYNC_USER:-$USER}")"
+# Build the remote command using "env KEY=VAL cmd" — compatible with tcsh and bash
+REMOTE_CMD="env PLANSYNC_USER=$(printf '%q' "${PLANSYNC_USER:-$USER}")"
 if [ -n "${PLANSYNC_PROJECT:-}" ]; then
   REMOTE_CMD="$REMOTE_CMD PLANSYNC_PROJECT=$(printf '%q' "$PLANSYNC_PROJECT")"
 fi
