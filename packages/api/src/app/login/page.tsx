@@ -66,7 +66,7 @@ export default function LoginPage() {
 
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1.5">
-                Team Password
+                Linux Password
               </label>
               <input
                 type="password"
@@ -76,9 +76,7 @@ export default function LoginPage() {
                 required
                 className="input-field w-full"
               />
-              <p className="text-xs text-slate-400 mt-1.5">
-                Contact your team admin for the password
-              </p>
+              <p className="text-xs text-slate-400 mt-1.5">Use your Linux system password</p>
             </div>
 
             {error && (

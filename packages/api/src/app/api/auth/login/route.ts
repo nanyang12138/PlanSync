@@ -22,11 +22,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'userName and password required' }, { status: 400 });
     }
 
+    const name = userName.trim();
+
     if (!verifyLinuxPassword(name, password)) {
       return NextResponse.json({ error: 'Invalid username or password' }, { status: 401 });
     }
-
-    const name = userName.trim();
 
     // Replace existing web-session key for this user (one active session at a time)
     await prisma.apiKey.deleteMany({
