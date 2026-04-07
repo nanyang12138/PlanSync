@@ -30,6 +30,9 @@ Thumbs.db
 # Temp / build cache
 packages/api/tmp/
 tmp/
+
+# PAM auth helper binary (compiled from pam_auth.c)
+packages/api/pam_auth
 *.nfs*
 
 # Logs

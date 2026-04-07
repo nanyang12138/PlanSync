@@ -54,22 +54,7 @@ export async function authenticate(req: NextRequest): Promise<AuthContext> {
     return { userName };
   }
 
-  if (!token) {
-    throw new AppError(ErrorCode.UNAUTHORIZED, 'Missing or invalid Authorization header');
-  }
-
-  const secret = process.env.PLANSYNC_SECRET;
-
-  if (token !== secret) {
-    throw new AppError(ErrorCode.UNAUTHORIZED, 'Invalid token');
-  }
-
-  const userName = req.headers.get('x-user-name') ?? qpUser;
-  if (!userName) {
-    throw new AppError(ErrorCode.UNAUTHORIZED, 'Missing X-User-Name header');
-  }
-
-  return { userName };
+  throw new AppError(ErrorCode.UNAUTHORIZED, 'Missing or invalid Authorization header');
 }
 
 export async function requireProjectRole(

@@ -1,6 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
+import { spawnSync } from 'child_process';
+import path from 'path';
 import { prisma } from '@/lib/prisma';
+
+function verifyLinuxPassword(userName: string, password: string): boolean {
+  const pamAuth = path.join(process.cwd(), 'pam_auth');
+  const result = spawnSync(pamAuth, [userName], {
+    input: password,
+    timeout: 5000,
+  });
+  return result.status === 0;
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -11,9 +22,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'userName and password required' }, { status: 400 });
     }
 
-    const secret = process.env.PLANSYNC_SECRET || 'dev-secret';
-    if (password !== secret) {
-      return NextResponse.json({ error: 'Invalid password' }, { status: 401 });
+    if (!verifyLinuxPassword(name, password)) {
+      return NextResponse.json({ error: 'Invalid username or password' }, { status: 401 });
     }
 
     const name = userName.trim();

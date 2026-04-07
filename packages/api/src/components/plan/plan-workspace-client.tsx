@@ -15,6 +15,7 @@ import {
   AlertTriangle,
   Sparkles,
   Loader2,
+  Mail,
 } from 'lucide-react';
 import { PlanDetail } from './plan-detail';
 
@@ -130,6 +131,8 @@ export function PlanWorkspaceClient({
   const [form, setForm] = useState<PlanFormState>(buildFormState(selectedPlan));
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notifyLoading, setNotifyLoading] = useState<string | null>(null);
+  const [notifySent, setNotifySent] = useState<string[]>([]);
   const [aiDraftDesc, setAiDraftDesc] = useState('');
   const [aiDraftLoading, setAiDraftLoading] = useState(false);
   const [aiDraftError, setAiDraftError] = useState('');
@@ -320,6 +323,28 @@ export function PlanWorkspaceClient({
     }
   }
 
+  async function handleNotify(type: 'plan_reviewers' | 'plan_owner') {
+    if (!selectedPlan) return;
+    setNotifyLoading(type);
+    setNotifySent([]);
+    setError(null);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/notify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type, planId: selectedPlan.id }),
+        credentials: 'include',
+      });
+      const data = (await res.json()) as { sent?: string[]; error?: string };
+      if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
+      setNotifySent(data.sent ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to send notification');
+    } finally {
+      setNotifyLoading(null);
+    }
+  }
+
   function startNewDraft() {
     setMode('create');
     setForm(buildFormState(selectedPlan));
@@ -506,7 +531,7 @@ export function PlanWorkspaceClient({
             <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/70 px-4 py-3">
               <div className="flex items-start gap-2">
                 <ShieldCheck className="mt-0.5 h-4 w-4 text-amber-600" />
-                <div className="text-sm text-amber-800">
+                <div className="flex-1 text-sm text-amber-800">
                   <p className="font-medium">
                     Review status: {reviewSummary.approved} approved, {reviewSummary.pending}{' '}
                     pending, {reviewSummary.rejected} rejected
@@ -514,6 +539,41 @@ export function PlanWorkspaceClient({
                   {!canActivateSelectedPlan && (
                     <p className="mt-1 text-amber-700">
                       This plan cannot be activated until every reviewer approves.
+                    </p>
+                  )}
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {reviewSummary.pending > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => handleNotify('plan_reviewers')}
+                        disabled={notifyLoading !== null}
+                        className="flex items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-50 disabled:opacity-50 transition-colors"
+                      >
+                        {notifyLoading === 'plan_reviewers' ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Mail className="h-3 w-3" />
+                        )}
+                        通知 Reviewers
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleNotify('plan_owner')}
+                      disabled={notifyLoading !== null}
+                      className="flex items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-50 disabled:opacity-50 transition-colors"
+                    >
+                      {notifyLoading === 'plan_owner' ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Mail className="h-3 w-3" />
+                      )}
+                      通知 Owner
+                    </button>
+                  </div>
+                  {notifySent.length > 0 && (
+                    <p className="mt-2 text-xs text-emerald-700">
+                      ✓ 已发送至：{notifySent.join(', ')}
                     </p>
                   )}
                 </div>
