@@ -33,6 +33,13 @@ if [ -f "$PROJECT_DIR/.env" ]; then
   set +a
 fi
 
+# Clear stale Next.js webpack cache (module IDs shift when new files are added)
+BUILD_DIR="$PROJECT_DIR/packages/api/tmp/ps-next-build-$(whoami)"
+if [ -d "$BUILD_DIR" ]; then
+  echo "Clearing stale Next.js build cache..."
+  rm -rf "$BUILD_DIR"
+fi
+
 # Ensure migrations are up to date
 if [ ! -f "$PROJECT_DIR/node_modules/prisma/build/index.js" ]; then
   echo "Prisma CLI not found in local dependencies"
