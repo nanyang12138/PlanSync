@@ -47,5 +47,6 @@ if [ ! -f "$PROJECT_DIR/node_modules/prisma/build/index.js" ]; then
   exit 1
 fi
 run_local_prisma migrate deploy --schema "$PROJECT_DIR/packages/api/prisma/schema.prisma"
+run_local_prisma generate --schema "$PROJECT_DIR/packages/api/prisma/schema.prisma"
 
 exec "$LOCAL_NPM_BIN" run --workspace=@plansync/api dev -- --port "$PORT"
