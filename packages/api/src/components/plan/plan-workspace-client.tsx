@@ -554,7 +554,7 @@ export function PlanWorkspaceClient({
                         ) : (
                           <Mail className="h-3 w-3" />
                         )}
-                        通知 Reviewers
+                        Notify Reviewers
                       </button>
                     )}
                     <button
@@ -568,12 +568,12 @@ export function PlanWorkspaceClient({
                       ) : (
                         <Mail className="h-3 w-3" />
                       )}
-                      通知 Owner
+                      Notify Owner
                     </button>
                   </div>
                   {notifySent.length > 0 && (
                     <p className="mt-2 text-xs text-emerald-700">
-                      ✓ 已发送至：{notifySent.join(', ')}
+                      ✓ Sent to: {notifySent.join(', ')}
                     </p>
                   )}
                 </div>
