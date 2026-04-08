@@ -1,0 +1,43 @@
+#!/bin/bash
+# PlanSync MCP Server launcher — invoked by .claude/settings.json
+# Reads credentials from ~/.config/plansync/env (created by ./bin/plansync on first run)
+# No hardcoded paths or credentials — works for any user who clones this repo.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+# shellcheck source=scripts/local-node-runtime.sh
+. "$PROJECT_DIR/scripts/local-node-runtime.sh"
+ensure_user_runtime_ready   # sets LOCAL_NODE_BIN
+
+_load_env() {
+  [ -f "$1" ] || return 0
+  while IFS= read -r _line; do
+    [[ "$_line" =~ ^[[:space:]]*($|#) ]] && continue
+    local _key="${_line%%=*}"; _key="${_key// /}"
+    [ -n "${!_key+set}" ] || export "$_line"
+  done < "$1"
+}
+
+_load_env "$HOME/.config/plansync/env"   # per-user credentials (PLANSYNC_API_KEY, PLANSYNC_USER)
+_load_env "$PROJECT_DIR/.env"            # shared config (PLANSYNC_API_URL, AUTH_DISABLED, etc.)
+
+export PLANSYNC_API_URL="${PLANSYNC_API_URL:-http://localhost:3001}"
+export PLANSYNC_API_KEY="${PLANSYNC_API_KEY:-}"
+export PLANSYNC_USER="${PLANSYNC_USER:-$USER}"
+export PLANSYNC_PROJECT="${PLANSYNC_PROJECT:-}"
+export LOG_LEVEL="${LOG_LEVEL:-warn}"
+
+MCP_SERVER="$PROJECT_DIR/packages/mcp-server/dist/index.js"
+
+# Build MCP server dist if missing (dist/ is gitignored, first run after clone)
+if [ ! -f "$MCP_SERVER" ]; then
+  "$LOCAL_NODE_BIN" "$PROJECT_DIR/node_modules/.bin/esbuild" \
+    "$PROJECT_DIR/packages/mcp-server/src/index.ts" \
+    --bundle --platform=node --target=node18 \
+    --outfile="$MCP_SERVER" --format=cjs \
+    --external:pino --external:pino-pretty >/dev/null 2>&1
+fi
+
+exec "$LOCAL_NODE_BIN" "$MCP_SERVER"

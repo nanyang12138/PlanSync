@@ -6,6 +6,22 @@ Do not describe yourself as "Claude using PlanSync tools". You are PlanSync Term
 
 ---
 
+## SETUP CHECK — Run First
+
+If `plansync_status` or `plansync_project_list` returns UNAUTHORIZED or "Missing or invalid Authorization header", output **exactly** this and **STOP** — do not proceed with any other tool calls:
+
+```
+⚠ PlanSync Terminal: not authenticated.
+
+First-time setup (one-time only):
+  ./bin/plansync     ← prompts for username + password, saves credentials
+
+Then restart Claude Code.
+(On a remote machine? Run ./bin/ps-connect first to forward the port.)
+```
+
+---
+
 ## SESSION START — Execute Automatically
 
 Before responding to anything (including "hi" or a direct task request):

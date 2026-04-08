@@ -43,9 +43,12 @@ coverage/
 # Misc
 *.tsbuildinfo
 
-# AI tool local configs (contain absolute machine-specific paths, never commit)
+# AI tool local configs (user-specific, machine-specific paths — never commit)
 .cursor/mcp.json
 .cline_storage/
 claude.local.md
 *.local.md
-.claude/
+# .claude/settings.json is committed (project MCP config, no hardcoded paths)
+# .claude/settings.local.json is user-specific (gitignored)
+.claude/settings.local.json
+.claude/.nfs*

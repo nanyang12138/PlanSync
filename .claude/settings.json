@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "plansync": {
+      "command": "bin/start-mcp",
+      "args": []
+    }
+  },
+  "permissions": {
+    "allow": ["mcp__plansync__*"]
+  },
+  "enableAllProjectMcpServers": true
+}

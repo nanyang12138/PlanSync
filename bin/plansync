@@ -33,27 +33,12 @@ while [[ $# -gt 0 ]]; do
     --user)       require_arg "$1" "${2:-}"; PLANSYNC_USER_ARG="$2"; shift 2 ;;
     --dir)        require_arg "$1" "${2:-}"; WORK_DIR="$2"; shift 2 ;;
     install)
-      # Explicitly install PlanSync into ~/.claude/settings.json for persistent MCP access.
-      # Run this once so PlanSync tools are available in all future Claude/Genie sessions.
-      # Normal `plansync` launch does NOT modify ~/.claude/ — MCP is session-scoped via --mcp-config.
-      ensure_user_runtime_ready
-      _load_env "$PROJECT_DIR/.env"
-      _load_env "$HOME/.config/plansync/env"
-      export PLANSYNC_API_URL="${PLANSYNC_API_URL:-$(plansync_api_url 3001)}"
-      export PLANSYNC_USER="${PLANSYNC_USER:-${USER}}"
-      _ensure_credentials
-      export _PS_MCP_SERVER="$PROJECT_DIR/packages/mcp-server/dist/index.js"
-      export _PS_NODE_BIN="$LOCAL_NODE_BIN"
-      export _PS_API_URL="$PLANSYNC_API_URL"
-      export _PS_API_KEY="${PLANSYNC_API_KEY:-}"
-      export _PS_USER="$PLANSYNC_USER"
-      export _PS_PROJECT=""
-      export _PS_WORK_DIR="$(pwd)"
-      inject_claude_settings
-      echo "" >&2
-      echo "✅ PlanSync installed into ~/.claude/settings.json" >&2
-      echo "   MCP tools will be available in all future Claude/Genie sessions." >&2
-      echo "   To uninstall: remove the 'plansync' entry from ~/.claude/settings.json" >&2
+      # Deprecated: MCP is now pre-configured via .claude/settings.json (committed to git).
+      # No manual install step needed — just clone and open Claude Code.
+      # Run ./bin/plansync once to set up your credentials (~/.config/plansync/env).
+      echo "ℹ️  install is no longer needed." >&2
+      echo "   PlanSync MCP is pre-configured via .claude/settings.json (committed to git)." >&2
+      echo "   Just run ./bin/plansync once to set up your credentials." >&2
       exit 0
       ;;
     --help|-h)
@@ -96,8 +81,7 @@ AI (pick one):
   ANTHROPIC_API_KEY  Anthropic API key (external users)
 
 Examples:
-  plansync install                  # Install PlanSync MCP into ~/.claude/settings.json
-  plansync                          # Launch PlanSync Terminal (default)
+  plansync                          # Launch PlanSync Terminal (default; first run prompts for credentials)
   plansync --project clxyz123       # Specify project, then launch terminal
   plansync --user alice             # Set identity for this session
   plansync --host genie             # Launch Genie directly with PlanSync MCP (no terminal)
