@@ -390,7 +390,7 @@ describe('C: Plan Lifecycle', () => {
     });
     expect(after).not.toBeNull();
     expect(after?.role).toBe('developer');
-    expect(after?.type).toBe('agent');
+    expect(after?.type).toBe('human');
   });
 
   it('C12: 连续创建 3 个 plan → version 递增', async () => {

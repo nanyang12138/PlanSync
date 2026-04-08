@@ -37,7 +37,7 @@ const _mcpAuto = path.resolve(_selfDir, '../../mcp-server/dist/index.js');
 
 const cfg = {
   apiUrl: process.env.PLANSYNC_API_URL || 'http://localhost:3001',
-  secret: process.env.PLANSYNC_SECRET || 'dev-secret',
+  apiKey: process.env.PLANSYNC_API_KEY || '',
   user: process.env.PLANSYNC_USER || process.env.USER || 'unknown',
   project: process.env.PLANSYNC_PROJECT || '',
   llmKey: process.env.LLM_API_KEY || '',
@@ -82,7 +82,7 @@ function psRequest<T>(method: string, path: string, body?: unknown): Promise<T> 
         path: url.pathname + url.search,
         method,
         headers: {
-          Authorization: `Bearer ${cfg.secret}`,
+          Authorization: `Bearer ${cfg.apiKey}`,
           'x-user-name': cfg.user,
           'Content-Type': 'application/json',
           ...(bodyStr ? { 'Content-Length': Buffer.byteLength(bodyStr) } : {}),
@@ -241,7 +241,7 @@ class McpClient {
     const env: Record<string, string> = {
       ...(process.env as Record<string, string>),
       PLANSYNC_API_URL: cfg.apiUrl,
-      PLANSYNC_SECRET: cfg.secret,
+      PLANSYNC_API_KEY: cfg.apiKey,
       PLANSYNC_USER: cfg.user,
       PLANSYNC_PROJECT: cfg.project,
       LOG_LEVEL: 'warn',
@@ -915,7 +915,7 @@ function writeGenieSettings(): void {
         args: [cfg.mcpServer],
         env: {
           PLANSYNC_API_URL: cfg.apiUrl,
-          PLANSYNC_SECRET: cfg.secret,
+          PLANSYNC_API_KEY: cfg.apiKey,
           PLANSYNC_USER: cfg.user,
           PLANSYNC_PROJECT: '',
           LOG_LEVEL: 'warn',

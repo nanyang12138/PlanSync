@@ -8,6 +8,23 @@ export interface AuthContext {
   projectRole?: 'owner' | 'developer';
 }
 
+// Password verification (same scrypt scheme as login/route.ts)
+async function verifyPassword(password: string, stored: string): Promise<boolean> {
+  const [saltHex, hashHex] = stored.split(':');
+  if (!saltHex || !hashHex) return false;
+  const salt = Buffer.from(saltHex, 'hex');
+  const expected = Buffer.from(hashHex, 'hex');
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(password, salt, 64, (err, dk) => {
+      if (err) reject(err);
+      else resolve(crypto.timingSafeEqual(dk, expected));
+    });
+  });
+}
+
+// Cache successful password verifications for 5 min to avoid scrypt on every API call
+const _pwCache = new Map<string, { user: string; exp: number }>();
+
 async function verifyApiKey(
   rawKey: string,
 ): Promise<{ userName: string; projectId: string } | null> {
@@ -40,6 +57,24 @@ export async function authenticate(req: NextRequest): Promise<AuthContext> {
   const authHeader = req.headers.get('authorization');
   const tokenFromHeader = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
   const token = tokenFromHeader ?? qpToken;
+
+  // Allow login password as Bearer token (each user sets PLANSYNC_API_KEY = their password).
+  // Identity comes from X-User-Name header (set by bin/plansync from $USER).
+  if (token && !token.startsWith('ps_key_')) {
+    const userName = req.headers.get('x-user-name');
+    if (userName) {
+      const cacheKey = `${userName}:${token}`;
+      const hit = _pwCache.get(cacheKey);
+      if (hit && hit.exp > Date.now()) {
+        return { userName: hit.user };
+      }
+      const account = await prisma.userAccount.findUnique({ where: { userName } });
+      if (account && (await verifyPassword(token, account.passwordHash))) {
+        _pwCache.set(cacheKey, { user: userName, exp: Date.now() + 5 * 60_000 });
+        return { userName };
+      }
+    }
+  }
 
   if (token?.startsWith('ps_key_')) {
     const apiAuth = await verifyApiKey(token);

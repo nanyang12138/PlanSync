@@ -38,8 +38,10 @@ while [[ $# -gt 0 ]]; do
       # Normal `plansync` launch does NOT modify ~/.claude/ — MCP is session-scoped via --mcp-config.
       ensure_user_runtime_ready
       _load_env "$PROJECT_DIR/.env"
+      _load_env "$HOME/.config/plansync/env"
       export PLANSYNC_API_URL="${PLANSYNC_API_URL:-$(plansync_api_url 3001)}"
       export PLANSYNC_USER="${PLANSYNC_USER:-${USER}}"
+      _ensure_credentials
       export _PS_MCP_SERVER="$PROJECT_DIR/packages/mcp-server/dist/index.js"
       export _PS_NODE_BIN="$LOCAL_NODE_BIN"
       export _PS_API_URL="$PLANSYNC_API_URL"
@@ -81,7 +83,7 @@ Options:
 
 Environment:
   PLANSYNC_API_URL   API server URL (default: http://localhost:3001)
-  PLANSYNC_API_KEY   API key (ps_key_...) — run: ps-admin gen-key
+  PLANSYNC_API_KEY   Your login password (prompted automatically on first run)
   PLANSYNC_USER      Your username (default: $USER)
   PG_BIN             PostgreSQL binary directory (default: /tool/pandora64/bin)
   GENIE_BIN          Path to Genie binary (default: /proj/verif_release_ro/...)
@@ -123,7 +125,55 @@ _load_env() {
     [ -n "${!_key+set}" ] || export "$_line"
   done < "$1"
 }
+
+# ─── First-run credential setup ───
+# Prompts for username+password on first run, saves to ~/.config/plansync/env.
+# Subsequent runs load credentials automatically from that file.
+_ensure_credentials() {
+  [ -n "$PLANSYNC_API_KEY" ] && return 0
+  if [[ ! -t 0 ]]; then
+    die "PLANSYNC_API_KEY not set. Run ./bin/plansync once interactively to configure credentials."
+  fi
+  printf '\nPlanSync first-time setup\n' >&2
+  printf 'Username [%s]: ' "${PLANSYNC_USER:-$USER}" >&2
+  read -r _ec_user
+  _ec_user="${_ec_user:-${PLANSYNC_USER:-$USER}}"
+  printf 'Password: ' >&2
+  read -rs _ec_pass
+  printf '\n' >&2
+  # Verify credentials via server. Use node to safely handle special chars (e.g. !).
+  _ec_ok=$(
+    _EC_URL="$PLANSYNC_API_URL" _EC_U="$_ec_user" _EC_P="$_ec_pass" \
+    "$LOCAL_NODE_BIN" -e "
+      const h=require('http'),u=new URL('/api/auth/login',process.env._EC_URL);
+      const b=JSON.stringify({userName:process.env._EC_U,password:process.env._EC_P});
+      h.request({hostname:u.hostname,port:u.port||80,path:u.pathname,
+        method:'POST',headers:{'Content-Type':'application/json'}},r=>{
+        let d='';r.on('data',c=>d+=c);
+        r.on('end',()=>{try{process.stdout.write(JSON.parse(d).success?'ok':'fail');}catch{process.stdout.write('fail');}});
+      }).end(b);
+    " 2>/dev/null
+  )
+  if [ "$_ec_ok" = "ok" ]; then
+    mkdir -p "$HOME/.config/plansync"
+    # Write via node — avoids shell ! expansion issues with special chars in passwords
+    _EC_F="$HOME/.config/plansync/env" _EC_P="$_ec_pass" _EC_U="$_ec_user" \
+    "$LOCAL_NODE_BIN" -e "
+      require('fs').writeFileSync(process.env._EC_F,
+        'PLANSYNC_API_KEY='+process.env._EC_P+'\nPLANSYNC_USER='+process.env._EC_U+'\n',
+        {mode:0o600});
+    "
+    export PLANSYNC_API_KEY="$_ec_pass"
+    export PLANSYNC_USER="$_ec_user"
+    printf 'Credentials saved to %s\n\n' "$HOME/.config/plansync/env" >&2
+  else
+    printf 'Login failed. Check server URL (%s) and credentials.\n' "$PLANSYNC_API_URL" >&2
+    exit 1
+  fi
+}
+
 _load_env "$PROJECT_DIR/.env"
+_load_env "$HOME/.config/plansync/env"
 
 # ─── Config (env > .env > defaults) ───
 export PLANSYNC_API_URL="${PLANSYNC_API_URL:-$(plansync_api_url 3001)}"
@@ -156,6 +206,8 @@ else
     die "API not reachable. Start the API server first."
   fi
 fi
+
+_ensure_credentials
 
 # ─── Inject CLAUDE.md / AGENTS.md into working directory ───
 INSTRUCTIONS_SRC="$PROJECT_DIR/claude-md/plansync-instructions.md"
