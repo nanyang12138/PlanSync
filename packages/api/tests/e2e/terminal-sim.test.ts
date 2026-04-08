@@ -42,8 +42,8 @@ function stripAnsi(s: string): string {
 const PROMPT_TOKENS = [
   '> ', // main REPL prompt
   'Enter number', // project selection list
-  '[yes/N]:', // delete confirmation
-  '[Y/n]:', // yes/no prompt
+  '[y/n]:', // delete confirmation
+  '[y/n]:', // yes/no prompt
   'Project name:', // name input
   'cancel]:', // "or Enter to cancel:"
 ];
