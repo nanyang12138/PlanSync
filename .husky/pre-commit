@@ -4,4 +4,20 @@ LOCAL_NODE="$(git rev-parse --show-toplevel)/.local-runtime/node/bin"
 if [ -d "$LOCAL_NODE" ]; then
   PATH="$LOCAL_NODE:$PATH"
 fi
+
+# Migration files are immutable once created — reject modifications to existing ones.
+MODIFIED_MIGRATIONS=$(git diff --cached --name-only --diff-filter=M | grep 'prisma/migrations/.*\.sql$' || true)
+if [ -n "$MODIFIED_MIGRATIONS" ]; then
+  echo ""
+  echo "✗ ERROR: Migration files must not be modified after creation."
+  echo "  Modified files:"
+  echo "$MODIFIED_MIGRATIONS" | sed 's/^/    /'
+  echo ""
+  echo "  To fix an already-applied migration, create a new one instead:"
+  echo "    npx prisma migrate dev --name <description>"
+  echo "  or write a migration SQL manually in a new timestamped directory."
+  echo ""
+  exit 1
+fi
+
 npx lint-staged

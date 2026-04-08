@@ -295,6 +295,16 @@ ensure_owner_runtime_ready() {
   fi
 
   log_step "Applying database migrations"
+  # Check for migration file drift (applied migrations whose SQL was edited after the fact).
+  # prisma migrate status exits non-zero and prints "checksum mismatch" when this happens.
+  if run_local_prisma migrate status --schema "$PROJECT_DIR/packages/api/prisma/schema.prisma" 2>&1 | grep -q "checksum"; then
+    echo ""
+    echo "⚠ WARNING: One or more applied migration files have been modified since they were"
+    echo "  applied. This can cause schema drift between environments."
+    echo "  Run: npx prisma migrate status   to see which migrations are affected."
+    echo "  Fix: create a new migration to correct the drift — do NOT edit the existing file."
+    echo ""
+  fi
   run_local_prisma migrate deploy --schema "$PROJECT_DIR/packages/api/prisma/schema.prisma"
   OWNER_RUNTIME_FRESH_DB="$fresh_db"
 }
