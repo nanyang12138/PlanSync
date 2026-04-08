@@ -63,7 +63,7 @@ export async function POST(req: NextRequest, { params }: Params) {
             projectId: params.projectId,
             name,
             role: 'developer',
-            type: 'agent',
+            type: 'human',
           })),
           skipDuplicates: true,
         });
