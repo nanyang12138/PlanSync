@@ -112,9 +112,29 @@ _load_env() {
 
 # ─── First-run credential setup ───
 # Prompts for username+password on first run, saves to ~/.config/plansync/env.
-# Subsequent runs load credentials automatically from that file.
+# Subsequent runs verify existing credentials against the server before continuing.
 _ensure_credentials() {
-  [ -n "$PLANSYNC_API_KEY" ] && return 0
+  if [ -n "$PLANSYNC_API_KEY" ]; then
+    # Verify existing credentials against server (handles DB-reset / stale-env scenario)
+    _ec_ok=$(
+      _EC_URL="$PLANSYNC_API_URL" _EC_U="${PLANSYNC_USER:-$USER}" _EC_P="$PLANSYNC_API_KEY" \
+      "$LOCAL_NODE_BIN" -e "
+        const h=require('http'),u=new URL('/api/auth/login',process.env._EC_URL);
+        const b=JSON.stringify({userName:process.env._EC_U,password:process.env._EC_P});
+        h.request({hostname:u.hostname,port:u.port||80,path:u.pathname,
+          method:'POST',headers:{'Content-Type':'application/json'}},r=>{
+          let d='';r.on('data',c=>d+=c);
+          r.on('end',()=>{try{process.stdout.write(JSON.parse(d).success?'ok':'fail');}catch{process.stdout.write('fail');}});
+        }).end(b);
+      " 2>/dev/null
+    )
+    if [ "$_ec_ok" = "ok" ]; then
+      return 0   # credentials valid, fast path
+    fi
+    # Stale credentials (e.g. DB was reset) — fall through to re-prompt
+    printf '\n⚠️  Stored credentials no longer valid. Please re-enter.\n' >&2
+    unset PLANSYNC_API_KEY
+  fi
   if [[ ! -t 0 ]]; then
     die "PLANSYNC_API_KEY not set. Run ./bin/plansync once interactively to configure credentials."
   fi
