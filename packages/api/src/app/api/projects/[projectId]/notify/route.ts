@@ -35,12 +35,12 @@ export async function POST(req: NextRequest, { params }: { params: { projectId: 
         const to = userEmail(review.reviewerName);
         sendMail(
           [to],
-          `[PlanSync] 请审核计划 v${plan.version} "${plan.title}"`,
-          `${review.reviewerName} 您好，\n\n` +
-            `项目计划 v${plan.version} "${plan.title}" 正在等待您的审核。\n\n` +
-            (review.focusNotes ? `审核重点：${review.focusNotes}\n\n` : '') +
-            `目标：${plan.goal}\n\n` +
-            `请登录 PlanSync 完成审核。\n\n` +
+          `[PlanSync] Review requested: v${plan.version} "${plan.title}"`,
+          `Hi ${review.reviewerName},\n\n` +
+            `Plan v${plan.version} "${plan.title}" is waiting for your review.\n\n` +
+            (review.focusNotes ? `Focus area: ${review.focusNotes}\n\n` : '') +
+            `Goal: ${plan.goal}\n\n` +
+            `Please log in to PlanSync to complete your review.\n\n` +
             `— PlanSync`,
         );
         sent.push(to);
@@ -56,13 +56,13 @@ export async function POST(req: NextRequest, { params }: { params: { projectId: 
       const to = userEmail(task.assignee);
       sendMail(
         [to],
-        `[PlanSync] 任务已分配给您："${task.title}"`,
-        `${task.assignee} 您好，\n\n` +
-          `您有一个新任务待处理：\n\n` +
-          `任务：${task.title}\n` +
-          `优先级：${task.priority}\n` +
-          (task.description ? `描述：${task.description}\n` : '') +
-          `\n请登录 PlanSync 查看详情。\n\n` +
+        `[PlanSync] Task assigned to you: "${task.title}"`,
+        `Hi ${task.assignee},\n\n` +
+          `You have a new task:\n\n` +
+          `Task: ${task.title}\n` +
+          `Priority: ${task.priority}\n` +
+          (task.description ? `Description: ${task.description}\n` : '') +
+          `\nPlease log in to PlanSync to view the details.\n\n` +
           `— PlanSync`,
       );
       sent.push(to);
@@ -80,13 +80,13 @@ export async function POST(req: NextRequest, { params }: { params: { projectId: 
       const to = userEmail(plan.createdBy);
       sendMail(
         [to],
-        `[PlanSync] 计划 v${plan.version} "${plan.title}" 审核进度`,
-        `${plan.createdBy} 您好，\n\n` +
-          `您的计划 v${plan.version} "${plan.title}" 审核进度：\n\n` +
-          `✓ 已批准：${approved}\n` +
-          `✗ 已拒绝：${rejected}\n` +
-          `⏳ 待审核：${pending}\n\n` +
-          `请登录 PlanSync 查看详情。\n\n` +
+        `[PlanSync] Review status: v${plan.version} "${plan.title}"`,
+        `Hi ${plan.createdBy},\n\n` +
+          `Review status for your plan v${plan.version} "${plan.title}":\n\n` +
+          `✓ Approved: ${approved}\n` +
+          `✗ Rejected: ${rejected}\n` +
+          `⏳ Pending: ${pending}\n\n` +
+          `Please log in to PlanSync to view the details.\n\n` +
           `— PlanSync`,
       );
       sent.push(to);
