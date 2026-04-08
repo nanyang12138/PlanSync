@@ -4,7 +4,7 @@ export async function register() {
     const path = await import('path');
     const cwd = process.cwd();
     const sourceSchema = path.join(cwd, 'prisma/schema.prisma');
-    const generatedSchema = path.join(cwd, 'node_modules/.prisma/client/schema.prisma');
+    const generatedSchema = path.join(cwd, '../../node_modules/.prisma/client/schema.prisma');
     try {
       const srcMtime = fs.statSync(sourceSchema).mtimeMs;
       const genMtime = fs.statSync(generatedSchema).mtimeMs;
