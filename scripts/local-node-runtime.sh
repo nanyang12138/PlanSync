@@ -181,7 +181,7 @@ ensure_local_dependencies() {
 
   if dependencies_need_install; then
     log_step "Installing workspace dependencies"
-    run_local_npm install --cache "$LOCAL_NPM_CACHE"
+    run_local_npm install --prefix "$PROJECT_DIR" --cache "$LOCAL_NPM_CACHE"
     touch "$LOCAL_DEPS_STAMP"
   fi
 }
