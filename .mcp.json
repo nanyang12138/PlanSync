@@ -5,8 +5,6 @@
       "args": ["./scripts/run-mcp.sh"],
       "env": {
         "PLANSYNC_API_URL": "http://localhost:3001",
-        "PLANSYNC_SECRET": "dev-secret",
-        "PLANSYNC_USER": "",
         "PLANSYNC_PROJECT": "",
         "LOG_LEVEL": "warn"
       }

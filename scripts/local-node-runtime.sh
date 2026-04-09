@@ -180,6 +180,12 @@ ensure_local_dependencies() {
   ensure_local_node_runtime
 
   if dependencies_need_install; then
+    # If the server is already running, dependencies are clearly installed.
+    # Skip npm install to avoid ETXTBSY when esbuild is held open by the server process.
+    if is_plansync_api_reachable "$(plansync_api_url)"; then
+      touch "$LOCAL_DEPS_STAMP"
+      return 0
+    fi
     log_step "Installing workspace dependencies"
     run_local_npm install --prefix "$PROJECT_DIR" --cache "$LOCAL_NPM_CACHE"
     touch "$LOCAL_DEPS_STAMP"
