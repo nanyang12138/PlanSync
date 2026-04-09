@@ -30,7 +30,8 @@
     "/tmp/plansync-next-*/types/**/*.ts",
     "/tmp/ps-next-build-*/types/**/*.ts",
     "tmp/ps-next-build-*/types/**/*.ts",
-    "tmp/ps-next-build-nanyang2/types/**/*.ts"
+    "tmp/ps-next-build-nanyang2/types/**/*.ts",
+    "tmp/ps-next-build-tzhang5/types/**/*.ts"
   ],
   "exclude": ["node_modules"]
 }

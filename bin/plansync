@@ -118,24 +118,41 @@ _ensure_credentials() {
   if [[ ! -t 0 ]]; then
     die "PLANSYNC_API_KEY not set. Run ./bin/plansync once interactively to configure credentials."
   fi
+  _ec_user="${PLANSYNC_USER:-$USER}"
   printf '\nPlanSync first-time setup\n' >&2
-  printf 'Username [%s]: ' "${PLANSYNC_USER:-$USER}" >&2
-  read -r _ec_user
-  _ec_user="${_ec_user:-${PLANSYNC_USER:-$USER}}"
-  printf 'Password: ' >&2
-  read -rs _ec_pass
-  printf '\n' >&2
+  printf 'Username is %s\n' "$_ec_user" >&2
+  # Try with confirm password first (new account flow)
+  while true; do
+    printf 'Set your password: ' >&2
+    read -rs _ec_pass
+    printf '\n' >&2
+    printf 'Confirm password: ' >&2
+    read -rs _ec_pass2
+    printf '\n' >&2
+    if [ "$_ec_pass" = "$_ec_pass2" ]; then
+      break
+    fi
+    printf 'Passwords do not match. Please try again.\n' >&2
+  done
   # Verify credentials via server. Use node to safely handle special chars (e.g. !).
   _ec_ok=$(
     _EC_URL="$PLANSYNC_API_URL" _EC_U="$_ec_user" _EC_P="$_ec_pass" \
     "$LOCAL_NODE_BIN" -e "
       const h=require('http'),u=new URL('/api/auth/login',process.env._EC_URL);
       const b=JSON.stringify({userName:process.env._EC_U,password:process.env._EC_P});
-      h.request({hostname:u.hostname,port:u.port||80,path:u.pathname,
-        method:'POST',headers:{'Content-Type':'application/json'}},r=>{
+      const req=h.request({hostname:u.hostname,port:u.port||80,path:u.pathname,
+        method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(b)}},r=>{
         let d='';r.on('data',c=>d+=c);
-        r.on('end',()=>{try{process.stdout.write(JSON.parse(d).success?'ok':'fail');}catch{process.stdout.write('fail');}});
-      }).end(b);
+        r.on('end',()=>{
+          try{
+            const j=JSON.parse(d);
+            if(j.success){process.stdout.write('ok');}
+            else{process.stdout.write('ERR:'+(j.error||'unknown error'));}
+          }catch{process.stdout.write('ERR:invalid response');}
+        });
+      });
+      req.on('error',e=>process.stdout.write('ERR:'+e.message));
+      req.write(b);req.end();
     " 2>/dev/null
   )
   if [ "$_ec_ok" = "ok" ]; then
@@ -149,10 +166,54 @@ _ensure_credentials() {
     "
     export PLANSYNC_API_KEY="$_ec_pass"
     export PLANSYNC_USER="$_ec_user"
-    printf 'Credentials saved to %s\n\n' "$HOME/.config/plansync/env" >&2
+    printf 'Credentials saved to %s\n' "$HOME/.config/plansync/env" >&2
+    printf '\nWelcome to PlanSync, %s! Your account is ready.\n\n' "$_ec_user" >&2
   else
-    printf 'Login failed. Check server URL (%s) and credentials.\n' "$PLANSYNC_API_URL" >&2
-    exit 1
+    _ec_err="${_ec_ok#ERR:}"
+    if [[ "$_ec_err" == *"Invalid username or password"* ]]; then
+      printf 'Account already exists. Please enter your existing password: ' >&2
+      read -rs _ec_pass
+      printf '\n' >&2
+      _ec_ok2=$(
+        _EC_URL="$PLANSYNC_API_URL" _EC_U="$_ec_user" _EC_P="$_ec_pass" \
+        "$LOCAL_NODE_BIN" -e "
+          const h=require('http'),u=new URL('/api/auth/login',process.env._EC_URL);
+          const b=JSON.stringify({userName:process.env._EC_U,password:process.env._EC_P});
+          const req=h.request({hostname:u.hostname,port:u.port||80,path:u.pathname,
+            method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(b)}},r=>{
+            let d='';r.on('data',c=>d+=c);
+            r.on('end',()=>{
+              try{
+                const j=JSON.parse(d);
+                if(j.success){process.stdout.write('ok');}
+                else{process.stdout.write('ERR:'+(j.error||'unknown error'));}
+              }catch{process.stdout.write('ERR:invalid response');}
+            });
+          });
+          req.on('error',e=>process.stdout.write('ERR:'+e.message));
+          req.write(b);req.end();
+        " 2>/dev/null
+      )
+      if [ "$_ec_ok2" = "ok" ]; then
+        mkdir -p "$HOME/.config/plansync"
+        _EC_F="$HOME/.config/plansync/env" _EC_P="$_ec_pass" _EC_U="$_ec_user" \
+        "$LOCAL_NODE_BIN" -e "
+          require('fs').writeFileSync(process.env._EC_F,
+            'PLANSYNC_API_KEY='+process.env._EC_P+'\nPLANSYNC_USER='+process.env._EC_U+'\n',
+            {mode:0o600});
+        "
+        export PLANSYNC_API_KEY="$_ec_pass"
+        export PLANSYNC_USER="$_ec_user"
+        printf 'Credentials saved to %s\n' "$HOME/.config/plansync/env" >&2
+        printf '\nWelcome to PlanSync, %s!\n\n' "$_ec_user" >&2
+      else
+        printf 'Login failed: %s\n' "${_ec_ok2#ERR:}" >&2
+        exit 1
+      fi
+    else
+      printf 'Login failed: %s\n' "${_ec_err:-no response from server}" >&2
+      exit 1
+    fi
   fi
 }
 
@@ -183,7 +244,7 @@ else
   echo "   Or set PLANSYNC_API_URL to the correct URL." >&2
   echo "" >&2
   if [[ -t 0 ]]; then
-    read -p "   Continue anyway? [y/N] " -n 1 -r
+    read -p "   Continue anyway? [y/n] " -n 1 -r
     echo >&2
     [[ $REPLY =~ ^[Yy]$ ]] || exit 1
   else
