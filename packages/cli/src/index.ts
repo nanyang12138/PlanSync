@@ -817,9 +817,7 @@ async function createProject(rl: readline.Interface): Promise<void> {
 async function deleteProject(rl: readline.Interface, list: any[]): Promise<void> {
   console.log(`\n  ${c.bold}Which project to delete?${c.reset}\n`);
   list.forEach((p: any, i: number) =>
-    console.log(
-      `  ${c.cyan}${i + 1}${c.reset}. ${c.bold}${p.name}${c.reset}  ${c.dim}${p.id}${c.reset}`,
-    ),
+    console.log(`  ${c.cyan}${i + 1}${c.reset}. ${c.bold}${p.name}${c.reset}`),
   );
   const choice = await new Promise<string>((resolve) =>
     rl.question(`\n  Enter number [1-${list.length}] or Enter to cancel: `, resolve),
@@ -836,11 +834,11 @@ async function deleteProject(rl: readline.Interface, list: any[]): Promise<void>
   const proj = list[idx];
   const confirm = await new Promise<string>((resolve) =>
     rl.question(
-      `\n  ${c.red}Delete "${proj.name}" and ALL its data? This is irreversible. [yes/N]: ${c.reset}`,
+      `\n  ${c.red}Delete "${proj.name}" and ALL its data? This is irreversible. [y/n]: ${c.reset}`,
       resolve,
     ),
   );
-  if (confirm.trim().toLowerCase() !== 'yes') {
+  if (!confirm.trim().match(/^y$/i)) {
     console.log(`  ${c.yellow}Cancelled.${c.reset}`);
     return;
   }
@@ -860,16 +858,14 @@ async function selectProject(rl: readline.Interface): Promise<void> {
     if (list.length === 0) {
       console.log(`\n  ${c.yellow}⚠ No projects yet.${c.reset}`);
       const yn = await new Promise<string>((resolve) =>
-        rl.question(`  Create a new project? [Y/n]: `, resolve),
+        rl.question(`  Create a new project? [y/n]: `, resolve),
       );
       if (!yn.trim() || yn.trim().toLowerCase() === 'y') await createProject(rl);
       return;
     }
     console.log(`\n  ${c.bold}Select a project:${c.reset}\n`);
     list.forEach((p: any, i: number) =>
-      console.log(
-        `  ${c.cyan}${i + 1}${c.reset}. ${c.bold}${p.name}${c.reset}  ${c.dim}${p.id}${c.reset}`,
-      ),
+      console.log(`  ${c.cyan}${i + 1}${c.reset}. ${c.bold}${p.name}${c.reset}`),
     );
     console.log(`  ${c.cyan}n${c.reset}. ${c.dim}Create new project${c.reset}`);
     console.log(`  ${c.cyan}d${c.reset}. ${c.dim}Delete a project${c.reset}`);
