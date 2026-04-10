@@ -5,6 +5,8 @@ import { handleApiError } from '@/lib/errors';
 import { AppError, ErrorCode } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
 import { eventBus } from '@/lib/event-bus';
+import { sendMail, userEmail } from '@/lib/email';
+import { logger } from '@/lib/logger';
 
 type Params = { params: { projectId: string; planId: string } };
 
@@ -87,6 +89,33 @@ export async function POST(req: NextRequest, { params }: Params) {
       title: plan.title,
       proposedBy: auth.userName,
     });
+
+    // Send email to human reviewers
+    if (reviewerNames.length > 0) {
+      const members = await prisma.projectMember.findMany({
+        where: { projectId: params.projectId, name: { in: reviewerNames }, type: 'human' },
+        select: { name: true },
+      });
+      const humanReviewers = members.map((m) => m.name);
+      if (humanReviewers.length > 0) {
+        const body = [
+          `${auth.userName} submitted plan "${plan.title}" (v${plan.version}) for your review.`,
+          '',
+          `Please log in to PlanSync to complete your review.`,
+          `Project ID: ${params.projectId}`,
+          `Plan ID: ${plan.id}`,
+        ].join('\n');
+        try {
+          sendMail(
+            humanReviewers.map(userEmail),
+            `[PlanSync] Review requested: "${plan.title}"`,
+            body,
+          );
+        } catch (err) {
+          logger.warn({ err, planId: plan.id }, 'Failed to send review notification email');
+        }
+      }
+    }
 
     return NextResponse.json({ data: updated });
   } catch (error) {

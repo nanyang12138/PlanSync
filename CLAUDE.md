@@ -26,9 +26,13 @@ Then restart Claude Code.
 
 Before responding to anything (including "hi" or a direct task request):
 
-1. Call `plansync_status`
-2. If `PLANSYNC_PROJECT` is not set, call `plansync_project_list` so the user can select a project
-3. Output the status in this exact format:
+1. Call `plansync_my_work` (no projectId) — get cross-project pending work for the current user
+2. If `hasWork=true`, display at the top:
+   ```
+   ⚠ Pending items  {N} pending reviews · {M} drifts
+   ```
+3. Call `plansync_status` (if `PLANSYNC_PROJECT` is set); otherwise call `plansync_project_list` so the user can select a project
+4. Output the status in this exact format:
 
 ```
 **PlanSync [Terminal Mode]** · {userName} · {projectName}
@@ -42,7 +46,7 @@ Drift        {N pending} or none ✓
 What would you like to work on today?
 ```
 
-4. Wait for the user's response.
+5. Wait for the user's response.
 
 ---
 
@@ -141,35 +145,35 @@ If the user says "work as `<agent>`", "handle `<agent>`'s work", or similar:
    **Review comment template (required format):**
 
    ```
-   **[{agentName} 审核意见 — v{version} "{planTitle}"]**
+   **[{agentName} Review — v{version} "{planTitle}"]**
 
-   **我的角色视角：** 我负责 {列出自己的 task，若无则写"暂无分配任务"}，主要关注 {从任务推断出的领域}。
-   {如果 focusNotes 非空} Owner 希望我重点审核：{focusNotes}
+   **My role perspective:** I am responsible for {list own tasks, or "no tasks assigned"}, primarily focused on {domain inferred from tasks}.
+   {if focusNotes non-empty} Owner asked me to focus on: {focusNotes}
 
-   **本版本核心变化：** {来自 diff 的 summary，若首次提案则写"首次提案，无 diff"}
+   **Key changes in this version:** {summary from diff; if first proposal write "First proposal, no diff"}
 
-   **对我负责任务的具体影响：**
-   - Task "{taskTitle}" — {高/中/无影响}: {具体说明，例如"scope 扩大要求我额外实现 X"}
-   - 若无影响：明确说明"本次变更与我的任务无交叉，因为 {原因}"
+   **Impact on my tasks:**
+   - Task "{taskTitle}" — {high/medium/none}: {specific explanation, e.g. "scope expansion requires me to also implement X"}
+   - If no impact: explicitly state "This change does not overlap with my tasks because {reason}"
 
-   **支持点：**
-   - {具体理由，引用计划原文}
+   **Supporting points:**
+   - {specific reasoning, quoting plan text}
 
-   **疑虑 / 风险：**
-   - {具体风险}: {说明}
-   - 若无疑虑：说明"经检查 diff 和自身任务，未发现风险，因为 {原因}"
+   **Concerns / Risks:**
+   - {specific risk}: {explanation}
+   - If no concerns: state "After reviewing the diff and my tasks, no risks found because {reason}"
 
-   **给 owner 的问题：**
-   - {具体问题，或"无"}
+   **Questions for owner:**
+   - {specific question, or "None"}
 
-   **决定：APPROVE / REJECT** — {一句话核心理由，必须有具体依据}
+   **Decision: APPROVE / REJECT** — {one-sentence core rationale with specific evidence}
    ```
 
    **Review rules:**
 
    - Step 1 (check own tasks) is mandatory — do not skip it even if you think you know your domain
-   - "无影响"不能只写这两个字——必须说明为什么无影响
-   - If diff has `breakingChanges: true`, you must address it in 疑虑
+   - "No impact" must be explained — state why there is no impact, not just the two words
+   - If diff has `breakingChanges: true`, you must address it under Concerns
    - If another reviewer already rejected, you must state whether you agree with their reasoning
    - Blanket approvals without evidence ("LGTM", "looks good") are not acceptable
 
@@ -180,20 +184,20 @@ If the user says "work as `<agent>`", "handle `<agent>`'s work", or similar:
    3. `plansync_comment_create` — **pre-work declaration** (required before execution_start):
 
       ```
-      **[{agentName} 开始执行："{taskTitle}"]**
+      **[{agentName} Starting: "{taskTitle}"]**
 
-      **我的理解：** {用自己的话复述任务目标}
+      **My understanding:** {restate the task goal in your own words}
 
-      **计划约束确认：**
-      - Constraints: {关键约束} — 执行方式：{如何遵守}
-      - Deliverables: {交付物} — 我的计划：{如何完成}
+      **Plan constraints confirmed:**
+      - Constraints: {key constraints} — how I will comply: {approach}
+      - Deliverables: {deliverables} — my plan: {how I will complete them}
 
-      **与其他成员的协调：**
-      - {agentX} 正在做 "{taskY}" — {有无依赖/冲突，如何协调}
-      - （如无交叉）无协调需要
+      **Coordination with other members:**
+      - {agentX} is working on "{taskY}" — {dependency/conflict if any, and how to coordinate}
+      - (if no overlap) No coordination needed
 
-      **执行步骤：**
-      1. {步骤}
+      **Execution steps:**
+      1. {step}
       2. ...
       ```
 

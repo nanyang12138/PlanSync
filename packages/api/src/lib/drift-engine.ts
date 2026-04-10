@@ -5,6 +5,7 @@ import { aiClient } from './ai/client';
 import { getOrCreatePlanDiff } from './ai/plan-diff';
 import { analyzeTaskImpact } from './ai/impact-analysis';
 import { eventBus } from './event-bus';
+import { sendMail, userEmail } from './email';
 
 export interface DriftScanResult {
   alerts: Array<{
@@ -70,7 +71,7 @@ export async function persistDriftAlerts(
 ) {
   if (alerts.length === 0) return [];
 
-  return tx.driftAlert.createManyAndReturn({
+  const created = await tx.driftAlert.createManyAndReturn({
     data: alerts.map((a) => ({
       projectId,
       taskId: a.taskId,
@@ -82,6 +83,51 @@ export async function persistDriftAlerts(
       taskBoundVersion: a.taskBoundVersion,
     })),
   });
+
+  // Notify human task assignees by email
+  const taskIds = alerts.map((a) => a.taskId);
+  const tasks = await prisma.task.findMany({
+    where: { id: { in: taskIds }, assignee: { not: null } },
+    select: { id: true, title: true, assignee: true },
+  });
+
+  // Group alerts by assignee
+  const byAssignee = new Map<string, Array<{ title: string; reason: string }>>();
+  for (const alert of alerts) {
+    const task = tasks.find((t) => t.id === alert.taskId);
+    if (!task?.assignee) continue;
+    if (!byAssignee.has(task.assignee)) byAssignee.set(task.assignee, []);
+    byAssignee.get(task.assignee)!.push({ title: task.title, reason: alert.reason });
+  }
+
+  if (byAssignee.size > 0) {
+    const assigneeNames = Array.from(byAssignee.keys());
+    const humanMembers = await prisma.projectMember.findMany({
+      where: { projectId, name: { in: assigneeNames }, type: 'human' },
+      select: { name: true },
+    });
+    const humanSet = new Set(humanMembers.map((m) => m.name));
+
+    for (const [assignee, affected] of byAssignee.entries()) {
+      if (!humanSet.has(assignee)) continue;
+      const lines = affected.map((a) => `  • "${a.title}": ${a.reason}`).join('\n');
+      const body = [
+        `The following tasks have drift alerts that require your attention:`,
+        '',
+        lines,
+        '',
+        `Please log in to PlanSync to review and resolve these drift alerts.`,
+        `Project ID: ${projectId}`,
+      ].join('\n');
+      try {
+        sendMail([userEmail(assignee)], `[PlanSync] Drift alert: your tasks need attention`, body);
+      } catch (err) {
+        logger.warn({ err, assignee, projectId }, 'Failed to send drift notification email');
+      }
+    }
+  }
+
+  return created;
 }
 
 /** Runs after drift alerts are persisted; uses AI when available to enrich DriftAlert rows. */

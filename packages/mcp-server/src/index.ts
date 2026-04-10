@@ -58,9 +58,13 @@ async function main() {
 
   logger.info({ apiUrl: config.apiBaseUrl, user: config.userName }, 'PlanSync MCP Server starting');
 
-  const projectId = process.env.PLANSYNC_PROJECT;
-  if (projectId) {
-    const listener = new EventListener(config, projectId, (eventType, data) => {
+  const projectId = process.env.PLANSYNC_PROJECT ?? null;
+  const listenerUrl = projectId ? undefined : `${config.apiBaseUrl}/api/user-events`;
+
+  const listener = new EventListener(
+    config,
+    projectId,
+    (eventType, data) => {
       switch (eventType) {
         case 'plan_activated': {
           const msg = `⚠ Plan v${data.version} activated by ${data.activatedBy}. Check your tasks for drift — running work may be affected.`;
@@ -169,17 +173,22 @@ async function main() {
         default:
           logger.debug({ eventType, data }, 'Unhandled SSE event');
       }
-    });
-    listener.start();
+    },
+    undefined,
+    listenerUrl,
+  );
+  listener.start();
 
-    const cleanup = () => {
-      listener.stop();
-      heartbeatManager.stopAll();
-    };
-    process.on('SIGTERM', cleanup);
-    process.on('SIGINT', cleanup);
-    logger.info({ projectId }, 'Event listener started for real-time notifications');
-  }
+  const cleanup = () => {
+    listener.stop();
+    heartbeatManager.stopAll();
+  };
+  process.on('SIGTERM', cleanup);
+  process.on('SIGINT', cleanup);
+  logger.info(
+    { projectId: projectId ?? 'user-level', url: listenerUrl ?? 'project-events' },
+    'Event listener started for real-time notifications',
+  );
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

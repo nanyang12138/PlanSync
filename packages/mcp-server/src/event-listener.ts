@@ -26,9 +26,10 @@ export class EventListener {
 
   constructor(
     private config: McpConfig,
-    private projectId: string,
+    private projectId: string | null,
     handler: EventHandler,
     notifyConfig?: Partial<NotificationConfig>,
+    private urlOverride?: string,
   ) {
     this.handler = handler;
     this.notifyConfig = { ...DEFAULT_CONFIG, ...notifyConfig };
@@ -49,11 +50,12 @@ export class EventListener {
   private async connect(): Promise<void> {
     if (!this.running) return;
 
-    const url = `${this.config.apiBaseUrl}/api/projects/${this.projectId}/events`;
+    const url =
+      this.urlOverride ?? `${this.config.apiBaseUrl}/api/projects/${this.projectId}/events`;
     this.abortController = new AbortController();
 
     try {
-      logger.info({ url, projectId: this.projectId }, 'Connecting to SSE');
+      logger.info({ url, projectId: this.projectId ?? 'user-level' }, 'Connecting to SSE');
       const res = await fetch(url, {
         headers: {
           Authorization: `Bearer ${this.config.apiToken}`,
@@ -67,7 +69,7 @@ export class EventListener {
       }
 
       this.reconnectDelay = 1000;
-      logger.info({ projectId: this.projectId }, 'SSE connected');
+      logger.info({ projectId: this.projectId ?? 'user-level' }, 'SSE connected');
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -100,7 +102,7 @@ export class EventListener {
       }
     } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') return;
-      logger.warn({ err, projectId: this.projectId }, 'SSE connection error');
+      logger.warn({ err, projectId: this.projectId ?? 'user-level' }, 'SSE connection error');
     }
 
     // Re-check this.running after async operations to avoid scheduling a reconnect

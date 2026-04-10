@@ -112,7 +112,7 @@ export function registerStatusTools(server: McpServer, api: ApiClient, config: M
     'plansync_my_work',
     'View all pending work assigned to you (or a named agent): plans awaiting review, assigned tasks, drift alerts. Call at session start. Returns items sorted by priority: drifts (P0) > reviews (P1) > tasks (P2). Use agentName to query work on behalf of an agent member.',
     {
-      projectId: z.string(),
+      projectId: z.string().optional(),
       agentName: z
         .string()
         .optional()
@@ -128,6 +128,35 @@ export function registerStatusTools(server: McpServer, api: ApiClient, config: M
         activeDelegationAgent = undefined;
       }
 
+      // No projectId: use cross-project /api/my-work endpoint
+      if (!args.projectId) {
+        const result = await api.get<{
+          reviews: Array<Record<string, unknown>>;
+          drifts: Array<Record<string, unknown>>;
+          tasks: Array<Record<string, unknown>>;
+        }>('/api/my-work');
+        const { reviews = [], drifts = [], tasks = [] } = result;
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                {
+                  targetUser,
+                  hasWork: reviews.length + drifts.length + tasks.length > 0,
+                  driftAlerts: drifts,
+                  pendingReviews: reviews,
+                  pendingTasks: tasks,
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      }
+
+      // projectId provided: per-project mode (backward compatible)
       // P2: tasks assigned to targetUser with pending status
       const tasksRes = await api.get<{ data: Array<Record<string, unknown>> }>(
         `/api/projects/${args.projectId}/tasks?assignee=${encodeURIComponent(targetUser)}`,
