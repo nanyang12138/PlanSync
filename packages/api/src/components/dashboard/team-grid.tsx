@@ -36,6 +36,18 @@ function StatusDot({ status }: { status: MemberStatus }) {
   return <span className="inline-flex rounded-full h-2 w-2 bg-slate-300" />;
 }
 
+const statusLabel: Record<MemberStatus, string> = {
+  active: 'Active',
+  drift: 'Drift',
+  idle: 'Idle',
+};
+
+const statusTextCls: Record<MemberStatus, string> = {
+  active: 'text-emerald-600',
+  drift: 'text-amber-600 font-medium',
+  idle: 'text-slate-400',
+};
+
 export function TeamGrid({ members, tasks, activePlanVersion, driftTaskIds = [] }: TeamGridProps) {
   const driftTaskIdSet = new Set(driftTaskIds);
 
@@ -44,19 +56,15 @@ export function TeamGrid({ members, tasks, activePlanVersion, driftTaskIds = [] 
   }
 
   return (
-    <div className="space-y-3">
+    <div className="grid grid-cols-2 gap-x-3 gap-y-2">
       {members.map((member) => {
         const status = memberStatus(member, tasks, activePlanVersion, driftTaskIdSet);
         const isAgent = member.type === 'agent';
-        const currentTask = tasks.find(
-          (t) =>
-            t.assignee === member.name && (t.status === 'in_progress' || t.status === 'blocked'),
-        );
 
         return (
-          <div key={member.id} className="flex items-center gap-3">
+          <div key={member.id} className="flex items-center gap-2 min-w-0">
             <div
-              className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
+              className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 ${
                 status === 'drift'
                   ? 'bg-amber-100 text-amber-600'
                   : status === 'active'
@@ -64,30 +72,19 @@ export function TeamGrid({ members, tasks, activePlanVersion, driftTaskIds = [] 
                     : 'bg-slate-100 text-slate-400'
               }`}
             >
-              {isAgent ? <Bot className="h-4 w-4" /> : <User className="h-4 w-4" />}
+              {isAgent ? <Bot className="h-3.5 w-3.5" /> : <User className="h-3.5 w-3.5" />}
             </div>
-            <div className="flex-1 min-w-0">
-              <span className="text-sm font-medium text-slate-900 block truncate">
+            <div className="min-w-0">
+              <span className="text-xs font-medium text-slate-800 block truncate leading-tight">
                 {member.name}
               </span>
-              <div className="flex items-center gap-1.5 mt-0.5">
+              <div className="flex items-center gap-1 mt-0.5">
                 <StatusDot status={status} />
-                <span
-                  className={`text-xs truncate ${status === 'drift' ? 'text-amber-600 font-medium' : 'text-slate-500'}`}
-                >
-                  {status === 'drift'
-                    ? 'Blocked by drift'
-                    : status === 'active' && currentTask
-                      ? currentTask.title
-                      : status === 'active'
-                        ? 'Working'
-                        : 'Idle'}
+                <span className={`text-[10px] ${statusTextCls[status]}`}>
+                  {statusLabel[status]}
                 </span>
               </div>
             </div>
-            <span className={`badge text-[10px] ${isAgent ? 'badge-violet' : 'badge-neutral'}`}>
-              {isAgent ? 'Agent' : member.role}
-            </span>
           </div>
         );
       })}

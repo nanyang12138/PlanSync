@@ -45,8 +45,8 @@ export function ActivityFeed({ activities }: ActivityFeedProps) {
   }
 
   return (
-    <div className="space-y-3 max-h-80 overflow-y-auto pr-2">
-      {activities.map((a) => {
+    <div className="space-y-3">
+      {activities.slice(0, 5).map((a) => {
         const { Icon, cls } = activityIcon(a.type);
         return (
           <div key={a.id} className="flex items-start gap-3">

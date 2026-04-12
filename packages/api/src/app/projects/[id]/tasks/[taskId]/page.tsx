@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { cookies } from 'next/headers';
-import { ArrowLeft, ClipboardList } from 'lucide-react';
+import { ArrowLeft, ClipboardList, Home } from 'lucide-react';
 import { prisma } from '@/lib/prisma';
 import { TaskDetail } from '@/components/task/task-detail';
 import { ExecutionHistory } from '@/components/task/execution-history';
@@ -41,6 +41,9 @@ export default async function TaskDetailPage({
       <div className="page-shell">
         <header className="page-header">
           <div className="mx-auto flex max-w-7xl items-center gap-4 px-6 py-3">
+            <Link href="/" className="btn-ghost !px-2 !py-1.5 shrink-0" title="All Projects">
+              <Home className="h-4 w-4" />
+            </Link>
             <Link href={`/projects/${params.id}`} className="btn-ghost !px-2 !py-1.5">
               <ArrowLeft className="h-4 w-4" />
               <span className="hidden sm:inline">Back to {project.name}</span>

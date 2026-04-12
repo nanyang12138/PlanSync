@@ -1,29 +1,23 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { prisma } from '@/lib/prisma';
-import { PlanCard } from '@/components/dashboard/plan-card';
 import { DriftAlertCard } from '@/components/dashboard/drift-alert-card';
-import { TeamGrid } from '@/components/dashboard/team-grid';
 import { TaskList } from '@/components/dashboard/task-list';
-import { ActivityFeed } from '@/components/dashboard/activity-feed';
+import { SidebarTabs } from '@/components/dashboard/sidebar-tabs';
 import {
   GitBranch,
-  ArrowLeft,
   Users,
   AlertTriangle,
   CheckCircle2,
-  Activity,
   FileText,
   LayoutDashboard,
   ListChecks,
-  Sparkles,
 } from 'lucide-react';
 import { RealtimeWrapper } from '@/components/realtime-wrapper';
 import { PageHeader } from '@/components/shared/page-header';
 import { SummaryStrip } from '@/components/shared/summary-strip';
 import { StatusBlock } from '@/components/shared/status-block';
 import { SectionShell } from '@/components/shared/section-shell';
-import { AiChatPanel } from '@/components/dashboard/ai-chat-panel';
 
 export default async function ProjectDashboard({ params }: { params: { id: string } }) {
   const project = await prisma.project.findUnique({
@@ -56,11 +50,6 @@ export default async function ProjectDashboard({ params }: { params: { id: strin
     <RealtimeWrapper projectId={params.id}>
       <div className="page-shell">
         <PageHeader
-          breadcrumbs={
-            <Link href="/" className="btn-ghost !px-2 !py-1.5">
-              <ArrowLeft className="h-4 w-4" />
-            </Link>
-          }
           title={
             <div className="flex items-center gap-3">
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-600 to-violet-600 shadow-sm shrink-0">
@@ -178,33 +167,16 @@ export default async function ProjectDashboard({ params }: { params: { id: strin
             </div>
 
             {/* Right sidebar - Sticky */}
-            <div className="lg:col-span-4 space-y-6 sticky top-24">
-              <SectionShell title="Active Plan" icon={<GitBranch className="h-5 w-5" />}>
-                {activePlan ? (
-                  <PlanCard plan={activePlan} projectId={params.id} />
-                ) : (
-                  <p className="text-sm text-slate-500 italic text-center py-4">
-                    No active plan yet
-                  </p>
-                )}
-              </SectionShell>
-
-              <SectionShell title="Team Status" icon={<Users className="h-5 w-5" />}>
-                <TeamGrid
-                  members={project.members}
-                  tasks={project.tasks}
-                  activePlanVersion={activePlan?.version}
-                  driftTaskIds={driftAlerts.map((a) => a.taskId)}
-                />
-              </SectionShell>
-
-              <SectionShell title="PlanSync AI" icon={<Sparkles className="h-5 w-5" />}>
-                <AiChatPanel projectId={params.id} />
-              </SectionShell>
-
-              <SectionShell title="Recent Activity" icon={<Activity className="h-5 w-5" />}>
-                <ActivityFeed activities={activities} />
-              </SectionShell>
+            <div className="lg:col-span-4 sticky top-24">
+              <SidebarTabs
+                projectId={params.id}
+                activePlan={activePlan ?? null}
+                members={project.members}
+                tasks={project.tasks}
+                activePlanVersion={activePlan?.version}
+                driftTaskIds={driftAlerts.map((a) => a.taskId)}
+                activities={activities}
+              />
             </div>
           </div>
         </main>

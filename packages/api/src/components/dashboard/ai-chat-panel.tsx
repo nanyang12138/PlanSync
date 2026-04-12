@@ -9,6 +9,36 @@ type AiChatPanelProps = {
   projectId: string;
 };
 
+function MessageContent({ content }: { content: string }) {
+  const parts = content.split(/(```[\s\S]*?```)/g);
+  return (
+    <>
+      {parts.map((part, i) => {
+        if (part.startsWith('```')) {
+          const code = part.replace(/^```[^\n]*\n?/, '').replace(/```$/, '');
+          return (
+            <pre
+              key={i}
+              className="mt-1.5 rounded p-2 bg-slate-900 text-slate-100 text-[10px] font-mono overflow-x-auto whitespace-pre"
+            >
+              {code}
+            </pre>
+          );
+        }
+        return (
+          <span key={i}>
+            {part.split('\n\n').map((para, j) => (
+              <p key={j} className={j > 0 ? 'mt-1.5' : ''}>
+                {para}
+              </p>
+            ))}
+          </span>
+        );
+      })}
+    </>
+  );
+}
+
 export function AiChatPanel({ projectId }: AiChatPanelProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -35,10 +65,7 @@ export function AiChatPanel({ projectId }: AiChatPanelProps) {
       const res = await fetch(`/api/projects/${projectId}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: text,
-          history: messages.slice(-8),
-        }),
+        body: JSON.stringify({ message: text, history: messages.slice(-8) }),
       });
 
       if (res.status === 503) {
@@ -47,8 +74,10 @@ export function AiChatPanel({ projectId }: AiChatPanelProps) {
       }
 
       const data = await res.json();
-      const reply = data.reply ?? 'No response from PlanSync AI.';
-      setMessages([...nextMessages, { role: 'assistant', content: reply }]);
+      setMessages([
+        ...nextMessages,
+        { role: 'assistant', content: data.reply ?? 'No response from PlanSync AI.' },
+      ]);
     } catch {
       setMessages([
         ...nextMessages,
@@ -68,31 +97,28 @@ export function AiChatPanel({ projectId }: AiChatPanelProps) {
 
   if (aiUnavailable) {
     return (
-      <div className="flex flex-col items-center gap-3 py-6 text-center">
+      <div className="flex flex-col h-full items-center justify-center gap-3 p-6 text-center">
         <AlertCircle className="h-8 w-8 text-amber-400" />
         <p className="text-sm font-medium text-slate-700">PlanSync AI not configured</p>
         <p className="text-xs text-slate-500 max-w-[200px]">
           Set <code className="font-mono">LLM_API_KEY</code> or{' '}
-          <code className="font-mono">ANTHROPIC_API_KEY</code> in your server environment to enable
-          AI.
+          <code className="font-mono">ANTHROPIC_API_KEY</code> in your server environment.
         </p>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col h-[380px]">
-      {/* Message list */}
-      <div className="flex-1 overflow-y-auto space-y-3 pr-1 pb-2">
+    <div className="flex flex-col h-full">
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto px-4 pt-4 pb-2 space-y-3">
         {messages.length === 0 && (
-          <div className="text-center py-4 space-y-2">
-            <div className="flex justify-center">
-              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-violet-500">
-                <Sparkles className="h-4 w-4 text-white" />
-              </div>
+          <div className="flex flex-col items-center gap-3 pt-6 text-center">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-violet-500">
+              <Sparkles className="h-4.5 w-4.5 text-white" />
             </div>
-            <p className="text-xs text-slate-500">Hi, I&apos;m PlanSync AI. Try asking me:</p>
-            <div className="space-y-1">
+            <p className="text-xs text-slate-500">Hi, I&apos;m PlanSync AI. Try asking:</p>
+            <div className="w-full space-y-1">
               {[
                 'What should I work on today?',
                 'Explain this drift alert',
@@ -104,7 +130,7 @@ export function AiChatPanel({ projectId }: AiChatPanelProps) {
                     setInput(hint);
                     textareaRef.current?.focus();
                   }}
-                  className="block w-full text-xs text-left text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded px-2 py-1 transition-colors"
+                  className="block w-full text-xs text-left text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded px-3 py-1.5 transition-colors"
                 >
                   {hint}
                 </button>
@@ -116,13 +142,13 @@ export function AiChatPanel({ projectId }: AiChatPanelProps) {
         {messages.map((msg, i) => (
           <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div
-              className={`max-w-[85%] rounded-xl px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap ${
+              className={`max-w-[88%] rounded-xl px-3 py-2 text-xs leading-relaxed ${
                 msg.role === 'user'
                   ? 'bg-blue-600 text-white rounded-br-sm'
                   : 'bg-slate-100 text-slate-700 rounded-bl-sm'
               }`}
             >
-              {msg.content}
+              {msg.role === 'assistant' ? <MessageContent content={msg.content} /> : msg.content}
             </div>
           </div>
         ))}
@@ -138,14 +164,14 @@ export function AiChatPanel({ projectId }: AiChatPanelProps) {
         <div ref={bottomRef} />
       </div>
 
-      {/* Input */}
-      <div className="flex items-end gap-2 pt-2 border-t border-slate-100">
+      {/* Input — pinned at bottom */}
+      <div className="border-t border-slate-100 p-3 flex items-end gap-2">
         <textarea
           ref={textareaRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Ask me anything about plans, tasks, or drift..."
+          placeholder="Ask about plans, tasks, or drift..."
           rows={1}
           className="flex-1 resize-none rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 leading-relaxed"
           style={{ maxHeight: '80px', overflowY: 'auto' }}

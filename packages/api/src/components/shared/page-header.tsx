@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Menu, X } from 'lucide-react';
+import { Menu, X, Home } from 'lucide-react';
 import { UserIdentity } from '@/components/user-identity';
 
 interface NavItem {
@@ -29,6 +29,11 @@ export function PageHeader({ breadcrumbs, title, navigation, actions }: PageHead
         {/* Top Row: Breadcrumbs, Title, Actions */}
         <div className="flex items-center justify-between gap-4">
           <div className="flex min-w-0 flex-1 items-center gap-3">
+            {pathname !== '/' && (
+              <Link href="/" className="btn-ghost !px-2 !py-1.5 shrink-0" title="All Projects">
+                <Home className="h-4 w-4" />
+              </Link>
+            )}
             {breadcrumbs}
             {title && <div className="truncate">{title}</div>}
           </div>
