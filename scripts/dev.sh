@@ -25,18 +25,13 @@ if ! pg_isready -p "$PG_PORT" -q 2>/dev/null; then
   pg_ctl -D "$PG_DATA" -l "$PG_DATA/logfile" -o "-p $PG_PORT" start > /dev/null 2>&1
 fi
 
-# Load user credentials first (~/.config/plansync/env), then project .env.
-# Project .env takes precedence (allows per-project overrides).
-# This ensures LLM_API_KEY set by bin/plansync is available to the web server.
-_load_env() {
-  [ -f "$1" ] || return 0
+# Load environment variables from root .env (bash expands ${USER} etc.)
+if [ -f "$PROJECT_DIR/.env" ]; then
   set -a
-  # shellcheck source=/dev/null
-  . "$1"
+  # shellcheck source=../.env
+  . "$PROJECT_DIR/.env"
   set +a
-}
-_load_env "$HOME/.config/plansync/env"
-_load_env "$PROJECT_DIR/.env"
+fi
 
 # Clear stale Next.js webpack cache (module IDs shift when new files are added)
 BUILD_DIR="$PROJECT_DIR/packages/api/tmp/ps-next-build-$(whoami)"
