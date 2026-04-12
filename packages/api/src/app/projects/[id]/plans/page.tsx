@@ -137,7 +137,9 @@ export default async function ProjectPlansPage({
                 <div className="py-6 text-center">
                   <p className="text-base font-semibold text-slate-700">No plans yet</p>
                   <p className="mt-1 text-sm text-slate-500">
-                    Owners can create the first draft plan from this page.
+                    {isOwner
+                      ? 'Use the panel below to draft your first plan.'
+                      : 'The project owner can create the first plan from this page.'}
                   </p>
                 </div>
               )}

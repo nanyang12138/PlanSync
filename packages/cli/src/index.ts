@@ -954,7 +954,7 @@ async function main() {
         cfg.project = list[0].id;
         process.stdout.write(' '.repeat(40) + '\r');
         console.log(`  ${c.dim}Auto-selected project: ${c.bold}${list[0].name}${c.reset}`);
-      } else if (list.length > 1) {
+      } else {
         process.stdout.write(' '.repeat(40) + '\r');
         await selectProject(rl);
       }

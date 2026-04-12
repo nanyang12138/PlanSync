@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import type { Plan, ProjectMember, Task, Activity } from '@prisma/client';
 import { Sparkles, GitBranch, Users, Activity as ActivityIcon } from 'lucide-react';
 import { AiChatPanel } from './ai-chat-panel';
@@ -69,7 +70,15 @@ export function SidebarTabs({
             (activePlan ? (
               <PlanCard plan={activePlan} projectId={projectId} />
             ) : (
-              <p className="text-sm text-slate-500 italic text-center py-8">No active plan yet.</p>
+              <div className="text-center py-8 space-y-2">
+                <p className="text-sm text-slate-500 italic">No active plan yet.</p>
+                <Link
+                  href={`/projects/${projectId}/plans`}
+                  className="text-sm text-blue-500 hover:underline"
+                >
+                  Go to Plans →
+                </Link>
+              </div>
             ))}
           {activeTab === 'team' && (
             <TeamGrid

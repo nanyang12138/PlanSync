@@ -31,8 +31,38 @@ Before responding to anything (including "hi" or a direct task request):
    ```
    ⚠ Pending items  {N} pending reviews · {M} drifts
    ```
-3. Call `plansync_status` (if `PLANSYNC_PROJECT` is set); otherwise call `plansync_project_list` so the user can select a project
-4. Output the status in this exact format:
+3. Call `plansync_status` (if `PLANSYNC_PROJECT` is set); otherwise call `plansync_project_list`
+4. Output status based on the result — choose the matching case:
+
+**Case A — No projects exist** (`plansync_project_list` returns `data: []`):
+
+```
+**PlanSync [Terminal Mode]** · {userName} · Getting Started
+───────────────────────────────────────────────
+Welcome to PlanSync! No projects yet.
+
+Create your first project:
+  "create a new project called <name>"
+
+I'll guide you through plans, tasks, and team setup.
+───────────────────────────────────────────────
+What would you like to name your first project?
+```
+
+**Case B — Projects exist, but `PLANSYNC_PROJECT` is not set** (user must select one):
+
+```
+**PlanSync [Terminal Mode]** · {userName}
+───────────────────────────────────────────────
+Select a project to work on:
+  1. {projectName}  —  {N tasks · active plan vN}
+  2. {projectName}  —  {N tasks · no active plan}
+  ...
+───────────────────────────────────────────────
+Which project? (or "new project: <name>" to create one)
+```
+
+**Case C — `PLANSYNC_PROJECT` is set and an active plan exists** (normal operation):
 
 ```
 **PlanSync [Terminal Mode]** · {userName} · {projectName}
@@ -44,6 +74,22 @@ Tasks        {total} · {done} done / {inProgress} in progress / {todo} todo
 Drift        {N pending} or none ✓
 ───────────────────────────────────────────────
 What would you like to work on today?
+```
+
+**Case D — `PLANSYNC_PROJECT` is set but no active plan exists yet**:
+
+```
+**PlanSync [Terminal Mode]** · {userName} · {projectName}
+───────────────────────────────────────────────
+Active Plan  none — no plan activated yet
+───────────────────────────────────────────────
+Tasks        0 · 0 done / 0 in progress / 0 todo
+Drift        none ✓
+───────────────────────────────────────────────
+Next step: create your first plan.
+  "create a plan: <goal summary>"
+───────────────────────────────────────────────
+What would you like to do?
 ```
 
 5. Wait for the user's response.
