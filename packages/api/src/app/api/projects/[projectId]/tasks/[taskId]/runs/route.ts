@@ -59,15 +59,17 @@ export async function POST(req: NextRequest, { params }: Params) {
       throw new AppError(ErrorCode.FORBIDDEN, 'Cannot start execution as another user');
     }
     if (body.executorType === 'agent') {
-      const agentMember = await prisma.projectMember.findFirst({
-        where: { projectId: params.projectId, name: body.executorName, type: 'agent' },
+      // Auto-register agent as a project member on first execution — no manual setup required
+      await prisma.projectMember.upsert({
+        where: { projectId_name: { projectId: params.projectId, name: body.executorName } },
+        create: {
+          projectId: params.projectId,
+          name: body.executorName,
+          role: 'developer',
+          type: 'agent',
+        },
+        update: {},
       });
-      if (!agentMember) {
-        throw new AppError(
-          ErrorCode.BAD_REQUEST,
-          `Agent "${body.executorName}" is not a registered member of this project`,
-        );
-      }
     }
 
     const taskPack = await buildTaskPack(params.taskId, params.projectId);
