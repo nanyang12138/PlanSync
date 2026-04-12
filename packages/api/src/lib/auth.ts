@@ -58,6 +58,27 @@ export async function authenticate(req: NextRequest): Promise<AuthContext> {
   const tokenFromHeader = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
   const token = tokenFromHeader ?? qpToken;
 
+  // Master delegation: PLANSYNC_SECRET lets the server owner act as any registered user.
+  // Used for multi-user simulation in dev/testing. Requires a non-default secret value.
+  const masterSecret = process.env.PLANSYNC_SECRET;
+  if (masterSecret && masterSecret !== 'dev-secret' && token === masterSecret) {
+    const userName = req.headers.get('x-user-name') || qpUser;
+    if (!userName) {
+      throw new AppError(
+        ErrorCode.UNAUTHORIZED,
+        'X-User-Name header required with delegation token',
+      );
+    }
+    // Skip DB check when AUTH_DISABLED=true (test environments don't register accounts)
+    if (!authDisabled) {
+      const exists = await prisma.userAccount.findFirst({ where: { userName } });
+      if (!exists) {
+        throw new AppError(ErrorCode.UNAUTHORIZED, `Delegation target "${userName}" not found`);
+      }
+    }
+    return { userName };
+  }
+
   // Allow login password as Bearer token (each user sets PLANSYNC_API_KEY = their password).
   // Identity comes from X-User-Name header (set by bin/plansync from $USER).
   if (token && !token.startsWith('ps_key_')) {

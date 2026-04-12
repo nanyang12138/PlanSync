@@ -54,12 +54,15 @@ export async function GET(req: NextRequest) {
         },
       }),
 
-      // P0: Open drift alerts on tasks assigned to user
+      // P0: Open drift alerts on tasks assigned to user, plus unassigned tasks in their projects
+      // (unassigned tasks have no specific owner, so we surface them to all project members)
       prisma.driftAlert.findMany({
         where: {
           projectId: { in: projectIds },
           status: 'open',
-          task: { assignee: auth.userName },
+          task: {
+            OR: [{ assignee: auth.userName }, { assignee: null }],
+          },
         },
         include: {
           task: { select: { id: true, title: true, assignee: true } },

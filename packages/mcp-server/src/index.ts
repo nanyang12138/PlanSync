@@ -59,15 +59,25 @@ async function main() {
   logger.info({ apiUrl: config.apiBaseUrl, user: config.userName }, 'PlanSync MCP Server starting');
 
   const projectId = process.env.PLANSYNC_PROJECT ?? null;
-  const listenerUrl = projectId ? undefined : `${config.apiBaseUrl}/api/user-events`;
+  // Always subscribe to user-level SSE so the user receives notifications from ALL their
+  // projects, not just the currently active one. /api/user-events enriches each event with
+  // projectId and projectName so we can prefix messages accordingly.
+  const listenerUrl = `${config.apiBaseUrl}/api/user-events`;
 
   const listener = new EventListener(
     config,
     projectId,
     (eventType, data) => {
+      // Prefix notification with [ProjectName] when event comes from user-level SSE
+      // (user-events adds projectName to each event; project-specific SSE does not)
+      const pfx = (msg: string) =>
+        data.projectName ? `[${data.projectName as string}] ${msg}` : msg;
+
       switch (eventType) {
         case 'plan_activated': {
-          const msg = `⚠ Plan v${data.version} activated by ${data.activatedBy}. Check your tasks for drift — running work may be affected.`;
+          const msg = pfx(
+            `⚠ Plan v${data.version} activated by ${data.activatedBy}. Check your tasks for drift — running work may be affected.`,
+          );
           logger.warn({ version: data.version, activatedBy: data.activatedBy }, msg);
           pushNotification(server, 'warning', msg, {
             version: data.version,
@@ -79,38 +89,42 @@ async function main() {
           const alerts = data.alerts as Array<{ taskId: string; severity: string }> | undefined;
           const highCount = alerts?.filter((a) => a.severity === 'high').length ?? 0;
           const medCount = alerts?.filter((a) => a.severity === 'medium').length ?? 0;
-          const msg = `⚠ Drift detected: ${alerts?.length ?? 0} alert(s) (${highCount} high, ${medCount} medium). Pause execution and check drift alerts.`;
+          const msg = pfx(
+            `⚠ Drift detected: ${alerts?.length ?? 0} alert(s) (${highCount} high, ${medCount} medium). Pause execution and check drift alerts.`,
+          );
           logger.warn({ alertCount: alerts?.length, highCount, medCount }, msg);
           pushNotification(server, 'warning', msg, { alerts: data.alerts });
           break;
         }
         case 'drift_resolved': {
-          const msg = `Drift alert resolved (action: ${data.resolvedAction ?? data.action}, by: ${data.resolvedBy ?? 'unknown'})`;
+          const msg = pfx(
+            `Drift alert resolved (action: ${data.resolvedAction ?? data.action}, by: ${data.resolvedBy ?? 'unknown'})`,
+          );
           logger.info({ alertId: data.alertId, action: data.resolvedAction ?? data.action }, msg);
           pushNotification(server, 'info', msg, { alertId: data.alertId });
           break;
         }
         case 'task_created': {
           logger.info({ taskId: data.taskId, title: data.title }, 'New task created');
-          pushNotification(server, 'info', `New task created: "${data.title}"`, {
+          pushNotification(server, 'info', pfx(`New task created: "${data.title}"`), {
             taskId: data.taskId,
           });
           break;
         }
         case 'task_assigned': {
-          const msg = `Task "${data.title}" assigned to ${data.assignee}`;
+          const msg = pfx(`Task "${data.title}" assigned to ${data.assignee}`);
           logger.info({ taskId: data.taskId, assignee: data.assignee }, msg);
           pushNotification(server, 'info', msg, { taskId: data.taskId });
           break;
         }
         case 'task_unassigned': {
-          const msg = `Task unassigned (was: ${data.previousAssignee})`;
+          const msg = pfx(`Task unassigned (was: ${data.previousAssignee})`);
           logger.info({ taskId: data.taskId, previousAssignee: data.previousAssignee }, msg);
           pushNotification(server, 'info', msg, { taskId: data.taskId });
           break;
         }
         case 'task_completed': {
-          const msg = `Task "${data.title ?? data.taskId}" completed`;
+          const msg = pfx(`Task "${data.title ?? data.taskId}" completed`);
           logger.info({ taskId: data.taskId }, msg);
           pushNotification(server, 'info', msg, { taskId: data.taskId });
           break;
@@ -123,13 +137,17 @@ async function main() {
           break;
         }
         case 'execution_stale': {
-          const msg = `⚠ Execution run went stale (no heartbeat) — executor "${data.executorName}" may have crashed`;
+          const msg = pfx(
+            `⚠ Execution run went stale (no heartbeat) — executor "${data.executorName}" may have crashed`,
+          );
           logger.warn({ runId: data.runId, taskId: data.taskId }, msg);
           pushNotification(server, 'warning', msg, { runId: data.runId, taskId: data.taskId });
           break;
         }
         case 'suggestion_created': {
-          const msg = `New plan suggestion by ${data.suggestedBy}: ${data.field} → "${data.value}"`;
+          const msg = pfx(
+            `New plan suggestion by ${data.suggestedBy}: ${data.field} → "${data.value}"`,
+          );
           logger.info({ suggestionId: data.suggestionId }, msg);
           pushNotification(server, 'info', msg, {
             suggestionId: data.suggestionId,
@@ -138,7 +156,9 @@ async function main() {
           break;
         }
         case 'suggestion_resolved': {
-          const msg = `Plan suggestion resolved (status: ${data.status ?? data.resolution}, by: ${data.resolvedBy ?? 'unknown'})`;
+          const msg = pfx(
+            `Plan suggestion resolved (status: ${data.status ?? data.resolution}, by: ${data.resolvedBy ?? 'unknown'})`,
+          );
           logger.info(
             {
               suggestionId: data.suggestionId,
@@ -151,7 +171,7 @@ async function main() {
           break;
         }
         case 'plan_proposed': {
-          const msg = `Plan "${data.title}" submitted for review by ${data.proposedBy}`;
+          const msg = pfx(`Plan "${data.title}" submitted for review by ${data.proposedBy}`);
           logger.info({ planId: data.planId }, msg);
           pushNotification(server, 'info', msg, { planId: data.planId });
           break;

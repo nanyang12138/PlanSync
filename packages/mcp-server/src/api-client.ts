@@ -16,9 +16,15 @@ export class ApiError extends Error {
 export class ApiClient {
   constructor(private config: McpConfig) {}
 
-  /** Return a new ApiClient that sends a different X-User-Name header (for delegation). */
+  /** Return a new ApiClient that sends a different X-User-Name header (for delegation).
+   *  If a delegationSecret is configured, it is used as the Bearer token so the API
+   *  can authenticate any registered user without their individual password. */
   withUser(userName: string): ApiClient {
-    return new ApiClient({ ...this.config, userName });
+    return new ApiClient({
+      ...this.config,
+      userName,
+      apiToken: this.config.delegationSecret || this.config.apiToken,
+    });
   }
 
   private get headers(): Record<string, string> {

@@ -27,6 +27,7 @@ export PLANSYNC_API_URL="${PLANSYNC_API_URL:-http://localhost:3001}"
 export PLANSYNC_API_KEY="${PLANSYNC_API_KEY:-}"
 export PLANSYNC_USER="${PLANSYNC_USER:-$USER}"
 export PLANSYNC_PROJECT="${PLANSYNC_PROJECT:-}"
+export PLANSYNC_SECRET="${PLANSYNC_SECRET:-}"
 export LOG_LEVEL="${LOG_LEVEL:-warn}"
 
 MCP_SERVER="$PROJECT_DIR/packages/mcp-server/dist/index.js"

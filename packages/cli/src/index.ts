@@ -236,6 +236,12 @@ class McpClient {
   private reqId = 0;
   private tools: any[] = [];
   private readBuffer = '';
+  private notifyPrinter: ((text: string) => void) | null = null;
+
+  /** Call after readline is ready to get clean notification rendering. */
+  setNotifyPrinter(fn: (text: string) => void): void {
+    this.notifyPrinter = fn;
+  }
 
   async start(serverPath: string): Promise<void> {
     const env: Record<string, string> = {
@@ -296,7 +302,13 @@ class McpClient {
     if (msg.method === 'notifications/message') {
       const data = msg.params?.data;
       const text = typeof data === 'string' ? data : data?.message || JSON.stringify(data);
-      if (text) process.stdout.write(`\n${c.yellow}[PlanSync] ${text}${c.reset}\n`); // notifications already in English
+      if (text) {
+        if (this.notifyPrinter) {
+          this.notifyPrinter(text);
+        } else {
+          process.stdout.write(`\n${c.yellow}[PlanSync] ${text}${c.reset}\n`);
+        }
+      }
     }
   }
 
@@ -895,7 +907,8 @@ async function selectProject(rl: readline.Interface): Promise<void> {
 
 function writeGenieSettings(): void {
   // Auto-generate .claude/settings.local.json so any user can run /code without manual setup.
-  // This file is not committed to git — it's regenerated on every startup with the current user's paths.
+  // This file is in the project directory (shared NFS) — never write user credentials here.
+  // Credentials are read per-user from ~/.config/plansync/env by bin/start-mcp.
   const projectRoot = path.resolve(_selfDir, '../../../');
   const settingsPath = path.join(projectRoot, '.claude', 'settings.local.json');
   try {
@@ -907,13 +920,10 @@ function writeGenieSettings(): void {
     }
     existing.mcpServers = {
       plansync: {
-        command: cfg.nodeBin,
-        args: [cfg.mcpServer],
+        command: path.join(projectRoot, 'bin', 'start-mcp'),
+        args: [],
         env: {
-          PLANSYNC_API_URL: cfg.apiUrl,
-          PLANSYNC_API_KEY: cfg.apiKey,
-          PLANSYNC_USER: cfg.user,
-          PLANSYNC_PROJECT: '',
+          PLANSYNC_PROJECT: cfg.project || '',
           LOG_LEVEL: 'warn',
         },
       },
@@ -961,6 +971,18 @@ async function main() {
     await mcp.start(cfg.mcpServer);
     mcpOk = true;
     process.stdout.write(' '.repeat(40) + '\r');
+    // Connect readline to MCP notification printer so notifications
+    // don't collide with the user's current input line.
+    mcp.setNotifyPrinter((text) => {
+      readline.clearLine(process.stdout, 0);
+      readline.cursorTo(process.stdout, 0);
+      process.stdout.write(`${c.yellow}[PlanSync] ${text}${c.reset}\n`);
+      // Only re-display the prompt when readline is idle (not during AI streaming).
+      // rl.paused is true while runAgentLoop holds the input loop.
+      if (!(rl as any).paused) {
+        rl.prompt(true);
+      }
+    });
   } catch (err: any) {
     process.stdout.write(' '.repeat(40) + '\r');
     console.log(`${c.yellow}⚠ MCP server failed to start: ${err.message}${c.reset}`);
