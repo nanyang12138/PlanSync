@@ -167,11 +167,13 @@ export default async function ProjectDashboard({ params }: { params: { id: strin
                 description="Current tasks and their execution status"
                 icon={<ListChecks className="h-5 w-5" />}
               >
-                <TaskList
-                  tasks={project.tasks}
-                  activePlanVersion={activePlan?.version}
-                  projectId={params.id}
-                />
+                <div className="max-h-[560px] overflow-y-auto">
+                  <TaskList
+                    tasks={project.tasks}
+                    activePlanVersion={activePlan?.version}
+                    projectId={params.id}
+                  />
+                </div>
               </SectionShell>
             </div>
 

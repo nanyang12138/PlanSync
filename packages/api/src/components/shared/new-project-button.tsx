@@ -1,16 +1,21 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { Plus, X } from 'lucide-react';
 
 export function NewProjectButton() {
   const router = useRouter();
   const [open, setOpen] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  // Track client mount to safely use createPortal (document.body unavailable during SSR)
+  useEffect(() => setMounted(true), []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -51,63 +56,66 @@ export function NewProjectButton() {
         New Project
       </button>
 
-      {open && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
-          onClick={(e) => e.target === e.currentTarget && handleClose()}
-        >
-          <div className="panel w-full max-w-md p-6 shadow-2xl">
-            <div className="flex items-center justify-between mb-5">
-              <h2 className="text-base font-semibold text-slate-900">New Project</h2>
-              <button
-                type="button"
-                onClick={handleClose}
-                className="rounded-lg p-1 text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
-              >
-                <X className="h-4 w-4" />
-              </button>
+      {open &&
+        mounted &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+            onClick={(e) => e.target === e.currentTarget && handleClose()}
+          >
+            <div className="panel w-full max-w-md p-6 shadow-2xl">
+              <div className="flex items-center justify-between mb-5">
+                <h2 className="text-base font-semibold text-slate-900">New Project</h2>
+                <button
+                  type="button"
+                  onClick={handleClose}
+                  className="rounded-lg p-1 text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div>
+                  <label className="section-label mb-1.5 block">Project Name *</label>
+                  <input
+                    autoFocus
+                    className="input-field w-full"
+                    placeholder="e.g. GPU Verification Q3"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    maxLength={100}
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="section-label mb-1.5 block">Description</label>
+                  <textarea
+                    className="input-field w-full resize-none"
+                    rows={3}
+                    placeholder="What is this project about?"
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    maxLength={2000}
+                  />
+                </div>
+
+                {error && <p className="text-sm text-rose-600">{error}</p>}
+
+                <div className="flex justify-end gap-2 pt-1">
+                  <button type="button" onClick={handleClose} className="btn-secondary">
+                    Cancel
+                  </button>
+                  <button type="submit" disabled={loading || !name.trim()} className="btn-primary">
+                    {loading ? 'Creating…' : 'Create Project'}
+                  </button>
+                </div>
+              </form>
             </div>
-
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div>
-                <label className="section-label mb-1.5 block">Project Name *</label>
-                <input
-                  autoFocus
-                  className="input-field w-full"
-                  placeholder="e.g. GPU Verification Q3"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  maxLength={100}
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="section-label mb-1.5 block">Description</label>
-                <textarea
-                  className="input-field w-full resize-none"
-                  rows={3}
-                  placeholder="What is this project about?"
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  maxLength={2000}
-                />
-              </div>
-
-              {error && <p className="text-sm text-rose-600">{error}</p>}
-
-              <div className="flex justify-end gap-2 pt-1">
-                <button type="button" onClick={handleClose} className="btn-secondary">
-                  Cancel
-                </button>
-                <button type="submit" disabled={loading || !name.trim()} className="btn-primary">
-                  {loading ? 'Creating…' : 'Create Project'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body,
+        )}
     </>
   );
 }
