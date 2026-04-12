@@ -18,13 +18,19 @@ export function sendMail(to: string[], subject: string, body: string): void {
     body,
   ].join('\n');
 
-  const result = spawnSync(SENDMAIL, ['-t'], {
-    input: message,
-    timeout: 10000,
-  });
+  try {
+    const result = spawnSync(SENDMAIL, ['-t'], {
+      input: message,
+      timeout: 10000,
+    });
 
-  if (result.status !== 0) {
-    const err = result.stderr?.toString() ?? 'unknown error';
-    throw new Error(`sendmail failed: ${err}`);
+    if (result.status !== 0) {
+      const err = result.stderr?.toString().slice(0, 200) ?? 'unknown error';
+      console.warn('[email] sendmail failed (status %d): %s', result.status, err);
+      // Do not throw — email failure must not block drift scans or plan proposals
+    }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn('[email] sendmail unavailable: %s', msg);
   }
 }

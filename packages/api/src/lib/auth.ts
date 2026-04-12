@@ -25,6 +25,13 @@ async function verifyPassword(password: string, stored: string): Promise<boolean
 // Cache successful password verifications for 5 min to avoid scrypt on every API call
 const _pwCache = new Map<string, { user: string; exp: number }>();
 
+/** Remove all cached entries for a user. Call after a successful password change. */
+export function invalidatePasswordCache(userName: string): void {
+  for (const key of _pwCache.keys()) {
+    if (key.startsWith(`${userName}:`)) _pwCache.delete(key);
+  }
+}
+
 async function verifyApiKey(
   rawKey: string,
 ): Promise<{ userName: string; projectId: string } | null> {

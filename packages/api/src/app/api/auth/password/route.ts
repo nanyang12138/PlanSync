@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
-import { authenticate } from '@/lib/auth';
+import { authenticate, invalidatePasswordCache } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { AppError } from '@plansync/shared';
 
@@ -64,6 +64,7 @@ export async function PUT(req: NextRequest) {
 
     const passwordHash = await hashPassword(newPassword);
     await prisma.userAccount.update({ where: { userName }, data: { passwordHash } });
+    invalidatePasswordCache(userName);
 
     return NextResponse.json({ success: true });
   } catch (error) {

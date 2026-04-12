@@ -54,6 +54,22 @@ export async function POST(req: NextRequest, { params }: Params) {
       throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
     }
 
+    // Authorization: humans cannot impersonate other users; agents must be registered members
+    if (body.executorType === 'human' && body.executorName !== auth.userName) {
+      throw new AppError(ErrorCode.FORBIDDEN, 'Cannot start execution as another user');
+    }
+    if (body.executorType === 'agent') {
+      const agentMember = await prisma.projectMember.findFirst({
+        where: { projectId: params.projectId, name: body.executorName, type: 'agent' },
+      });
+      if (!agentMember) {
+        throw new AppError(
+          ErrorCode.BAD_REQUEST,
+          `Agent "${body.executorName}" is not a registered member of this project`,
+        );
+      }
+    }
+
     const taskPack = await buildTaskPack(params.taskId, params.projectId);
 
     if (taskPack && taskPack.driftAlerts.length > 0) {
