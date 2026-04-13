@@ -569,6 +569,12 @@ async function runAgentLoop(
   system: string,
   status: ProjectStatus,
   mcp: McpClient,
+  onExecStart?: (
+    taskId: string,
+    runId: string,
+    projectId: string,
+    taskPack: unknown,
+  ) => Promise<void>,
 ): Promise<string> {
   const tools = mcp.getAnthropicTools();
   const messages: Message[] = [...history, { role: 'user', content: userInput }];
@@ -604,6 +610,38 @@ async function runAgentLoop(
       } catch (err: any) {
         result = `Tool error: ${err.message}`;
       }
+
+      // ─── Auto-launch Genie when execution_start is called ────────────
+      if (
+        tc.name === 'plansync_execution_start' &&
+        onExecStart &&
+        !result.startsWith('Tool error')
+      ) {
+        try {
+          const parsed = JSON.parse(result);
+          const run = parsed?.data ?? parsed;
+          const runId: string = run?.id ?? '';
+          const taskPack: unknown = run?.taskPackSnapshot ?? null;
+          const projectId: string = (tc.input as any)?.projectId ?? cfg.project;
+          const taskId: string = (tc.input as any)?.taskId ?? '';
+
+          if (runId && taskId) {
+            result = [
+              JSON.stringify({ data: run }, null, 2),
+              '',
+              '─────────────────────────────────────────',
+              `→ Genie coding mode auto-launched for task ${taskId} (Run: ${runId})`,
+              '  Genie will handle: plan review, implementation, execution_complete.',
+              '  Do NOT attempt further task work in this terminal.',
+              '─────────────────────────────────────────',
+            ].join('\n');
+            await onExecStart(taskId, runId, projectId, taskPack);
+          }
+        } catch {
+          // parse failed — fall through, let AI handle normally
+        }
+      }
+      // ─────────────────────────────────────────────────────────────────
 
       process.stdout.write(`\r  ${c.green}✓${c.reset} ${c.violet}${tc.name}${c.reset}\n`);
       toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: result });
@@ -878,6 +916,83 @@ async function launchExec(taskId: string): Promise<void> {
 
   // 5. 启动 Genie（与 launchCode 完全相同的 spawn 模式，加 -p prompt）
   console.log(`\n${c.blue}→ Entering PlanSync Coding Mode (task: ${taskId})${c.reset}\n`);
+  const child = spawn(cfg.genieOrClaude, ['-p', execPrompt], {
+    stdio: 'inherit',
+    env: { ...process.env },
+    cwd: projectRoot,
+  });
+
+  await new Promise<void>((resolve) => {
+    child.on('close', () => {
+      restore();
+      console.log(`\n${c.blue}← Returned to PlanSync Terminal${c.reset}\n`);
+      resolve();
+    });
+    child.on('error', (err) => {
+      restore();
+      console.log(`\n${c.red}✗ ${err.message}${c.reset}\n`);
+      resolve();
+    });
+  });
+}
+
+// ─── /auto-exec (triggered by execution_start interception) ────────────────
+
+async function launchAutoExec(
+  taskId: string,
+  runId: string,
+  projectId: string,
+  taskPack: unknown,
+): Promise<void> {
+  const projectRoot = path.resolve(_selfDir, '../../../');
+  const settingsPath = path.join(projectRoot, '.claude', 'settings.local.json');
+  let originalProject = '';
+  try {
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    if (settings.mcpServers?.plansync?.env) {
+      originalProject = settings.mcpServers.plansync.env.PLANSYNC_PROJECT || '';
+      settings.mcpServers.plansync.env.PLANSYNC_PROJECT = projectId;
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+    }
+  } catch {
+    /* ignore */
+  }
+
+  const restore = () => {
+    try {
+      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+      if (settings.mcpServers?.plansync?.env) {
+        settings.mcpServers.plansync.env.PLANSYNC_PROJECT = originalProject;
+        fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+      }
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const execPrompt = [
+    'You are executing a PlanSync task.',
+    '',
+    '⚠ EXECUTION ALREADY REGISTERED — do NOT call plansync_execution_start again.',
+    `  Run ID:     ${runId}`,
+    `  Task ID:    ${taskId}`,
+    `  Project ID: ${projectId}`,
+    '',
+    'Instructions:',
+    '1. Enter plan mode — present your implementation approach for user approval.',
+    '2. Once approved: implement using real tools (Edit, Write, Bash, Glob, Grep).',
+    '3. When done: call plansync_execution_complete with:',
+    `     runId: "${runId}"  ← use this exact run ID`,
+    '     deliverablesMet: [...]  ← be specific, not vague',
+    '4. Call plansync_task_update { status: "done" }',
+    '',
+    'FORBIDDEN: Do NOT call plansync_plan_create, plansync_plan_propose, or plansync_plan_activate.',
+    '',
+    'Task Pack:',
+    JSON.stringify(taskPack ?? {}, null, 2),
+  ].join('\n');
+
+  console.log(`\n${c.blue}→ Auto-launching Genie for task execution (Run: ${runId})${c.reset}\n`);
   const child = spawn(cfg.genieOrClaude, ['-p', execPrompt], {
     stdio: 'inherit',
     env: { ...process.env },
@@ -1239,7 +1354,16 @@ async function main() {
     }
 
     rl.pause();
-    const reply = await runAgentLoop(input, history, currentSystem, currentStatus, mcp);
+    const reply = await runAgentLoop(
+      input,
+      history,
+      currentSystem,
+      currentStatus,
+      mcp,
+      async (taskId, runId, projectId, taskPack) => {
+        await launchAutoExec(taskId, runId, projectId, taskPack);
+      },
+    );
 
     if (reply) {
       history.push({ role: 'user', content: input });
