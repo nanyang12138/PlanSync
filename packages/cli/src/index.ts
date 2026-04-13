@@ -683,7 +683,6 @@ function banner(status: ProjectStatus, toolCount: number) {
       console.log(`          ${c.yellow}⚠${c.reset} [${d.severity}] "${d.taskTitle}"${ownerTag}`);
     });
   }
-  console.log(`  ${c.gray}Tools${c.reset}   ${c.dim}${toolCount} MCP tools${c.reset}`);
   console.log('');
   console.log(`  ${c.dim}Chat with PlanSync AI — it will call tools automatically.${c.reset}`);
   console.log(`  ${c.dim}! runs shell commands  /help for all commands${c.reset}`);
