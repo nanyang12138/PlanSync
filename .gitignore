@@ -1,6 +1,9 @@
 # Runtime-generated server location (written by ps-admin start)
 data/server_host
 
+# Task execution sandboxes (git worktrees, auto-cleaned on exit)
+.plansync-exec/
+
 # Dependencies
 node_modules/
 .npm/

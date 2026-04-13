@@ -45,6 +45,42 @@ export const heartbeatManager = new HeartbeatManager();
 
 export function registerExecutionTools(server: McpServer, api: ApiClient) {
   server.tool(
+    'plansync_exec_context',
+    'Call this at session start to check if this session was launched for task execution. Returns task context and runId if so — skip normal session start and enter plan mode immediately.',
+    {},
+    async () => {
+      const runId = process.env.PLANSYNC_EXEC_RUN_ID ?? '';
+      const taskId = process.env.PLANSYNC_EXEC_TASK_ID ?? '';
+      const projectId = process.env.PLANSYNC_PROJECT ?? '';
+
+      if (!runId || !taskId || !projectId) {
+        return { content: [{ type: 'text', text: JSON.stringify({ execMode: false }) }] };
+      }
+
+      try {
+        const taskPack = await api.get(`/api/projects/${projectId}/tasks/${taskId}/pack`);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({ execMode: true, runId, taskId, projectId, taskPack }),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({ execMode: false, error: err.message }),
+            },
+          ],
+        };
+      }
+    },
+  );
+
+  server.tool(
     'plansync_execution_start',
     'Register your execution. Binds your work to the current plan version so the team can see you are running. Auto-heartbeat every 30s.',
     {

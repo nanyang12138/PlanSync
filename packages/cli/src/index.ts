@@ -936,77 +936,92 @@ async function launchExec(taskId: string): Promise<void> {
   });
 }
 
-// ─── /auto-exec (triggered by execution_start interception) ────────────────
+// ─── /auto-exec (git worktree sandbox, triggered by execution_start interception) ──
 
 async function launchAutoExec(
   taskId: string,
   runId: string,
   projectId: string,
-  taskPack: unknown,
+  _taskPack: unknown, // kept for signature compat; task pack fetched by MCP tool
 ): Promise<void> {
   const projectRoot = path.resolve(_selfDir, '../../../');
-  const settingsPath = path.join(projectRoot, '.claude', 'settings.local.json');
-  let originalProject = '';
+  const worktreeDir = path.join(projectRoot, '.plansync-exec', runId);
+
+  // 1. 创建 git worktree（隔离 sandbox）
   try {
-    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-    if (settings.mcpServers?.plansync?.env) {
-      originalProject = settings.mcpServers.plansync.env.PLANSYNC_PROJECT || '';
-      settings.mcpServers.plansync.env.PLANSYNC_PROJECT = projectId;
-      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+    execSync(`git worktree add --detach "${worktreeDir}"`, {
+      cwd: projectRoot,
+      stdio: 'pipe',
+    });
+  } catch (err: any) {
+    console.log(`\n${c.red}✗ Failed to create worktree: ${err.message}${c.reset}\n`);
+    return;
+  }
+
+  const removeWorktree = () => {
+    try {
+      execSync(`git worktree remove --force "${worktreeDir}"`, {
+        cwd: projectRoot,
+        stdio: 'pipe',
+      });
+    } catch {
+      /* ignore cleanup errors */
     }
+  };
+
+  // 2. 写入 worktree 专属的 .claude/settings.local.json
+  // 包含 PLANSYNC_EXEC_RUN_ID 等 env — 每个 worktree 独立，零多用户冲突
+  const worktreeClaudeDir = path.join(worktreeDir, '.claude');
+  fs.mkdirSync(worktreeClaudeDir, { recursive: true });
+
+  let mainSettings: any = {};
+  try {
+    mainSettings = JSON.parse(
+      fs.readFileSync(path.join(projectRoot, '.claude', 'settings.local.json'), 'utf8'),
+    );
   } catch {
     /* ignore */
   }
 
-  const restore = () => {
-    try {
-      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-      if (settings.mcpServers?.plansync?.env) {
-        settings.mcpServers.plansync.env.PLANSYNC_PROJECT = originalProject;
-        fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-      }
-    } catch {
-      /* ignore */
-    }
+  const worktreeSettings = {
+    ...mainSettings,
+    mcpServers: {
+      plansync: {
+        command: path.join(projectRoot, 'bin', 'start-mcp'),
+        args: [],
+        env: {
+          PLANSYNC_PROJECT: projectId,
+          PLANSYNC_EXEC_RUN_ID: runId,
+          PLANSYNC_EXEC_TASK_ID: taskId,
+          LOG_LEVEL: 'warn',
+        },
+      },
+    },
   };
+  fs.writeFileSync(
+    path.join(worktreeClaudeDir, 'settings.local.json'),
+    JSON.stringify(worktreeSettings, null, 2),
+  );
 
-  const execPrompt = [
-    'You are executing a PlanSync task.',
-    '',
-    '⚠ EXECUTION ALREADY REGISTERED — do NOT call plansync_execution_start again.',
-    `  Run ID:     ${runId}`,
-    `  Task ID:    ${taskId}`,
-    `  Project ID: ${projectId}`,
-    '',
-    'Instructions:',
-    '1. Enter plan mode — present your implementation approach for user approval.',
-    '2. Once approved: implement using real tools (Edit, Write, Bash, Glob, Grep).',
-    '3. When done: call plansync_execution_complete with:',
-    `     runId: "${runId}"  ← use this exact run ID`,
-    '     deliverablesMet: [...]  ← be specific, not vague',
-    '4. Call plansync_task_update { status: "done" }',
-    '',
-    'FORBIDDEN: Do NOT call plansync_plan_create, plansync_plan_propose, or plansync_plan_activate.',
-    '',
-    'Task Pack:',
-    JSON.stringify(taskPack ?? {}, null, 2),
-  ].join('\n');
-
-  console.log(`\n${c.blue}→ Auto-launching Genie for task execution (Run: ${runId})${c.reset}\n`);
-  const child = spawn(cfg.genieOrClaude, ['-p', execPrompt], {
+  // 3. 启动 Genie（交互式，无 -p）
+  // Genie 读 worktree 的 CLAUDE.md → 调 plansync_exec_context → 进入 plan mode
+  console.log(
+    `\n${c.blue}→ Launching Genie sandbox for task ${taskId} (Run: ${runId})${c.reset}\n`,
+  );
+  const child = spawn(cfg.genieOrClaude, [], {
     stdio: 'inherit',
     env: { ...process.env },
-    cwd: projectRoot,
+    cwd: worktreeDir,
   });
 
   await new Promise<void>((resolve) => {
     child.on('close', () => {
-      restore();
+      removeWorktree();
       console.log(`\n${c.blue}← Returned to PlanSync Terminal${c.reset}\n`);
       resolve();
     });
     child.on('error', (err) => {
-      restore();
+      removeWorktree();
       console.log(`\n${c.red}✗ ${err.message}${c.reset}\n`);
       resolve();
     });
@@ -1141,6 +1156,21 @@ function writeGenieSettings(): void {
 
 async function main() {
   writeGenieSettings();
+
+  // 清理上次异常退出遗留的 worktree sandbox
+  const execSandboxDir = path.join(path.resolve(_selfDir, '../../../'), '.plansync-exec');
+  if (fs.existsSync(execSandboxDir)) {
+    for (const entry of fs.readdirSync(execSandboxDir)) {
+      try {
+        execSync(`git worktree remove --force "${path.join(execSandboxDir, entry)}"`, {
+          cwd: path.resolve(_selfDir, '../../../'),
+          stdio: 'pipe',
+        });
+      } catch {
+        /* ignore */
+      }
+    }
+  }
 
   const rl = readline.createInterface({
     input: process.stdin,
