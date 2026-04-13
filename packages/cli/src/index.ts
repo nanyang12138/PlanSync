@@ -1003,12 +1003,25 @@ async function launchAutoExec(
     JSON.stringify(worktreeSettings, null, 2),
   );
 
-  // 3. 启动 Genie（交互式，无 -p）
-  // Genie 读 worktree 的 CLAUDE.md → 调 plansync_exec_context → 进入 plan mode
+  // 3. 启动 Genie（加 -p prompt 触发 CLAUDE.md Session Start Override）
+  // 若无 -p，Genie 显示空白提示符等待用户输入，Session Start Override 不会自动触发
+  const autoExecPrompt = [
+    'You are about to execute a PlanSync task in an isolated git worktree sandbox.',
+    '',
+    'IMPORTANT: Do NOT write any code yet.',
+    'First call plansync_exec_context (no arguments) to get the task pack and run context.',
+    'Then enter plan mode — present your implementation approach for user approval.',
+    'Only after approval: implement with real tools (Edit/Write/Bash), then call plansync_execution_complete with the runId.',
+    '',
+    'FORBIDDEN: Do NOT call plansync_plan_create, plansync_plan_propose, or plansync_plan_activate.',
+    '',
+    `Task ID: ${taskId} | Run ID: ${runId} | Project: ${projectId}`,
+  ].join('\n');
+
   console.log(
     `\n${c.blue}→ Launching Genie sandbox for task ${taskId} (Run: ${runId})${c.reset}\n`,
   );
-  const child = spawn(cfg.genieOrClaude, [], {
+  const child = spawn(cfg.genieOrClaude, ['-p', autoExecPrompt], {
     stdio: 'inherit',
     env: { ...process.env },
     cwd: worktreeDir,
