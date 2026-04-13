@@ -948,16 +948,8 @@ async function main() {
   process.stdout.write(`${c.dim}Connecting to PlanSync...${c.reset}\r`);
   if (!cfg.project) {
     try {
-      const res = await apiGet<any>('/api/projects');
-      const list: any[] = res.data || [];
-      if (list.length === 1) {
-        cfg.project = list[0].id;
-        process.stdout.write(' '.repeat(40) + '\r');
-        console.log(`  ${c.dim}Auto-selected project: ${c.bold}${list[0].name}${c.reset}`);
-      } else {
-        process.stdout.write(' '.repeat(40) + '\r');
-        await selectProject(rl);
-      }
+      process.stdout.write(' '.repeat(40) + '\r');
+      await selectProject(rl);
     } catch {
       /* ignore */
     }
