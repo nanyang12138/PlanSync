@@ -16,6 +16,7 @@ import * as http from 'http';
 import * as path from 'path';
 import * as fs from 'fs';
 import { execSync, spawn, ChildProcess } from 'child_process';
+import * as pty from 'node-pty';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -1003,39 +1004,52 @@ async function launchAutoExec(
     JSON.stringify(worktreeSettings, null, 2),
   );
 
-  // 3. 启动 Genie（加 -p prompt 触发 CLAUDE.md Session Start Override）
-  // 若无 -p，Genie 显示空白提示符等待用户输入，Session Start Override 不会自动触发
-  const autoExecPrompt = [
-    'You are about to execute a PlanSync task in an isolated git worktree sandbox.',
-    '',
-    'IMPORTANT: Do NOT write any code yet.',
-    'First call plansync_exec_context (no arguments) to get the task pack and run context.',
-    'Then enter plan mode — present your implementation approach for user approval.',
-    'Only after approval: implement with real tools (Edit/Write/Bash), then call plansync_execution_complete with the runId.',
-    '',
-    'FORBIDDEN: Do NOT call plansync_plan_create, plansync_plan_propose, or plansync_plan_activate.',
-    '',
-    `Task ID: ${taskId} | Run ID: ${runId} | Project: ${projectId}`,
-  ].join('\n');
-
+  // 3. 启动 Genie（node-pty 创建真实 PTY → 保持交互式 + 自动注入初始消息触发 Session Start Override）
   console.log(
     `\n${c.blue}→ Launching Genie sandbox for task ${taskId} (Run: ${runId})${c.reset}\n`,
   );
-  const child = spawn(cfg.genieOrClaude, ['-p', autoExecPrompt], {
-    stdio: 'inherit',
-    env: { ...process.env },
+
+  const ptyProc = pty.spawn(cfg.genieOrClaude, [], {
+    name: 'xterm-256color',
+    cols: process.stdout.columns || 80,
+    rows: process.stdout.rows || 24,
     cwd: worktreeDir,
+    env: process.env as Record<string, string>,
   });
 
+  // PTY 输出 → 终端；监听 Genie 提示符 ❯ 后自动发送 "start" 触发 CLAUDE.md Session Start Override
+  let autoStartSent = false;
+  ptyProc.onData((data) => {
+    process.stdout.write(data);
+    if (!autoStartSent && data.includes('❯')) {
+      autoStartSent = true;
+      setTimeout(() => ptyProc.write('start\r'), 100);
+    }
+  });
+
+  // 终端 stdin → PTY（raw mode 传递所有按键）
+  const stdin = process.stdin as NodeJS.ReadStream;
+  if (stdin.isTTY) stdin.setRawMode(true);
+  stdin.resume();
+  const onStdinData = (chunk: Buffer) => ptyProc.write(chunk.toString());
+  stdin.on('data', onStdinData);
+
+  // 传递终端 resize 事件至 PTY
+  const onResize = () => ptyProc.resize(process.stdout.columns || 80, process.stdout.rows || 24);
+  process.stdout.on('resize', onResize);
+
   await new Promise<void>((resolve) => {
-    child.on('close', () => {
+    ptyProc.onExit(() => {
+      stdin.removeListener('data', onStdinData);
+      process.stdout.removeListener('resize', onResize);
+      if (stdin.isTTY) stdin.setRawMode(false);
       removeWorktree();
-      console.log(`\n${c.blue}← Returned to PlanSync Terminal${c.reset}\n`);
-      resolve();
-    });
-    child.on('error', (err) => {
-      removeWorktree();
-      console.log(`\n${c.red}✗ ${err.message}${c.reset}\n`);
+      console.log(`\n${c.blue}← Genie sandbox closed (task: ${taskId}, run: ${runId})${c.reset}`);
+      console.log(
+        `${c.yellow}⚠ Execution was handled inside Genie.` +
+          ` Do NOT call plansync_execution_complete from PlanSync Terminal —` +
+          ` Genie handles it (or user exited early).${c.reset}\n`,
+      );
       resolve();
     });
   });

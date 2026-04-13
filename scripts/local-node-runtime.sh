@@ -176,6 +176,22 @@ dependencies_need_install() {
   return 1
 }
 
+detect_python38() {
+  # node-pty requires Python 3.8+ for its node-gyp build scripts.
+  # Search common locations for a compatible Python interpreter.
+  for py in python3.8 python3.9 python3.10 python3.11 python3.12 python3 python; do
+    local py_path
+    py_path="$(command -v "$py" 2>/dev/null)" || continue
+    local ver
+    ver="$("$py_path" -c 'import sys; print(sys.version_info.major * 10 + sys.version_info.minor)' 2>/dev/null)" || continue
+    if [ "$ver" -ge 38 ]; then
+      echo "$py_path"
+      return 0
+    fi
+  done
+  return 1
+}
+
 ensure_local_dependencies() {
   ensure_local_node_runtime
 
@@ -187,6 +203,11 @@ ensure_local_dependencies() {
       return 0
     fi
     log_step "Installing workspace dependencies"
+    # node-pty (native addon) requires Python 3.8+ for node-gyp; detect and export it.
+    local py38
+    if py38="$(detect_python38)"; then
+      export PYTHON="$py38"
+    fi
     run_local_npm install --prefix "$PROJECT_DIR" --cache "$LOCAL_NPM_CACHE"
     touch "$LOCAL_DEPS_STAMP"
   fi
