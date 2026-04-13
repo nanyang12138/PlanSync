@@ -128,10 +128,57 @@ When the user asks to change any plan field (goal, scope, constraints, deliverab
 
 ---
 
+## If the Plan Needs to Change During Execution
+
+### As an agent (developer):
+
+Do NOT stop execution. Instead:
+
+1. `plansync_comment_create` — document the issue so the owner sees it
+2. `plansync_plan_suggest` — formally propose the change
+3. Continue executing within current plan constraints as best as possible
+4. When owner activates a new plan: you will receive a drift alert
+5. `plansync_drift_resolve action=rebind` — accept new plan and continue
+
+### As the owner:
+
+1. `plansync_plan_update` — edit the plan content
+2. `plansync_plan_propose` → `plansync_plan_activate` — activate the new version
+3. All running tasks (including your own) will receive drift alerts
+4. Resolve each drift: `plansync_drift_resolve action=rebind`
+5. Continue execution bound to the new plan version
+
+---
+
 ## After Work
 
 - Call `plansync_execution_complete` with a summary of what was done
 - Update task status with `plansync_task_update`
+
+---
+
+## Task Execution — Use /exec
+
+When the user asks to **execute**, **implement**, **work on**, or **start** a specific task (i.e., do actual coding/development work):
+
+**Do NOT attempt the coding work in PlanSync Terminal** — use `/exec` to launch Genie with full IDE tools.
+
+1. Call `plansync_task_pack <taskId>` — confirm no unresolved drift alerts
+2. If drift exists: resolve first (see "When Drift Is Detected" below)
+3. Tell the user to type in PlanSync terminal:
+
+   ```
+   /exec <taskId>
+   ```
+
+   This launches Genie with:
+
+   - Full task context pre-loaded (goal, constraints, deliverables)
+   - Plan mode: Genie presents implementation approach for user approval before writing any code
+   - Full IDE tools: Edit, Bash, Read, Write, Glob, Grep
+   - PlanSync MCP tools for execution tracking (execution_start, execution_complete)
+
+4. Genie handles everything: plan review → execution_start → coding → execution_complete.
 
 ---
 
@@ -248,7 +295,13 @@ If the user says "work as `<agent>`", "handle `<agent>`'s work", or similar:
       ```
 
    4. `plansync_execution_start`
-   5. Do the work. Document significant decisions with `plansync_comment_create`.
+   5. Do the work:
+      - **NEVER call `plansync_plan_create`, `plansync_plan_propose`, or `plansync_plan_activate`.**
+        A plan already exists — you are executing within it, not creating a new one.
+      - For code/design/bug/refactor tasks: MUST use Edit, Write, Bash tools to create actual files.
+        Do NOT produce work as chat-only text output.
+      - Do NOT write "complete", "done", or "finished" until `plansync_execution_complete` returns success.
+      - Document significant decisions with `plansync_comment_create`.
    6. `plansync_execution_complete { summary }`
    7. `plansync_task_update { status: 'done' }`
 

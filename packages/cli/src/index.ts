@@ -746,6 +746,9 @@ function printHelp(toolCount: number) {
   console.log(
     `  ${c.cyan}/code${c.reset}                Enter Genie coding mode (with PlanSync MCP)`,
   );
+  console.log(
+    `  ${c.cyan}/exec <taskId>${c.reset}       Enter Genie coding mode with task context + plan mode`,
+  );
   console.log(`  ${c.cyan}/clear${c.reset}               Clear conversation history`);
   console.log(`  ${c.cyan}/quit${c.reset}  ${c.cyan}/exit${c.reset}        Exit`);
   console.log('');
@@ -805,6 +808,94 @@ function launchCode(): ReturnType<typeof spawn> {
     console.log(`\n${c.red}✗ ${err.message}${c.reset}\n`);
   });
   return child;
+}
+
+// ─── /exec command ─────────────────────────────────────────────────────────────
+
+async function launchExec(taskId: string): Promise<void> {
+  // 1. 获取 task pack
+  let taskPack: unknown;
+  try {
+    taskPack = await apiGet<unknown>(`/api/projects/${cfg.project}/tasks/${taskId}/pack`);
+  } catch (err: any) {
+    console.log(`\n${c.red}✗ Failed to fetch task pack: ${err.message ?? err}${c.reset}\n`);
+    return;
+  }
+
+  // 2. 检查 drift 告警
+  const pack = taskPack as { driftAlerts?: Array<{ status: string; reason: string }> };
+  const openDrifts = (pack.driftAlerts ?? []).filter((d) => d.status === 'open');
+  if (openDrifts.length > 0) {
+    console.log(
+      `\n${c.yellow}⚠ Task has ${openDrifts.length} unresolved drift alert(s). Resolve them first.${c.reset}\n`,
+    );
+    openDrifts.forEach((d) => console.log(`  • ${d.reason}`));
+    console.log('');
+    return;
+  }
+
+  // 3. 构建 prompt（明确 plan mode 优先，禁止创建 plan）
+  const execPrompt = [
+    'You are about to execute a PlanSync task. Read the task pack below carefully.',
+    '',
+    'IMPORTANT: Do NOT write any code yet.',
+    'First enter plan mode — present your implementation approach for user approval.',
+    'Only after approval: call plansync_execution_start, implement with real tools (Edit/Write/Bash), then plansync_execution_complete.',
+    '',
+    'FORBIDDEN: Do NOT call plansync_plan_create, plansync_plan_propose, or plansync_plan_activate.',
+    'A plan already exists. You are here to EXECUTE a task within the existing plan, not to create a new one.',
+    '',
+    'Task Pack:',
+    JSON.stringify(taskPack, null, 2),
+  ].join('\n');
+
+  // 4. 临时设置 project（与 launchCode 相同的 restore 模式）
+  const projectRoot = path.resolve(_selfDir, '../../../');
+  const settingsPath = path.join(projectRoot, '.claude', 'settings.local.json');
+  let originalProject = '';
+  try {
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    if (settings.mcpServers?.plansync?.env) {
+      originalProject = settings.mcpServers.plansync.env.PLANSYNC_PROJECT || '';
+      settings.mcpServers.plansync.env.PLANSYNC_PROJECT = cfg.project;
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+    }
+  } catch {
+    /* ignore */
+  }
+
+  const restore = () => {
+    try {
+      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+      if (settings.mcpServers?.plansync?.env) {
+        settings.mcpServers.plansync.env.PLANSYNC_PROJECT = originalProject;
+        fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+      }
+    } catch {
+      /* ignore */
+    }
+  };
+
+  // 5. 启动 Genie（与 launchCode 完全相同的 spawn 模式，加 -p prompt）
+  console.log(`\n${c.blue}→ Entering PlanSync Coding Mode (task: ${taskId})${c.reset}\n`);
+  const child = spawn(cfg.genieOrClaude, ['-p', execPrompt], {
+    stdio: 'inherit',
+    env: { ...process.env },
+    cwd: projectRoot,
+  });
+
+  await new Promise<void>((resolve) => {
+    child.on('close', () => {
+      restore();
+      console.log(`\n${c.blue}← Returned to PlanSync Terminal${c.reset}\n`);
+      resolve();
+    });
+    child.on('error', (err) => {
+      restore();
+      console.log(`\n${c.red}✗ ${err.message}${c.reset}\n`);
+      resolve();
+    });
+  });
 }
 
 // ─── Project selection ──────────────────────────────────────────────────────
@@ -1111,6 +1202,26 @@ async function main() {
           rl.resume();
           rl.prompt();
         });
+        return;
+      }
+      if (cmd === '/exec') {
+        const taskId = parts[1]?.trim();
+        if (!taskId) {
+          console.log(`\n${c.yellow}Usage: /exec <taskId>${c.reset}\n`);
+          rl.prompt();
+          return;
+        }
+        if (!cfg.project) {
+          console.log(
+            `\n${c.yellow}No project selected. Use /project to select one first.${c.reset}\n`,
+          );
+          rl.prompt();
+          return;
+        }
+        rl.pause();
+        await launchExec(taskId);
+        rl.resume();
+        rl.prompt();
         return;
       }
       console.log(`\n${c.yellow}Unknown command: ${cmd}. Type /help.${c.reset}\n`);

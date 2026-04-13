@@ -24,10 +24,14 @@ PLANSYNC_PROJ=""
 PLANSYNC_USER_ARG=""
 WORK_DIR="$(pwd)"
 PASSTHROUGH_ARGS=()
+EXEC_TASK_ID=""
+EXEC_HOST="genie"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
     --run)        HOST="run"; shift ;;
+    --exec)       require_arg "$1" "${2:-}"; EXEC_TASK_ID="$2"; HOST="exec"; shift 2 ;;
+    --exec-host)  require_arg "$1" "${2:-}"; EXEC_HOST="$2"; shift 2 ;;
     --host)       require_arg "$1" "${2:-}"; HOST="$2"; shift 2 ;;
     --project)    require_arg "$1" "${2:-}"; PLANSYNC_PROJ="$2"; shift 2 ;;
     --user)       require_arg "$1" "${2:-}"; PLANSYNC_USER_ARG="$2"; shift 2 ;;
@@ -56,6 +60,11 @@ Options:
   --run                        Run as an autonomous agent: process all pending work
                                (reviews, tasks, drift alerts) for PLANSYNC_USER, then exit.
                                Idempotent — safe to call from cron; exits 0 if no work.
+  --exec TASK_ID               Launch /code with task context pre-loaded in plan mode.
+                               Fetches the task pack and opens a genie/claude session
+                               for full IDE execution. Use --exec-host to pick claude.
+                               Requires --project or PLANSYNC_PROJECT.
+  --exec-host genie|claude     AI tool to use for --exec (default: genie)
   --host terminal|genie|claude|cursor
                                Interface to use (default: terminal)
                                terminal: PlanSync Terminal REPL (recommended)
@@ -88,6 +97,8 @@ Examples:
   plansync --host claude            # Launch Claude Code with PlanSync MCP
   plansync --host cursor            # Configure Cursor (writes .cursor/mcp.json)
   plansync --run --project <id>     # Run as agent: process all pending work, then exit
+  plansync --exec abc123 --project xyz456   # Open task in /code with plan mode
+  plansync --exec abc123 --exec-host claude # Same but use Claude instead of Genie
 USAGE
       exit 0
       ;;
@@ -500,7 +511,109 @@ Output a summary when all work is done, then exit."
     exec "$GENIE_BIN" --mcp-config "$MCP_CONFIG_JSON" -p "$RUN_PROMPT"
     ;;
 
+  exec)
+    [[ -n "$PLANSYNC_PROJECT" ]] || die "--exec requires --project <id> or PLANSYNC_PROJECT env var"
+    [[ -n "$EXEC_TASK_ID" ]] || die "--exec requires a task ID argument"
+
+    EXEC_BIN="$GENIE_BIN"
+    [[ "$EXEC_HOST" = "claude" ]] && EXEC_BIN="$CLAUDE_BIN"
+
+    echo "" >&2
+    echo "📋 Fetching task pack for $EXEC_TASK_ID..." >&2
+
+    # Fetch task pack via API using env vars to avoid shell injection
+    export _PS_EXEC_TASK_ID="$EXEC_TASK_ID"
+    TASK_PACK_JSON="$("$LOCAL_NODE_BIN" -e '
+      const h = require("http");
+      const url = new URL(
+        "/api/projects/" + process.env._PS_PROJECT +
+        "/tasks/" + process.env._PS_EXEC_TASK_ID + "/pack",
+        process.env._PS_API_URL
+      );
+      h.get({
+        hostname: url.hostname,
+        port: url.port || 80,
+        path: url.pathname,
+        headers: { "Authorization": "Bearer " + process.env._PS_API_KEY }
+      }, (res) => {
+        let d = "";
+        res.on("data", c => d += c);
+        res.on("end", () => {
+          try {
+            const j = JSON.parse(d);
+            if (j.error) { process.stderr.write("API error: " + j.error + "\n"); process.exit(1); }
+            process.stdout.write(JSON.stringify(j, null, 2));
+          } catch { process.stderr.write("Invalid response\n"); process.exit(1); }
+        });
+      }).on("error", e => { process.stderr.write("ERROR: " + e.message + "\n"); process.exit(1); });
+    ' 2>&1)" || die "Failed to fetch task pack. Check task ID and project."
+
+    # Check for drift alerts in the response
+    HAS_DRIFT="$("$LOCAL_NODE_BIN" -e '
+      try {
+        const d = JSON.parse(process.argv[1] || "{}");
+        const alerts = (d.driftAlerts || []).filter(a => a.status === "open");
+        process.stdout.write(alerts.length > 0 ? "yes" : "no");
+      } catch { process.stdout.write("no"); }
+    ' "$TASK_PACK_JSON" 2>/dev/null || echo "no")"
+
+    if [ "$HAS_DRIFT" = "yes" ]; then
+      echo "⚠️  Task $EXEC_TASK_ID has unresolved drift alerts." >&2
+      echo "   Resolve them in PlanSync Terminal before executing." >&2
+      exit 1
+    fi
+
+    # Build MCP config (same pattern as run/genie modes)
+    MCP_CONFIG_JSON="$("$LOCAL_NODE_BIN" -e '
+      const cfg = {
+        mcpServers: {
+          plansync: {
+            command: process.env._PS_NODE_BIN,
+            args: [process.env._PS_MCP_SERVER],
+            env: {
+              PLANSYNC_API_URL: process.env._PS_API_URL,
+              PLANSYNC_API_KEY: process.env._PS_API_KEY,
+              PLANSYNC_USER: process.env._PS_USER,
+              PLANSYNC_PROJECT: process.env._PS_PROJECT || "",
+              LOG_LEVEL: "warn",
+            },
+          },
+        },
+      };
+      process.stdout.write(JSON.stringify(cfg));
+    ')"
+
+    inject_instructions "$WORK_DIR_ABS"
+
+    # Construct the execution prompt
+    EXEC_PROMPT="You are PlanSync agent ${PLANSYNC_USER} about to execute a task.
+
+IMPORTANT: Do NOT write any code yet. First, analyze the task and present your implementation plan for user approval.
+
+Task Pack (from PlanSync):
+${TASK_PACK_JSON}
+
+Execution protocol:
+1. Call plansync_task_pack with taskId=\"${EXEC_TASK_ID}\" and projectId=\"${PLANSYNC_PROJECT}\" to confirm current state
+2. If drift alerts present: stop, show them to the user, and wait
+3. Enter plan mode — present your approach: what files you will change, what steps you will take, how you will meet each deliverable listed in the task pack
+4. Wait for user approval before writing any code
+5. Once approved: call plansync_execution_start (executorType=\"agent\", executorName=\"${PLANSYNC_USER}\")
+6. Implement the solution using your full tools (Edit, Bash, Read, Write, Glob, Grep)
+7. Call plansync_execution_complete with a specific deliverablesMet list (each item must name a concrete output, not vague phrases like \"completed the task\")
+8. Call plansync_task_update status=\"done\"
+
+Project: ${PLANSYNC_PROJECT}  |  Task: ${EXEC_TASK_ID}"
+
+    echo "🚀 Launching ${EXEC_HOST} for task execution..." >&2
+    echo "   Task: $EXEC_TASK_ID | User: $PLANSYNC_USER | Project: $PLANSYNC_PROJECT" >&2
+    echo "" >&2
+
+    cd "$WORK_DIR_ABS"
+    exec "$EXEC_BIN" --mcp-config "$MCP_CONFIG_JSON" -p "$EXEC_PROMPT"
+    ;;
+
   *)
-    die "Unknown host: $HOST (supported: terminal, genie, claude, cursor, --run)"
+    die "Unknown host: $HOST (supported: terminal, genie, claude, cursor, --run, --exec)"
     ;;
 esac
