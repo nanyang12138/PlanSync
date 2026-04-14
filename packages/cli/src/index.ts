@@ -3,1321 +3,34 @@
  * PlanSync Terminal — AI agent backed by PlanSync MCP server
  *
  * Architecture:
- *   User input → AI model (tool_use) → MCP server (stdio) → PlanSync API
- *
- * The CLI spawns the MCP server as a subprocess, fetches its full tool list,
- * and forwards all AI tool calls to the MCP server via JSON-RPC.
- * This means the CLI always has the full PlanSync tool set without duplicating any logic.
+ *   User input → RawInput (raw mode) → handleInput()
+ *     → AI model (tool_use) → MCP server (stdio) → PlanSync API
  */
 
-import * as readline from 'readline';
-import * as https from 'https';
-import * as http from 'http';
 import * as path from 'path';
 import * as fs from 'fs';
-import { execSync, spawn, spawnSync, ChildProcess } from 'child_process';
-import crypto from 'crypto';
-
-// ─── Config ───────────────────────────────────────────────────────────────────
-
-function parseCustomHeaders(raw: string): Record<string, string> {
-  const result: Record<string, string> = {};
-  for (const line of raw.split('\n')) {
-    const idx = line.indexOf(':');
-    if (idx > 0) result[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
-  }
-  return result;
-}
-
-const _anthropicBase = process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com';
-const _anthropicUrl = new URL(_anthropicBase);
-
-// Auto-detect MCP server path: env var, or relative to this file
-const _selfDir = path.dirname(process.argv[1] || __filename);
-const _mcpAuto = path.resolve(_selfDir, '../../mcp-server/dist/index.js');
-
-const cfg = {
-  apiUrl: process.env.PLANSYNC_API_URL || 'http://localhost:3001',
-  apiKey: process.env.PLANSYNC_API_KEY || '',
-  user: process.env.PLANSYNC_USER || process.env.USER || 'unknown',
-  project: process.env.PLANSYNC_PROJECT || '',
-  llmKey: process.env.LLM_API_KEY || '',
-  llmBase: (process.env.LLM_API_BASE || 'https://llm-api.amd.com/Anthropic').replace(/\/$/, ''),
-  llmModel: process.env.LLM_MODEL_NAME || 'claude-opus-4-6',
-  anthropicKey: process.env.ANTHROPIC_API_KEY || '',
-  anthropicModel: process.env.ANTHROPIC_DEFAULT_SONNET_MODEL || 'claude-sonnet-4-20250514',
-  anthropicHostname: _anthropicUrl.hostname,
-  anthropicPathPrefix: _anthropicUrl.pathname.replace(/\/$/, ''),
-  anthropicCustomHeaders: parseCustomHeaders(process.env.ANTHROPIC_CUSTOM_HEADERS || ''),
-  genieOrClaude: process.env.GENIE_BIN || '/proj/verif_release_ro/genie/current/bin/genie',
-  mcpServer: process.env.PLANSYNC_MCP_SERVER || _mcpAuto,
-  nodeBin: process.env.PLANSYNC_NODE_BIN || process.execPath,
-};
-
-// ─── Colors ───────────────────────────────────────────────────────────────────
-
-const c = {
-  reset: '\x1b[0m',
-  bold: '\x1b[1m',
-  dim: '\x1b[2m',
-  blue: '\x1b[34m',
-  cyan: '\x1b[36m',
-  green: '\x1b[32m',
-  yellow: '\x1b[33m',
-  red: '\x1b[31m',
-  violet: '\x1b[35m',
-  gray: '\x1b[90m',
-};
-
-// ─── Spinner ─────────────────────────────────────────────────────────────────
-
-function createSpinner(message: string) {
-  const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-  let i = 0;
-  let timer: ReturnType<typeof setInterval> | null = null;
-  const startTime = Date.now();
-
-  return {
-    start() {
-      timer = setInterval(() => {
-        const elapsed = Math.floor((Date.now() - startTime) / 1000);
-        const mins = Math.floor(elapsed / 60);
-        const secs = elapsed % 60;
-        const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
-        process.stdout.write(
-          `\r${c.blue}${frames[i % frames.length]}${c.reset} ${message} ${c.dim}(${timeStr})${c.reset}  `,
-        );
-        i++;
-      }, 80);
-    },
-    stop(finalMessage?: string) {
-      if (timer) clearInterval(timer);
-      process.stdout.write('\r' + ' '.repeat(80) + '\r');
-      if (finalMessage) {
-        process.stdout.write(finalMessage + '\n');
-      }
-    },
-  };
-}
-
-// ─── PlanSync HTTP helpers (for banner/status display only) ──────────────────
-
-function psRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const url = new URL(cfg.apiUrl + path);
-    const mod = url.protocol === 'https:' ? https : http;
-    const bodyStr = body ? JSON.stringify(body) : undefined;
-    const req = mod.request(
-      {
-        hostname: url.hostname,
-        port: url.port,
-        path: url.pathname + url.search,
-        method,
-        headers: {
-          Authorization: `Bearer ${cfg.apiKey}`,
-          'x-user-name': cfg.user,
-          'Content-Type': 'application/json',
-          ...(bodyStr ? { 'Content-Length': Buffer.byteLength(bodyStr) } : {}),
-        },
-      },
-      (res) => {
-        let data = '';
-        res.on('data', (d) => (data += d));
-        res.on('end', () => {
-          try {
-            resolve(JSON.parse(data));
-          } catch {
-            reject(new Error(`Parse error: ${data.slice(0, 100)}`));
-          }
-        });
-      },
-    );
-    req.on('error', reject);
-    req.setTimeout(10000, () => {
-      req.destroy();
-      reject(new Error('API timeout'));
-    });
-    if (bodyStr) req.write(bodyStr);
-    req.end();
-  });
-}
-
-const apiGet = <T>(path: string) => psRequest<T>('GET', path);
-
-// ─── Project status (for banner display) ─────────────────────────────────────
-
-interface ProjectStatus {
-  projectId: string;
-  projectName: string;
-  activePlan: { version: number; title: string; goal: string } | null;
-  proposedPlan: {
-    version: number;
-    title: string;
-    reviews: { reviewer: string; status: string }[];
-  } | null;
-  tasks: { total: number; done: number; inProgress: number; todo: number; blocked: number };
-  taskList: {
-    id: string;
-    title: string;
-    status: string;
-    assignee: string | null;
-    priority: string;
-  }[];
-  driftAlerts: {
-    id: string;
-    taskTitle: string;
-    severity: string;
-    reason: string;
-    assignee: string | null;
-  }[];
-}
-
-async function fetchStatus(): Promise<ProjectStatus> {
-  if (!cfg.project) return emptyStatus();
-  try {
-    const [proj, drifts, tasksRes, plansRes] = await Promise.all([
-      apiGet<any>(`/api/projects/${cfg.project}`),
-      apiGet<any>(`/api/projects/${cfg.project}/drifts?status=open`),
-      apiGet<any>(`/api/projects/${cfg.project}/tasks?pageSize=100`),
-      apiGet<any>(`/api/projects/${cfg.project}/plans`),
-    ]);
-    const project = proj.data || {};
-    const plans: any[] = plansRes.data || [];
-    const plan = plans.find((p: any) => p.status === 'active') || null;
-    const proposed = !plan ? plans.find((p: any) => p.status === 'proposed') || null : null;
-
-    // Fetch reviews for proposed plan (only when needed)
-    let proposedReviews: { reviewer: string; status: string }[] = [];
-    if (proposed) {
-      try {
-        const revRes = await apiGet<any>(
-          `/api/projects/${cfg.project}/plans/${proposed.id}/reviews`,
-        );
-        const rawReviews: any[] = revRes.data || [];
-        // Build review status: start with requiredReviewers as pending, overlay actual reviews
-        const reviewMap = new Map<string, string>();
-        for (const r of proposed.requiredReviewers || []) reviewMap.set(r, 'pending');
-        for (const r of rawReviews) reviewMap.set(r.reviewerName, r.status);
-        proposedReviews = Array.from(reviewMap.entries()).map(([reviewer, status]) => ({
-          reviewer,
-          status,
-        }));
-      } catch {
-        /* ignore */
-      }
-    }
-
-    const taskList: any[] = tasksRes.data || [];
-    const taskAssigneeMap = new Map<string, string | null>();
-    for (const t of taskList) taskAssigneeMap.set(t.id, t.assignee || null);
-    return {
-      projectId: cfg.project,
-      projectName: project.name || cfg.project,
-      activePlan: plan
-        ? { version: plan.version, title: plan.title, goal: (plan.goal || '').slice(0, 120) }
-        : null,
-      proposedPlan: proposed
-        ? { version: proposed.version, title: proposed.title, reviews: proposedReviews }
-        : null,
-      tasks: {
-        total: taskList.length,
-        done: taskList.filter((t) => t.status === 'done').length,
-        inProgress: taskList.filter((t) => t.status === 'in_progress').length,
-        todo: taskList.filter((t) => t.status === 'todo').length,
-        blocked: taskList.filter((t) => t.status === 'blocked').length,
-      },
-      taskList: taskList.map((t: any) => ({
-        id: t.id,
-        title: t.title,
-        status: t.status,
-        assignee: t.assignee || null,
-        priority: t.priority || 'p2',
-      })),
-      driftAlerts: (drifts.data || []).slice(0, 5).map((d: any) => ({
-        id: d.id,
-        taskTitle: d.taskTitle || d.task?.title || d.taskId,
-        severity: d.severity,
-        reason: d.reason,
-        assignee: taskAssigneeMap.get(d.taskId) ?? d.task?.assignee ?? null,
-      })),
-    };
-  } catch {
-    return { ...emptyStatus(), projectId: cfg.project, projectName: cfg.project };
-  }
-}
-
-function emptyStatus(): ProjectStatus {
-  return {
-    projectId: '',
-    projectName: '(no project)',
-    activePlan: null,
-    proposedPlan: null,
-    tasks: { total: 0, done: 0, inProgress: 0, todo: 0, blocked: 0 },
-    taskList: [],
-    driftAlerts: [],
-  };
-}
-
-// ─── MCP Client ──────────────────────────────────────────────────────────────
-// Communicates with the MCP server subprocess via JSON-RPC over stdio.
-// This gives the CLI the full PlanSync tool set without duplicating any logic.
-
-class McpClient {
-  private proc: ChildProcess | null = null;
-  private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
-  private reqId = 0;
-  private tools: any[] = [];
-  private readBuffer = '';
-  private notifyPrinter: ((text: string) => void) | null = null;
-
-  /** Call after readline is ready to get clean notification rendering. */
-  setNotifyPrinter(fn: (text: string) => void): void {
-    this.notifyPrinter = fn;
-  }
-
-  async start(serverPath: string): Promise<void> {
-    const env: Record<string, string> = {
-      ...(process.env as Record<string, string>),
-      PLANSYNC_API_URL: cfg.apiUrl,
-      PLANSYNC_API_KEY: cfg.apiKey,
-      PLANSYNC_USER: cfg.user,
-      PLANSYNC_PROJECT: cfg.project,
-      LOG_LEVEL: 'warn',
-    };
-
-    this.proc = spawn(cfg.nodeBin, [serverPath], {
-      stdio: ['pipe', 'pipe', 'inherit'],
-      env,
-    });
-
-    this.proc.stdout!.on('data', (chunk: Buffer) => {
-      this.readBuffer += chunk.toString();
-      const lines = this.readBuffer.split('\n');
-      this.readBuffer = lines.pop() || '';
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          this.handleMessage(JSON.parse(line));
-        } catch {
-          /* ignore */
-        }
-      }
-    });
-
-    this.proc.on('error', (err) => {
-      process.stdout.write(`\n${c.red}⚠ MCP server error: ${err.message}${c.reset}\n`);
-    });
-
-    // MCP handshake
-    await this.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: { logging: {} },
-      clientInfo: { name: 'plansync-terminal', version: '0.1.0' },
-    });
-    this.send({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} });
-
-    // Fetch all tools
-    const result = await this.request('tools/list', {});
-    this.tools = result.tools || [];
-  }
-
-  private handleMessage(msg: any): void {
-    // Response to pending request
-    if (msg.id !== undefined && this.pending.has(msg.id)) {
-      const { resolve, reject } = this.pending.get(msg.id)!;
-      this.pending.delete(msg.id);
-      if (msg.error) reject(new Error(msg.error.message || JSON.stringify(msg.error)));
-      else resolve(msg.result);
-      return;
-    }
-    // Server notification (drift alerts, etc.)
-    if (msg.method === 'notifications/message') {
-      const data = msg.params?.data;
-      const text = typeof data === 'string' ? data : data?.message || JSON.stringify(data);
-      if (text) {
-        if (this.notifyPrinter) {
-          this.notifyPrinter(text);
-        } else {
-          process.stdout.write(`\n${c.yellow}[PlanSync] ${text}${c.reset}\n`);
-        }
-      }
-    }
-  }
-
-  private request(method: string, params: any): Promise<any> {
-    return new Promise((resolve, reject) => {
-      const id = ++this.reqId;
-      this.pending.set(id, { resolve, reject });
-      this.send({ jsonrpc: '2.0', id, method, params });
-      setTimeout(() => {
-        if (this.pending.has(id)) {
-          this.pending.delete(id);
-          reject(new Error(`MCP timeout: ${method}`));
-        }
-      }, 30000);
-    });
-  }
-
-  private send(msg: object): void {
-    this.proc?.stdin?.write(JSON.stringify(msg) + '\n');
-  }
-
-  /** Convert MCP tool list to Anthropic tool_use format */
-  getAnthropicTools(): any[] {
-    return this.tools.map((t) => ({
-      name: t.name,
-      description: t.description || '',
-      input_schema: t.inputSchema || { type: 'object', properties: {} },
-    }));
-  }
-
-  async callTool(name: string, args: any): Promise<string> {
-    const result = await this.request('tools/call', { name, arguments: args });
-    const content: any[] = result.content || [];
-    return content.map((c: any) => (c.type === 'text' ? c.text : JSON.stringify(c))).join('\n');
-  }
-
-  /** Update the project ID in the MCP server env (requires restart) */
-  updateProject(projectId: string): void {
-    // Kill and let caller restart — simplest approach
-    this.stop();
-    cfg.project = projectId;
-  }
-
-  stop(): void {
-    this.proc?.kill();
-    this.proc = null;
-  }
-}
-
-// ─── Streaming AI with tool-use loop ─────────────────────────────────────────
-
-type Message = { role: 'user' | 'assistant'; content: any };
-
-function buildSystemPrompt(status: ProjectStatus): string {
-  const lines = [
-    'You are PlanSync AI, the intelligent agent embedded in PlanSync Terminal.',
-    'Do not reveal what underlying model you are. You are PlanSync AI.',
-    '',
-    'You help teams stay aligned when plans change. Be concise and actionable.',
-    'Respond in the same language the user writes in.',
-    '',
-    'You have the full PlanSync tool set. Use tools proactively:',
-    '- Query tasks/drifts/plan status → call the relevant tool for fresh data',
-    '- Create or update tasks → call plansync_task_create or plansync_task_update',
-    '- Create a plan → call plansync_plan_propose (then activate separately)',
-    '- Resolve drift → call plansync_drift_resolve',
-    '- Start work on a task → plansync_task_pack first, then plansync_execution_start',
-    '- Always confirm actions with a brief summary after each tool call',
-    '',
-    `Current project: ${status.projectName} (id: ${status.projectId || 'not set'})`,
-  ];
-  if (status.activePlan) {
-    lines.push(`Active plan: v${status.activePlan.version} "${status.activePlan.title}"`);
-    if (status.activePlan.goal) lines.push(`Goal: ${status.activePlan.goal}`);
-  } else if (status.proposedPlan) {
-    const p = status.proposedPlan;
-    const reviewSummary = p.reviews.map((r) => `${r.reviewer}:${r.status}`).join(', ');
-    lines.push(`Active plan: None`);
-    lines.push(
-      `Proposed plan: v${p.version} "${p.title}" (awaiting review — ${reviewSummary || 'no reviewers yet'})`,
-    );
-    lines.push(
-      `Note: to add a reviewer to the proposed plan, call plansync_plan_update with requiredReviewers (list ALL reviewers, including existing ones).`,
-    );
-  } else {
-    lines.push('Active plan: None');
-  }
-  const t = status.tasks;
-  lines.push(
-    `Tasks: ${t.total} total — ${t.done} done / ${t.inProgress} in_progress / ${t.todo} todo / ${t.blocked} blocked`,
-  );
-  if (status.driftAlerts.length > 0) {
-    lines.push(`Drift alerts (${status.driftAlerts.length} open):`);
-    status.driftAlerts.forEach((d) =>
-      lines.push(`  - [${d.severity}] "${d.taskTitle}" (id:${d.id}): ${d.reason}`),
-    );
-  } else {
-    lines.push('Drift alerts: None');
-  }
-  return lines.join('\n');
-}
-
-interface StreamResult {
-  text: string;
-  toolCalls: { id: string; name: string; input: any }[];
-}
-
-async function streamOneTurn(
-  messages: Message[],
-  system: string,
-  tools: any[],
-): Promise<StreamResult> {
-  if (!cfg.anthropicKey && !cfg.llmKey) {
-    console.log(
-      `\n${c.yellow}⚠ AI not configured. Set LLM_API_KEY or ANTHROPIC_API_KEY.${c.reset}\n`,
-    );
-    return { text: '', toolCalls: [] };
-  }
-
-  const useAnthropic = !!cfg.anthropicKey;
-  const amdUrl = new URL(`${cfg.llmBase}/v1/messages`);
-  const hostname = useAnthropic ? cfg.anthropicHostname : amdUrl.hostname;
-  const path_ = useAnthropic ? `${cfg.anthropicPathPrefix}/v1/messages` : amdUrl.pathname;
-
-  const requestBody = {
-    model: useAnthropic ? cfg.anthropicModel : cfg.llmModel,
-    max_tokens: 4096,
-    stream: true,
-    system,
-    tools,
-    messages,
-  };
-
-  const bodyStr = JSON.stringify(requestBody);
-  const headers: Record<string, string> = useAnthropic
-    ? {
-        'Content-Type': 'application/json',
-        'x-api-key': cfg.anthropicKey,
-        'anthropic-version': '2023-06-01',
-        ...cfg.anthropicCustomHeaders,
-      }
-    : {
-        'Content-Type': 'application/json',
-        'x-api-key': 'dummy',
-        'anthropic-version': '2023-06-01',
-        'Ocp-Apim-Subscription-Key': cfg.llmKey,
-      };
-
-  const mod = hostname !== 'localhost' ? https : http;
-
-  return new Promise((resolve) => {
-    let buffer = '';
-    let textAcc = '';
-    let isFirstText = true;
-    const prefix = `\n${c.cyan}${c.bold}PlanSync${c.reset} `;
-
-    const toolCalls: { id: string; name: string; input: any }[] = [];
-    let currentTool: { id: string; name: string; inputRaw: string } | null = null;
-
-    // Both AMD (/Anthropic/v1/messages) and Anthropic use the same SSE format
-    const flush = (line: string) => {
-      if (!line.startsWith('data: ')) return;
-      const data = line.slice(6).trim();
-      if (data === '[DONE]') return;
-      let evt: any;
-      try {
-        evt = JSON.parse(data);
-      } catch {
-        return;
-      }
-
-      const t = evt.type;
-
-      if (t === 'content_block_start') {
-        if (evt.content_block?.type === 'tool_use') {
-          currentTool = { id: evt.content_block.id, name: evt.content_block.name, inputRaw: '' };
-        }
-      } else if (t === 'content_block_delta') {
-        if (evt.delta?.type === 'text_delta') {
-          const text: string = evt.delta.text || '';
-          if (text) {
-            if (isFirstText) {
-              process.stdout.write('\r' + ' '.repeat(30) + '\r' + prefix);
-              isFirstText = false;
-            }
-            process.stdout.write(text);
-            textAcc += text;
-          }
-        } else if (evt.delta?.type === 'input_json_delta' && currentTool) {
-          currentTool.inputRaw += evt.delta.partial_json || '';
-        }
-      } else if (t === 'content_block_stop') {
-        if (currentTool) {
-          let parsed = {};
-          try {
-            parsed = JSON.parse(currentTool.inputRaw || '{}');
-          } catch {
-            /* ignore */
-          }
-          toolCalls.push({ id: currentTool.id, name: currentTool.name, input: parsed });
-          currentTool = null;
-        }
-      }
-    };
-
-    const req = mod.request(
-      {
-        hostname,
-        path: path_,
-        method: 'POST',
-        headers: { ...headers, 'Content-Length': Buffer.byteLength(bodyStr) },
-      },
-      (res) => {
-        if (res.statusCode && res.statusCode >= 400) {
-          let errBody = '';
-          res.on('data', (d: Buffer) => (errBody += d));
-          res.on('end', () => {
-            process.stdout.write('\r' + ' '.repeat(30) + '\r');
-            console.log(
-              `\n${c.red}⚠ AI error ${res.statusCode}: ${errBody.slice(0, 200)}${c.reset}\n`,
-            );
-            resolve({ text: '', toolCalls: [] });
-          });
-          return;
-        }
-        res.on('data', (chunk: Buffer) => {
-          buffer += chunk.toString();
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-          lines.forEach((l) => flush(l.trim()));
-        });
-        res.on('end', () => {
-          if (buffer.trim()) flush(buffer.trim());
-          if (textAcc) process.stdout.write('\n\n');
-          resolve({ text: textAcc, toolCalls });
-        });
-      },
-    );
-    req.on('error', (err) => {
-      process.stdout.write('\r' + ' '.repeat(30) + '\r');
-      console.log(`\n${c.red}⚠ Network error: ${err.message}${c.reset}\n`);
-      resolve({ text: '', toolCalls: [] });
-    });
-    req.setTimeout(90000, () => {
-      req.destroy();
-      process.stdout.write('\r' + ' '.repeat(30) + '\r');
-      console.log(`\n${c.red}⚠ Request timed out${c.reset}\n`);
-      resolve({ text: '', toolCalls: [] });
-    });
-    req.write(bodyStr);
-    req.end();
-  });
-}
-
-async function runAgentLoop(
-  userInput: string,
-  history: Message[],
-  system: string,
-  status: ProjectStatus,
-  mcp: McpClient,
-  onExecStart?: (
-    taskId: string,
-    runId: string,
-    projectId: string,
-    taskPack: unknown,
-  ) => Promise<void>,
-): Promise<string> {
-  const tools = mcp.getAnthropicTools();
-  const messages: Message[] = [...history, { role: 'user', content: userInput }];
-  let finalText = '';
-
-  for (let turn = 0; turn < 8; turn++) {
-    process.stdout.write(`\n${c.dim}Thinking...${c.reset}`);
-
-    const { text, toolCalls } = await streamOneTurn(messages, system, tools);
-    if (text) finalText = text;
-
-    if (toolCalls.length === 0) break;
-
-    const assistantContent: any[] = [];
-    if (text) assistantContent.push({ type: 'text', text });
-    for (const tc of toolCalls) {
-      assistantContent.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.input });
-    }
-    messages.push({ role: 'assistant', content: assistantContent });
-
-    const toolResults: any[] = [];
-    for (const tc of toolCalls) {
-      const inputSummary = Object.entries(tc.input || {})
-        .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
-        .join(', ');
-      process.stdout.write(
-        `\n${c.dim}  ⚙ ${c.reset}${c.violet}${tc.name}${c.reset}${inputSummary ? ` ${c.dim}{ ${inputSummary} }${c.reset}` : ''}`,
-      );
-
-      let result: string;
-      try {
-        result = await mcp.callTool(tc.name, tc.input);
-      } catch (err: any) {
-        result = `Tool error: ${err.message}`;
-      }
-
-      // ─── Auto-launch Genie when execution_start is called ────────────
-      if (
-        tc.name === 'plansync_execution_start' &&
-        onExecStart &&
-        !result.startsWith('Tool error')
-      ) {
-        try {
-          const parsed = JSON.parse(result);
-          const run = parsed?.data ?? parsed;
-          const runId: string = run?.id ?? '';
-          const taskPack: unknown = run?.taskPackSnapshot ?? null;
-          const projectId: string = (tc.input as any)?.projectId ?? cfg.project;
-          const taskId: string = (tc.input as any)?.taskId ?? '';
-
-          if (runId && taskId) {
-            result = [
-              JSON.stringify({ data: run }, null, 2),
-              '',
-              '─────────────────────────────────────────',
-              `→ Genie coding mode auto-launched for task ${taskId} (Run: ${runId})`,
-              '  Genie will handle: plan review, implementation, execution_complete.',
-              '  Do NOT attempt further task work in this terminal.',
-              '─────────────────────────────────────────',
-            ].join('\n');
-            await onExecStart(taskId, runId, projectId, taskPack);
-          }
-        } catch {
-          // parse failed — fall through, let AI handle normally
-        }
-      }
-      // ─────────────────────────────────────────────────────────────────
-
-      process.stdout.write(`\r  ${c.green}✓${c.reset} ${c.violet}${tc.name}${c.reset}\n`);
-      toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: result });
-    }
-
-    messages.push({ role: 'user', content: toolResults });
-  }
-
-  return finalText;
-}
-
-// ─── Display ─────────────────────────────────────────────────────────────────
-
-function banner(status: ProjectStatus, toolCount: number) {
-  const cols = process.stdout.columns || 70;
-  const width = Math.min(cols - 2, 70);
-  const title = 'PlanSync Terminal';
-  const pad = Math.max(0, width - 2 - title.length);
-
-  console.log('');
-  console.log(`${c.blue}${c.bold}╔${'═'.repeat(width - 2)}╗${c.reset}`);
-  console.log(
-    `${c.blue}${c.bold}║${c.reset}${c.bold}${' '.repeat(Math.floor(pad / 2))}${title}${' '.repeat(Math.ceil(pad / 2))}${c.reset}${c.blue}${c.bold}║${c.reset}`,
-  );
-  console.log(`${c.blue}${c.bold}╚${'═'.repeat(width - 2)}╝${c.reset}`);
-  console.log('');
-
-  const REVIEW_ICON: Record<string, string> = {
-    approved: `${c.green}✓${c.reset}`,
-    rejected: `${c.red}✗${c.reset}`,
-    pending: `${c.dim}○${c.reset}`,
-  };
-  let planStr: string;
-  if (status.activePlan) {
-    planStr = `v${status.activePlan.version} "${status.activePlan.title}"`;
-  } else if (status.proposedPlan) {
-    const p = status.proposedPlan;
-    const reviewStr =
-      p.reviews.length > 0
-        ? '  ' +
-          p.reviews
-            .map((r) => `${c.dim}${r.reviewer}${c.reset} ${REVIEW_ICON[r.status] ?? '○'}`)
-            .join('  ')
-        : `  ${c.dim}awaiting approval${c.reset}`;
-    planStr = `${c.yellow}Pending Review${c.reset}  v${p.version} "${p.title}"${reviewStr}`;
-  } else {
-    planStr = `${c.dim}(no active plan)${c.reset}`;
-  }
-  const t = status.tasks;
-  const driftStr =
-    status.driftAlerts.length > 0
-      ? `${c.yellow}⚠ ${status.driftAlerts.length}${c.reset}`
-      : `${c.green}✓ none${c.reset}`;
-
-  console.log(
-    `  ${c.gray}User${c.reset}    ${c.bold}${cfg.user}${c.reset}   ${c.gray}Project${c.reset}  ${c.cyan}${status.projectName}${c.reset}`,
-  );
-  console.log(`  ${c.gray}Plan${c.reset}    ${planStr}`);
-  if (status.activePlan?.goal) {
-    const g = status.activePlan.goal.slice(0, Math.min(cols - 12, 80));
-    console.log(`          ${c.dim}${g}${status.activePlan.goal.length > 80 ? '…' : ''}${c.reset}`);
-  }
-  console.log(
-    `  ${c.gray}Tasks${c.reset}   ${t.total} · ${c.green}${t.done} done${c.reset} / ${c.blue}${t.inProgress} in progress${c.reset} / ${t.todo} todo / ${c.yellow}${t.blocked} blocked${c.reset}`,
-  );
-  console.log(`  ${c.gray}Drift${c.reset}   ${driftStr}`);
-  if (status.driftAlerts.length > 0) {
-    status.driftAlerts.forEach((d) => {
-      let ownerTag: string;
-      if (!d.assignee) {
-        ownerTag = `  ${c.dim}(unassigned)${c.reset}`;
-      } else if (d.assignee === cfg.user) {
-        ownerTag = `  ${c.yellow}← yours to resolve${c.reset}`;
-      } else {
-        ownerTag = `  ${c.dim}→ @${d.assignee}${c.reset}`;
-      }
-      console.log(`          ${c.yellow}⚠${c.reset} [${d.severity}] "${d.taskTitle}"${ownerTag}`);
-    });
-  }
-  console.log('');
-  console.log(`  ${c.dim}Chat with PlanSync AI — it will call tools automatically.${c.reset}`);
-  console.log(`  ${c.dim}! runs shell commands  /help for all commands${c.reset}`);
-  console.log('');
-}
-
-const STATUS_ICON: Record<string, string> = {
-  done: `${c.green}✓${c.reset}`,
-  in_progress: `${c.blue}▶${c.reset}`,
-  todo: '○',
-  blocked: `${c.red}✗${c.reset}`,
-};
-
-function printTasks(status: ProjectStatus) {
-  if (status.taskList.length === 0) {
-    console.log(`\n  ${c.dim}No tasks.${c.reset}\n`);
-    return;
-  }
-  console.log(
-    `\n  ${c.bold}Tasks — ${status.projectName}${c.reset}  ${c.dim}(${status.taskList.length})${c.reset}\n`,
-  );
-  const groups: Record<string, typeof status.taskList> = {
-    in_progress: [],
-    todo: [],
-    blocked: [],
-    done: [],
-  };
-  for (const t of status.taskList) (groups[t.status] ??= []).push(t);
-
-  const showGroup = (label: string, items: typeof status.taskList) => {
-    if (!items.length) return;
-    console.log(`  ${c.gray}── ${label} (${items.length}) ──${c.reset}`);
-    items.forEach((t) => {
-      const prio =
-        t.priority === 'p0'
-          ? `${c.red}P0${c.reset}`
-          : t.priority === 'p1'
-            ? `${c.yellow}P1${c.reset}`
-            : `${c.dim}P2${c.reset}`;
-      const who = t.assignee ? `  ${c.dim}@${t.assignee}${c.reset}` : '';
-      const title = t.title.length > 52 ? t.title.slice(0, 51) + '…' : t.title;
-      console.log(`    ${STATUS_ICON[t.status] || '·'} ${title}  ${prio}${who}`);
-    });
-    console.log('');
-  };
-
-  showGroup('In Progress', groups.in_progress);
-  showGroup('Todo', groups.todo);
-  showGroup('Blocked', groups.blocked);
-  showGroup('Done', groups.done);
-}
-
-function printHelp(toolCount: number) {
-  console.log('');
-  console.log(`${c.bold}PlanSync Terminal — Commands${c.reset}`);
-  console.log('');
-  console.log(`  ${c.cyan}/status${c.reset}              Refresh and show project status`);
-  console.log(`  ${c.cyan}/tasks${c.reset}               Show task list`);
-  console.log(`  ${c.cyan}/project [id]${c.reset}        Switch project (interactive if no arg)`);
-  console.log(`  ${c.cyan}/tools${c.reset}               List all available MCP tools`);
-  console.log(
-    `  ${c.cyan}/code${c.reset}                Enter Genie coding mode (with PlanSync MCP)`,
-  );
-  console.log(
-    `  ${c.cyan}/exec <taskId>${c.reset}       Enter Genie coding mode with task context + plan mode`,
-  );
-  console.log(`  ${c.cyan}/clear${c.reset}               Clear conversation history`);
-  console.log(`  ${c.cyan}/quit${c.reset}  ${c.cyan}/exit${c.reset}        Exit`);
-  console.log('');
-  console.log(`  ${c.dim}! prefix runs shell commands, e.g.: !git log --oneline -5${c.reset}`);
-  console.log('');
-  console.log(`  ${c.bold}AI uses ${toolCount} MCP tools:${c.reset}`);
-  console.log(
-    `  ${c.dim}Create/update tasks, view plans, resolve drift, register executions, view team status…${c.reset}`,
-  );
-  console.log(`  ${c.dim}Just say it in natural language — AI picks the right tool.${c.reset}`);
-  console.log('');
-}
-
-// ─── /code command ─────────────────────────────────────────────────────────────
-
-function launchCode(): ReturnType<typeof spawn> {
-  // Genie reads MCP config from .claude/settings.local.json in the project directory.
-  // Temporarily set PLANSYNC_PROJECT so the MCP server knows which project to use.
-  const projectRoot = path.resolve(_selfDir, '../../../');
-  const settingsPath = path.join(projectRoot, '.claude', 'settings.local.json');
-  let originalProject = '';
-  try {
-    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-    if (settings.mcpServers?.plansync?.env) {
-      originalProject = settings.mcpServers.plansync.env.PLANSYNC_PROJECT || '';
-      settings.mcpServers.plansync.env.PLANSYNC_PROJECT = cfg.project;
-      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-    }
-  } catch {
-    /* ignore */
-  }
-
-  console.log(`\n${c.blue}→ Entering PlanSync Coding Mode${c.reset}\n`);
-  const child = spawn(cfg.genieOrClaude, [], {
-    stdio: 'inherit',
-    env: { ...process.env },
-    cwd: projectRoot,
-  });
-
-  const restore = () => {
-    try {
-      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-      if (settings.mcpServers?.plansync?.env) {
-        settings.mcpServers.plansync.env.PLANSYNC_PROJECT = originalProject;
-        fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-      }
-    } catch {
-      /* ignore */
-    }
-  };
-  child.on('close', () => {
-    restore();
-    console.log(`\n${c.blue}← Returned to PlanSync Terminal${c.reset}\n`);
-  });
-  child.on('error', (err) => {
-    restore();
-    console.log(`\n${c.red}✗ ${err.message}${c.reset}\n`);
-  });
-  return child;
-}
-
-// ─── /exec command ─────────────────────────────────────────────────────────────
-
-async function launchExec(taskId: string): Promise<void> {
-  // 1. 获取 task pack
-  let taskPack: unknown;
-  try {
-    taskPack = await apiGet<unknown>(`/api/projects/${cfg.project}/tasks/${taskId}/pack`);
-  } catch (err: any) {
-    console.log(`\n${c.red}✗ Failed to fetch task pack: ${err.message ?? err}${c.reset}\n`);
-    return;
-  }
-
-  // 2. 检查 drift 告警
-  const pack = taskPack as { driftAlerts?: Array<{ status: string; reason: string }> };
-  const openDrifts = (pack.driftAlerts ?? []).filter((d) => d.status === 'open');
-  if (openDrifts.length > 0) {
-    console.log(
-      `\n${c.yellow}⚠ Task has ${openDrifts.length} unresolved drift alert(s). Resolve them first.${c.reset}\n`,
-    );
-    openDrifts.forEach((d) => console.log(`  • ${d.reason}`));
-    console.log('');
-    return;
-  }
-
-  // 3. 构建 prompt（明确 plan mode 优先，禁止创建 plan）
-  const execPrompt = [
-    'You are about to execute a PlanSync task. Read the task pack below carefully.',
-    '',
-    'IMPORTANT: Do NOT write any code yet.',
-    'First enter plan mode — present your implementation approach for user approval.',
-    'Only after approval: call plansync_execution_start, implement with real tools (Edit/Write/Bash), then plansync_execution_complete.',
-    '',
-    'FORBIDDEN: Do NOT call plansync_plan_create, plansync_plan_propose, or plansync_plan_activate.',
-    'A plan already exists. You are here to EXECUTE a task within the existing plan, not to create a new one.',
-    '',
-    'Task Pack:',
-    JSON.stringify(taskPack, null, 2),
-  ].join('\n');
-
-  // 4. 临时设置 project（与 launchCode 相同的 restore 模式）
-  const projectRoot = path.resolve(_selfDir, '../../../');
-  const settingsPath = path.join(projectRoot, '.claude', 'settings.local.json');
-  let originalProject = '';
-  try {
-    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-    if (settings.mcpServers?.plansync?.env) {
-      originalProject = settings.mcpServers.plansync.env.PLANSYNC_PROJECT || '';
-      settings.mcpServers.plansync.env.PLANSYNC_PROJECT = cfg.project;
-      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-    }
-  } catch {
-    /* ignore */
-  }
-
-  const restore = () => {
-    try {
-      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-      if (settings.mcpServers?.plansync?.env) {
-        settings.mcpServers.plansync.env.PLANSYNC_PROJECT = originalProject;
-        fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-      }
-    } catch {
-      /* ignore */
-    }
-  };
-
-  // 5. 启动 Genie（与 launchCode 完全相同的 spawn 模式，加 -p prompt）
-  console.log(`\n${c.blue}→ Entering PlanSync Coding Mode (task: ${taskId})${c.reset}\n`);
-  const child = spawn(cfg.genieOrClaude, ['-p', execPrompt], {
-    stdio: 'inherit',
-    env: { ...process.env },
-    cwd: projectRoot,
-  });
-
-  await new Promise<void>((resolve) => {
-    child.on('close', () => {
-      restore();
-      console.log(`\n${c.blue}← Returned to PlanSync Terminal${c.reset}\n`);
-      resolve();
-    });
-    child.on('error', (err) => {
-      restore();
-      console.log(`\n${c.red}✗ ${err.message}${c.reset}\n`);
-      resolve();
-    });
-  });
-}
-
-// ─── Best-effort API PATCH (fire-and-forget with timeout) ────────────────────
-
-function patchTaskBestEffort(projectId: string, taskId: string, body: Record<string, unknown>) {
-  try {
-    const patchUrl = `${cfg.apiUrl}/api/projects/${projectId}/tasks/${taskId}`;
-    const patchBody = JSON.stringify(body);
-    const patchMod = patchUrl.startsWith('https') ? https : http;
-    const patchParsed = new URL(patchUrl);
-    const req = patchMod.request(
-      {
-        hostname: patchParsed.hostname,
-        port: patchParsed.port,
-        path: patchParsed.pathname,
-        method: 'PATCH',
-        headers: {
-          Authorization: `Bearer ${cfg.apiKey}`,
-          'x-user-name': cfg.user,
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(patchBody),
-        },
-      },
-      () => {
-        /* response ignored */
-      },
-    );
-    req.setTimeout(5000, () => req.destroy());
-    req.on('error', () => {
-      /* best-effort — silently ignore */
-    });
-    req.write(patchBody);
-    req.end();
-  } catch {
-    /* best-effort */
-  }
-}
-
-// ─── MCP config builder (shared by launchAutoExec + startup resume) ──────────
-
-function buildMcpConfigArg(
-  runId: string,
-  taskId: string,
-  projectId: string,
-  sessionId: string,
-): string {
-  const projectRoot = path.resolve(_selfDir, '../../../');
-  const localNodeBin = path.join(projectRoot, '.local-runtime', 'node', 'bin', 'node');
-  const mcpServerDist = path.join(projectRoot, 'packages', 'mcp-server', 'dist', 'index.js');
-
-  return JSON.stringify({
-    mcpServers: {
-      plansync: {
-        command: localNodeBin,
-        args: [mcpServerDist],
-        env: {
-          PLANSYNC_API_URL: process.env.PLANSYNC_API_URL ?? 'http://localhost:3001',
-          PLANSYNC_API_KEY: process.env.PLANSYNC_API_KEY ?? '',
-          PLANSYNC_USER: process.env.PLANSYNC_USER ?? process.env.USER ?? '',
-          PLANSYNC_SECRET: process.env.PLANSYNC_SECRET ?? '',
-          PLANSYNC_PROJECT: projectId,
-          PLANSYNC_EXEC_RUN_ID: runId,
-          PLANSYNC_EXEC_TASK_ID: taskId,
-          PLANSYNC_EXEC_SESSION_ID: sessionId,
-          LOG_LEVEL: 'warn',
-        },
-      },
-    },
-  });
-}
-
-// ─── /auto-exec (git worktree sandbox, triggered by execution_start interception) ──
-
-async function launchAutoExec(
-  taskId: string,
-  runId: string,
-  projectId: string,
-  _taskPack: unknown, // kept for signature compat; task pack fetched by MCP tool
-): Promise<void> {
-  const projectRoot = path.resolve(_selfDir, '../../../');
-  const worktreeDir = path.join(projectRoot, '.plansync-exec', runId);
-
-  // 1. Create isolated git worktree for this execution run
-  try {
-    execSync(`git worktree add --detach "${worktreeDir}"`, {
-      cwd: projectRoot,
-      stdio: 'pipe',
-    });
-  } catch (err: any) {
-    console.log(`\n${c.red}✗ Failed to create worktree: ${err.message}${c.reset}\n`);
-    return;
-  }
-
-  const removeWorktree = () => {
-    try {
-      execSync(`git worktree remove --force "${worktreeDir}"`, {
-        cwd: projectRoot,
-        stdio: 'pipe',
-      });
-    } catch {
-      /* ignore cleanup errors */
-    }
-  };
-
-  // 2. Build --mcp-config and write exec metadata for crash recovery.
-  const sessionId = crypto.randomUUID();
-  const mcpConfigArg = buildMcpConfigArg(runId, taskId, projectId, sessionId);
-
-  // Write metadata so startup scan can offer resume if session is interrupted.
-  const metaPath = path.join(worktreeDir, '.exec-meta.json');
-  fs.writeFileSync(
-    metaPath,
-    JSON.stringify(
-      { taskId, runId, sessionId, projectId, startedAt: new Date().toISOString() },
-      null,
-      2,
-    ),
-  );
-
-  // 3. Two-phase launch.
-  //    Phase 1: non-interactive plan generation with spinner.
-  //    Phase 2: interactive review and execution.
-  console.log(`\n${c.blue}→ Launching Genie sandbox for task ${taskId} (Run: ${runId})${c.reset}`);
-  console.log(`  ${c.dim}Worktree: ${worktreeDir}${c.reset}`);
-  console.log(`  ${c.dim}Session:  ${sessionId}${c.reset}\n`);
-
-  // Phase 1: trigger CLAUDE.md Session Start Override via "-p start", generate plan, exit.
-  // "--session-id" pins the session to a unique UUID so Phase 2 can resume it exactly.
-  // "--mcp-config" bypasses settings.json so MCP works regardless of git worktree resolution.
-  // Uses async spawn + spinner so the user sees progress while waiting.
-  const spinner = createSpinner('Generating implementation plan...');
-  spinner.start();
-
-  const phase1ExitCode = await new Promise<number | null>((resolve) => {
-    const child = spawn(
-      cfg.genieOrClaude,
-      ['-p', 'start', '--session-id', sessionId, '--mcp-config', mcpConfigArg],
-      {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env },
-        cwd: worktreeDir,
-      },
-    );
-
-    let stdout = '';
-    let stderr = '';
-    child.stdout?.on('data', (d: Buffer) => {
-      stdout += d.toString();
-    });
-    child.stderr?.on('data', (d: Buffer) => {
-      stderr += d.toString();
-    });
-
-    let settled = false;
-    const cleanup = () => {
-      if (settled) return;
-      settled = true;
-      spinner.stop();
-      child.kill('SIGINT');
-    };
-    process.once('SIGINT', cleanup);
-
-    child.on('close', (code) => {
-      process.removeListener('SIGINT', cleanup);
-      if (!settled) {
-        settled = true;
-        spinner.stop(`${c.green}✓${c.reset} Plan generation complete.`);
-      }
-      if (stdout.trim()) process.stdout.write(stdout);
-      if (stderr.trim()) process.stderr.write(stderr);
-      resolve(code);
-    });
-    child.on('error', (err) => {
-      process.removeListener('SIGINT', cleanup);
-      if (!settled) {
-        settled = true;
-        spinner.stop(`${c.red}✗ Plan generation failed: ${err.message}${c.reset}`);
-      }
-      resolve(null);
-    });
-  });
-
-  if (phase1ExitCode !== 0 && phase1ExitCode !== null) {
-    console.log(
-      `\n${c.yellow}⚠ Plan generation exited early (status ${phase1ExitCode}).${c.reset}\n`,
-    );
-  }
-
-  // Phase 2: resume the pinned session interactively so the user can review the plan,
-  // adjust it, approve, and let Genie execute with real tools (Edit/Write/Bash).
-  console.log(`\n${c.blue}→ Resuming session for interactive review…${c.reset}\n`);
-  spawnSync(cfg.genieOrClaude, ['--resume', sessionId, '--mcp-config', mcpConfigArg], {
-    stdio: 'inherit',
-    env: { ...process.env },
-    cwd: worktreeDir,
-  });
-
-  // Preserve any changes Genie made before cleaning up the worktree.
-  // The branch persists in the main repo after the worktree directory is removed.
-  const preserveAndRemoveWorktree = () => {
-    try {
-      const status = execSync(`git -C "${worktreeDir}" status --porcelain`, {
-        encoding: 'utf8',
-        stdio: 'pipe',
-      }).trim();
-      const worktreeHead = execSync(`git -C "${worktreeDir}" rev-parse HEAD`, {
-        encoding: 'utf8',
-        stdio: 'pipe',
-      }).trim();
-      const projectHead = execSync(`git rev-parse HEAD`, {
-        cwd: projectRoot,
-        encoding: 'utf8',
-        stdio: 'pipe',
-      }).trim();
-
-      if (status || worktreeHead !== projectHead) {
-        const branchName = `plansync/exec-${taskId.slice(0, 8)}-${runId.slice(-6)}`;
-        if (status) {
-          execSync(`git -C "${worktreeDir}" add -A`, { stdio: 'pipe' });
-          execSync(
-            `git -C "${worktreeDir}" commit -m "chore: PlanSync task execution (${taskId})"`,
-            { stdio: 'pipe' },
-          );
-        }
-        execSync(`git -C "${worktreeDir}" branch "${branchName}"`, { stdio: 'pipe' });
-        console.log(`\n${c.green}✓ Changes saved to branch: ${branchName}${c.reset}`);
-        console.log(`  Review:  git diff HEAD...${branchName}`);
-        console.log(`  Merge:   git merge ${branchName}\n`);
-
-        // Write branchName back to Task via API (best-effort)
-        patchTaskBestEffort(projectId, taskId, { branchName });
-      }
-    } catch {
-      /* best-effort — if preservation fails, still remove the worktree */
-    }
-    removeWorktree();
-  };
-
-  preserveAndRemoveWorktree();
-  console.log(`\n${c.blue}← Genie sandbox closed (task: ${taskId}, run: ${runId})${c.reset}`);
-  console.log(
-    `${c.yellow}⚠ Execution was handled inside Genie.` +
-      ` Do NOT call plansync_execution_complete from PlanSync Terminal —` +
-      ` Genie handles it (or user exited early).${c.reset}\n`,
-  );
-}
-
-// ─── Project selection ──────────────────────────────────────────────────────
-
-async function createProject(rl: readline.Interface): Promise<void> {
-  const name = await new Promise<string>((resolve) => rl.question(`\n  Project name: `, resolve));
-  if (!name.trim()) {
-    console.log(`  ${c.yellow}Cancelled.${c.reset}`);
-    return;
-  }
-  try {
-    const result = await psRequest<any>('POST', '/api/projects', { name: name.trim() });
-    const proj = result.data || result;
-    cfg.project = proj.id;
-    console.log(`  ${c.green}✓ Created: ${proj.name}  ${c.dim}${proj.id}${c.reset}`);
-  } catch (err: any) {
-    console.log(`  ${c.red}✗ Failed to create project: ${err.message}${c.reset}`);
-  }
-}
-
-async function deleteProject(rl: readline.Interface, list: any[]): Promise<void> {
-  console.log(`\n  ${c.bold}Which project to delete?${c.reset}\n`);
-  list.forEach((p: any, i: number) =>
-    console.log(`  ${c.cyan}${i + 1}${c.reset}. ${c.bold}${p.name}${c.reset}`),
-  );
-  const choice = await new Promise<string>((resolve) =>
-    rl.question(`\n  Enter number [1-${list.length}] or Enter to cancel: `, resolve),
-  );
-  if (!choice.trim()) {
-    console.log(`  ${c.yellow}Cancelled.${c.reset}`);
-    return;
-  }
-  const idx = parseInt(choice.trim(), 10) - 1;
-  if (idx < 0 || idx >= list.length) {
-    console.log(`  ${c.yellow}Invalid selection.${c.reset}`);
-    return;
-  }
-  const proj = list[idx];
-  const confirm = await new Promise<string>((resolve) =>
-    rl.question(
-      `\n  ${c.red}Delete "${proj.name}" and ALL its data? This is irreversible. [y/n]: ${c.reset}`,
-      resolve,
-    ),
-  );
-  if (!confirm.trim().match(/^y$/i)) {
-    console.log(`  ${c.yellow}Cancelled.${c.reset}`);
-    return;
-  }
-  try {
-    await psRequest<any>('DELETE', `/api/projects/${proj.id}`);
-    if (cfg.project === proj.id) cfg.project = '';
-    console.log(`  ${c.green}✓ Deleted: ${proj.name}${c.reset}`);
-  } catch (err: any) {
-    console.log(`  ${c.red}✗ Failed to delete project: ${err.message}${c.reset}`);
-  }
-}
-
-async function selectProject(rl: readline.Interface): Promise<void> {
-  try {
-    const res = await apiGet<any>('/api/projects');
-    const list: any[] = res.data || [];
-    if (list.length === 0) {
-      console.log(`\n  ${c.yellow}⚠ No projects yet.${c.reset}`);
-      const yn = await new Promise<string>((resolve) =>
-        rl.question(`  Create a new project? [y/n]: `, resolve),
-      );
-      if (!yn.trim() || yn.trim().toLowerCase() === 'y') await createProject(rl);
-      return;
-    }
-    console.log(`\n  ${c.bold}Select a project:${c.reset}\n`);
-    list.forEach((p: any, i: number) =>
-      console.log(`  ${c.cyan}${i + 1}${c.reset}. ${c.bold}${p.name}${c.reset}`),
-    );
-    console.log(`  ${c.cyan}n${c.reset}. ${c.dim}Create new project${c.reset}`);
-    console.log(`  ${c.cyan}d${c.reset}. ${c.dim}Delete a project${c.reset}`);
-    const choice = await new Promise<string>((resolve) =>
-      rl.question(`\n  Enter number [1-${list.length}], n, or d: `, resolve),
-    );
-    if (choice.trim().toLowerCase() === 'n') {
-      await createProject(rl);
-      return;
-    }
-    if (choice.trim().toLowerCase() === 'd') {
-      await deleteProject(rl, list);
-      await selectProject(rl);
-      return;
-    }
-    const idx = parseInt(choice.trim(), 10) - 1;
-    if (idx >= 0 && idx < list.length) {
-      cfg.project = list[idx].id;
-      console.log(`  ${c.green}✓ Selected: ${list[idx].name}${c.reset}`);
-    }
-  } catch (err: any) {
-    console.log(`  ${c.red}✗ Failed to fetch projects: ${err.message}${c.reset}`);
-  }
-}
-
-// ─── Main REPL ────────────────────────────────────────────────────────────────
+import { execSync } from 'child_process';
+import { cfg, selfDir } from './config.js';
+import { c, banner, showSplash } from './ui.js';
+import { McpClient } from './mcp-client.js';
+import { buildSystemPrompt, runAgentLoop, Message } from './ai-loop.js';
+import { fetchStatus, handleSlashCommand, buildPrompt, selectProject } from './commands.js';
+import {
+  scanInterruptedExecs,
+  resumeInterruptedExec,
+  cleanupInterruptedExec,
+  launchAutoExec,
+} from './exec.js';
+import { startSession, appendToSession, loadInputHistory } from './session.js';
+import { RawInput, SlashCmd } from './input.js';
+
+// ─── Genie settings writer ────────────────────────────────────────────────────
 
 function writeGenieSettings(): void {
-  // Auto-generate .claude/settings.local.json so any user can run /code without manual setup.
-  // This file is in the project directory (shared NFS) — never write user credentials here.
-  // Credentials are read per-user from ~/.config/plansync/env by bin/start-mcp.
-  const projectRoot = path.resolve(_selfDir, '../../../');
+  const projectRoot = path.resolve(selfDir, '../../../');
   const settingsPath = path.join(projectRoot, '.claude', 'settings.local.json');
   try {
-    let existing: any = {};
+    let existing: Record<string, unknown> = {};
     try {
       existing = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
     } catch {
@@ -1327,10 +40,7 @@ function writeGenieSettings(): void {
       plansync: {
         command: path.join(projectRoot, 'bin', 'start-mcp'),
         args: [],
-        env: {
-          PLANSYNC_PROJECT: cfg.project || '',
-          LOG_LEVEL: 'warn',
-        },
+        env: { PLANSYNC_PROJECT: cfg.project || '', LOG_LEVEL: 'warn' },
       },
     };
     fs.writeFileSync(settingsPath, JSON.stringify(existing, null, 2));
@@ -1339,347 +49,246 @@ function writeGenieSettings(): void {
   }
 }
 
+// ─── Slash commands registry ──────────────────────────────────────────────────
+
+const SLASH_CMDS: SlashCmd[] = [
+  { cmd: '/status', desc: 'Refresh project status' },
+  { cmd: '/tasks', desc: 'Show task list' },
+  { cmd: '/project', desc: 'Switch project' },
+  { cmd: '/resume', desc: 'Restore a previous session' },
+  { cmd: '/clear', desc: 'Clear conversation history' },
+  { cmd: '/exec', desc: 'Execute a task in Genie' },
+  { cmd: '/code', desc: 'Open Genie coding mode' },
+  { cmd: '/tools', desc: 'List MCP tools' },
+  { cmd: '/help', desc: 'Show help' },
+  { cmd: '/quit', desc: 'Exit' },
+  // /exit is kept functional but not shown (alias for /quit)
+];
+
+// ─── Main REPL ────────────────────────────────────────────────────────────────
+
 async function main() {
+  await showSplash();
   writeGenieSettings();
 
-  // Scan for interrupted executions (worktrees with .exec-meta.json)
-  const projectRoot = path.resolve(_selfDir, '../../../');
-  const execSandboxDir = path.join(projectRoot, '.plansync-exec');
-  type InterruptedExec = {
-    taskId: string;
-    runId: string;
-    sessionId: string;
-    projectId: string;
-    worktreeDir: string;
-  };
-  const interrupted: InterruptedExec[] = [];
+  const interrupted = scanInterruptedExecs();
+  const rawInput = new RawInput(SLASH_CMDS);
+  const savedHistory = loadInputHistory();
 
-  if (fs.existsSync(execSandboxDir)) {
-    for (const entry of fs.readdirSync(execSandboxDir)) {
-      const dir = path.join(execSandboxDir, entry);
-      const metaFile = path.join(dir, '.exec-meta.json');
-      try {
-        const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
-        interrupted.push({ ...meta, worktreeDir: dir });
-      } catch {
-        // No meta file or invalid — just remove the worktree
-        try {
-          execSync(`git worktree remove --force "${dir}"`, { cwd: projectRoot, stdio: 'pipe' });
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-  }
+  // ─── Start raw mode first — eliminates readline→rawmode transition issues ──
+  rawInput.start(savedHistory);
 
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    prompt: `${c.blue}>${c.reset} `,
-    historySize: 100,
-  });
-
-  // Step 1: Auto project selection
+  // ─── Project selection (via raw mode) ─────────────────────────────────────
   process.stdout.write(`${c.dim}Connecting to PlanSync...${c.reset}\r`);
   if (!cfg.project) {
     try {
       process.stdout.write(' '.repeat(40) + '\r');
-      await selectProject(rl);
+      const preAsk = async (prompt: string) => {
+        rawInput.setPrompt(prompt);
+        return (await rawInput.nextLine()) ?? '';
+      };
+      await selectProject(preAsk);
     } catch {
       /* ignore */
     }
   }
 
-  // Step 2: Start MCP server
+  // ─── MCP server ───────────────────────────────────────────────────────────
   process.stdout.write(`${c.dim}Starting MCP server...${c.reset}\r`);
   const mcp = new McpClient();
-  let mcpOk = false;
   try {
     await mcp.start(cfg.mcpServer);
-    mcpOk = true;
     process.stdout.write(' '.repeat(40) + '\r');
-    // Connect readline to MCP notification printer so notifications
-    // don't collide with the user's current input line.
-    mcp.setNotifyPrinter((text) => {
-      readline.clearLine(process.stdout, 0);
-      readline.cursorTo(process.stdout, 0);
-      process.stdout.write(`${c.yellow}[PlanSync] ${text}${c.reset}\n`);
-      // Only re-display the prompt when readline is idle (not during AI streaming).
-      // rl.paused is true while runAgentLoop holds the input loop.
-      if (!(rl as any).paused) {
-        rl.prompt(true);
-      }
-    });
-  } catch (err: any) {
+  } catch (err: unknown) {
     process.stdout.write(' '.repeat(40) + '\r');
-    console.log(`${c.yellow}⚠ MCP server failed to start: ${err.message}${c.reset}`);
-    console.log(`  ${c.dim}Path: ${cfg.mcpServer}${c.reset}`);
+    console.log(
+      `${c.yellow}⚠ MCP server failed to start: ${err instanceof Error ? err.message : String(err)}${c.reset}`,
+    );
     console.log(
       `  ${c.dim}AI unavailable. /status, /tasks, and other commands still work.${c.reset}\n`,
     );
   }
 
-  // Step 3: Fetch status and show banner
+  // ─── Status + banner ──────────────────────────────────────────────────────
   const status = await fetchStatus();
   process.stdout.write(' '.repeat(40) + '\r');
-  const toolCount = mcp.getAnthropicTools().length;
-  banner(status, toolCount);
+  banner(status, mcp.getAnthropicTools().length, cfg.user);
 
-  // Step 4: Prompt user to resume any interrupted executions
-  for (const run of interrupted) {
-    console.log(
-      `\n${c.yellow}⚠ Interrupted execution found: task ${run.taskId.slice(0, 8)} (run ${run.runId.slice(-6)})${c.reset}`,
-    );
-    const choice = await new Promise<string>((resolve) =>
-      rl.question(`  Resume? [y]es / [n]o (discard): `, resolve),
-    );
-    if (choice.trim().toLowerCase() === 'y') {
-      const mcpCfg = buildMcpConfigArg(run.runId, run.taskId, run.projectId, run.sessionId);
-      console.log(`\n${c.blue}→ Resuming Genie for task ${run.taskId.slice(0, 8)}…${c.reset}\n`);
-      spawnSync(cfg.genieOrClaude, ['--resume', run.sessionId, '--mcp-config', mcpCfg], {
-        stdio: 'inherit',
-        env: { ...process.env },
-        cwd: run.worktreeDir,
-      });
-    }
-    // Clean up worktree regardless (after resume or on discard)
-    try {
-      // Preserve changes before removing
-      const wtStatus = execSync(`git -C "${run.worktreeDir}" status --porcelain`, {
-        encoding: 'utf8',
-        stdio: 'pipe',
-      }).trim();
-      const wtHead = execSync(`git -C "${run.worktreeDir}" rev-parse HEAD`, {
-        encoding: 'utf8',
-        stdio: 'pipe',
-      }).trim();
-      const mainHead = execSync(`git rev-parse HEAD`, {
-        cwd: projectRoot,
-        encoding: 'utf8',
-        stdio: 'pipe',
-      }).trim();
-
-      if (wtStatus || wtHead !== mainHead) {
-        const branchName = `plansync/exec-${run.taskId.slice(0, 8)}-${run.runId.slice(-6)}`;
-        if (wtStatus) {
-          execSync(`git -C "${run.worktreeDir}" add -A`, { stdio: 'pipe' });
-          execSync(
-            `git -C "${run.worktreeDir}" commit -m "chore: PlanSync task execution (${run.taskId})"`,
-            { stdio: 'pipe' },
-          );
-        }
-        try {
-          execSync(`git -C "${run.worktreeDir}" branch "${branchName}"`, { stdio: 'pipe' });
-          console.log(`${c.green}✓ Changes saved to branch: ${branchName}${c.reset}`);
-          patchTaskBestEffort(run.projectId, run.taskId, { branchName });
-        } catch {
-          /* branch may already exist */
-        }
-      }
-    } catch {
-      /* best-effort */
-    }
-
-    try {
-      execSync(`git worktree remove --force "${run.worktreeDir}"`, {
-        cwd: projectRoot,
-        stdio: 'pipe',
-      });
-    } catch {
-      /* ignore */
-    }
-  }
-
+  // ─── Session + history ────────────────────────────────────────────────────
   const history: Message[] = [];
+  const currentSessionId = startSession(cfg.project);
+
   let currentStatus = status;
   let currentSystem = buildSystemPrompt(status);
 
-  rl.prompt();
+  // ─── MCP notification printer ─────────────────────────────────────────────
+  mcp.setNotifyPrinter((text) => {
+    rawInput.printAbove(`${c.yellow}[PlanSync] ${text}${c.reset}`);
+  });
 
-  rl.on('line', async (line) => {
-    const input = line.trim();
-    if (!input) {
-      rl.prompt();
-      return;
-    }
+  // ─── AbortController for in-flight AI requests ───────────────────────────
+  let currentAbort: AbortController | null = null;
 
-    // ! shell commands
+  // ─── Exit hook ────────────────────────────────────────────────────────────
+  rawInput.onSigint = () => {
+    rawInput.stop();
+    mcp.stop();
+    console.log(`\n${c.dim}Goodbye.${c.reset}\n`);
+    process.exit(0);
+  };
+
+  // ─── ctx for commands ─────────────────────────────────────────────────────
+  const ctx = {
+    rawInput,
+    mcp,
+    getStatus: () => currentStatus,
+    setStatus: (s: typeof currentStatus) => {
+      currentStatus = s;
+      currentSystem = buildSystemPrompt(s);
+    },
+    getSystem: () => currentSystem,
+    history,
+    currentSessionId,
+    // Ask a question using raw mode. setPrompt() renders the question as the prompt string,
+    // then nextLine() re-renders it (same content) and waits for Enter.
+    // Do NOT call rawInput.pause() here — that would block handleKey and deadlock nextLine().
+    ask: async (prompt: string) => {
+      rawInput.setPrompt(prompt);
+      const answer = (await rawInput.nextLine()) ?? '';
+      rawInput.setPrompt(buildPrompt(currentStatus)); // restore normal prompt
+      return answer;
+    },
+  };
+
+  // ─── Resume interrupted executions ───────────────────────────────────────
+  for (const run of interrupted) {
+    rawInput.clearDisplay();
+    console.log(
+      `\n${c.yellow}⚠ Interrupted execution found: task ${run.taskId.slice(0, 8)} (run ${run.runId.slice(-6)})${c.reset}`,
+    );
+    const choice = await ctx.ask(`  Resume? [y]es / [n]o (discard): `);
+    if (choice.trim().toLowerCase() === 'y') resumeInterruptedExec(run);
+    cleanupInterruptedExec(run);
+  }
+
+  // ─── Core input handler ───────────────────────────────────────────────────
+  async function handleInput(input: string): Promise<void> {
+    if (!input.trim()) return;
+
+    // Shell commands
     if (input.startsWith('!')) {
       const cmd = input.slice(1).trim();
-      if (!cmd) {
-        rl.prompt();
-        return;
-      }
+      if (!cmd) return;
       console.log(`\n${c.dim}$ ${cmd}${c.reset}`);
       try {
         const out = execSync(cmd, { encoding: 'utf8', timeout: 15000 }).trim();
         if (out) console.log(out);
-      } catch (err: any) {
-        console.log(`${c.red}${err.stderr?.trim() || err.message}${c.reset}`);
+      } catch (err: unknown) {
+        const e = err as { stderr?: string; message?: string };
+        console.log(`${c.red}${e.stderr?.trim() || e.message}${c.reset}`);
       }
       console.log('');
-      rl.prompt();
+      return;
+    }
+
+    // Bare "/" — show command list
+    if (input === '/') {
+      console.log('');
+      for (const { cmd, desc } of SLASH_CMDS) {
+        console.log(`  ${c.cyan}${cmd.padEnd(12)}${c.reset}${c.dim}${desc}${c.reset}`);
+      }
+      console.log('');
       return;
     }
 
     // Slash commands
     if (input.startsWith('/')) {
-      const parts = input.split(' ');
-      const cmd = parts[0].toLowerCase();
-
-      if (cmd === '/quit' || cmd === '/exit') {
-        mcp.stop();
-        console.log(`\n${c.dim}Goodbye.${c.reset}\n`);
-        rl.close();
-        process.exit(0);
+      const result = await handleSlashCommand(input, ctx);
+      if (result === 'unknown') {
+        console.log(
+          `\n${c.yellow}Unknown command: ${input.split(' ')[0]}. Type / to see all commands.${c.reset}\n`,
+        );
       }
-      if (cmd === '/help') {
-        printHelp(mcp.getAnthropicTools().length);
-        rl.prompt();
-        return;
-      }
-      if (cmd === '/clear') {
-        history.length = 0;
-        console.log(`\n${c.dim}Conversation history cleared.${c.reset}\n`);
-        rl.prompt();
-        return;
-      }
-      if (cmd === '/tools') {
-        const tools = mcp.getAnthropicTools();
-        if (tools.length === 0) {
-          console.log(`\n  ${c.dim}MCP not connected — no tools available.${c.reset}\n`);
-        } else {
-          console.log(`\n  ${c.bold}Available MCP tools (${tools.length})${c.reset}\n`);
-          tools.forEach((t) =>
-            console.log(
-              `  ${c.violet}${t.name}${c.reset}  ${c.dim}${(t.description || '').slice(0, 70)}${c.reset}`,
-            ),
-          );
-          console.log('');
-        }
-        rl.prompt();
-        return;
-      }
-      if (cmd === '/status') {
-        process.stdout.write(`${c.dim}Refreshing status...${c.reset}\r`);
-        currentStatus = await fetchStatus();
-        currentSystem = buildSystemPrompt(currentStatus);
-        process.stdout.write(' '.repeat(40) + '\r');
-        banner(currentStatus, mcp.getAnthropicTools().length);
-        rl.prompt();
-        return;
-      }
-      if (cmd === '/tasks') {
-        if (!currentStatus.taskList.length) {
-          process.stdout.write(`${c.dim}Fetching tasks...${c.reset}\r`);
-          currentStatus = await fetchStatus();
-          process.stdout.write(' '.repeat(40) + '\r');
-        }
-        printTasks(currentStatus);
-        rl.prompt();
-        return;
-      }
-      if (cmd === '/project') {
-        const targetId = parts[1]?.trim();
-        if (targetId) {
-          cfg.project = targetId;
-        } else {
-          rl.pause();
-          await selectProject(rl);
-          rl.resume();
-        }
-        if (cfg.project) {
-          // Restart MCP with new project
-          process.stdout.write(`${c.dim}Restarting MCP (new project)...${c.reset}\r`);
-          mcp.stop();
-          try {
-            await mcp.start(cfg.mcpServer);
-          } catch {
-            /* ignore */
-          }
-          currentStatus = await fetchStatus();
-          currentSystem = buildSystemPrompt(currentStatus);
-          process.stdout.write(' '.repeat(40) + '\r');
-          banner(currentStatus, mcp.getAnthropicTools().length);
-        }
-        rl.prompt();
-        return;
-      }
-      if (cmd === '/code') {
-        rl.pause();
-        const codeChild = launchCode();
-        codeChild.on('close', () => {
-          rl.resume();
-          rl.prompt();
-        });
-        return;
-      }
-      if (cmd === '/exec') {
-        const taskId = parts[1]?.trim();
-        if (!taskId) {
-          console.log(`\n${c.yellow}Usage: /exec <taskId>${c.reset}\n`);
-          rl.prompt();
-          return;
-        }
-        if (!cfg.project) {
-          console.log(
-            `\n${c.yellow}No project selected. Use /project to select one first.${c.reset}\n`,
-          );
-          rl.prompt();
-          return;
-        }
-        rl.pause();
-        await launchExec(taskId);
-        rl.resume();
-        rl.prompt();
-        return;
-      }
-      console.log(`\n${c.yellow}Unknown command: ${cmd}. Type /help.${c.reset}\n`);
-      rl.prompt();
       return;
     }
 
-    // AI agent conversation
-    if (!mcpOk && mcp.getAnthropicTools().length === 0) {
-      console.log(
-        `\n${c.yellow}⚠ MCP not connected — AI cannot execute operations. Check MCP server.${c.reset}\n`,
+    // AI conversation — auto-reconnect MCP if needed
+    if (!mcp.isRunning()) {
+      process.stdout.write(`${c.dim}Reconnecting MCP...${c.reset}\r`);
+      const ok = await mcp.ensureRunning(cfg.mcpServer);
+      process.stdout.write(' '.repeat(40) + '\r');
+      if (!ok) {
+        console.log(`\n${c.yellow}⚠ MCP reconnect failed.${c.reset}\n`);
+        return;
+      }
+      mcp.setNotifyPrinter((text) =>
+        rawInput.printAbove(`${c.yellow}[PlanSync] ${text}${c.reset}`),
       );
-      rl.prompt();
+      console.log(`${c.green}✔ MCP reconnected.${c.reset}`);
+    }
+    if (mcp.getAnthropicTools().length === 0) {
+      console.log(`\n${c.yellow}⚠ MCP connected but no tools available.${c.reset}\n`);
       return;
     }
 
-    rl.pause();
+    currentAbort = new AbortController();
+
+    // Wire Ctrl+C to abort the in-flight AI request
+    const origSigint = rawInput.onSigint;
+    rawInput.onSigint = () => {
+      if (currentAbort) {
+        currentAbort.abort();
+        currentAbort = null;
+        process.stdout.write(`\n${c.yellow}⚠ Cancelled.${c.reset}\n`);
+        rawInput.onSigint = origSigint;
+      }
+    };
+
     const reply = await runAgentLoop(
       input,
       history,
       currentSystem,
-      currentStatus,
       mcp,
+      currentAbort.signal,
       async (taskId, runId, projectId, taskPack) => {
+        rawInput.pause();
         await launchAutoExec(taskId, runId, projectId, taskPack);
+        rawInput.resume();
       },
     );
 
+    currentAbort = null;
+    rawInput.onSigint = origSigint;
+
     if (reply) {
-      history.push({ role: 'user', content: input });
-      history.push({ role: 'assistant', content: reply });
-      if (history.length > 20) history.splice(0, history.length - 20);
+      const userMsg: Message = { role: 'user', content: input };
+      const assistantMsg: Message = { role: 'assistant', content: reply };
+      history.push(userMsg);
+      history.push(assistantMsg);
+      appendToSession(cfg.project, currentSessionId, userMsg, assistantMsg);
+      if (history.length > 40) history.splice(0, history.length - 40);
       currentStatus = await fetchStatus();
       currentSystem = buildSystemPrompt(currentStatus);
     }
+  }
 
-    rl.resume();
-    rl.prompt();
-  });
+  // ─── Main input loop ──────────────────────────────────────────────────────
+  while (true) {
+    rawInput.setPrompt(buildPrompt(currentStatus));
+    const input = await rawInput.nextLine();
+    if (input === null) break; // EOF / Ctrl+D
+    await handleInput(input);
+  }
 
-  rl.on('close', () => {
-    mcp.stop();
-    console.log(`\n${c.dim}Goodbye.${c.reset}\n`);
-    process.exit(0);
-  });
+  rawInput.stop();
+  mcp.stop();
+  console.log(`\n${c.dim}Goodbye.${c.reset}\n`);
+  process.exit(0);
 }
 
 main().catch((err) => {
-  console.error(`${c.red}Startup failed: ${err.message}${c.reset}`);
+  console.error(
+    `${c.red}Startup failed: ${err instanceof Error ? err.message : String(err)}${c.reset}`,
+  );
   process.exit(1);
 });
