@@ -1032,7 +1032,45 @@ async function launchAutoExec(
     cwd: worktreeDir,
   });
 
-  removeWorktree();
+  // Preserve any changes Genie made before cleaning up the worktree.
+  // The branch persists in the main repo after the worktree directory is removed.
+  const preserveAndRemoveWorktree = () => {
+    try {
+      const status = execSync(`git -C "${worktreeDir}" status --porcelain`, {
+        encoding: 'utf8',
+        stdio: 'pipe',
+      }).trim();
+      const worktreeHead = execSync(`git -C "${worktreeDir}" rev-parse HEAD`, {
+        encoding: 'utf8',
+        stdio: 'pipe',
+      }).trim();
+      const projectHead = execSync(`git rev-parse HEAD`, {
+        cwd: projectRoot,
+        encoding: 'utf8',
+        stdio: 'pipe',
+      }).trim();
+
+      if (status || worktreeHead !== projectHead) {
+        const branchName = `plansync/exec-${taskId.slice(0, 8)}`;
+        if (status) {
+          execSync(`git -C "${worktreeDir}" add -A`, { stdio: 'pipe' });
+          execSync(
+            `git -C "${worktreeDir}" commit -m "chore: PlanSync task execution (${taskId})"`,
+            { stdio: 'pipe' },
+          );
+        }
+        execSync(`git -C "${worktreeDir}" branch "${branchName}"`, { stdio: 'pipe' });
+        console.log(`\n${c.green}✓ Changes saved to branch: ${branchName}${c.reset}`);
+        console.log(`  Review:  git diff HEAD...${branchName}`);
+        console.log(`  Merge:   git merge ${branchName}\n`);
+      }
+    } catch {
+      /* best-effort — if preservation fails, still remove the worktree */
+    }
+    removeWorktree();
+  };
+
+  preserveAndRemoveWorktree();
   console.log(`\n${c.blue}← Genie sandbox closed (task: ${taskId}, run: ${runId})${c.reset}`);
   console.log(
     `${c.yellow}⚠ Execution was handled inside Genie.` +
