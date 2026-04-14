@@ -144,8 +144,9 @@ model Task {
   prUrl            String?  @map("pr_url")
   agentContext     String?  @map("agent_context")
   expectedOutput   String?  @map("expected_output")
-  agentConstraints String[] @map("agent_constraints")
-  createdAt        DateTime @default(now()) @map("created_at")
+  agentConstraints    String[] @map("agent_constraints")
+  planDeliverableRefs String[] @default([]) @map("plan_deliverable_refs")
+  createdAt           DateTime @default(now()) @map("created_at")
   updatedAt        DateTime @updatedAt @map("updated_at")
 
   project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)

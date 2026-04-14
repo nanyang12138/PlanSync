@@ -53,6 +53,12 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
       agentContext: z.string().optional(),
       expectedOutput: z.string().optional(),
       agentConstraints: z.array(z.string()).optional(),
+      planDeliverableRefs: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Which plan deliverables this task is responsible for. execution_complete AI verification will check only these, not all plan deliverables.',
+        ),
     },
     async (args) => {
       const { projectId, ...body } = args;
@@ -78,6 +84,12 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
       priority: z.enum(['p0', 'p1', 'p2']).optional(),
       assignee: z.string().nullable().optional().describe('Set assignee name, or null to unassign'),
       assigneeType: z.enum(['human', 'agent', 'unassigned']).optional(),
+      planDeliverableRefs: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Which plan deliverables this task is responsible for. execution_complete AI verification will check only these, not all plan deliverables.',
+        ),
     },
     async (args) => {
       const { projectId, taskId, ...body } = args;

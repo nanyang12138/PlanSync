@@ -63,7 +63,10 @@ export async function POST(req: NextRequest, { params }: Params) {
           const plan = await prisma.plan.findFirst({
             where: { projectId: params.projectId, version: task.boundPlanVersion },
           });
-          const planDeliverables = plan?.deliverables ?? [];
+          const planDeliverables =
+            task.planDeliverableRefs && task.planDeliverableRefs.length > 0
+              ? task.planDeliverableRefs
+              : (plan?.deliverables ?? []);
 
           if (!plan) {
             console.warn(

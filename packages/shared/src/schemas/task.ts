@@ -16,6 +16,7 @@ export const createTaskSchema = z.object({
   agentContext: z.string().optional(),
   expectedOutput: z.string().optional(),
   agentConstraints: z.array(z.string()).default([]),
+  planDeliverableRefs: z.array(z.string()).default([]),
 });
 
 export const updateTaskSchema = z.object({
@@ -31,6 +32,7 @@ export const updateTaskSchema = z.object({
   agentContext: z.string().nullable().optional(),
   expectedOutput: z.string().nullable().optional(),
   agentConstraints: z.array(z.string()).optional(),
+  planDeliverableRefs: z.array(z.string()).optional(),
 });
 
 export const claimTaskSchema = z.object({
@@ -56,6 +58,7 @@ export const taskSchema = z.object({
   agentContext: z.string().nullable(),
   expectedOutput: z.string().nullable(),
   agentConstraints: z.array(z.string()),
+  planDeliverableRefs: z.array(z.string()),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 });
