@@ -970,48 +970,31 @@ async function launchAutoExec(
     }
   };
 
-  // 2. Overwrite .claude/settings.json in the worktree with the full sandbox config.
-  //    The git-versioned settings.json has "command": "bin/start-mcp" (relative path)
-  //    which resolves to the worktree's bin/start-mcp. That script looks for
-  //    .local-runtime/node/ which is absent in worktrees, causing MCP to fail.
-  //    Writing settings.json directly (no settings.local.json needed) gives Genie
-  //    one authoritative config: MCP server runs straight from the pre-built dist.
-  const worktreeClaudeDir = path.join(worktreeDir, '.claude');
-  fs.mkdirSync(worktreeClaudeDir, { recursive: true });
-
+  // 2. Build --mcp-config JSON to pass directly to Genie.
+  //    Genie follows the worktree's .git file (gitdir pointer) back to the main repo
+  //    and reads the main repo's .claude/settings.json — it ignores any settings.json
+  //    we write into the worktree. Passing --mcp-config bypasses settings.json entirely.
   const localNodeBin = path.join(projectRoot, '.local-runtime', 'node', 'bin', 'node');
   const mcpServerDist = path.join(projectRoot, 'packages', 'mcp-server', 'dist', 'index.js');
 
-  fs.writeFileSync(
-    path.join(worktreeClaudeDir, 'settings.json'),
-    JSON.stringify(
-      {
-        enableAllProjectMcpServers: true,
-        // Allow all tools — the worktree provides git-level isolation.
-        permissions: { allow: ['*'] },
-        mcpServers: {
-          plansync: {
-            // Run MCP server directly (no start-mcp setup overhead) so Genie's MCP
-            // initialization completes before the connection timeout.
-            command: localNodeBin,
-            args: [mcpServerDist],
-            env: {
-              PLANSYNC_API_URL: process.env.PLANSYNC_API_URL ?? 'http://localhost:3001',
-              PLANSYNC_API_KEY: process.env.PLANSYNC_API_KEY ?? '',
-              PLANSYNC_USER: process.env.PLANSYNC_USER ?? process.env.USER ?? '',
-              PLANSYNC_SECRET: process.env.PLANSYNC_SECRET ?? '',
-              PLANSYNC_PROJECT: projectId,
-              PLANSYNC_EXEC_RUN_ID: runId,
-              PLANSYNC_EXEC_TASK_ID: taskId,
-              LOG_LEVEL: 'warn',
-            },
-          },
+  const mcpConfigArg = JSON.stringify({
+    mcpServers: {
+      plansync: {
+        command: localNodeBin,
+        args: [mcpServerDist],
+        env: {
+          PLANSYNC_API_URL: process.env.PLANSYNC_API_URL ?? 'http://localhost:3001',
+          PLANSYNC_API_KEY: process.env.PLANSYNC_API_KEY ?? '',
+          PLANSYNC_USER: process.env.PLANSYNC_USER ?? process.env.USER ?? '',
+          PLANSYNC_SECRET: process.env.PLANSYNC_SECRET ?? '',
+          PLANSYNC_PROJECT: projectId,
+          PLANSYNC_EXEC_RUN_ID: runId,
+          PLANSYNC_EXEC_TASK_ID: taskId,
+          LOG_LEVEL: 'warn',
         },
       },
-      null,
-      2,
-    ),
-  );
+    },
+  });
 
   // 3. Two-phase launch using stdio:'inherit' (same pattern as /code — no nested PTY).
   //    Phase 1: print mode generates the implementation plan non-interactively.
@@ -1024,11 +1007,16 @@ async function launchAutoExec(
 
   // Phase 1: trigger CLAUDE.md Session Start Override via "-p start", generate plan, exit.
   // "--session-id" pins the session to a unique UUID so Phase 2 can resume it exactly.
-  const phase1 = spawnSync(cfg.genieOrClaude, ['-p', 'start', '--session-id', sessionId], {
-    stdio: 'inherit',
-    env: { ...process.env },
-    cwd: worktreeDir,
-  });
+  // "--mcp-config" bypasses settings.json so MCP works regardless of git worktree resolution.
+  const phase1 = spawnSync(
+    cfg.genieOrClaude,
+    ['-p', 'start', '--session-id', sessionId, '--mcp-config', mcpConfigArg],
+    {
+      stdio: 'inherit',
+      env: { ...process.env },
+      cwd: worktreeDir,
+    },
+  );
   if (phase1.status !== 0) {
     console.log(
       `\n${c.yellow}⚠ Plan generation exited early (status ${phase1.status}).${c.reset}\n`,
@@ -1038,7 +1026,7 @@ async function launchAutoExec(
   // Phase 2: resume the pinned session interactively so the user can review the plan,
   // adjust it, approve, and let Genie execute with real tools (Edit/Write/Bash).
   console.log(`\n${c.blue}→ Resuming session for interactive review…${c.reset}\n`);
-  spawnSync(cfg.genieOrClaude, ['--resume', sessionId], {
+  spawnSync(cfg.genieOrClaude, ['--resume', sessionId, '--mcp-config', mcpConfigArg], {
     stdio: 'inherit',
     env: { ...process.env },
     cwd: worktreeDir,
