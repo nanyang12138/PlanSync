@@ -15,8 +15,8 @@ import * as https from 'https';
 import * as http from 'http';
 import * as path from 'path';
 import * as fs from 'fs';
-import { execSync, spawn, ChildProcess } from 'child_process';
-import * as pty from 'node-pty';
+import { execSync, spawn, spawnSync, ChildProcess } from 'child_process';
+import crypto from 'crypto';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -1013,57 +1013,44 @@ async function launchAutoExec(
     ),
   );
 
-  // 3. Launch Genie via node-pty (real PTY) — stays interactive, auto-injects
-  //    "start" once the prompt appears to trigger CLAUDE.md Session Start Override.
+  // 3. Two-phase launch using stdio:'inherit' (same pattern as /code — no nested PTY).
+  //    Phase 1: print mode generates the implementation plan non-interactively.
+  //    Phase 2: resume the exact session interactively for user review and execution.
+  const sessionId = crypto.randomUUID();
+
   console.log(
     `\n${c.blue}→ Launching Genie sandbox for task ${taskId} (Run: ${runId})${c.reset}\n`,
   );
 
-  const ptyProc = pty.spawn(cfg.genieOrClaude, [], {
-    name: 'xterm-256color',
-    cols: process.stdout.columns || 80,
-    rows: process.stdout.rows || 24,
+  // Phase 1: trigger CLAUDE.md Session Start Override via "-p start", generate plan, exit.
+  // "--session-id" pins the session to a unique UUID so Phase 2 can resume it exactly.
+  const phase1 = spawnSync(cfg.genieOrClaude, ['-p', 'start', '--session-id', sessionId], {
+    stdio: 'inherit',
+    env: { ...process.env },
     cwd: worktreeDir,
-    env: process.env as Record<string, string>,
+  });
+  if (phase1.status !== 0) {
+    console.log(
+      `\n${c.yellow}⚠ Plan generation exited early (status ${phase1.status}).${c.reset}\n`,
+    );
+  }
+
+  // Phase 2: resume the pinned session interactively so the user can review the plan,
+  // adjust it, approve, and let Genie execute with real tools (Edit/Write/Bash).
+  console.log(`\n${c.blue}→ Resuming session for interactive review…${c.reset}\n`);
+  spawnSync(cfg.genieOrClaude, ['--resume', sessionId], {
+    stdio: 'inherit',
+    env: { ...process.env },
+    cwd: worktreeDir,
   });
 
-  // Forward PTY output to terminal. Once the Genie prompt (❯) appears, auto-send
-  // "start" to trigger CLAUDE.md Session Start Override without user input.
-  let autoStartSent = false;
-  ptyProc.onData((data) => {
-    process.stdout.write(data);
-    if (!autoStartSent && data.includes('❯')) {
-      autoStartSent = true;
-      setTimeout(() => ptyProc.write('start\r'), 100);
-    }
-  });
-
-  // Forward terminal stdin to PTY in raw mode (pass all keystrokes through).
-  const stdin = process.stdin as NodeJS.ReadStream;
-  if (stdin.isTTY) stdin.setRawMode(true);
-  stdin.resume();
-  const onStdinData = (chunk: Buffer) => ptyProc.write(chunk.toString());
-  stdin.on('data', onStdinData);
-
-  // Propagate terminal resize events to the PTY.
-  const onResize = () => ptyProc.resize(process.stdout.columns || 80, process.stdout.rows || 24);
-  process.stdout.on('resize', onResize);
-
-  await new Promise<void>((resolve) => {
-    ptyProc.onExit(() => {
-      stdin.removeListener('data', onStdinData);
-      process.stdout.removeListener('resize', onResize);
-      if (stdin.isTTY) stdin.setRawMode(false);
-      removeWorktree();
-      console.log(`\n${c.blue}← Genie sandbox closed (task: ${taskId}, run: ${runId})${c.reset}`);
-      console.log(
-        `${c.yellow}⚠ Execution was handled inside Genie.` +
-          ` Do NOT call plansync_execution_complete from PlanSync Terminal —` +
-          ` Genie handles it (or user exited early).${c.reset}\n`,
-      );
-      resolve();
-    });
-  });
+  removeWorktree();
+  console.log(`\n${c.blue}← Genie sandbox closed (task: ${taskId}, run: ${runId})${c.reset}`);
+  console.log(
+    `${c.yellow}⚠ Execution was handled inside Genie.` +
+      ` Do NOT call plansync_execution_complete from PlanSync Terminal —` +
+      ` Genie handles it (or user exited early).${c.reset}\n`,
+  );
 }
 
 // ─── Project selection ──────────────────────────────────────────────────────
