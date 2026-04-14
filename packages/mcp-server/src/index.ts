@@ -13,7 +13,7 @@ import { registerCommentTools } from './tools/comment';
 import { registerTaskTools } from './tools/task';
 import { registerExecutionTools, heartbeatManager } from './tools/execution';
 import { registerDriftTools } from './tools/drift';
-import { registerStatusTools } from './tools/status';
+import { registerStatusTools, getDelegationAgent } from './tools/status';
 
 function pushNotification(
   server: McpServer,
@@ -45,6 +45,132 @@ async function main() {
     version: '0.1.0',
     capabilities: { logging: {} },
   });
+
+  // --- Unified tool access guard (execution mode + delegation mode) ---
+  //
+  // Two contexts restrict tool access:
+  //   1. Execution mode (PLANSYNC_EXEC_TASK_ID set at startup)
+  //      → Tools not in EXEC_ALLOWED are not registered at all (invisible to AI)
+  //   2. Delegation mode (activeDelegationAgent set at runtime via plansync_my_work)
+  //      → Tools not in DELEGATION_ALLOWED return DELEGATION_BLOCKED at call time
+  //
+  const execMode = Boolean(process.env.PLANSYNC_EXEC_TASK_ID);
+
+  // Execution mode whitelist — tools allowed during task execution
+  const EXEC_ALLOWED = new Set([
+    // Read-only queries
+    'plansync_task_list',
+    'plansync_task_show',
+    'plansync_task_pack',
+    'plansync_plan_list',
+    'plansync_plan_show',
+    'plansync_plan_active',
+    'plansync_plan_diff',
+    'plansync_status',
+    'plansync_who',
+    'plansync_activity_list',
+    'plansync_my_work',
+    'plansync_drift_list',
+    'plansync_member_list',
+    'plansync_project_list',
+    'plansync_project_show',
+    'plansync_suggestion_list',
+    'plansync_comment_list',
+    'plansync_exec_context',
+    'plansync_check_task_conflicts',
+    // Execution lifecycle
+    'plansync_execution_start',
+    'plansync_execution_heartbeat',
+    'plansync_execution_complete',
+    // Collaboration (safe writes)
+    'plansync_comment_create',
+    'plansync_comment_edit',
+    'plansync_comment_delete',
+    'plansync_plan_suggest',
+    'plansync_drift_resolve',
+    'plansync_task_rebind',
+  ]);
+
+  // Delegation mode whitelist — tools allowed when "working as <agent>"
+  const DELEGATION_ALLOWED = new Set([
+    // All read-only (same as exec)
+    'plansync_task_list',
+    'plansync_task_show',
+    'plansync_task_pack',
+    'plansync_plan_list',
+    'plansync_plan_show',
+    'plansync_plan_active',
+    'plansync_plan_diff',
+    'plansync_status',
+    'plansync_who',
+    'plansync_activity_list',
+    'plansync_my_work',
+    'plansync_drift_list',
+    'plansync_member_list',
+    'plansync_project_list',
+    'plansync_project_show',
+    'plansync_suggestion_list',
+    'plansync_comment_list',
+    'plansync_exec_context',
+    'plansync_check_task_conflicts',
+    // Execution lifecycle
+    'plansync_execution_start',
+    'plansync_execution_heartbeat',
+    'plansync_execution_complete',
+    // Collaboration
+    'plansync_comment_create',
+    'plansync_comment_edit',
+    'plansync_comment_delete',
+    'plansync_plan_suggest',
+    'plansync_drift_resolve',
+    'plansync_task_rebind',
+    // Agent task operations (claim, decline, update own task)
+    'plansync_task_claim',
+    'plansync_task_decline',
+    'plansync_task_update',
+    // Plan review (agent's core delegation action)
+    'plansync_review_approve',
+    'plansync_review_reject',
+    // Exit delegation
+    'plansync_delegation_clear',
+  ]);
+
+  {
+    const originalTool = server.tool.bind(server);
+    (server as any).tool = function (name: string, ...rest: any[]) {
+      // Execution mode: skip registration entirely — tool won't appear in AI's tool list
+      if (execMode && !EXEC_ALLOWED.has(name)) return;
+
+      // Wrap handler to check delegation mode at call time
+      const originalHandler = rest[rest.length - 1];
+      rest[rest.length - 1] = async (args: any) => {
+        const delegationAgent = getDelegationAgent();
+        if (delegationAgent && !DELEGATION_ALLOWED.has(name)) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  error: 'DELEGATION_BLOCKED',
+                  message: `Delegation mode active (as: "${delegationAgent}") — "${name}" is blocked. Use plansync_plan_suggest to propose changes, or call plansync_delegation_clear first.`,
+                }),
+              },
+            ],
+          };
+        }
+        return originalHandler(args);
+      };
+
+      return originalTool(name, ...rest);
+    };
+  }
+
+  if (execMode) {
+    logger.info(
+      { allowedTools: EXEC_ALLOWED.size, execTaskId: process.env.PLANSYNC_EXEC_TASK_ID },
+      'Execution mode: tool filtering active',
+    );
+  }
 
   registerProjectTools(server, api);
   registerMemberTools(server, api);

@@ -60,21 +60,6 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
         ),
     },
     async (args) => {
-      const delegationAgent = getDelegationAgent();
-      if (delegationAgent) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                error: 'DELEGATION_BLOCKED',
-                message: `Delegation mode active (as: "${delegationAgent}") — this operation requires owner role and is blocked.`,
-                hint: 'Use plansync_plan_suggest to propose a change, or call plansync_delegation_clear and ask the owner to perform this action.',
-              }),
-            },
-          ],
-        };
-      }
       const { projectId, asAgent, ...body } = args;
       const effectiveApi = asAgent ? api.withUser(asAgent) : api;
       const result = await effectiveApi.post(`/api/projects/${projectId}/plans`, body);
@@ -146,21 +131,6 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
         ),
     },
     async (args) => {
-      const delegationAgent = getDelegationAgent();
-      if (delegationAgent) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                error: 'DELEGATION_BLOCKED',
-                message: `Delegation mode active (as: "${delegationAgent}") — this operation requires owner role and is blocked.`,
-                hint: 'Use plansync_plan_suggest to propose a change, or call plansync_delegation_clear and ask the owner to perform this action.',
-              }),
-            },
-          ],
-        };
-      }
       const { projectId, planId, reviewers, asAgent } = args;
       const effectiveApi = asAgent ? api.withUser(asAgent) : api;
       const result = await effectiveApi.post(`/api/projects/${projectId}/plans/${planId}/propose`, {
@@ -184,21 +154,6 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
         ),
     },
     async (args) => {
-      const delegationAgent = getDelegationAgent();
-      if (delegationAgent) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                error: 'DELEGATION_BLOCKED',
-                message: `Delegation mode active (as: "${delegationAgent}") — this operation requires owner role and is blocked.`,
-                hint: 'Use plansync_plan_suggest to propose a change, or call plansync_delegation_clear and ask the owner to perform this action.',
-              }),
-            },
-          ],
-        };
-      }
       const effectiveApi = args.asAgent ? api.withUser(args.asAgent) : api;
       const result = await effectiveApi.post(
         `/api/projects/${args.projectId}/plans/${args.planId}/activate`,
@@ -222,21 +177,6 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
         ),
     },
     async (args) => {
-      const delegationAgent = getDelegationAgent();
-      if (delegationAgent) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                error: 'DELEGATION_BLOCKED',
-                message: `Delegation mode active (as: "${delegationAgent}") — this operation requires owner role and is blocked.`,
-                hint: 'Use plansync_plan_suggest to propose a change, or call plansync_delegation_clear and ask the owner to perform this action.',
-              }),
-            },
-          ],
-        };
-      }
       const effectiveApi = args.asAgent ? api.withUser(args.asAgent) : api;
       const result = await effectiveApi.post(
         `/api/projects/${args.projectId}/plans/${args.planId}/reactivate`,
