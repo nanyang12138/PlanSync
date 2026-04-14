@@ -8,6 +8,8 @@ import { ExecutionHistory } from '@/components/task/execution-history';
 import { TaskActions } from '@/components/task/task-actions';
 import { DriftAlertCard } from '@/components/dashboard/drift-alert-card';
 import { RealtimeWrapper } from '@/components/realtime-wrapper';
+import { LiveExecutionBanner } from '@/components/task/live-execution-banner';
+import { ExecutionSummary } from '@/components/task/execution-summary';
 
 export default async function TaskDetailPage({
   params,
@@ -35,6 +37,10 @@ export default async function TaskDetailPage({
   const canRebind = !!activePlan && task.boundPlanVersion !== activePlan.version;
   const canClaim = task.status === 'todo' && !task.assignee;
   const canDecline = task.status === 'todo' && task.assignee === currentUser;
+
+  // Derive execution state for new components
+  const runningRun = task.executionRuns.find((r) => r.status === 'running') ?? null;
+  const latestCompletedRun = task.executionRuns.find((r) => r.status === 'completed') ?? null;
 
   return (
     <RealtimeWrapper projectId={params.id}>
@@ -64,6 +70,19 @@ export default async function TaskDetailPage({
             <div className="p-6 space-y-6">
               <TaskDetail task={task} activePlan={activePlan} />
 
+              {/* Live execution indicator */}
+              <LiveExecutionBanner
+                run={
+                  runningRun
+                    ? {
+                        executorName: runningRun.executorName,
+                        executorType: runningRun.executorType,
+                        startedAt: runningRun.startedAt.toISOString(),
+                      }
+                    : null
+                }
+              />
+
               <TaskActions
                 projectId={params.id}
                 taskId={params.taskId}
@@ -71,6 +90,9 @@ export default async function TaskDetailPage({
                 canClaim={canClaim}
                 canDecline={canDecline}
               />
+
+              {/* Latest execution summary */}
+              <ExecutionSummary run={latestCompletedRun} />
 
               {task.driftAlerts.length > 0 && (
                 <section>

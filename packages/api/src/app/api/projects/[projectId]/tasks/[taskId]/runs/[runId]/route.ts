@@ -138,7 +138,10 @@ export async function POST(req: NextRequest, { params }: Params) {
       if (body.status === 'completed') {
         await prisma.task.update({
           where: { id: params.taskId },
-          data: { status: 'done' },
+          data: {
+            status: 'done',
+            ...(body.branchName ? { branchName: body.branchName } : {}),
+          },
         });
       } else if (body.status === 'failed') {
         const otherRunning = await prisma.executionRun.count({

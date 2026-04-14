@@ -156,6 +156,7 @@ export function registerExecutionTools(server: McpServer, api: ApiClient) {
       filesChanged: z.array(z.string()).optional(),
       blockers: z.array(z.string()).optional(),
       driftSignals: z.array(z.string()).optional(),
+      branchName: z.string().optional().describe('Git branch name where changes were committed.'),
       deliverablesMet: z
         .array(z.string())
         .optional()

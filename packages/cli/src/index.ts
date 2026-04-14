@@ -69,6 +69,37 @@ const c = {
   gray: '\x1b[90m',
 };
 
+// ─── Spinner ─────────────────────────────────────────────────────────────────
+
+function createSpinner(message: string) {
+  const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+  let i = 0;
+  let timer: ReturnType<typeof setInterval> | null = null;
+  const startTime = Date.now();
+
+  return {
+    start() {
+      timer = setInterval(() => {
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        const mins = Math.floor(elapsed / 60);
+        const secs = elapsed % 60;
+        const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+        process.stdout.write(
+          `\r${c.blue}${frames[i % frames.length]}${c.reset} ${message} ${c.dim}(${timeStr})${c.reset}  `,
+        );
+        i++;
+      }, 80);
+    },
+    stop(finalMessage?: string) {
+      if (timer) clearInterval(timer);
+      process.stdout.write('\r' + ' '.repeat(80) + '\r');
+      if (finalMessage) {
+        process.stdout.write(finalMessage + '\n');
+      }
+    },
+  };
+}
+
 // ─── PlanSync HTTP helpers (for banner/status display only) ──────────────────
 
 function psRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -937,6 +968,75 @@ async function launchExec(taskId: string): Promise<void> {
   });
 }
 
+// ─── Best-effort API PATCH (fire-and-forget with timeout) ────────────────────
+
+function patchTaskBestEffort(projectId: string, taskId: string, body: Record<string, unknown>) {
+  try {
+    const patchUrl = `${cfg.apiUrl}/api/projects/${projectId}/tasks/${taskId}`;
+    const patchBody = JSON.stringify(body);
+    const patchMod = patchUrl.startsWith('https') ? https : http;
+    const patchParsed = new URL(patchUrl);
+    const req = patchMod.request(
+      {
+        hostname: patchParsed.hostname,
+        port: patchParsed.port,
+        path: patchParsed.pathname,
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${cfg.apiKey}`,
+          'x-user-name': cfg.user,
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(patchBody),
+        },
+      },
+      () => {
+        /* response ignored */
+      },
+    );
+    req.setTimeout(5000, () => req.destroy());
+    req.on('error', () => {
+      /* best-effort — silently ignore */
+    });
+    req.write(patchBody);
+    req.end();
+  } catch {
+    /* best-effort */
+  }
+}
+
+// ─── MCP config builder (shared by launchAutoExec + startup resume) ──────────
+
+function buildMcpConfigArg(
+  runId: string,
+  taskId: string,
+  projectId: string,
+  sessionId: string,
+): string {
+  const projectRoot = path.resolve(_selfDir, '../../../');
+  const localNodeBin = path.join(projectRoot, '.local-runtime', 'node', 'bin', 'node');
+  const mcpServerDist = path.join(projectRoot, 'packages', 'mcp-server', 'dist', 'index.js');
+
+  return JSON.stringify({
+    mcpServers: {
+      plansync: {
+        command: localNodeBin,
+        args: [mcpServerDist],
+        env: {
+          PLANSYNC_API_URL: process.env.PLANSYNC_API_URL ?? 'http://localhost:3001',
+          PLANSYNC_API_KEY: process.env.PLANSYNC_API_KEY ?? '',
+          PLANSYNC_USER: process.env.PLANSYNC_USER ?? process.env.USER ?? '',
+          PLANSYNC_SECRET: process.env.PLANSYNC_SECRET ?? '',
+          PLANSYNC_PROJECT: projectId,
+          PLANSYNC_EXEC_RUN_ID: runId,
+          PLANSYNC_EXEC_TASK_ID: taskId,
+          PLANSYNC_EXEC_SESSION_ID: sessionId,
+          LOG_LEVEL: 'warn',
+        },
+      },
+    },
+  });
+}
+
 // ─── /auto-exec (git worktree sandbox, triggered by execution_start interception) ──
 
 async function launchAutoExec(
@@ -970,56 +1070,87 @@ async function launchAutoExec(
     }
   };
 
-  // 2. Build --mcp-config JSON to pass directly to Genie.
-  //    Genie follows the worktree's .git file (gitdir pointer) back to the main repo
-  //    and reads the main repo's .claude/settings.json — it ignores any settings.json
-  //    we write into the worktree. Passing --mcp-config bypasses settings.json entirely.
-  const localNodeBin = path.join(projectRoot, '.local-runtime', 'node', 'bin', 'node');
-  const mcpServerDist = path.join(projectRoot, 'packages', 'mcp-server', 'dist', 'index.js');
-
-  const mcpConfigArg = JSON.stringify({
-    mcpServers: {
-      plansync: {
-        command: localNodeBin,
-        args: [mcpServerDist],
-        env: {
-          PLANSYNC_API_URL: process.env.PLANSYNC_API_URL ?? 'http://localhost:3001',
-          PLANSYNC_API_KEY: process.env.PLANSYNC_API_KEY ?? '',
-          PLANSYNC_USER: process.env.PLANSYNC_USER ?? process.env.USER ?? '',
-          PLANSYNC_SECRET: process.env.PLANSYNC_SECRET ?? '',
-          PLANSYNC_PROJECT: projectId,
-          PLANSYNC_EXEC_RUN_ID: runId,
-          PLANSYNC_EXEC_TASK_ID: taskId,
-          LOG_LEVEL: 'warn',
-        },
-      },
-    },
-  });
-
-  // 3. Two-phase launch using stdio:'inherit' (same pattern as /code — no nested PTY).
-  //    Phase 1: print mode generates the implementation plan non-interactively.
-  //    Phase 2: resume the exact session interactively for user review and execution.
+  // 2. Build --mcp-config and write exec metadata for crash recovery.
   const sessionId = crypto.randomUUID();
+  const mcpConfigArg = buildMcpConfigArg(runId, taskId, projectId, sessionId);
 
-  console.log(
-    `\n${c.blue}→ Launching Genie sandbox for task ${taskId} (Run: ${runId})${c.reset}\n`,
+  // Write metadata so startup scan can offer resume if session is interrupted.
+  const metaPath = path.join(worktreeDir, '.exec-meta.json');
+  fs.writeFileSync(
+    metaPath,
+    JSON.stringify(
+      { taskId, runId, sessionId, projectId, startedAt: new Date().toISOString() },
+      null,
+      2,
+    ),
   );
+
+  // 3. Two-phase launch.
+  //    Phase 1: non-interactive plan generation with spinner.
+  //    Phase 2: interactive review and execution.
+  console.log(`\n${c.blue}→ Launching Genie sandbox for task ${taskId} (Run: ${runId})${c.reset}`);
+  console.log(`  ${c.dim}Worktree: ${worktreeDir}${c.reset}`);
+  console.log(`  ${c.dim}Session:  ${sessionId}${c.reset}\n`);
 
   // Phase 1: trigger CLAUDE.md Session Start Override via "-p start", generate plan, exit.
   // "--session-id" pins the session to a unique UUID so Phase 2 can resume it exactly.
   // "--mcp-config" bypasses settings.json so MCP works regardless of git worktree resolution.
-  const phase1 = spawnSync(
-    cfg.genieOrClaude,
-    ['-p', 'start', '--session-id', sessionId, '--mcp-config', mcpConfigArg],
-    {
-      stdio: 'inherit',
-      env: { ...process.env },
-      cwd: worktreeDir,
-    },
-  );
-  if (phase1.status !== 0) {
+  // Uses async spawn + spinner so the user sees progress while waiting.
+  const spinner = createSpinner('Generating implementation plan...');
+  spinner.start();
+
+  const phase1ExitCode = await new Promise<number | null>((resolve) => {
+    const child = spawn(
+      cfg.genieOrClaude,
+      ['-p', 'start', '--session-id', sessionId, '--mcp-config', mcpConfigArg],
+      {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env },
+        cwd: worktreeDir,
+      },
+    );
+
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (d: Buffer) => {
+      stdout += d.toString();
+    });
+    child.stderr?.on('data', (d: Buffer) => {
+      stderr += d.toString();
+    });
+
+    let settled = false;
+    const cleanup = () => {
+      if (settled) return;
+      settled = true;
+      spinner.stop();
+      child.kill('SIGINT');
+    };
+    process.once('SIGINT', cleanup);
+
+    child.on('close', (code) => {
+      process.removeListener('SIGINT', cleanup);
+      if (!settled) {
+        settled = true;
+        spinner.stop(`${c.green}✓${c.reset} Plan generation complete.`);
+      }
+      if (stdout.trim()) process.stdout.write(stdout);
+      if (stderr.trim()) process.stderr.write(stderr);
+      resolve(code);
+    });
+    child.on('error', (err) => {
+      process.removeListener('SIGINT', cleanup);
+      if (!settled) {
+        settled = true;
+        spinner.stop(`${c.red}✗ Plan generation failed: ${err.message}${c.reset}`);
+      }
+      resolve(null);
+    });
+  });
+
+  if (phase1ExitCode !== 0 && phase1ExitCode !== null) {
     console.log(
-      `\n${c.yellow}⚠ Plan generation exited early (status ${phase1.status}).${c.reset}\n`,
+      `\n${c.yellow}⚠ Plan generation exited early (status ${phase1ExitCode}).${c.reset}\n`,
     );
   }
 
@@ -1063,6 +1194,9 @@ async function launchAutoExec(
         console.log(`\n${c.green}✓ Changes saved to branch: ${branchName}${c.reset}`);
         console.log(`  Review:  git diff HEAD...${branchName}`);
         console.log(`  Merge:   git merge ${branchName}\n`);
+
+        // Write branchName back to Task via API (best-effort)
+        patchTaskBestEffort(projectId, taskId, { branchName });
       }
     } catch {
       /* best-effort — if preservation fails, still remove the worktree */
@@ -1208,17 +1342,32 @@ function writeGenieSettings(): void {
 async function main() {
   writeGenieSettings();
 
-  // 清理上次异常退出遗留的 worktree sandbox
-  const execSandboxDir = path.join(path.resolve(_selfDir, '../../../'), '.plansync-exec');
+  // Scan for interrupted executions (worktrees with .exec-meta.json)
+  const projectRoot = path.resolve(_selfDir, '../../../');
+  const execSandboxDir = path.join(projectRoot, '.plansync-exec');
+  type InterruptedExec = {
+    taskId: string;
+    runId: string;
+    sessionId: string;
+    projectId: string;
+    worktreeDir: string;
+  };
+  const interrupted: InterruptedExec[] = [];
+
   if (fs.existsSync(execSandboxDir)) {
     for (const entry of fs.readdirSync(execSandboxDir)) {
+      const dir = path.join(execSandboxDir, entry);
+      const metaFile = path.join(dir, '.exec-meta.json');
       try {
-        execSync(`git worktree remove --force "${path.join(execSandboxDir, entry)}"`, {
-          cwd: path.resolve(_selfDir, '../../../'),
-          stdio: 'pipe',
-        });
+        const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+        interrupted.push({ ...meta, worktreeDir: dir });
       } catch {
-        /* ignore */
+        // No meta file or invalid — just remove the worktree
+        try {
+          execSync(`git worktree remove --force "${dir}"`, { cwd: projectRoot, stdio: 'pipe' });
+        } catch {
+          /* ignore */
+        }
       }
     }
   }
@@ -1275,6 +1424,71 @@ async function main() {
   process.stdout.write(' '.repeat(40) + '\r');
   const toolCount = mcp.getAnthropicTools().length;
   banner(status, toolCount);
+
+  // Step 4: Prompt user to resume any interrupted executions
+  for (const run of interrupted) {
+    console.log(
+      `\n${c.yellow}⚠ Interrupted execution found: task ${run.taskId.slice(0, 8)} (run ${run.runId.slice(-6)})${c.reset}`,
+    );
+    const choice = await new Promise<string>((resolve) =>
+      rl.question(`  Resume? [y]es / [n]o (discard): `, resolve),
+    );
+    if (choice.trim().toLowerCase() === 'y') {
+      const mcpCfg = buildMcpConfigArg(run.runId, run.taskId, run.projectId, run.sessionId);
+      console.log(`\n${c.blue}→ Resuming Genie for task ${run.taskId.slice(0, 8)}…${c.reset}\n`);
+      spawnSync(cfg.genieOrClaude, ['--resume', run.sessionId, '--mcp-config', mcpCfg], {
+        stdio: 'inherit',
+        env: { ...process.env },
+        cwd: run.worktreeDir,
+      });
+    }
+    // Clean up worktree regardless (after resume or on discard)
+    try {
+      // Preserve changes before removing
+      const wtStatus = execSync(`git -C "${run.worktreeDir}" status --porcelain`, {
+        encoding: 'utf8',
+        stdio: 'pipe',
+      }).trim();
+      const wtHead = execSync(`git -C "${run.worktreeDir}" rev-parse HEAD`, {
+        encoding: 'utf8',
+        stdio: 'pipe',
+      }).trim();
+      const mainHead = execSync(`git rev-parse HEAD`, {
+        cwd: projectRoot,
+        encoding: 'utf8',
+        stdio: 'pipe',
+      }).trim();
+
+      if (wtStatus || wtHead !== mainHead) {
+        const branchName = `plansync/exec-${run.taskId.slice(0, 8)}-${run.runId.slice(-6)}`;
+        if (wtStatus) {
+          execSync(`git -C "${run.worktreeDir}" add -A`, { stdio: 'pipe' });
+          execSync(
+            `git -C "${run.worktreeDir}" commit -m "chore: PlanSync task execution (${run.taskId})"`,
+            { stdio: 'pipe' },
+          );
+        }
+        try {
+          execSync(`git -C "${run.worktreeDir}" branch "${branchName}"`, { stdio: 'pipe' });
+          console.log(`${c.green}✓ Changes saved to branch: ${branchName}${c.reset}`);
+          patchTaskBestEffort(run.projectId, run.taskId, { branchName });
+        } catch {
+          /* branch may already exist */
+        }
+      }
+    } catch {
+      /* best-effort */
+    }
+
+    try {
+      execSync(`git worktree remove --force "${run.worktreeDir}"`, {
+        cwd: projectRoot,
+        stdio: 'pipe',
+      });
+    } catch {
+      /* ignore */
+    }
+  }
 
   const history: Message[] = [];
   let currentStatus = status;

@@ -1,5 +1,6 @@
 import type { Plan, Task } from '@prisma/client';
-import { AlertTriangle, Bot, User, Calendar } from 'lucide-react';
+import { AlertTriangle, Bot, User, Calendar, GitBranch, ExternalLink } from 'lucide-react';
+import { CopyButton } from '@/components/shared/copy-button';
 
 export type TaskDetailProps = {
   task: Task;
@@ -94,6 +95,60 @@ export function TaskDetail({ task, activePlan }: TaskDetailProps) {
           </div>
         </div>
       </div>
+
+      {/* Branch & PR info */}
+      {(task.branchName || task.prUrl) && (
+        <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4 space-y-3">
+          {task.branchName && (
+            <div>
+              <div className="flex items-center gap-2 mb-2">
+                <GitBranch className="h-4 w-4 text-blue-500 shrink-0" />
+                <span className="text-xs font-medium text-slate-600">Execution Branch</span>
+              </div>
+              <div className="flex items-center gap-2 mb-2">
+                <code className="text-sm font-mono text-slate-800 bg-white border border-slate-200 rounded-md px-2.5 py-1">
+                  {task.branchName}
+                </code>
+                <CopyButton text={task.branchName} />
+              </div>
+              <p className="text-xs text-slate-400 leading-relaxed mb-2">
+                Code changes from this task&apos;s execution are saved to this branch.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <div className="flex items-center gap-1.5 rounded-md bg-white border border-slate-200 px-2 py-1">
+                  <span className="text-[10px] text-slate-400 uppercase tracking-wider">
+                    Review
+                  </span>
+                  <code className="text-[11px] font-mono text-slate-600">
+                    git diff HEAD...{task.branchName}
+                  </code>
+                  <CopyButton text={`git diff HEAD...${task.branchName}`} />
+                </div>
+                <div className="flex items-center gap-1.5 rounded-md bg-white border border-slate-200 px-2 py-1">
+                  <span className="text-[10px] text-slate-400 uppercase tracking-wider">Merge</span>
+                  <code className="text-[11px] font-mono text-slate-600">
+                    git merge {task.branchName}
+                  </code>
+                  <CopyButton text={`git merge ${task.branchName}`} />
+                </div>
+              </div>
+            </div>
+          )}
+          {task.prUrl && (
+            <div className={task.branchName ? 'pt-3 border-t border-slate-200' : ''}>
+              <a
+                href={task.prUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50/50 px-3 py-2 hover:bg-blue-100 transition-colors"
+              >
+                <ExternalLink className="h-3.5 w-3.5 text-blue-500 shrink-0" />
+                <span className="text-xs text-blue-600 font-medium">View Pull Request</span>
+              </a>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
