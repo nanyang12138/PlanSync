@@ -948,7 +948,7 @@ async function launchAutoExec(
   const projectRoot = path.resolve(_selfDir, '../../../');
   const worktreeDir = path.join(projectRoot, '.plansync-exec', runId);
 
-  // 1. 创建 git worktree（隔离 sandbox）
+  // 1. Create isolated git worktree for this execution run
   try {
     execSync(`git worktree add --detach "${worktreeDir}"`, {
       cwd: projectRoot,
@@ -970,8 +970,10 @@ async function launchAutoExec(
     }
   };
 
-  // 2. 写入 worktree 专属的 .claude/settings.local.json
-  // 包含 PLANSYNC_EXEC_RUN_ID 等 env — 每个 worktree 独立，零多用户冲突
+  // 2. Write worktree-specific .claude/settings.local.json.
+  //    Use the pre-built MCP server dist directly (not start-mcp) to avoid the
+  //    setup overhead (Node install, dep check, build) that causes Genie's MCP
+  //    initialization timeout. All required env vars are passed explicitly.
   const worktreeClaudeDir = path.join(worktreeDir, '.claude');
   fs.mkdirSync(worktreeClaudeDir, { recursive: true });
 
@@ -984,13 +986,24 @@ async function launchAutoExec(
     /* ignore */
   }
 
+  const localNodeBin = path.join(projectRoot, '.local-runtime', 'node', 'bin', 'node');
+  const mcpServerDist = path.join(projectRoot, 'packages', 'mcp-server', 'dist', 'index.js');
+
   const worktreeSettings = {
     ...mainSettings,
+    // Allow all tools in the execution sandbox — the worktree provides git-level isolation.
+    permissions: { allow: ['*'] },
     mcpServers: {
       plansync: {
-        command: path.join(projectRoot, 'bin', 'start-mcp'),
-        args: [],
+        // Run MCP server directly (skip start-mcp setup overhead) so Genie's MCP
+        // initialization completes before the connection timeout.
+        command: localNodeBin,
+        args: [mcpServerDist],
         env: {
+          PLANSYNC_API_URL: process.env.PLANSYNC_API_URL ?? 'http://localhost:3001',
+          PLANSYNC_API_KEY: process.env.PLANSYNC_API_KEY ?? '',
+          PLANSYNC_USER: process.env.PLANSYNC_USER ?? process.env.USER ?? '',
+          PLANSYNC_SECRET: process.env.PLANSYNC_SECRET ?? '',
           PLANSYNC_PROJECT: projectId,
           PLANSYNC_EXEC_RUN_ID: runId,
           PLANSYNC_EXEC_TASK_ID: taskId,
@@ -1004,7 +1017,8 @@ async function launchAutoExec(
     JSON.stringify(worktreeSettings, null, 2),
   );
 
-  // 3. 启动 Genie（node-pty 创建真实 PTY → 保持交互式 + 自动注入初始消息触发 Session Start Override）
+  // 3. Launch Genie via node-pty (real PTY) — stays interactive, auto-injects
+  //    "start" once the prompt appears to trigger CLAUDE.md Session Start Override.
   console.log(
     `\n${c.blue}→ Launching Genie sandbox for task ${taskId} (Run: ${runId})${c.reset}\n`,
   );
@@ -1017,7 +1031,8 @@ async function launchAutoExec(
     env: process.env as Record<string, string>,
   });
 
-  // PTY 输出 → 终端；监听 Genie 提示符 ❯ 后自动发送 "start" 触发 CLAUDE.md Session Start Override
+  // Forward PTY output to terminal. Once the Genie prompt (❯) appears, auto-send
+  // "start" to trigger CLAUDE.md Session Start Override without user input.
   let autoStartSent = false;
   ptyProc.onData((data) => {
     process.stdout.write(data);
@@ -1027,14 +1042,14 @@ async function launchAutoExec(
     }
   });
 
-  // 终端 stdin → PTY（raw mode 传递所有按键）
+  // Forward terminal stdin to PTY in raw mode (pass all keystrokes through).
   const stdin = process.stdin as NodeJS.ReadStream;
   if (stdin.isTTY) stdin.setRawMode(true);
   stdin.resume();
   const onStdinData = (chunk: Buffer) => ptyProc.write(chunk.toString());
   stdin.on('data', onStdinData);
 
-  // 传递终端 resize 事件至 PTY
+  // Propagate terminal resize events to the PTY.
   const onResize = () => ptyProc.resize(process.stdout.columns || 80, process.stdout.rows || 24);
   process.stdout.on('resize', onResize);
 
