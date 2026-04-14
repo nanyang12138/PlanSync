@@ -1051,7 +1051,7 @@ async function launchAutoExec(
       }).trim();
 
       if (status || worktreeHead !== projectHead) {
-        const branchName = `plansync/exec-${taskId.slice(0, 8)}`;
+        const branchName = `plansync/exec-${taskId.slice(0, 8)}-${runId.slice(-6)}`;
         if (status) {
           execSync(`git -C "${worktreeDir}" add -A`, { stdio: 'pipe' });
           execSync(
