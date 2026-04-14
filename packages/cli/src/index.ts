@@ -970,51 +970,47 @@ async function launchAutoExec(
     }
   };
 
-  // 2. Write worktree-specific .claude/settings.local.json.
-  //    Use the pre-built MCP server dist directly (not start-mcp) to avoid the
-  //    setup overhead (Node install, dep check, build) that causes Genie's MCP
-  //    initialization timeout. All required env vars are passed explicitly.
+  // 2. Overwrite .claude/settings.json in the worktree with the full sandbox config.
+  //    The git-versioned settings.json has "command": "bin/start-mcp" (relative path)
+  //    which resolves to the worktree's bin/start-mcp. That script looks for
+  //    .local-runtime/node/ which is absent in worktrees, causing MCP to fail.
+  //    Writing settings.json directly (no settings.local.json needed) gives Genie
+  //    one authoritative config: MCP server runs straight from the pre-built dist.
   const worktreeClaudeDir = path.join(worktreeDir, '.claude');
   fs.mkdirSync(worktreeClaudeDir, { recursive: true });
-
-  let mainSettings: any = {};
-  try {
-    mainSettings = JSON.parse(
-      fs.readFileSync(path.join(projectRoot, '.claude', 'settings.local.json'), 'utf8'),
-    );
-  } catch {
-    /* ignore */
-  }
 
   const localNodeBin = path.join(projectRoot, '.local-runtime', 'node', 'bin', 'node');
   const mcpServerDist = path.join(projectRoot, 'packages', 'mcp-server', 'dist', 'index.js');
 
-  const worktreeSettings = {
-    ...mainSettings,
-    // Allow all tools in the execution sandbox — the worktree provides git-level isolation.
-    permissions: { allow: ['*'] },
-    mcpServers: {
-      plansync: {
-        // Run MCP server directly (skip start-mcp setup overhead) so Genie's MCP
-        // initialization completes before the connection timeout.
-        command: localNodeBin,
-        args: [mcpServerDist],
-        env: {
-          PLANSYNC_API_URL: process.env.PLANSYNC_API_URL ?? 'http://localhost:3001',
-          PLANSYNC_API_KEY: process.env.PLANSYNC_API_KEY ?? '',
-          PLANSYNC_USER: process.env.PLANSYNC_USER ?? process.env.USER ?? '',
-          PLANSYNC_SECRET: process.env.PLANSYNC_SECRET ?? '',
-          PLANSYNC_PROJECT: projectId,
-          PLANSYNC_EXEC_RUN_ID: runId,
-          PLANSYNC_EXEC_TASK_ID: taskId,
-          LOG_LEVEL: 'warn',
+  fs.writeFileSync(
+    path.join(worktreeClaudeDir, 'settings.json'),
+    JSON.stringify(
+      {
+        enableAllProjectMcpServers: true,
+        // Allow all tools — the worktree provides git-level isolation.
+        permissions: { allow: ['*'] },
+        mcpServers: {
+          plansync: {
+            // Run MCP server directly (no start-mcp setup overhead) so Genie's MCP
+            // initialization completes before the connection timeout.
+            command: localNodeBin,
+            args: [mcpServerDist],
+            env: {
+              PLANSYNC_API_URL: process.env.PLANSYNC_API_URL ?? 'http://localhost:3001',
+              PLANSYNC_API_KEY: process.env.PLANSYNC_API_KEY ?? '',
+              PLANSYNC_USER: process.env.PLANSYNC_USER ?? process.env.USER ?? '',
+              PLANSYNC_SECRET: process.env.PLANSYNC_SECRET ?? '',
+              PLANSYNC_PROJECT: projectId,
+              PLANSYNC_EXEC_RUN_ID: runId,
+              PLANSYNC_EXEC_TASK_ID: taskId,
+              LOG_LEVEL: 'warn',
+            },
+          },
         },
       },
-    },
-  };
-  fs.writeFileSync(
-    path.join(worktreeClaudeDir, 'settings.local.json'),
-    JSON.stringify(worktreeSettings, null, 2),
+      null,
+      2,
+    ),
   );
 
   // 3. Launch Genie via node-pty (real PTY) — stays interactive, auto-injects
