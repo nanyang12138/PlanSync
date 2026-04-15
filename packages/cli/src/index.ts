@@ -58,6 +58,7 @@ const SLASH_CMDS: SlashCmd[] = [
   { cmd: '/resume', desc: 'Restore a previous session' },
   { cmd: '/clear', desc: 'Clear conversation history' },
   { cmd: '/exec', desc: 'Execute a task in Genie' },
+  { cmd: '/worker', desc: 'Auto-execute agent tasks (worker mode)' },
   { cmd: '/code', desc: 'Open Genie coding mode' },
   { cmd: '/tools', desc: 'List MCP tools' },
   { cmd: '/help', desc: 'Show help' },
@@ -252,7 +253,9 @@ async function main() {
       currentAbort.signal,
       async (taskId, runId, projectId, taskPack) => {
         rawInput.pause();
-        await launchAutoExec(taskId, runId, projectId, taskPack);
+        const tp = taskPack as { task?: { assigneeType?: string } } | null;
+        const isAutonomous = tp?.task?.assigneeType === 'agent';
+        await launchAutoExec(taskId, runId, projectId, taskPack, { autonomous: isAutonomous });
         rawInput.resume();
       },
     );

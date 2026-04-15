@@ -239,6 +239,30 @@ function preserveAndRemoveWorktree(worktreeDir: string, taskId: string, runId: s
   }
 }
 
+// ─── Autonomous execution prompt ─────────────────────────────────────────────
+
+function buildAutonomousPrompt(): string {
+  return [
+    'You are in AUTONOMOUS execution mode. Do NOT wait for user approval.',
+    '',
+    '1. Call plansync_exec_context → get taskPack, confirm execMode=true',
+    '2. Plan internally (no user interaction needed)',
+    '3. Determine the correct test command by checking:',
+    '   - package.json scripts.test',
+    '   - Makefile test target',
+    '   - pytest.ini / jest.config.js',
+    '   - .github/workflows for test commands',
+    '   - Fall back to: npm test / pytest / go test ./...',
+    '4. Implement using Edit, Write, Bash, Glob, Grep tools',
+    '5. Run tests. If they fail: fix and retry (max 3 attempts)',
+    '6. Call plansync_execution_complete with SPECIFIC deliverablesMet:',
+    '   GOOD: "Implemented POST /auth/login with JWT; 12/12 tests pass (npm test)"',
+    '   BAD: "all done", "completed", "requirements met" → REJECTED by verifier',
+    '',
+    'FORBIDDEN: plansync_plan_create, plansync_plan_propose, plansync_plan_activate',
+  ].join('\n');
+}
+
 // ─── Auto-exec (git worktree sandbox) ────────────────────────────────────────
 
 export async function launchAutoExec(
@@ -246,6 +270,7 @@ export async function launchAutoExec(
   runId: string,
   projectId: string,
   _taskPack: unknown,
+  options: { autonomous?: boolean } = {},
 ): Promise<void> {
   const projectRoot = path.resolve(selfDir, '../../../');
   const worktreeDir = path.join(projectRoot, '.plansync-exec', runId);
@@ -271,17 +296,23 @@ export async function launchAutoExec(
     ),
   );
 
+  const phase1Prompt = options.autonomous ? buildAutonomousPrompt() : 'start';
+  const phase1Label = options.autonomous
+    ? `Executing task autonomously (${taskId})...`
+    : 'Generating implementation plan...';
+
   console.log(`\n${c.blue}→ Launching Genie sandbox for task ${taskId} (Run: ${runId})${c.reset}`);
+  console.log(`  ${c.dim}Mode:     ${options.autonomous ? 'autonomous' : 'interactive'}${c.reset}`);
   console.log(`  ${c.dim}Worktree: ${worktreeDir}${c.reset}`);
   console.log(`  ${c.dim}Session:  ${sessionId}${c.reset}\n`);
 
-  const spinner = createSpinner('Generating implementation plan...');
+  const spinner = createSpinner(phase1Label);
   spinner.start();
 
   const phase1ExitCode = await new Promise<number | null>((resolve) => {
     const child = spawn(
       cfg.genieOrClaude,
-      ['-p', 'start', '--session-id', sessionId, '--mcp-config', mcpConfigArg],
+      ['-p', phase1Prompt, '--session-id', sessionId, '--mcp-config', mcpConfigArg],
       { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env }, cwd: worktreeDir },
     );
 
@@ -302,32 +333,35 @@ export async function launchAutoExec(
 
     child.on('close', (code) => {
       process.removeListener('SIGINT', cleanup);
-      spinner.done('Plan generation complete.');
+      spinner.done(
+        options.autonomous ? 'Autonomous execution complete.' : 'Plan generation complete.',
+      );
       if (stdout.trim()) process.stdout.write(stdout);
       if (stderr.trim()) process.stderr.write(stderr);
       resolve(code);
     });
     child.on('error', (err) => {
       process.removeListener('SIGINT', cleanup);
-      spinner.fail(`Plan generation failed: ${err.message}`);
+      spinner.fail(`Execution failed: ${err.message}`);
       resolve(null);
     });
   });
 
   if (phase1ExitCode !== 0 && phase1ExitCode !== null) {
-    console.log(
-      `\n${c.yellow}⚠ Plan generation exited early (status ${phase1ExitCode}).${c.reset}\n`,
-    );
+    console.log(`\n${c.yellow}⚠ Genie exited early (status ${phase1ExitCode}).${c.reset}\n`);
   }
 
-  console.log(`\n${c.blue}→ Resuming session for interactive review…${c.reset}\n`);
-  rawOff();
-  spawnSync(cfg.genieOrClaude, ['--resume', sessionId, '--mcp-config', mcpConfigArg], {
-    stdio: 'inherit',
-    env: { ...process.env },
-    cwd: worktreeDir,
-  });
-  rawOn();
+  if (!options.autonomous) {
+    // Interactive mode: resume session for human plan review
+    console.log(`\n${c.blue}→ Resuming session for interactive review…${c.reset}\n`);
+    rawOff();
+    spawnSync(cfg.genieOrClaude, ['--resume', sessionId, '--mcp-config', mcpConfigArg], {
+      stdio: 'inherit',
+      env: { ...process.env },
+      cwd: worktreeDir,
+    });
+    rawOn();
+  }
 
   preserveAndRemoveWorktree(worktreeDir, taskId, runId);
   console.log(`\n${c.blue}← Genie sandbox closed (task: ${taskId}, run: ${runId})${c.reset}`);

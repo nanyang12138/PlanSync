@@ -4,7 +4,7 @@ import { cfg } from './config.js';
 import { c, banner, printTasks, printHelp, ProjectStatus, emptyStatus } from './ui.js';
 import { McpClient } from './mcp-client.js';
 import { RawInput } from './input.js';
-import { launchCode, launchExec } from './exec.js';
+import { launchCode, launchExec, launchAutoExec } from './exec.js';
 
 // ─── API helpers ──────────────────────────────────────────────────────────────
 
@@ -425,6 +425,183 @@ export async function handleSlashCommand(
     ctx.rawInput.pause();
     await launchExec(taskId, apiGet);
     ctx.rawInput.resume();
+    return 'handled';
+  }
+
+  if (cmd === '/worker') {
+    if (!cfg.project) {
+      console.log(
+        `\n${c.yellow}No project selected. Use /project to select one first.${c.reset}\n`,
+      );
+      return 'handled';
+    }
+
+    const intervalSec = Math.max(10, parseInt(parts[1] || '60', 10));
+
+    // Preview: fetch pending agent tasks assigned to current user
+    let pending: Array<{ id: string; title: string; priority: string }> = [];
+    try {
+      const res = await apiGet<{ data?: unknown[] }>(
+        `/api/projects/${cfg.project}/tasks?assigneeType=agent&assignee=${encodeURIComponent(cfg.user)}&status=todo&pageSize=10`,
+      );
+      pending = (res.data || []) as Array<{ id: string; title: string; priority: string }>;
+    } catch {
+      console.log(`\n${c.red}✗ Failed to fetch tasks.${c.reset}\n`);
+      return 'handled';
+    }
+
+    if (pending.length === 0) {
+      console.log(
+        `\n${c.dim}No pending agent tasks assigned to ${cfg.user}.${c.reset}\n` +
+          `  Assign tasks with assigneeType="agent" and assignee="${cfg.user}" to use worker mode.\n`,
+      );
+      return 'handled';
+    }
+
+    console.log(
+      `\n  ${c.bold}PlanSync Worker Mode${c.reset} — Agent tasks assigned to ${cfg.user}:\n`,
+    );
+    pending.forEach((t, i) =>
+      console.log(
+        `  ${c.cyan}${i + 1}${c.reset}. ${c.dim}${t.id.slice(0, 8)}${c.reset} [${t.priority}] ${t.title}`,
+      ),
+    );
+    console.log('');
+    console.log(`  ${c.dim}[a] all  [1,2,3] specific numbers  [n] cancel${c.reset}`);
+
+    const answer = await ctx.ask(`  Execute: `);
+    const trimmed = answer.trim().toLowerCase();
+
+    let selectedIds: string[] = [];
+    if (!trimmed || trimmed === 'n') {
+      console.log(`  ${c.yellow}Cancelled.${c.reset}\n`);
+      return 'handled';
+    } else if (trimmed === 'a') {
+      selectedIds = pending.map((t) => t.id);
+    } else {
+      // Parse numbers like "1,2,3" or "1 2 3"
+      const nums = trimmed.split(/[\s,]+/).map((s) => parseInt(s, 10) - 1);
+      selectedIds = nums.filter((i) => i >= 0 && i < pending.length).map((i) => pending[i].id);
+      if (selectedIds.length === 0) {
+        console.log(`  ${c.yellow}No valid selection.${c.reset}\n`);
+        return 'handled';
+      }
+    }
+
+    const selectedSet = new Set(selectedIds);
+
+    // Worker loop — pause rawInput so the terminal doesn't accept commands mid-loop
+    ctx.rawInput.pause();
+    let stopWorker = false;
+    const origSigint = ctx.rawInput.onSigint;
+    ctx.rawInput.onSigint = () => {
+      stopWorker = true;
+      console.log(`\n${c.yellow}⚠ Worker stopping after current task...${c.reset}`);
+    };
+
+    const taskCount = selectedSet.size;
+    console.log(
+      `\n${c.green}✓ Worker started${c.reset} — ${taskCount} task(s) selected, polling every ${intervalSec}s ${c.dim}(Ctrl+C to stop)${c.reset}\n`,
+    );
+
+    const interruptibleSleep = (ms: number) =>
+      new Promise<void>((resolve) => {
+        const interval = setInterval(() => {
+          if (stopWorker) {
+            clearInterval(interval);
+            resolve();
+          }
+        }, 1000);
+        setTimeout(() => {
+          clearInterval(interval);
+          resolve();
+        }, ms);
+      });
+
+    try {
+      while (!stopWorker) {
+        // Poll for pending agent tasks
+        let tasks: Array<{ id: string; title: string; priority: string }> = [];
+        try {
+          const res = await apiGet<{ data?: unknown[] }>(
+            `/api/projects/${cfg.project}/tasks?assigneeType=agent&assignee=${encodeURIComponent(cfg.user)}&status=todo&pageSize=5`,
+          );
+          tasks = (res.data || []) as Array<{ id: string; title: string; priority: string }>;
+        } catch {
+          /* ignore poll errors */
+        }
+
+        // Filter to only selected tasks (if user chose specific ones)
+        const filtered = tasks.filter((t) => selectedSet.has(t.id));
+
+        for (const task of filtered) {
+          if (stopWorker) break;
+          console.log(
+            `\n${c.blue}[Worker]${c.reset} Executing: ${c.dim}${task.id.slice(0, 8)}${c.reset} "${task.title}"`,
+          );
+
+          // Check drift via task pack
+          let taskPack: unknown = null;
+          try {
+            const packResult = await ctx.mcp.callTool('plansync_task_pack', {
+              projectId: cfg.project,
+              taskId: task.id,
+            });
+            taskPack = JSON.parse(packResult);
+          } catch (err: unknown) {
+            console.log(
+              `  ${c.red}✗ Task pack failed: ${err instanceof Error ? err.message : String(err)}${c.reset}`,
+            );
+            continue;
+          }
+
+          const pack = taskPack as { driftAlerts?: Array<{ status: string }> } | null;
+          const openDrifts = (pack?.driftAlerts ?? []).filter((d) => d.status === 'open');
+          if (openDrifts.length > 0) {
+            console.log(
+              `  ${c.yellow}⚠ Skipping — ${openDrifts.length} unresolved drift alert(s)${c.reset}`,
+            );
+            continue;
+          }
+
+          // Register execution run
+          let runId = '';
+          try {
+            const startResult = await ctx.mcp.callTool('plansync_execution_start', {
+              projectId: cfg.project,
+              taskId: task.id,
+              executorType: 'agent',
+              executorName: cfg.user,
+            });
+            const parsed = JSON.parse(startResult);
+            const run = parsed?.data ?? parsed;
+            runId = run?.id ?? '';
+          } catch (err: unknown) {
+            console.log(
+              `  ${c.red}✗ execution_start failed: ${err instanceof Error ? err.message : String(err)}${c.reset}`,
+            );
+            continue;
+          }
+
+          if (!runId) {
+            console.log(`  ${c.red}✗ No run ID in response${c.reset}`);
+            continue;
+          }
+
+          // Execute autonomously in git worktree sandbox
+          await launchAutoExec(task.id, runId, cfg.project, taskPack, { autonomous: true });
+        }
+
+        if (!stopWorker) {
+          console.log(`${c.dim}[Worker] Next poll in ${intervalSec}s...${c.reset}`);
+          await interruptibleSleep(intervalSec * 1000);
+        }
+      }
+    } finally {
+      ctx.rawInput.onSigint = origSigint;
+      ctx.rawInput.resume();
+      console.log(`\n${c.blue}[Worker] Stopped.${c.reset}\n`);
+    }
     return 'handled';
   }
 
