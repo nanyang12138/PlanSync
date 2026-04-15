@@ -436,13 +436,18 @@ export async function handleSlashCommand(
       return 'handled';
     }
 
-    const intervalSec = Math.max(10, parseInt(parts[1] || '60', 10));
+    // parts[1] is agent name if non-numeric, otherwise interval
+    const isAgentArg = parts[1] !== undefined && isNaN(parseInt(parts[1], 10));
+    const agentName: string | undefined = isAgentArg ? parts[1] : undefined;
+    const intervalArg = isAgentArg ? parts[2] : parts[1];
+    const intervalSec = Math.max(10, parseInt(intervalArg || '60', 10));
+    const workerTarget = agentName ?? cfg.user;
 
-    // Preview: fetch pending agent tasks assigned to current user
+    // Preview: fetch pending agent tasks assigned to workerTarget
     let pending: Array<{ id: string; title: string; priority: string }> = [];
     try {
       const res = await apiGet<{ data?: unknown[] }>(
-        `/api/projects/${cfg.project}/tasks?assigneeType=agent&assignee=${encodeURIComponent(cfg.user)}&status=todo&pageSize=10`,
+        `/api/projects/${cfg.project}/tasks?assigneeType=agent&assignee=${encodeURIComponent(workerTarget)}&status=todo&pageSize=10`,
       );
       pending = (res.data || []) as Array<{ id: string; title: string; priority: string }>;
     } catch {
@@ -452,14 +457,15 @@ export async function handleSlashCommand(
 
     if (pending.length === 0) {
       console.log(
-        `\n${c.dim}No pending agent tasks assigned to ${cfg.user}.${c.reset}\n` +
-          `  Assign tasks with assigneeType="agent" and assignee="${cfg.user}" to use worker mode.\n`,
+        `\n${c.dim}No pending agent tasks assigned to ${workerTarget}.${c.reset}\n` +
+          `  Assign tasks with assigneeType="agent" and assignee="${workerTarget}" to use worker mode.\n`,
       );
       return 'handled';
     }
 
+    const operatorSuffix = agentName ? `  ${c.dim}[operator: ${cfg.user}]${c.reset}` : '';
     console.log(
-      `\n  ${c.bold}PlanSync Worker Mode${c.reset} — Agent tasks assigned to ${cfg.user}:\n`,
+      `\n  ${c.bold}PlanSync Worker Mode${c.reset} — Agent tasks assigned to ${workerTarget}:${operatorSuffix}\n`,
     );
     pending.forEach((t, i) =>
       console.log(
@@ -524,7 +530,7 @@ export async function handleSlashCommand(
         let tasks: Array<{ id: string; title: string; priority: string }> = [];
         try {
           const res = await apiGet<{ data?: unknown[] }>(
-            `/api/projects/${cfg.project}/tasks?assigneeType=agent&assignee=${encodeURIComponent(cfg.user)}&status=todo&pageSize=5`,
+            `/api/projects/${cfg.project}/tasks?assigneeType=agent&assignee=${encodeURIComponent(workerTarget)}&status=todo&pageSize=5`,
           );
           tasks = (res.data || []) as Array<{ id: string; title: string; priority: string }>;
         } catch {
@@ -571,7 +577,7 @@ export async function handleSlashCommand(
               projectId: cfg.project,
               taskId: task.id,
               executorType: 'agent',
-              executorName: cfg.user,
+              executorName: workerTarget,
             });
             const parsed = JSON.parse(startResult);
             const run = parsed?.data ?? parsed;

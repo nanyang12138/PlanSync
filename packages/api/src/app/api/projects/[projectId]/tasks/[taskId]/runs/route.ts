@@ -87,6 +87,32 @@ export async function POST(req: NextRequest, { params }: Params) {
       );
     }
 
+    if (task.status === 'todo') {
+      // Atomic claim: transition from 'todo' → 'in_progress' in a single DB operation.
+      // If two operators race on the same todo task, only one wins — the other gets count=0.
+      const claimed = await prisma.task.updateMany({
+        where: { id: params.taskId, status: 'todo' },
+        data: {
+          status: 'in_progress',
+          assignee: body.executorName,
+          assigneeType: body.executorType,
+        },
+      });
+      if (claimed.count === 0) {
+        throw new AppError(
+          ErrorCode.STATE_CONFLICT,
+          `Task was just claimed by another executor — only one executor at a time`,
+        );
+      }
+    } else if (task.status === 'in_progress') {
+      // Task already running — allow additional runs (e.g. retry after stale run).
+      // Not a concurrent claim risk: /worker only polls status=todo tasks.
+      await prisma.task.update({
+        where: { id: params.taskId },
+        data: { assignee: body.executorName, assigneeType: body.executorType },
+      });
+    }
+
     const run = await prisma.executionRun.create({
       data: {
         taskId: params.taskId,
@@ -101,17 +127,6 @@ export async function POST(req: NextRequest, { params }: Params) {
         driftSignals: [],
       },
     });
-
-    if (task.status === 'todo' || task.status === 'in_progress') {
-      await prisma.task.update({
-        where: { id: params.taskId },
-        data: {
-          status: 'in_progress',
-          assignee: body.executorName,
-          assigneeType: body.executorType,
-        },
-      });
-    }
 
     await createActivity({
       projectId: params.projectId,

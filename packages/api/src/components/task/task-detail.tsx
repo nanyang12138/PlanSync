@@ -124,13 +124,17 @@ export function TaskDetail({ task, activePlan }: TaskDetailProps) {
                   </code>
                   <CopyButton text={`git diff HEAD...${task.branchName}`} />
                 </div>
-                <div className="flex items-center gap-1.5 rounded-md bg-white border border-slate-200 px-2 py-1">
-                  <span className="text-[10px] text-slate-400 uppercase tracking-wider">Merge</span>
-                  <code className="text-[11px] font-mono text-slate-600">
-                    git merge {task.branchName}
-                  </code>
-                  <CopyButton text={`git merge ${task.branchName}`} />
-                </div>
+                {!task.prUrl && (
+                  <div className="flex items-center gap-1.5 rounded-md bg-white border border-slate-200 px-2 py-1">
+                    <span className="text-[10px] text-slate-400 uppercase tracking-wider">
+                      Merge
+                    </span>
+                    <code className="text-[11px] font-mono text-slate-600">
+                      git merge {task.branchName}
+                    </code>
+                    <CopyButton text={`git merge ${task.branchName}`} />
+                  </div>
+                )}
               </div>
             </div>
           )}
