@@ -447,7 +447,7 @@ export async function handleSlashCommand(
     let pending: Array<{ id: string; title: string; priority: string }> = [];
     try {
       const res = await apiGet<{ data?: unknown[] }>(
-        `/api/projects/${cfg.project}/tasks?assigneeType=agent&assignee=${encodeURIComponent(workerTarget)}&status=todo&pageSize=10`,
+        `/api/projects/${cfg.project}/tasks?assigneeType=agent&assignee=${encodeURIComponent(workerTarget)}&status=todo&pageSize=100`,
       );
       pending = (res.data || []) as Array<{ id: string; title: string; priority: string }>;
     } catch {
