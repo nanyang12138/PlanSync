@@ -158,3 +158,130 @@ describe('B: Member Management', () => {
     expect(res.status).toBe(200);
   });
 });
+
+describe('B-A: Member Management — Extended Coverage', () => {
+  const owner = 'bxa-owner';
+  let projectId: string;
+
+  beforeAll(async () => {
+    ({ projectId } = await createTestProject(owner));
+  });
+
+  afterAll(async () => {
+    await cleanupProject(projectId);
+  });
+
+  it('B-A1: owner can add agent-type developer', async () => {
+    const res = await POST(
+      makeReq(`/api/projects/${projectId}/members`, {
+        method: 'POST',
+        userName: owner,
+        body: { name: 'bot-worker', role: 'developer', type: 'agent' },
+      }),
+      { params: { projectId } },
+    );
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.data.name).toBe('bot-worker');
+    expect(body.data.role).toBe('developer');
+    expect(body.data.type).toBe('agent');
+  });
+
+  it('B-A2: owner can add agent-type owner', async () => {
+    const res = await POST(
+      makeReq(`/api/projects/${projectId}/members`, {
+        method: 'POST',
+        userName: owner,
+        body: { name: 'bot-owner', role: 'owner', type: 'agent' },
+      }),
+      { params: { projectId } },
+    );
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.data.role).toBe('owner');
+    expect(body.data.type).toBe('agent');
+  });
+
+  it('B-A3: PATCH updates member type human → agent', async () => {
+    const created = await testPrisma.projectMember.create({
+      data: { projectId, name: 'human-to-agent', role: 'developer', type: 'human' },
+    });
+    const res = await PATCH(
+      makeReq(`/api/projects/${projectId}/members/${created.id}`, {
+        method: 'PATCH',
+        userName: owner,
+        body: { type: 'agent' },
+      }),
+      { params: { projectId, memberId: created.id } },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.type).toBe('agent');
+    expect(body.data.role).toBe('developer');
+  });
+
+  it('B-A4: PATCH updates both role and type simultaneously', async () => {
+    const created = await testPrisma.projectMember.create({
+      data: { projectId, name: 'dual-update', role: 'developer', type: 'human' },
+    });
+    const res = await PATCH(
+      makeReq(`/api/projects/${projectId}/members/${created.id}`, {
+        method: 'PATCH',
+        userName: owner,
+        body: { role: 'owner', type: 'agent' },
+      }),
+      { params: { projectId, memberId: created.id } },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.role).toBe('owner');
+    expect(body.data.type).toBe('agent');
+  });
+
+  it('B-A5: PATCH non-existent member → 404', async () => {
+    const fakeMemberId = 'nonexistent-member-id-000';
+    const res = await PATCH(
+      makeReq(`/api/projects/${projectId}/members/${fakeMemberId}`, {
+        method: 'PATCH',
+        userName: owner,
+        body: { role: 'developer' },
+      }),
+      { params: { projectId, memberId: fakeMemberId } },
+    );
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('B-A6: DELETE non-existent member → 404', async () => {
+    const fakeMemberId = 'nonexistent-member-id-001';
+    const res = await DELETE(
+      makeReq(`/api/projects/${projectId}/members/${fakeMemberId}`, {
+        method: 'DELETE',
+        userName: owner,
+      }),
+      { params: { projectId, memberId: fakeMemberId } },
+    );
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('B-A7: can demote owner when another owner exists', async () => {
+    // bot-owner was added in B-A2 (role=owner). Now add a human second-owner to demote.
+    const secondOwner = await testPrisma.projectMember.create({
+      data: { projectId, name: 'second-owner', role: 'owner', type: 'human' },
+    });
+    const res = await PATCH(
+      makeReq(`/api/projects/${projectId}/members/${secondOwner.id}`, {
+        method: 'PATCH',
+        userName: owner,
+        body: { role: 'developer' },
+      }),
+      { params: { projectId, memberId: secondOwner.id } },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.role).toBe('developer');
+  });
+});
