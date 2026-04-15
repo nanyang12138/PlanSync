@@ -309,6 +309,9 @@ export function printHelp(toolCount: number) {
   console.log(`  ${c.cyan}/resume${c.reset}              Restore a previous session`);
   console.log(`  ${c.cyan}/clear${c.reset}               Clear conversation history`);
   console.log(`  ${c.cyan}/exec <taskId>${c.reset}       Execute a task in Genie`);
+  console.log(
+    `  ${c.cyan}/worker [agentName] [s]${c.reset}  Run agent task loop (e.g. /worker ai, /worker ai 30)`,
+  );
   console.log(`  ${c.cyan}/code${c.reset}                Open Genie coding mode`);
   console.log(`  ${c.cyan}/tools${c.reset}               List MCP tools`);
   console.log(`  ${c.cyan}/help${c.reset}                Show this help`);
