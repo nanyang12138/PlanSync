@@ -126,11 +126,11 @@ _load_env() {
 # Subsequent runs verify existing credentials against the server before continuing.
 _ensure_credentials() {
   if [ -n "$PLANSYNC_API_KEY" ]; then
-    # Verify existing credentials against server (handles DB-reset / stale-env scenario)
+    # Verify existing credentials against server (read-only, does not invalidate browser sessions)
     _ec_ok=$(
       _EC_URL="$PLANSYNC_API_URL" _EC_U="${PLANSYNC_USER:-$USER}" _EC_P="$PLANSYNC_API_KEY" \
       "$LOCAL_NODE_BIN" -e "
-        const h=require('http'),u=new URL('/api/auth/login',process.env._EC_URL);
+        const h=require('http'),u=new URL('/api/auth/verify',process.env._EC_URL);
         const b=JSON.stringify({userName:process.env._EC_U,password:process.env._EC_P});
         h.request({hostname:u.hostname,port:u.port||80,path:u.pathname,
           method:'POST',headers:{'Content-Type':'application/json'}},r=>{
@@ -208,7 +208,7 @@ _ensure_credentials() {
       _ec_ok2=$(
         _EC_URL="$PLANSYNC_API_URL" _EC_U="$_ec_user" _EC_P="$_ec_pass" \
         "$LOCAL_NODE_BIN" -e "
-          const h=require('http'),u=new URL('/api/auth/login',process.env._EC_URL);
+          const h=require('http'),u=new URL('/api/auth/verify',process.env._EC_URL);
           const b=JSON.stringify({userName:process.env._EC_U,password:process.env._EC_P});
           const req=h.request({hostname:u.hostname,port:u.port||80,path:u.pathname,
             method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(b)}},r=>{

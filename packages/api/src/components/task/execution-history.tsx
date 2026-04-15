@@ -5,6 +5,7 @@ import { GitBranch, CheckCircle2, AlertTriangle, FileCode } from 'lucide-react';
 
 export type ExecutionHistoryProps = {
   runs: ExecutionRun[];
+  latestCompletedRunId?: string;
 };
 
 function formatDateTime(d: Date | null) {
@@ -60,7 +61,7 @@ function hasDetails(run: ExecutionRun) {
   );
 }
 
-export function ExecutionHistory({ runs }: ExecutionHistoryProps) {
+export function ExecutionHistory({ runs, latestCompletedRunId }: ExecutionHistoryProps) {
   if (runs.length === 0) {
     return (
       <div className="panel p-10 text-center">
@@ -129,8 +130,8 @@ export function ExecutionHistory({ runs }: ExecutionHistoryProps) {
                 </td>
               </tr>
 
-              {/* Expandable details row */}
-              {hasDetails(run) && (
+              {/* Expandable details row — skip if already shown in ExecutionSummary above */}
+              {hasDetails(run) && run.id !== latestCompletedRunId && (
                 <tr>
                   <td colSpan={6} className="px-5 py-0">
                     <details className="group">

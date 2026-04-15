@@ -112,7 +112,10 @@ export default async function TaskDetailPage({
 
               <section>
                 <h2 className="section-label mb-3">Execution History</h2>
-                <ExecutionHistory runs={task.executionRuns} />
+                <ExecutionHistory
+                  runs={task.executionRuns}
+                  latestCompletedRunId={latestCompletedRun?.id}
+                />
               </section>
             </div>
           </div>
