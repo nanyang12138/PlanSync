@@ -241,9 +241,18 @@ function preserveAndRemoveWorktree(worktreeDir: string, taskId: string, runId: s
 
 // ─── Autonomous execution prompt ─────────────────────────────────────────────
 
-function buildAutonomousPrompt(): string {
+function buildAutonomousPrompt(worktreeDir: string): string {
+  const projectRoot = path.resolve(worktreeDir, '../../../');
   return [
     'You are in AUTONOMOUS execution mode. Do NOT wait for user approval.',
+    '',
+    '⚠ CRITICAL PATH ISOLATION — read carefully:',
+    `  Your working directory (worktree): ${worktreeDir}`,
+    `  Main repo root (DO NOT EDIT directly): ${projectRoot}`,
+    '  ALL file edits (Edit, Write) MUST use paths inside your working directory.',
+    `  When Glob or Grep returns a path like "${projectRoot}/packages/foo.ts",`,
+    `  you MUST use "${worktreeDir}/packages/foo.ts" instead.`,
+    `  NEVER edit files whose path starts with "${projectRoot}/" — those are the main repo.`,
     '',
     '1. Call plansync_exec_context → get taskPack, confirm execMode=true',
     '2. Plan internally (no user interaction needed)',
@@ -254,6 +263,7 @@ function buildAutonomousPrompt(): string {
     '   - .github/workflows for test commands',
     '   - Fall back to: npm test / pytest / go test ./...',
     '4. Implement using Edit, Write, Bash, Glob, Grep tools',
+    '   (all Edit/Write paths must start with your worktree dir above)',
     '5. Run tests. If they fail: fix and retry (max 3 attempts)',
     '6. Call plansync_execution_complete with SPECIFIC deliverablesMet:',
     '   GOOD: "Implemented POST /auth/login with JWT; 12/12 tests pass (npm test)"',
@@ -296,7 +306,26 @@ export async function launchAutoExec(
     ),
   );
 
-  const phase1Prompt = options.autonomous ? buildAutonomousPrompt() : 'start';
+  // Layer 2: append path constraint to worktree's CLAUDE.md so both phases are protected
+  const claudeMdPath = path.join(worktreeDir, 'CLAUDE.md');
+  if (fs.existsSync(claudeMdPath)) {
+    const constraint = [
+      '',
+      '---',
+      '',
+      '## EXEC WORKTREE PATH CONSTRAINT',
+      '',
+      'You are running inside an isolated exec worktree.',
+      `Working directory: ${worktreeDir}`,
+      '',
+      'ALL file operations (Edit, Write) must use paths within this directory.',
+      `If Glob or Grep returns a path like ${projectRoot}/packages/..., use ${worktreeDir}/packages/... instead.`,
+      `NEVER edit files whose path starts with ${projectRoot}/ — those are the main repository.`,
+    ].join('\n');
+    fs.appendFileSync(claudeMdPath, constraint);
+  }
+
+  const phase1Prompt = options.autonomous ? buildAutonomousPrompt(worktreeDir) : 'start';
   const phase1Label = options.autonomous
     ? `Executing task autonomously (${taskId})...`
     : 'Generating implementation plan...';
