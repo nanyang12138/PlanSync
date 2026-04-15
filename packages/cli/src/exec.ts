@@ -453,7 +453,15 @@ export async function launchAutoExec(
   const phase1ExitCode = await new Promise<number | null>((resolve) => {
     const child = spawn(
       cfg.genieOrClaude,
-      ['-p', phase1Prompt, '--session-id', sessionId, '--mcp-config', mcpConfigArg],
+      [
+        '-p',
+        phase1Prompt,
+        '--session-id',
+        sessionId,
+        '--mcp-config',
+        mcpConfigArg,
+        ...(options.autonomous ? ['--dangerously-skip-permissions'] : []),
+      ],
       { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env }, cwd: worktreeDir },
     );
 
