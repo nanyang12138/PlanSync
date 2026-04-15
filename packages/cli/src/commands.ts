@@ -596,6 +596,12 @@ export async function handleSlashCommand(
 
           // Execute autonomously in git worktree sandbox
           await launchAutoExec(task.id, runId, cfg.project, taskPack, { autonomous: true });
+          selectedSet.delete(task.id);
+          if (selectedSet.size === 0) {
+            stopWorker = true;
+            console.log(`\n${c.green}✓ All selected tasks completed. Worker stopping.${c.reset}\n`);
+            break;
+          }
         }
 
         if (!stopWorker) {

@@ -239,6 +239,7 @@ function preserveAndRemoveWorktree(
   taskId: string,
   runId: string,
   projectId: string,
+  options: { autonomous?: boolean } = {},
 ): void {
   const projectRoot = path.resolve(selfDir, '../../../');
   try {
@@ -280,51 +281,57 @@ function preserveAndRemoveWorktree(
       }
 
       if (hasRemote) {
-        rawOff();
-        process.stdout.write(`Push to GitHub and create PR? [y/N] `);
-        const readResult = spawnSync('bash', ['-c', 'read ans && printf "%s" "$ans"'], {
-          stdio: ['inherit', 'pipe', 'inherit'],
-        });
-        rawOn();
-        const answer = (readResult.stdout?.toString() ?? '').trim().toLowerCase();
-        console.log();
+        if (options.autonomous) {
+          console.log(
+            `  Push & PR: git push origin ${branchName} && gh pr create --head ${branchName}\n`,
+          );
+        } else {
+          rawOff();
+          process.stdout.write(`Push to GitHub and create PR? [y/N] `);
+          const readResult = spawnSync('bash', ['-c', 'read ans && printf "%s" "$ans"'], {
+            stdio: ['inherit', 'pipe', 'inherit'],
+          });
+          rawOn();
+          const answer = (readResult.stdout?.toString() ?? '').trim().toLowerCase();
+          console.log();
 
-        if (answer === 'y' || answer === 'yes') {
-          try {
-            execSync(`git push origin "${branchName}"`, { cwd: projectRoot, stdio: 'inherit' });
-
-            let defaultBranch = 'master';
+          if (answer === 'y' || answer === 'yes') {
             try {
-              defaultBranch =
-                execSync(`git rev-parse --abbrev-ref origin/HEAD`, {
-                  cwd: projectRoot,
-                  encoding: 'utf8',
-                  stdio: 'pipe',
-                })
-                  .trim()
-                  .replace(/^origin\//, '') || 'master';
-            } catch {
-              /* fallback to master */
-            }
+              execSync(`git push origin "${branchName}"`, { cwd: projectRoot, stdio: 'inherit' });
 
-            const prTitle = `chore: PlanSync task execution (${taskId.slice(0, 8)})`;
-            const prBody = `Automated execution of PlanSync task \`${taskId}\`.\n\nCreated by PlanSync /exec.`;
-            const prOutput = execSync(
-              `gh pr create --head "${branchName}" --base "${defaultBranch}" --title "${prTitle}" --body "${prBody}"`,
-              { encoding: 'utf8', cwd: projectRoot, stdio: 'pipe' },
-            ).trim();
-            prUrl = prOutput.match(/https?:\/\/\S+/)?.[0] ?? prOutput;
-            if (prUrl) {
-              console.log(`\n${c.green}✓ PR created: ${prUrl}${c.reset}\n`);
+              let defaultBranch = 'master';
+              try {
+                defaultBranch =
+                  execSync(`git rev-parse --abbrev-ref origin/HEAD`, {
+                    cwd: projectRoot,
+                    encoding: 'utf8',
+                    stdio: 'pipe',
+                  })
+                    .trim()
+                    .replace(/^origin\//, '') || 'master';
+              } catch {
+                /* fallback to master */
+              }
+
+              const prTitle = `chore: PlanSync task execution (${taskId.slice(0, 8)})`;
+              const prBody = `Automated execution of PlanSync task \`${taskId}\`.\n\nCreated by PlanSync /exec.`;
+              const prOutput = execSync(
+                `gh pr create --head "${branchName}" --base "${defaultBranch}" --title "${prTitle}" --body "${prBody}"`,
+                { encoding: 'utf8', cwd: projectRoot, stdio: 'pipe' },
+              ).trim();
+              prUrl = prOutput.match(/https?:\/\/\S+/)?.[0] ?? prOutput;
+              if (prUrl) {
+                console.log(`\n${c.green}✓ PR created: ${prUrl}${c.reset}\n`);
+              }
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : String(err);
+              console.log(`${c.red}✗ Push/PR failed: ${msg}${c.reset}`);
+              console.log(
+                `  Run manually: git push origin ${branchName} && gh pr create --head ${branchName}\n`,
+              );
             }
-          } catch (err: unknown) {
-            const msg = err instanceof Error ? err.message : String(err);
-            console.log(`${c.red}✗ Push/PR failed: ${msg}${c.reset}`);
-            console.log(
-              `  Run manually: git push origin ${branchName} && gh pr create --head ${branchName}\n`,
-            );
           }
-        }
+        } // end else (interactive mode)
       }
 
       // Single API patch with all available data
@@ -497,7 +504,9 @@ export async function launchAutoExec(
     rawOn();
   }
 
-  preserveAndRemoveWorktree(worktreeDir, taskId, runId, projectId);
+  preserveAndRemoveWorktree(worktreeDir, taskId, runId, projectId, {
+    autonomous: options.autonomous,
+  });
   console.log(`\n${c.blue}← Genie sandbox closed (task: ${taskId}, run: ${runId})${c.reset}`);
   console.log(
     `${c.yellow}⚠ Execution was handled inside Genie.` +
