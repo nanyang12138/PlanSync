@@ -295,6 +295,11 @@ export async function runAgentLoop(
               '─────────────────────────────────────────',
             ].join('\n');
             await onExecStart(taskId, runId, projectId, taskPack);
+            // Genie completed the task — stop the agent loop immediately.
+            // Without this return, the AI would continue to the next turn and
+            // re-execute the task itself, ignoring the "don't do more work" hint.
+            toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: result });
+            return finalText;
           }
         } catch {
           /* parse failed — let AI handle normally */

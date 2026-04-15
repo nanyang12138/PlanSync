@@ -121,7 +121,7 @@ export function printToolDone(result: string, ms: number): void {
     for (const l of lines.slice(0, MAX)) {
       process.stdout.write(`  ${c.dim}│  ${l}${c.reset}\n`);
     }
-    process.stdout.write(`  ${c.dim}│  [截断，共 ${lines.length} 行]${c.reset}\n`);
+    process.stdout.write(`  ${c.dim}│  [truncated — ${lines.length} lines total]${c.reset}\n`);
   }
   process.stdout.write(`  ${c.dim}╰─${c.reset} ${c.green}✔${c.reset} ${c.dim}${ms}ms${c.reset}\n`);
 }
