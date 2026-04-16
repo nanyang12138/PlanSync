@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { NextRequest } from 'next/server';
 import { AppError, ErrorCode } from '@plansync/shared';
 import { prisma } from './prisma';
+import { verifyToken } from './jwt';
 
 export interface AuthContext {
   userName: string;
@@ -64,6 +65,16 @@ export async function authenticate(req: NextRequest): Promise<AuthContext> {
   const authHeader = req.headers.get('authorization');
   const tokenFromHeader = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
   const token = tokenFromHeader ?? qpToken;
+
+  // JWT access token check — 3-part dot structure, not a ps_key_ API key
+  if (token && !token.startsWith('ps_key_') && token.split('.').length === 3 && process.env.JWT_SECRET) {
+    try {
+      const { userName } = verifyToken(token, 'access');
+      return { userName };
+    } catch {
+      // Invalid/expired JWT — fall through to other auth methods
+    }
+  }
 
   // Master delegation: PLANSYNC_SECRET lets the server owner act as any registered user.
   // Used for multi-user simulation in dev/testing. Requires a non-default secret value.

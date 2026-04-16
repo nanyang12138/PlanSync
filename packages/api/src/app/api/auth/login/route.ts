@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { prisma } from '@/lib/prisma';
+import { signAccessToken, signRefreshToken, hashJti } from '@/lib/jwt';
 
 async function hashPassword(password: string): Promise<string> {
   const salt = crypto.randomBytes(16);
@@ -79,11 +80,37 @@ export async function POST(req: NextRequest) {
     });
 
     const isFirstLogin = !account;
+
+    // JWT issuance — only when JWT_SECRET is configured
+    let accessToken: string | undefined;
+    let refreshToken: string | undefined;
+    const accessExpiry = parseInt(process.env.JWT_ACCESS_EXPIRY ?? '900', 10);
+    const refreshExpiry = parseInt(process.env.JWT_REFRESH_EXPIRY ?? '604800', 10);
+
+    if (process.env.JWT_SECRET) {
+      const jti = crypto.randomUUID();
+      // Revoke existing refresh tokens (single active session)
+      await prisma.apiKey.deleteMany({ where: { name: 'jwt-refresh', createdBy: name } });
+      // Store new refresh token JTI hash
+      await prisma.apiKey.create({
+        data: {
+          name: 'jwt-refresh',
+          keyPrefix: jti.slice(0, 8),
+          keyHash: hashJti(jti),
+          permissions: [],
+          createdBy: name,
+        },
+      });
+      accessToken = signAccessToken(name);
+      refreshToken = signRefreshToken(name, jti);
+    }
+
     const response = NextResponse.json({
       success: true,
       userName: name,
       isFirstLogin,
       key: rawKey,
+      ...(accessToken ? { accessToken, refreshToken } : {}),
     });
 
     // httpOnly: JS cannot read or tamper with this cookie
@@ -99,6 +126,22 @@ export async function POST(req: NextRequest) {
       maxAge: 31536000,
       sameSite: 'lax',
     });
+    if (accessToken) {
+      response.cookies.set('plansync-jwt', accessToken, {
+        path: '/',
+        maxAge: accessExpiry,
+        sameSite: 'lax',
+        httpOnly: true,
+      });
+    }
+    if (refreshToken) {
+      response.cookies.set('plansync-jwt-refresh', refreshToken, {
+        path: '/',
+        maxAge: refreshExpiry,
+        sameSite: 'lax',
+        httpOnly: true,
+      });
+    }
 
     return response;
   } catch (error) {
