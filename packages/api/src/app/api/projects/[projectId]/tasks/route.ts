@@ -42,7 +42,7 @@ export async function GET(req: NextRequest, { params }: Params) {
 export async function POST(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
-    await requireProjectRole(auth, params.projectId);
+    await requireProjectRole(auth, params.projectId, 'owner');
     const body = await validateBody(req, createTaskSchema);
 
     const task = await prisma.$transaction(async (tx) => {

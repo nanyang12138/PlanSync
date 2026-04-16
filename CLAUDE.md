@@ -315,8 +315,8 @@ If the user says "work as `<agent>`", "handle `<agent>`'s work", or similar:
 
    4. `plansync_execution_start`
    5. Do the work:
-      - **NEVER call `plansync_plan_create`, `plansync_plan_propose`, or `plansync_plan_activate`.**
-        A plan already exists — you are executing within it, not creating a new one.
+      - **NEVER call `plansync_plan_create`, `plansync_plan_propose`, `plansync_plan_activate`, or `plansync_task_create`.**
+        A plan already exists — you are executing within it, not creating a new one. Task creation is owner-only.
       - For code/design/bug/refactor tasks: MUST use Edit, Write, Bash tools to create actual files.
         Do NOT produce work as chat-only text output.
       - Do NOT write "complete", "done", or "finished" until `plansync_execution_complete` returns success.
@@ -332,7 +332,7 @@ If the user says "work as `<agent>`", "handle `<agent>`'s work", or similar:
 **Rules:**
 
 - Always call `plansync_comment_create` before approve/reject/complete — keeps work auditable.
-- Owner-only operations (`plansync_plan_create`, `plansync_plan_propose`, `plansync_plan_activate`, `plansync_plan_reactivate`) are **blocked at the MCP layer** during delegation — you will receive `DELEGATION_BLOCKED` if you attempt them. Use `plansync_plan_suggest` instead.
+- Owner-only operations (`plansync_plan_create`, `plansync_plan_propose`, `plansync_plan_activate`, `plansync_plan_reactivate`, `plansync_task_create`) are **blocked at the API layer** during delegation — you will receive `FORBIDDEN` if you attempt them. Use `plansync_plan_suggest` for plan changes. Task creation is owner-only; agents cannot create tasks directly.
 - If ANY operation is blocked during delegation, **STOP and report to the owner**. Do NOT retry with different parameters or omit the `asAgent`/`asUser` field.
 - When finished processing all of an agent's work, call `plansync_delegation_clear`.
 - If a plan write operation is genuinely needed, call `plansync_delegation_clear` first and ask the owner to perform it.

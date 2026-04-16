@@ -41,7 +41,7 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
 
   server.tool(
     'plansync_task_create',
-    'Create a new task (auto-binds to active plan version)',
+    'Create a new task (auto-binds to active plan version). OWNER ONLY.',
     {
       projectId: z.string(),
       title: z.string(),
