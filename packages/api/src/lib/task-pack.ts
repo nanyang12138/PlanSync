@@ -22,6 +22,8 @@ export async function buildTaskPack(taskId: string, projectId: string) {
       type: task.type,
       priority: task.priority,
       status: task.status,
+      assignee: task.assignee,
+      assigneeType: task.assigneeType,
       boundPlanVersion: task.boundPlanVersion,
       branchName: task.branchName,
       prUrl: task.prUrl,

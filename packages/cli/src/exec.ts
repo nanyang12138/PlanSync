@@ -234,15 +234,73 @@ function patchTask(projectId: string, taskId: string, body: Record<string, unkno
   }
 }
 
+function failRun(
+  projectId: string,
+  taskId: string,
+  runId: string,
+  outputSummary: string,
+  branchName?: string,
+): void {
+  try {
+    const url = `${cfg.apiUrl}/api/projects/${projectId}/tasks/${taskId}/runs/${runId}?action=complete`;
+    const body: Record<string, unknown> = { status: 'failed', outputSummary };
+    if (branchName) body.branchName = branchName;
+    const bodyStr = JSON.stringify(body);
+    const parsed = new URL(url);
+    const mod = parsed.protocol === 'https:' ? https : http;
+    const req = mod.request(
+      {
+        hostname: parsed.hostname,
+        port: parsed.port,
+        path: parsed.pathname + parsed.search,
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${cfg.apiKey}`,
+          'x-user-name': cfg.user,
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(bodyStr),
+        },
+      },
+      () => {
+        /* response ignored — fire-and-forget */
+      },
+    );
+    req.setTimeout(5000, () => req.destroy());
+    req.on('error', () => {
+      /* best-effort */
+    });
+    req.write(bodyStr);
+    req.end();
+  } catch {
+    /* best-effort */
+  }
+}
+
 function preserveAndRemoveWorktree(
   worktreeDir: string,
   taskId: string,
   runId: string,
   projectId: string,
   options: { autonomous?: boolean } = {},
-): void {
+): string | null {
   const projectRoot = path.resolve(selfDir, '../../../');
+  let createdBranch: string | null = null;
   try {
+    // Clean up CLI-generated setup files before checking for meaningful changes.
+    // .exec-meta.json is an untracked file created during worktree setup.
+    // CLAUDE.md had a worktree constraint appended — restore from HEAD.
+    try {
+      const metaPath = path.join(worktreeDir, '.exec-meta.json');
+      if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath);
+    } catch {
+      /* ignore */
+    }
+    try {
+      execSync(`git -C "${worktreeDir}" checkout HEAD -- CLAUDE.md`, { stdio: 'pipe' });
+    } catch {
+      /* ignore — CLAUDE.md may not exist at HEAD */
+    }
+
     const status = execSync(`git -C "${worktreeDir}" status --porcelain`, {
       encoding: 'utf8',
       stdio: 'pipe',
@@ -266,6 +324,7 @@ function preserveAndRemoveWorktree(
         });
       }
       execSync(`git -C "${worktreeDir}" branch "${branchName}"`, { stdio: 'pipe' });
+      createdBranch = branchName;
       console.log(`\n${c.green}✓ Changes saved to branch: ${branchName}${c.reset}`);
       console.log(`  Review:  git diff HEAD...${branchName}`);
       console.log(`  Merge:   git merge ${branchName}\n`);
@@ -349,6 +408,7 @@ function preserveAndRemoveWorktree(
   } catch {
     /* ignore */
   }
+  return createdBranch;
 }
 
 // ─── Autonomous execution prompt ─────────────────────────────────────────────
@@ -447,80 +507,147 @@ export async function launchAutoExec(
   console.log(`  ${c.dim}Worktree: ${worktreeDir}${c.reset}`);
   console.log(`  ${c.dim}Session:  ${sessionId}${c.reset}\n`);
 
-  const spinner = createSpinner(phase1Label);
-  spinner.start();
-
   const phase1ExitCode = await new Promise<number | null>((resolve) => {
-    const child = spawn(
-      cfg.genieOrClaude,
-      [
-        '-p',
-        phase1Prompt,
-        '--session-id',
-        sessionId,
-        '--mcp-config',
-        mcpConfigArg,
-        ...(options.autonomous ? ['--dangerously-skip-permissions'] : []),
-      ],
-      { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env }, cwd: worktreeDir },
-    );
+    const spawnArgs = [
+      '-p',
+      phase1Prompt,
+      '--session-id',
+      sessionId,
+      '--mcp-config',
+      mcpConfigArg,
+      ...(options.autonomous ? ['--dangerously-skip-permissions'] : []),
+    ];
 
-    let stdout = '';
-    let stderr = '';
-    child.stdout?.on('data', (d: Buffer) => {
-      stdout += d.toString();
-    });
-    child.stderr?.on('data', (d: Buffer) => {
-      stderr += d.toString();
-    });
+    if (options.autonomous) {
+      // Autonomous mode: buffer output behind a spinner
+      const spinner = createSpinner(phase1Label);
+      spinner.start();
 
-    const cleanup = () => {
-      spinner.stop();
-      child.kill('SIGINT');
-    };
-    process.once('SIGINT', cleanup);
+      const child = spawn(cfg.genieOrClaude, spawnArgs, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env },
+        cwd: worktreeDir,
+      });
 
-    child.on('close', (code) => {
-      process.removeListener('SIGINT', cleanup);
-      spinner.done(
-        options.autonomous ? 'Autonomous execution complete.' : 'Plan generation complete.',
-      );
-      if (stdout.trim()) process.stdout.write(stdout);
-      if (stderr.trim()) process.stderr.write(stderr);
-      resolve(code);
-    });
-    child.on('error', (err) => {
-      process.removeListener('SIGINT', cleanup);
-      spinner.fail(`Execution failed: ${err.message}`);
-      resolve(null);
-    });
+      let stdout = '';
+      let stderr = '';
+      child.stdout?.on('data', (d: Buffer) => {
+        stdout += d.toString();
+      });
+      child.stderr?.on('data', (d: Buffer) => {
+        stderr += d.toString();
+      });
+
+      const cleanup = () => {
+        spinner.stop();
+        child.kill('SIGINT');
+      };
+      process.once('SIGINT', cleanup);
+
+      child.on('close', (code) => {
+        process.removeListener('SIGINT', cleanup);
+        if (code === 0) {
+          spinner.done('Autonomous execution complete.');
+        } else if (code === 130) {
+          spinner.fail('Execution interrupted by user.');
+        } else {
+          spinner.fail(`Execution exited with status ${code ?? 'unknown'}.`);
+        }
+        if (stdout.trim()) process.stdout.write(stdout);
+        if (stderr.trim()) process.stderr.write(stderr);
+        resolve(code);
+      });
+      child.on('error', (err) => {
+        process.removeListener('SIGINT', cleanup);
+        spinner.fail(`Execution failed: ${err.message}`);
+        resolve(null);
+      });
+    } else {
+      // Interactive mode: show output directly so the user can see planning progress
+      console.log(`${c.blue}→ Phase 1: Generating implementation plan...${c.reset}\n`);
+      rawOff();
+
+      const child = spawn(cfg.genieOrClaude, spawnArgs, {
+        stdio: 'inherit',
+        env: { ...process.env },
+        cwd: worktreeDir,
+      });
+
+      const cleanup = () => {
+        child.kill('SIGINT');
+      };
+      process.once('SIGINT', cleanup);
+
+      child.on('close', (code) => {
+        process.removeListener('SIGINT', cleanup);
+        rawOn();
+        if (code === 0) {
+          console.log(`\n${c.green}✔ Plan generation complete.${c.reset}\n`);
+        } else if (code === 130) {
+          console.log(`\n${c.yellow}⚠ Plan generation interrupted by user.${c.reset}\n`);
+        } else {
+          console.log(`\n${c.yellow}⚠ Exited with status ${code ?? 'unknown'}.${c.reset}\n`);
+        }
+        resolve(code);
+      });
+      child.on('error', (err) => {
+        process.removeListener('SIGINT', cleanup);
+        rawOn();
+        console.log(`\n${c.red}✗ Execution failed: ${err.message}${c.reset}\n`);
+        resolve(null);
+      });
+    }
   });
 
-  if (phase1ExitCode !== 0 && phase1ExitCode !== null) {
-    console.log(`\n${c.yellow}⚠ Genie exited early (status ${phase1ExitCode}).${c.reset}\n`);
-  }
+  let isEarlyExit = phase1ExitCode !== 0 && phase1ExitCode !== null;
 
   if (!options.autonomous) {
-    // Interactive mode: resume session for human plan review
-    console.log(`\n${c.blue}→ Resuming session for interactive review…${c.reset}\n`);
-    rawOff();
-    spawnSync(cfg.genieOrClaude, ['--resume', sessionId, '--mcp-config', mcpConfigArg], {
-      stdio: 'inherit',
-      env: { ...process.env },
-      cwd: worktreeDir,
-    });
-    rawOn();
+    if (isEarlyExit) {
+      // Phase 1 was interrupted — skip resume session (nothing to resume)
+      console.log(`${c.dim}Skipping interactive review (session was interrupted).${c.reset}\n`);
+    } else {
+      // Interactive mode: resume session for human plan review
+      console.log(`\n${c.blue}→ Resuming session for interactive review…${c.reset}\n`);
+      rawOff();
+      const phase2 = spawnSync(
+        cfg.genieOrClaude,
+        ['--resume', sessionId, '--mcp-config', mcpConfigArg],
+        {
+          stdio: 'inherit',
+          env: { ...process.env },
+          cwd: worktreeDir,
+        },
+      );
+      rawOn();
+      // If phase 2 was also interrupted, treat as early exit
+      if (phase2.status !== 0 && phase2.status !== null) {
+        isEarlyExit = true;
+      }
+    }
   }
 
-  preserveAndRemoveWorktree(worktreeDir, taskId, runId, projectId, {
+  const branchName = preserveAndRemoveWorktree(worktreeDir, taskId, runId, projectId, {
     autonomous: options.autonomous,
   });
-  console.log(`\n${c.blue}← Genie sandbox closed (task: ${taskId}, run: ${runId})${c.reset}`);
-  console.log(
-    `${c.yellow}⚠ Execution was handled inside Genie.` +
-      ` Do NOT call plansync_execution_complete from PlanSync Terminal —` +
-      ` Genie handles it (or user exited early).${c.reset}\n`,
-  );
+
+  if (isEarlyExit) {
+    const reason =
+      phase1ExitCode === 130
+        ? 'Execution interrupted by user (SIGINT).'
+        : `Genie exited with status ${phase1ExitCode}.`;
+    failRun(projectId, taskId, runId, reason, branchName ?? undefined);
+    console.log(`\n${c.blue}← Genie sandbox closed (task: ${taskId}, run: ${runId})${c.reset}`);
+    console.log(
+      `${c.dim}Run marked as failed. Task will be set to 'blocked' if no other runs are active.${c.reset}\n`,
+    );
+  } else {
+    console.log(`\n${c.blue}← Genie sandbox closed (task: ${taskId}, run: ${runId})${c.reset}`);
+    console.log(
+      `${c.yellow}⚠ Execution was handled inside Genie.` +
+        ` Do NOT call plansync_execution_complete from PlanSync Terminal —` +
+        ` Genie handles it.${c.reset}\n`,
+    );
+  }
 }
 
 // ─── Interrupted run recovery ─────────────────────────────────────────────────
@@ -571,6 +698,20 @@ export function resumeInterruptedExec(run: InterruptedExec): void {
 
 export function cleanupInterruptedExec(run: InterruptedExec): void {
   const projectRoot = path.resolve(selfDir, '../../../');
+
+  // Clean up CLI-generated setup files before checking for meaningful changes
+  try {
+    const metaPath = path.join(run.worktreeDir, '.exec-meta.json');
+    if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath);
+  } catch {
+    /* ignore */
+  }
+  try {
+    execSync(`git -C "${run.worktreeDir}" checkout HEAD -- CLAUDE.md`, { stdio: 'pipe' });
+  } catch {
+    /* ignore */
+  }
+
   try {
     const wtStatus = execSync(`git -C "${run.worktreeDir}" status --porcelain`, {
       encoding: 'utf8',
