@@ -414,7 +414,7 @@ function preserveAndRemoveWorktree(
 // ─── Autonomous execution prompt ─────────────────────────────────────────────
 
 function buildAutonomousPrompt(worktreeDir: string): string {
-  const projectRoot = path.resolve(worktreeDir, '../../../');
+  const projectRoot = path.resolve(worktreeDir, '../../');
   return [
     'You are in AUTONOMOUS execution mode. Do NOT wait for user approval.',
     '',
@@ -497,7 +497,15 @@ export async function launchAutoExec(
     fs.appendFileSync(claudeMdPath, constraint);
   }
 
-  const phase1Prompt = options.autonomous ? buildAutonomousPrompt(worktreeDir) : 'start';
+  const phase1Prompt = options.autonomous
+    ? buildAutonomousPrompt(worktreeDir)
+    : [
+        'start',
+        '',
+        'PHASE 1 INSTRUCTION: After entering plan mode and writing your implementation plan',
+        'to the plan file, STOP. Do NOT call ExitPlanMode in this phase.',
+        'The user will review and approve your plan in the next interactive phase.',
+      ].join('\n');
   const phase1Label = options.autonomous
     ? `Executing task autonomously (${taskId})...`
     : 'Generating implementation plan...';
