@@ -526,85 +526,59 @@ export async function launchAutoExec(
       ...(options.autonomous ? ['--dangerously-skip-permissions'] : []),
     ];
 
-    if (options.autonomous) {
-      // Autonomous mode: buffer output behind a spinner
-      const spinner = createSpinner(phase1Label);
-      spinner.start();
+    // Both modes: buffer output behind a spinner
+    // Autonomous: stdin ignored; Interactive: stdin inherited (safety net for permission prompts)
+    const spinner = createSpinner(phase1Label);
+    spinner.start();
+    if (!options.autonomous) rawOff();
 
-      const child = spawn(cfg.genieOrClaude, spawnArgs, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env },
-        cwd: worktreeDir,
-      });
+    const child = spawn(cfg.genieOrClaude, spawnArgs, {
+      stdio: [options.autonomous ? 'ignore' : 'inherit', 'pipe', 'pipe'],
+      env: { ...process.env },
+      cwd: worktreeDir,
+    });
 
-      let stdout = '';
-      let stderr = '';
-      child.stdout?.on('data', (d: Buffer) => {
-        stdout += d.toString();
-      });
-      child.stderr?.on('data', (d: Buffer) => {
-        stderr += d.toString();
-      });
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (d: Buffer) => {
+      stdout += d.toString();
+    });
+    child.stderr?.on('data', (d: Buffer) => {
+      stderr += d.toString();
+    });
 
-      const cleanup = () => {
-        spinner.stop();
-        child.kill('SIGINT');
-      };
-      process.once('SIGINT', cleanup);
+    const cleanup = () => {
+      spinner.stop();
+      child.kill('SIGINT');
+    };
+    process.once('SIGINT', cleanup);
 
-      child.on('close', (code) => {
-        process.removeListener('SIGINT', cleanup);
-        if (code === 0) {
-          spinner.done('Autonomous execution complete.');
-        } else if (code === 130) {
-          spinner.fail('Execution interrupted by user.');
-        } else {
-          spinner.fail(`Execution exited with status ${code ?? 'unknown'}.`);
-        }
-        if (stdout.trim()) process.stdout.write(stdout);
-        if (stderr.trim()) process.stderr.write(stderr);
-        resolve(code);
-      });
-      child.on('error', (err) => {
-        process.removeListener('SIGINT', cleanup);
-        spinner.fail(`Execution failed: ${err.message}`);
-        resolve(null);
-      });
-    } else {
-      // Interactive mode: show output directly so the user can see planning progress
-      console.log(`${c.blue}→ Phase 1: Generating implementation plan...${c.reset}\n`);
-      rawOff();
-
-      const child = spawn(cfg.genieOrClaude, spawnArgs, {
-        stdio: 'inherit',
-        env: { ...process.env },
-        cwd: worktreeDir,
-      });
-
-      const cleanup = () => {
-        child.kill('SIGINT');
-      };
-      process.once('SIGINT', cleanup);
-
-      child.on('close', (code) => {
-        process.removeListener('SIGINT', cleanup);
-        rawOn();
-        if (code === 0) {
-          console.log(`\n${c.green}✔ Plan generation complete.${c.reset}\n`);
-        } else if (code === 130) {
-          console.log(`\n${c.yellow}⚠ Plan generation interrupted by user.${c.reset}\n`);
-        } else {
-          console.log(`\n${c.yellow}⚠ Exited with status ${code ?? 'unknown'}.${c.reset}\n`);
-        }
-        resolve(code);
-      });
-      child.on('error', (err) => {
-        process.removeListener('SIGINT', cleanup);
-        rawOn();
-        console.log(`\n${c.red}✗ Execution failed: ${err.message}${c.reset}\n`);
-        resolve(null);
-      });
-    }
+    child.on('close', (code) => {
+      process.removeListener('SIGINT', cleanup);
+      if (code === 0) {
+        spinner.done(
+          options.autonomous ? 'Autonomous execution complete.' : 'Plan generation complete.',
+        );
+      } else if (code === 130) {
+        spinner.fail(
+          options.autonomous
+            ? 'Execution interrupted by user.'
+            : 'Plan generation interrupted by user.',
+        );
+      } else {
+        spinner.fail(`Exited with status ${code ?? 'unknown'}.`);
+      }
+      if (stdout.trim()) process.stdout.write(stdout);
+      if (stderr.trim()) process.stderr.write(stderr);
+      if (!options.autonomous) rawOn();
+      resolve(code);
+    });
+    child.on('error', (err) => {
+      process.removeListener('SIGINT', cleanup);
+      spinner.fail(`Failed: ${err.message}`);
+      if (!options.autonomous) rawOn();
+      resolve(null);
+    });
   });
 
   let isEarlyExit = phase1ExitCode !== 0 && phase1ExitCode !== null;
