@@ -55,3 +55,6 @@ claude.local.md
 # .claude/settings.local.json is user-specific (gitignored)
 .claude/settings.local.json
 .claude/.nfs*
+
+# Codex runtime data (user-specific, machine-specific)
+.codex/

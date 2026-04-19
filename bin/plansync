@@ -60,7 +60,7 @@ Options:
   --run                        Run as an autonomous agent: process all pending work
                                (reviews, tasks, drift alerts) for PLANSYNC_USER, then exit.
                                Idempotent — safe to call from cron; exits 0 if no work.
-  --exec TASK_ID               Launch /code with task context pre-loaded in plan mode.
+  --exec TASK_ID               Launch /code with task context pre-loaded for implementation.
                                Fetches the task pack and opens a genie/claude session
                                for full IDE execution. Use --exec-host to pick claude.
                                Requires --project or PLANSYNC_PROJECT.
@@ -97,7 +97,7 @@ Examples:
   plansync --host claude            # Launch Claude Code with PlanSync MCP
   plansync --host cursor            # Configure Cursor (writes .cursor/mcp.json)
   plansync --run --project <id>     # Run as agent: process all pending work, then exit
-  plansync --exec abc123 --project xyz456   # Open task in /code with plan mode
+  plansync --exec abc123 --project xyz456   # Open task in /code for implementation
   plansync --exec abc123 --exec-host claude # Same but use Claude instead of Genie
 USAGE
       exit 0
@@ -303,16 +303,19 @@ inject_instructions() {
       echo "📝 CLAUDE.md created with PlanSync instructions" >&2
     fi
 
-    # Codex reads AGENTS.md — write instructions there too
-    if [ -f "$target_dir/AGENTS.md" ]; then
-      if ! grep -q "PlanSync" "$target_dir/AGENTS.md" 2>/dev/null; then
-        printf '\n---\n\n' >> "$target_dir/AGENTS.md"
-        cat "$INSTRUCTIONS_SRC" >> "$target_dir/AGENTS.md"
-        echo "📝 PlanSync instructions appended to AGENTS.md" >&2
+    # Codex reads AGENTS.md — use engine-agnostic instructions (not CLAUDE.md terminal instructions)
+    local CODEX_SRC="$PROJECT_DIR/claude-md/plansync-instructions.md"
+    if [ -f "$CODEX_SRC" ]; then
+      if [ -f "$target_dir/AGENTS.md" ]; then
+        if ! grep -q "PlanSync" "$target_dir/AGENTS.md" 2>/dev/null; then
+          printf '\n---\n\n' >> "$target_dir/AGENTS.md"
+          cat "$CODEX_SRC" >> "$target_dir/AGENTS.md"
+          echo "📝 PlanSync instructions appended to AGENTS.md" >&2
+        fi
+      else
+        cp "$CODEX_SRC" "$target_dir/AGENTS.md"
+        echo "📝 AGENTS.md created with PlanSync instructions" >&2
       fi
-    else
-      cp "$INSTRUCTIONS_SRC" "$target_dir/AGENTS.md"
-      echo "📝 AGENTS.md created with PlanSync instructions" >&2
     fi
   fi
 }
@@ -653,10 +656,10 @@ ${TASK_PACK_JSON}
 Execution protocol:
 1. Call plansync_task_pack with taskId=\"${EXEC_TASK_ID}\" and projectId=\"${PLANSYNC_PROJECT}\" to confirm current state
 2. If drift alerts present: stop, show them to the user, and wait
-3. Enter plan mode — present your approach: what files you will change, what steps you will take, how you will meet each deliverable listed in the task pack
+3. Present your approach: what files you will change, what steps you will take, how you will meet each deliverable listed in the task pack
 4. Wait for user approval before writing any code
 5. Once approved: call plansync_execution_start (executorType=\"agent\", executorName=\"${PLANSYNC_USER}\")
-6. Implement the solution using your full tools (Edit, Bash, Read, Write, Glob, Grep)
+6. Implement the solution using your available tools
 7. Call plansync_execution_complete with a specific deliverablesMet list (each item must name a concrete output, not vague phrases like \"completed the task\")
 8. Call plansync_task_update status=\"done\"
 

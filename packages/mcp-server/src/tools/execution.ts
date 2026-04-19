@@ -46,7 +46,7 @@ export const heartbeatManager = new HeartbeatManager();
 export function registerExecutionTools(server: McpServer, api: ApiClient) {
   server.tool(
     'plansync_exec_context',
-    'Call this at session start to check if this session was launched for task execution. Returns task context and runId if so — skip normal session start and enter plan mode immediately.',
+    'Call this at session start to check if this session was launched for task execution. Returns task context and runId if so — skip normal session start and present your implementation approach immediately.',
     {},
     async () => {
       const runId = process.env.PLANSYNC_EXEC_RUN_ID ?? '';

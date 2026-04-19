@@ -125,26 +125,12 @@ function cleanupCodexMcp(): void {
   spawnSync(cfg.genieOrClaude, ['--', 'mcp', 'remove', 'plansync'], { stdio: 'pipe' });
 }
 
-/** Codex reads AGENTS.md, not CLAUDE.md. Copy instructions if AGENTS.md is missing. */
+/** Codex reads AGENTS.md, not CLAUDE.md. Create from engine-agnostic instructions if missing. */
 function ensureAgentsMd(dir: string): void {
   const agentsMd = path.join(dir, 'AGENTS.md');
   if (fs.existsSync(agentsMd)) return;
 
-  // Try CLAUDE.md in the same directory first
-  const claudeMd = path.join(dir, 'CLAUDE.md');
-  try {
-    if (fs.existsSync(claudeMd)) {
-      const content = fs.readFileSync(claudeMd, 'utf8');
-      if (content.includes('PlanSync')) {
-        fs.writeFileSync(agentsMd, content);
-        return;
-      }
-    }
-  } catch {
-    /* best-effort */
-  }
-
-  // Fallback: copy from project's source instructions
+  // AGENTS.md should exist in git. If not (external cwd), copy from source.
   try {
     const projectRoot = path.resolve(selfDir, '../../../');
     const src = path.join(projectRoot, 'claude-md', 'plansync-instructions.md');
@@ -299,8 +285,8 @@ export async function launchExec(
     'You are about to execute a PlanSync task. Read the task pack below carefully.',
     '',
     'IMPORTANT: Do NOT write any code yet.',
-    'First enter plan mode — present your implementation approach for user approval.',
-    'Only after approval: call plansync_execution_start, implement with real tools (Edit/Write/Bash), then plansync_execution_complete.',
+    'First, present your implementation approach for user approval.',
+    'Only after approval: call plansync_execution_start, implement the solution using your available tools, then plansync_execution_complete.',
     '',
     'FORBIDDEN: Do NOT call plansync_plan_create, plansync_plan_propose, or plansync_plan_activate.',
     'A plan already exists. You are here to EXECUTE a task within the existing plan, not to create a new one.',
@@ -358,8 +344,8 @@ function buildExecPrompt(taskPack: unknown): string {
     'You are about to execute a PlanSync task. Read the task pack below carefully.',
     '',
     'IMPORTANT: Do NOT write any code yet.',
-    'First enter plan mode — present your implementation approach for user approval.',
-    'Only after approval: call plansync_execution_start, implement with real tools (Edit/Write/Bash), then plansync_execution_complete.',
+    'First, present your implementation approach for user approval.',
+    'Only after approval: call plansync_execution_start, implement the solution using your available tools, then plansync_execution_complete.',
     '',
     'FORBIDDEN: Do NOT call plansync_plan_create, plansync_plan_propose, or plansync_plan_activate.',
     'A plan already exists. You are here to EXECUTE a task within the existing plan, not to create a new one.',
@@ -409,8 +395,8 @@ async function launchExecDirect(
     : [
         'start',
         '',
-        'PHASE 1 INSTRUCTION: After entering plan mode and writing your implementation plan',
-        'to the plan file, STOP. Do NOT call ExitPlanMode in this phase.',
+        'PHASE 1 INSTRUCTION: After writing your implementation plan to the plan file,',
+        'STOP. Do NOT proceed to implementation in this phase.',
         'The user will review and approve your plan in the next interactive phase.',
       ].join('\n');
   const phase1Label = options.autonomous
@@ -812,8 +798,8 @@ function buildAutonomousPrompt(worktreeDir: string): string {
     '⚠ CRITICAL PATH ISOLATION — read carefully:',
     `  Your working directory (worktree): ${worktreeDir}`,
     `  Main repo root (DO NOT EDIT directly): ${projectRoot}`,
-    '  ALL file edits (Edit, Write) MUST use paths inside your working directory.',
-    `  When Glob or Grep returns a path like "${projectRoot}/packages/foo.ts",`,
+    '  ALL file edits MUST use paths inside your working directory.',
+    `  When file search returns a path like "${projectRoot}/packages/foo.ts",`,
     `  you MUST use "${worktreeDir}/packages/foo.ts" instead.`,
     `  NEVER edit files whose path starts with "${projectRoot}/" — those are the main repo.`,
     '',
@@ -825,8 +811,8 @@ function buildAutonomousPrompt(worktreeDir: string): string {
     '   - pytest.ini / jest.config.js',
     '   - .github/workflows for test commands',
     '   - Fall back to: npm test / pytest / go test ./...',
-    '4. Implement using Edit, Write, Bash, Glob, Grep tools',
-    '   (all Edit/Write paths must start with your worktree dir above)',
+    '4. Implement using your available tools (file editing, shell commands, search)',
+    '   (all file edit paths must start with your worktree dir above)',
     '5. Run tests. If they fail: fix and retry (max 3 attempts)',
     '6. Call plansync_execution_complete with SPECIFIC deliverablesMet:',
     '   GOOD: "Implemented POST /auth/login with JWT; 12/12 tests pass (npm test)"',
@@ -885,8 +871,8 @@ export async function launchAutoExec(
     'You are running inside an isolated exec worktree.',
     `Working directory: ${worktreeDir}`,
     '',
-    'ALL file operations (Edit, Write) must use paths within this directory.',
-    `If Glob or Grep returns a path like ${projectRoot}/packages/..., use ${worktreeDir}/packages/... instead.`,
+    'ALL file operations must use paths within this directory.',
+    `If file search returns a path like ${projectRoot}/packages/..., use ${worktreeDir}/packages/... instead.`,
     `NEVER edit files whose path starts with ${projectRoot}/ — those are the main repository.`,
   ].join('\n');
 
@@ -908,8 +894,8 @@ export async function launchAutoExec(
     : [
         'start',
         '',
-        'PHASE 1 INSTRUCTION: After entering plan mode and writing your implementation plan',
-        'to the plan file, STOP. Do NOT call ExitPlanMode in this phase.',
+        'PHASE 1 INSTRUCTION: After writing your implementation plan to the plan file,',
+        'STOP. Do NOT proceed to implementation in this phase.',
         'The user will review and approve your plan in the next interactive phase.',
       ].join('\n');
   const phase1Label = options.autonomous
