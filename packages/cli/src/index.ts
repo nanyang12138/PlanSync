@@ -23,6 +23,7 @@ import {
 } from './exec.js';
 import { startSession, appendToSession, loadInputHistory } from './session.js';
 import { RawInput, SlashCmd } from './input.js';
+import { CliSseListener, describeEvent } from './sse-listener.js';
 
 // ─── Genie settings writer ────────────────────────────────────────────────────
 
@@ -122,10 +123,55 @@ async function main() {
   let currentStatus = status;
   let currentSystem = buildSystemPrompt(status);
 
-  // ─── MCP notification printer ─────────────────────────────────────────────
-  mcp.setNotifyPrinter((text) => {
-    rawInput.printAbove(`${c.yellow}[PlanSync] ${text}${c.reset}`);
+  // ─── MCP notification printer + live status refresh ──────────────────────
+  // Each MCP notification means an SSE event fired server-side. We use that
+  // signal to refresh status and re-render the prompt, so the inline indicators
+  // (plan version, drift count, task counts) reflect changes within ~1 s.
+  let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  const scheduleStatusRefresh = () => {
+    if (refreshTimer) return;
+    refreshTimer = setTimeout(async () => {
+      refreshTimer = null;
+      try {
+        const fresh = await fetchStatus();
+        currentStatus = fresh;
+        currentSystem = buildSystemPrompt(fresh);
+        rawInput.setPrompt(buildPrompt(fresh));
+      } catch {
+        /* ignore — keep showing last known status */
+      }
+    }, 800);
+  };
+
+  const installNotifyPrinter = () => {
+    mcp.setNotifyPrinter((text) => {
+      rawInput.printAbove(`${c.yellow}[PlanSync] ${text}${c.reset}`);
+      scheduleStatusRefresh();
+    });
+  };
+  installNotifyPrinter();
+
+  // ─── Direct SSE subscription ─────────────────────────────────────────────
+  // The MCP server has its own event listener, but its notifications can be
+  // delayed or dropped by the MCP transport (logging-capability gating, paused
+  // stdin during subprocess spawns, etc). Subscribing to SSE directly from the
+  // CLI guarantees the user sees plan/drift updates in real time. We tell the
+  // MCP server to skip its listener via PLANSYNC_MCP_DISABLE_SSE so events
+  // aren't double-printed.
+  const sseListener = new CliSseListener((eventType, data) => {
+    const msg = describeEvent(eventType, data);
+    if (msg) rawInput.printAbove(`${c.yellow}[PlanSync] ${msg}${c.reset}`);
+    // If this user was just added to or removed from a project, reconnect SSE
+    // so the new subscription set takes effect.
+    if (
+      (eventType === 'member_added' || eventType === 'member_removed') &&
+      (data.name === cfg.user || data.memberName === cfg.user)
+    ) {
+      sseListener.scheduleRestart();
+    }
+    scheduleStatusRefresh();
   });
+  sseListener.start();
 
   // ─── AbortController for in-flight AI requests ───────────────────────────
   let currentAbort: AbortController | null = null;
@@ -133,6 +179,7 @@ async function main() {
   // ─── Exit hook ────────────────────────────────────────────────────────────
   rawInput.onSigint = () => {
     rawInput.stop();
+    sseListener.stop();
     mcp.stop();
     console.log(`\n${c.dim}Goodbye.${c.reset}\n`);
     process.exit(0);
@@ -222,9 +269,7 @@ async function main() {
         console.log(`\n${c.yellow}⚠ MCP reconnect failed.${c.reset}\n`);
         return;
       }
-      mcp.setNotifyPrinter((text) =>
-        rawInput.printAbove(`${c.yellow}[PlanSync] ${text}${c.reset}`),
-      );
+      installNotifyPrinter();
       console.log(`${c.green}✔ MCP reconnected.${c.reset}`);
     }
     if (mcp.getAnthropicTools().length === 0) {
@@ -284,6 +329,7 @@ async function main() {
   }
 
   rawInput.stop();
+  sseListener.stop();
   mcp.stop();
   console.log(`\n${c.dim}Goodbye.${c.reset}\n`);
   process.exit(0);

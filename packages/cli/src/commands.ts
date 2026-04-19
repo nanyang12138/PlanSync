@@ -625,8 +625,22 @@ export async function handleSlashCommand(
 export function buildPrompt(status: ProjectStatus): string {
   const name = status.projectName !== '(no project)' ? status.projectName : '';
   const proj = name.length > 20 ? name.slice(0, 19) + '…' : name;
-  const drift =
-    status.driftAlerts.length > 0 ? ` ${c.yellow}⚠${status.driftAlerts.length}${c.reset}` : '';
-  const label = proj ? `${c.dim}[${c.reset}${proj}${drift}${c.dim}]${c.reset}` : '';
+  const planSeg = status.activePlan
+    ? ` ${c.dim}·${c.reset} ${c.cyan}v${status.activePlan.version}${c.reset}`
+    : status.proposedPlan
+      ? ` ${c.dim}·${c.reset} ${c.yellow}v${status.proposedPlan.version}?${c.reset}`
+      : '';
+  const t = status.tasks;
+  const taskSeg =
+    t && (t.inProgress || t.todo)
+      ? ` ${c.dim}·${c.reset} ${c.green}${t.inProgress}▶${c.reset}${c.dim}/${t.todo}◯${c.reset}`
+      : '';
+  const driftSeg =
+    status.driftAlerts.length > 0
+      ? ` ${c.dim}·${c.reset} ${c.red}⚠${status.driftAlerts.length}${c.reset}`
+      : '';
+  const label = proj
+    ? `${c.dim}[${c.reset}${proj}${planSeg}${taskSeg}${driftSeg}${c.dim}]${c.reset}`
+    : '';
   return `${label}${c.blue}❯${c.reset} `;
 }

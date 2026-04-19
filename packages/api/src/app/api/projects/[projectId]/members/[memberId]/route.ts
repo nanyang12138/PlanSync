@@ -71,11 +71,23 @@ export async function DELETE(req: NextRequest, { params }: Params) {
       metadata: { memberId: member.id },
     });
 
-    eventBus.publish(params.projectId, 'member_removed', {
+    const project = await prisma.project.findUnique({
+      where: { id: params.projectId },
+      select: { name: true },
+    });
+
+    const removalPayload = {
       memberId: member.id,
       memberName: member.name,
+      name: member.name, // alias so client-side reconnect logic can match either field
       removedBy: auth.userName,
-    });
+      projectName: project?.name ?? params.projectId,
+    };
+
+    eventBus.publish(params.projectId, 'member_removed', removalPayload);
+    // Mirror to the removed member so their client can drop the project
+    // subscription via SSE reconnect.
+    eventBus.publishToUser(member.name, 'member_removed', params.projectId, removalPayload);
 
     return NextResponse.json({ data: { deleted: true } });
   } catch (error) {

@@ -25,6 +25,9 @@ export class McpClient {
       PLANSYNC_USER: cfg.user,
       PLANSYNC_PROJECT: cfg.project,
       LOG_LEVEL: 'warn',
+      // CLI subscribes to SSE directly; ask MCP server to skip its listener so
+      // the user doesn't see each event twice.
+      PLANSYNC_MCP_DISABLE_SSE: '1',
     };
 
     this.proc = spawn(cfg.nodeBin, [serverPath], {

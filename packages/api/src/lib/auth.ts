@@ -34,7 +34,7 @@ export function invalidatePasswordCache(userName: string): void {
 
 async function verifyApiKey(
   rawKey: string,
-): Promise<{ userName: string; projectId: string } | null> {
+): Promise<{ userName: string; projectId: string | null } | null> {
   const prefix = rawKey.slice(0, 15);
   const keys = await prisma.apiKey.findMany({ where: { keyPrefix: prefix } });
 

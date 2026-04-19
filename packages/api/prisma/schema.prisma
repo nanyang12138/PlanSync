@@ -289,3 +289,11 @@ model UserAccount {
 
   @@map("user_accounts")
 }
+
+model UserState {
+  userName           String    @id @map("user_name")
+  lastSeenActivityAt DateTime? @map("last_seen_activity_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  @@map("user_state")
+}

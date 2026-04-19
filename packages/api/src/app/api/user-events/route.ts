@@ -60,6 +60,17 @@ export async function GET(req: NextRequest) {
         });
         unsubscribers.push(unsub);
       }
+
+      // Also subscribe to the per-user channel so events about the user
+      // themselves (e.g. being added to a brand-new project) reach this
+      // stream even though no project subscription covers them. The user
+      // channel events carry their own projectId/projectName in the payload
+      // — forward them through the same SSE stream.
+      const userUnsub = eventBus.subscribeUser(auth.userName, (event: PlanSyncEvent) => {
+        const pname = (event.data.projectName as string | undefined) ?? '';
+        forward(event, event.projectId, pname);
+      });
+      unsubscribers.push(userUnsub);
     },
     cancel() {
       for (const unsub of unsubscribers) unsub();

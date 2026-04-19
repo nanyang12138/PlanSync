@@ -19,10 +19,10 @@ export async function GET(req: NextRequest) {
     const projectMap = Object.fromEntries(memberships.map((m) => [m.project.id, m.project.name]));
 
     if (projectIds.length === 0) {
-      return NextResponse.json({ reviews: [], drifts: [], tasks: [] });
+      return NextResponse.json({ reviews: [], drifts: [], tasks: [], unreadActivityCount: 0 });
     }
 
-    const [pendingReviews, pendingTasks, openDrifts] = await Promise.all([
+    const [pendingReviews, pendingTasks, openDrifts, userState] = await Promise.all([
       // P1: Plan reviews pending for this user
       prisma.planReview.findMany({
         where: {
@@ -68,7 +68,17 @@ export async function GET(req: NextRequest) {
           task: { select: { id: true, title: true, assignee: true } },
         },
       }),
+
+      prisma.userState.findUnique({ where: { userName: auth.userName } }),
     ]);
+
+    const lastSeen = userState?.lastSeenActivityAt ?? null;
+    const unreadActivityCount = await prisma.activity.count({
+      where: {
+        projectId: { in: projectIds },
+        ...(lastSeen ? { createdAt: { gt: lastSeen } } : {}),
+      },
+    });
 
     const reviews = pendingReviews.map((r) => ({
       reviewId: r.id,
@@ -100,7 +110,7 @@ export async function GET(req: NextRequest) {
       projectName: projectMap[d.projectId] ?? d.projectId,
     }));
 
-    return NextResponse.json({ reviews, drifts, tasks });
+    return NextResponse.json({ reviews, drifts, tasks, unreadActivityCount });
   } catch (error) {
     return handleApiError(error);
   }

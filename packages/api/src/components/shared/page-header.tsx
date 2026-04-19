@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Menu, X, Home } from 'lucide-react';
 import { UserIdentity } from '@/components/user-identity';
+import { NotificationBell } from '@/components/dashboard/notification-bell';
 
 interface NavItem {
   label: string;
@@ -40,10 +41,12 @@ export function PageHeader({ breadcrumbs, title, navigation, actions }: PageHead
 
           <div className="flex items-center gap-3">
             {actions}
-            <div className="sm:hidden">
+            <div className="sm:hidden flex items-center gap-1">
+              <NotificationBell />
               <UserIdentity />
             </div>
             <div className="hidden sm:flex items-center gap-3 border-l border-slate-200 pl-3">
+              <NotificationBell />
               <UserIdentity />
               <div className="flex items-center gap-1.5 text-xs text-emerald-600 font-medium bg-emerald-50 rounded-full px-2.5 py-1">
                 <span className="relative flex h-1.5 w-1.5">
@@ -93,7 +96,10 @@ export function PageHeader({ breadcrumbs, title, navigation, actions }: PageHead
         {navigation && navigation.length > 0 && mobileMenuOpen && (
           <nav className="sm:hidden flex flex-col gap-1 mt-4 pt-4 border-t border-slate-100 pb-2">
             <div className="mb-2 flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2.5">
-              <UserIdentity />
+              <div className="flex items-center gap-1">
+                <NotificationBell />
+                <UserIdentity />
+              </div>
               <div className="flex items-center gap-1.5 text-xs text-emerald-600 font-medium bg-emerald-50 rounded-full px-2.5 py-1">
                 <span className="relative flex h-1.5 w-1.5">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60" />

@@ -323,7 +323,19 @@ async function main() {
     undefined,
     listenerUrl,
   );
-  listener.start();
+  // The CLI REPL subscribes to SSE directly and sets PLANSYNC_MCP_DISABLE_SSE=1
+  // to prevent duplicate notifications. In all other contexts (Claude Code,
+  // Codex, Cursor, Genie agent) we keep the MCP-side listener active.
+  const sseDisabled = process.env.PLANSYNC_MCP_DISABLE_SSE === '1';
+  if (!sseDisabled) {
+    listener.start();
+    logger.info(
+      { projectId: projectId ?? 'user-level', url: listenerUrl ?? 'project-events' },
+      'Event listener started for real-time notifications',
+    );
+  } else {
+    logger.info('SSE listener disabled (PLANSYNC_MCP_DISABLE_SSE=1)');
+  }
 
   const cleanup = () => {
     listener.stop();
@@ -331,10 +343,6 @@ async function main() {
   };
   process.on('SIGTERM', cleanup);
   process.on('SIGINT', cleanup);
-  logger.info(
-    { projectId: projectId ?? 'user-level', url: listenerUrl ?? 'project-events' },
-    'Event listener started for real-time notifications',
-  );
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

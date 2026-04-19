@@ -45,16 +45,24 @@ export async function POST(req: NextRequest, { params }: Params) {
       metadata: { memberId: member.id, role: member.role },
     });
 
-    eventBus.publish(params.projectId, 'member_added', {
+    const project = await prisma.project.findUnique({
+      where: { id: params.projectId },
+      select: { name: true },
+    });
+
+    const eventPayload = {
       name: member.name,
       role: member.role,
       type: member.type,
-    });
-    dispatchWebhooks(params.projectId, 'member_added', {
-      name: member.name,
-      role: member.role,
-      type: member.type,
-    });
+      projectName: project?.name ?? params.projectId,
+    };
+
+    eventBus.publish(params.projectId, 'member_added', eventPayload);
+    // Mirror to the new member's personal channel — their existing SSE stream
+    // doesn't subscribe to this project yet (they were just added), so without
+    // this they'd only learn about the new project on next page reload.
+    eventBus.publishToUser(member.name, 'member_added', params.projectId, eventPayload);
+    dispatchWebhooks(params.projectId, 'member_added', eventPayload);
 
     return NextResponse.json({ data: member }, { status: 201 });
   } catch (error) {

@@ -30,6 +30,10 @@ type Listener = (event: PlanSyncEvent) => void;
 
 class EventBus {
   private listeners = new Map<string, Set<Listener>>();
+  // Per-user channels carry events the user must hear about even when they
+  // are not (yet) subscribed to the originating project — primarily
+  // membership changes that grant or revoke access to a project.
+  private userListeners = new Map<string, Set<Listener>>();
 
   subscribe(projectId: string, listener: Listener): () => void {
     if (!this.listeners.has(projectId)) {
@@ -48,6 +52,21 @@ class EventBus {
         if (set.size === 0) this.listeners.delete(projectId);
       }
       logger.debug({ projectId, count: set?.size ?? 0 }, 'SSE client unsubscribed');
+    };
+  }
+
+  subscribeUser(userName: string, listener: Listener): () => void {
+    if (!this.userListeners.has(userName)) {
+      this.userListeners.set(userName, new Set());
+    }
+    this.userListeners.get(userName)!.add(listener);
+
+    return () => {
+      const set = this.userListeners.get(userName);
+      if (set) {
+        set.delete(listener);
+        if (set.size === 0) this.userListeners.delete(userName);
+      }
     };
   }
 
@@ -72,10 +91,36 @@ class EventBus {
     }
   }
 
+  publishToUser(
+    userName: string,
+    type: PlanSyncEventType,
+    projectId: string,
+    data: Record<string, unknown>,
+  ): void {
+    const set = this.userListeners.get(userName);
+    if (!set || set.size === 0) return;
+
+    const event: PlanSyncEvent = {
+      type,
+      projectId,
+      data,
+      timestamp: new Date().toISOString(),
+    };
+
+    for (const listener of set) {
+      try {
+        listener(event);
+      } catch (err) {
+        logger.error({ err, userName, type }, 'User event listener error');
+      }
+    }
+  }
+
   getClientCount(projectId?: string): number {
     if (projectId) return this.listeners.get(projectId)?.size ?? 0;
     let total = 0;
     for (const set of this.listeners.values()) total += set.size;
+    for (const set of this.userListeners.values()) total += set.size;
     return total;
   }
 }

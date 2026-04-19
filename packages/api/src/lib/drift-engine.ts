@@ -130,7 +130,16 @@ export async function persistDriftAlerts(
   return created;
 }
 
-/** Runs after drift alerts are persisted; uses AI when available to enrich DriftAlert rows. */
+/**
+ * Runs after drift alerts are persisted; uses AI when available to enrich
+ * DriftAlert rows.
+ *
+ * Layout: batch DB reads, dedup plan-diffs (one AI call per unique plan pair),
+ * then run per-task impact analyses in parallel. The original implementation
+ * processed alerts in a serial for-loop, which made N drifts take N × AI
+ * latency (5–15 s each). With N=5 the wait was ~1 minute; this version
+ * collapses it to roughly one AI round-trip.
+ */
 export async function enrichDriftAlertsWithAi(
   projectId: string,
   activePlanId: string,
@@ -138,60 +147,90 @@ export async function enrichDriftAlertsWithAi(
 ): Promise<void> {
   if (!aiClient.isAvailable || alerts.length === 0) return;
 
-  for (const alert of alerts) {
-    try {
-      const task = await prisma.task.findUnique({ where: { id: alert.taskId } });
-      if (!task) continue;
+  // 1. Batch-fetch tasks and the bound-plan rows they reference.
+  const tasks = await prisma.task.findMany({
+    where: { id: { in: alerts.map((a) => a.taskId) } },
+  });
+  const taskById = new Map(tasks.map((t) => [t.id, t]));
 
-      const boundPlan = await prisma.plan.findFirst({
-        where: { projectId, version: task.boundPlanVersion },
-      });
-      if (!boundPlan || boundPlan.id === activePlanId) continue;
+  const boundVersions = Array.from(new Set(tasks.map((t) => t.boundPlanVersion)));
+  const boundPlans = boundVersions.length
+    ? await prisma.plan.findMany({
+        where: { projectId, version: { in: boundVersions } },
+      })
+    : [];
+  const boundPlanByVersion = new Map(boundPlans.map((p) => [p.version, p]));
 
-      const diff = await getOrCreatePlanDiff(projectId, boundPlan.id, activePlanId);
-      if (!diff) continue;
-
-      const impact = await analyzeTaskImpact(diff, task);
-      if (!impact) continue;
-
-      const planDiffRow = await prisma.planDiff.findUnique({
-        where: { fromPlanId_toPlanId: { fromPlanId: boundPlan.id, toPlanId: activePlanId } },
-      });
-
-      const highCompatibility = impact.compatibilityScore > 70;
-      const suggestedAction = highCompatibility ? 'no_impact' : impact.suggestedAction;
-
-      await prisma.driftAlert.update({
-        where: { id: alert.id },
-        data: {
-          compatibilityScore: impact.compatibilityScore,
-          impactAnalysis: impact.reasoning,
-          suggestedAction,
-          affectedAreas: impact.affectedAreas,
-          planDiffId: planDiffRow?.id ?? null,
-          ...(highCompatibility
-            ? {
-                status: 'resolved',
-                resolvedAction: 'no_impact',
-                resolvedAt: new Date(),
-                resolvedBy: 'system',
-              }
-            : {}),
-        },
-      });
-
-      // Publish event so connected clients know the alert was auto-resolved by AI
-      if (highCompatibility) {
-        eventBus.publish(projectId, 'drift_resolved', {
-          alertId: alert.id,
-          taskId: alert.taskId,
-          resolvedBy: 'system',
-          resolvedAction: 'no_impact',
-          compatibilityScore: impact.compatibilityScore,
-        });
-      }
-    } catch (err) {
-      logger.error({ err, alertId: alert.id }, 'Failed to enrich drift alert with AI');
-    }
+  // 2. Compute plan-diffs in parallel — one per unique (fromPlanId, toPlanId).
+  // getOrCreatePlanDiff is DB-cached and tolerates the P2002 race that two
+  // concurrent first-time computations of the same pair would produce.
+  const uniqueDiffPairs = new Map<string, string>(); // fromPlanId → fromPlanId
+  for (const plan of boundPlans) {
+    if (plan.id !== activePlanId) uniqueDiffPairs.set(plan.id, plan.id);
   }
+  const diffEntries = await Promise.all(
+    Array.from(uniqueDiffPairs.keys()).map(async (fromPlanId) => {
+      const diff = await getOrCreatePlanDiff(projectId, fromPlanId, activePlanId);
+      return [fromPlanId, diff] as const;
+    }),
+  );
+  const diffByBoundPlanId = new Map(diffEntries);
+
+  // 3. Run impact analysis + DriftAlert update for each alert in parallel.
+  // Each iteration is independent: distinct DriftAlert row, distinct AI call.
+  await Promise.all(
+    alerts.map(async (alert) => {
+      try {
+        const task = taskById.get(alert.taskId);
+        if (!task) return;
+
+        const boundPlan = boundPlanByVersion.get(task.boundPlanVersion);
+        if (!boundPlan || boundPlan.id === activePlanId) return;
+
+        const diff = diffByBoundPlanId.get(boundPlan.id);
+        if (!diff) return;
+
+        const impact = await analyzeTaskImpact(diff, task);
+        if (!impact) return;
+
+        const planDiffRow = await prisma.planDiff.findUnique({
+          where: { fromPlanId_toPlanId: { fromPlanId: boundPlan.id, toPlanId: activePlanId } },
+        });
+
+        const highCompatibility = impact.compatibilityScore > 70;
+        const suggestedAction = highCompatibility ? 'no_impact' : impact.suggestedAction;
+
+        await prisma.driftAlert.update({
+          where: { id: alert.id },
+          data: {
+            compatibilityScore: impact.compatibilityScore,
+            impactAnalysis: impact.reasoning,
+            suggestedAction,
+            affectedAreas: impact.affectedAreas,
+            planDiffId: planDiffRow?.id ?? null,
+            ...(highCompatibility
+              ? {
+                  status: 'resolved',
+                  resolvedAction: 'no_impact',
+                  resolvedAt: new Date(),
+                  resolvedBy: 'system',
+                }
+              : {}),
+          },
+        });
+
+        if (highCompatibility) {
+          eventBus.publish(projectId, 'drift_resolved', {
+            alertId: alert.id,
+            taskId: alert.taskId,
+            resolvedBy: 'system',
+            resolvedAction: 'no_impact',
+            compatibilityScore: impact.compatibilityScore,
+          });
+        }
+      } catch (err) {
+        logger.error({ err, alertId: alert.id }, 'Failed to enrich drift alert with AI');
+      }
+    }),
+  );
 }

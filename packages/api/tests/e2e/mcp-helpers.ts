@@ -137,7 +137,8 @@ export async function mcp(
   args: Record<string, unknown>,
 ): Promise<any> {
   const result = await client.callTool({ name: tool, arguments: args });
-  const text = (result.content[0] as any).text as string;
+  const content = result.content as Array<{ type: string; text?: string }>;
+  const text = content[0]?.text ?? '';
   return JSON.parse(text);
 }
 
