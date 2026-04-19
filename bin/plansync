@@ -291,6 +291,7 @@ inject_instructions() {
   local target_dir="$1"
 
   if [ -f "$INSTRUCTIONS_SRC" ]; then
+    # Claude Code reads CLAUDE.md
     if [ -f "$target_dir/CLAUDE.md" ]; then
       if ! grep -q "PlanSync" "$target_dir/CLAUDE.md" 2>/dev/null; then
         printf '\n---\n\n' >> "$target_dir/CLAUDE.md"
@@ -300,6 +301,18 @@ inject_instructions() {
     else
       cp "$INSTRUCTIONS_SRC" "$target_dir/CLAUDE.md"
       echo "📝 CLAUDE.md created with PlanSync instructions" >&2
+    fi
+
+    # Codex reads AGENTS.md — write instructions there too
+    if [ -f "$target_dir/AGENTS.md" ]; then
+      if ! grep -q "PlanSync" "$target_dir/AGENTS.md" 2>/dev/null; then
+        printf '\n---\n\n' >> "$target_dir/AGENTS.md"
+        cat "$INSTRUCTIONS_SRC" >> "$target_dir/AGENTS.md"
+        echo "📝 PlanSync instructions appended to AGENTS.md" >&2
+      fi
+    else
+      cp "$INSTRUCTIONS_SRC" "$target_dir/AGENTS.md"
+      echo "📝 AGENTS.md created with PlanSync instructions" >&2
     fi
   fi
 }
@@ -382,6 +395,38 @@ inject_cursor_settings() {
   '
 }
 
+# ─── Engine detection (codex vs claude-code) ───
+_detect_engine() {
+  if [ "${GENIE_AGENT_ENGINE:-}" = "codex" ]; then
+    echo "codex"
+  elif [ "${GENIE_AGENT_ENGINE:-}" = "claude-code" ]; then
+    echo "claude-code"
+  else
+    local help_output
+    help_output=$("$GENIE_BIN" help 2>&1 || true)
+    if echo "$help_output" | grep -q "Codex CLI"; then
+      echo "codex"
+    else
+      echo "claude-code"
+    fi
+  fi
+}
+
+_setup_codex_mcp() {
+  "$GENIE_BIN" -- mcp remove plansync 2>/dev/null || true
+  "$GENIE_BIN" -- mcp add plansync \
+    --env "PLANSYNC_API_URL=$PLANSYNC_API_URL" \
+    --env "PLANSYNC_API_KEY=$PLANSYNC_API_KEY" \
+    --env "PLANSYNC_USER=$PLANSYNC_USER" \
+    --env "PLANSYNC_PROJECT=${PLANSYNC_PROJECT:-}" \
+    --env "LOG_LEVEL=warn" \
+    -- "$LOCAL_NODE_BIN" "$MCP_SERVER" 2>/dev/null
+}
+
+_cleanup_codex_mcp() {
+  "$GENIE_BIN" -- mcp remove plansync 2>/dev/null || true
+}
+
 # ─── Host-specific launch ───
 case "$HOST" in
 
@@ -436,7 +481,13 @@ case "$HOST" in
 
     cd "$WORK_DIR_ABS"
     if [ "$HOST" = "genie" ]; then
-      exec "$GENIE_BIN" --mcp-config "$MCP_CONFIG_JSON" "${PASSTHROUGH_ARGS[@]}"
+      ENGINE=$(_detect_engine)
+      if [ "$ENGINE" = "codex" ]; then
+        _setup_codex_mcp
+        exec "$GENIE_BIN" -- --full-auto "${PASSTHROUGH_ARGS[@]}"
+      else
+        exec "$GENIE_BIN" --mcp-config "$MCP_CONFIG_JSON" "${PASSTHROUGH_ARGS[@]}"
+      fi
     else
       exec "$CLAUDE_BIN" --mcp-config "$MCP_CONFIG_JSON" "${PASSTHROUGH_ARGS[@]}"
     fi
@@ -508,7 +559,13 @@ Rule: always call plansync_comment_create before approve/reject/complete — kee
 Output a summary when all work is done, then exit."
 
     cd "$WORK_DIR_ABS"
-    exec "$GENIE_BIN" --mcp-config "$MCP_CONFIG_JSON" -p "$RUN_PROMPT"
+    ENGINE=$(_detect_engine)
+    if [ "$ENGINE" = "codex" ]; then
+      _setup_codex_mcp
+      exec "$GENIE_BIN" -- exec "$RUN_PROMPT" --dangerously-bypass-approvals-and-sandbox
+    else
+      exec "$GENIE_BIN" --mcp-config "$MCP_CONFIG_JSON" -p "$RUN_PROMPT"
+    fi
     ;;
 
   exec)
@@ -610,7 +667,17 @@ Project: ${PLANSYNC_PROJECT}  |  Task: ${EXEC_TASK_ID}"
     echo "" >&2
 
     cd "$WORK_DIR_ABS"
-    exec "$EXEC_BIN" --mcp-config "$MCP_CONFIG_JSON" -p "$EXEC_PROMPT"
+    if [ "$EXEC_HOST" = "claude" ]; then
+      exec "$EXEC_BIN" --mcp-config "$MCP_CONFIG_JSON" -p "$EXEC_PROMPT"
+    else
+      ENGINE=$(_detect_engine)
+      if [ "$ENGINE" = "codex" ]; then
+        _setup_codex_mcp
+        exec "$EXEC_BIN" -- --full-auto "$EXEC_PROMPT"
+      else
+        exec "$EXEC_BIN" --mcp-config "$MCP_CONFIG_JSON" -p "$EXEC_PROMPT"
+      fi
+    fi
     ;;
 
   *)

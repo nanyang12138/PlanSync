@@ -355,6 +355,25 @@ seed_demo_if_requested() {
 
 ensure_user_runtime_ready() {
   log_step "Checking user runtime and MCP prerequisites"
+
+  # Non-owner: verify required files exist, skip all write operations.
+  # The owner (admin) is responsible for setup via ps-admin start.
+  if [ ! -w "$PROJECT_DIR" ]; then
+    if ! local_node_runtime_exists; then
+      echo "❌ Node.js runtime not found." >&2
+      echo "   Ask the server admin to run: ps-admin start" >&2
+      exit 1
+    fi
+    if [ ! -f "$PROJECT_DIR/packages/mcp-server/dist/index.js" ]; then
+      echo "❌ MCP server not built." >&2
+      echo "   Ask the server admin to run: ps-admin start" >&2
+      exit 1
+    fi
+    use_local_node_runtime
+    return 0
+  fi
+
+  # Owner: normal setup flow
   ensure_env_file
   ensure_local_dependencies
   ensure_mcp_server_build

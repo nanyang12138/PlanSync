@@ -40,6 +40,133 @@ export function buildMcpConfigArg(
   });
 }
 
+// ─── Engine detection ─────────────────────────────────────────────────────────
+
+type Engine = 'claude-code' | 'codex';
+let _cachedEngine: Engine | null = null;
+
+function detectEngine(): Engine {
+  if (_cachedEngine) return _cachedEngine;
+
+  // Explicit env var takes precedence
+  const env = process.env.GENIE_AGENT_ENGINE;
+  if (env === 'codex') return (_cachedEngine = 'codex');
+  if (env === 'claude-code') return (_cachedEngine = 'claude-code');
+
+  // Probe: `genie help` outputs "Codex CLI" when codex engine is active
+  try {
+    const r = spawnSync(cfg.genieOrClaude, ['help'], {
+      encoding: 'utf8',
+      stdio: 'pipe',
+      timeout: 5000,
+    });
+    if (((r.stdout ?? '') + (r.stderr ?? '')).includes('Codex CLI')) {
+      return (_cachedEngine = 'codex');
+    }
+  } catch {
+    /* fallback to claude-code */
+  }
+
+  return (_cachedEngine = 'claude-code');
+}
+
+// ─── Codex MCP helpers ───────────────────────────────────────────────────────
+
+function setupCodexMcp(
+  runId?: string,
+  taskId?: string,
+  projectId?: string,
+  sessionId?: string,
+): void {
+  const projectRoot = path.resolve(selfDir, '../../../');
+  const localNodeBin = path.join(projectRoot, '.local-runtime', 'node', 'bin', 'node');
+  const mcpServerDist = path.join(projectRoot, 'packages', 'mcp-server', 'dist', 'index.js');
+
+  // Remove stale config first (ignore errors if not present)
+  spawnSync(cfg.genieOrClaude, ['--', 'mcp', 'remove', 'plansync'], { stdio: 'pipe' });
+
+  // Base env vars (always needed)
+  const envArgs = [
+    '--env',
+    `PLANSYNC_API_URL=${process.env.PLANSYNC_API_URL ?? 'http://localhost:3001'}`,
+    '--env',
+    `PLANSYNC_API_KEY=${process.env.PLANSYNC_API_KEY ?? ''}`,
+    '--env',
+    `PLANSYNC_USER=${process.env.PLANSYNC_USER ?? process.env.USER ?? ''}`,
+    '--env',
+    `PLANSYNC_SECRET=${process.env.PLANSYNC_SECRET ?? ''}`,
+    '--env',
+    `PLANSYNC_PROJECT=${projectId ?? cfg.project}`,
+    '--env',
+    'LOG_LEVEL=warn',
+  ];
+
+  // Execution-specific env vars (only for /exec with worktree)
+  if (runId && taskId && sessionId) {
+    envArgs.push(
+      '--env',
+      `PLANSYNC_EXEC_RUN_ID=${runId}`,
+      '--env',
+      `PLANSYNC_EXEC_TASK_ID=${taskId}`,
+      '--env',
+      `PLANSYNC_EXEC_SESSION_ID=${sessionId}`,
+    );
+  }
+
+  // Register with codex mcp add
+  spawnSync(
+    cfg.genieOrClaude,
+    ['--', 'mcp', 'add', 'plansync', ...envArgs, '--', localNodeBin, mcpServerDist],
+    { stdio: 'pipe' },
+  );
+}
+
+function cleanupCodexMcp(): void {
+  spawnSync(cfg.genieOrClaude, ['--', 'mcp', 'remove', 'plansync'], { stdio: 'pipe' });
+}
+
+/** Codex reads AGENTS.md, not CLAUDE.md. Copy instructions if AGENTS.md is missing. */
+function ensureAgentsMd(dir: string): void {
+  const agentsMd = path.join(dir, 'AGENTS.md');
+  if (fs.existsSync(agentsMd)) return;
+
+  // Try CLAUDE.md in the same directory first
+  const claudeMd = path.join(dir, 'CLAUDE.md');
+  try {
+    if (fs.existsSync(claudeMd)) {
+      const content = fs.readFileSync(claudeMd, 'utf8');
+      if (content.includes('PlanSync')) {
+        fs.writeFileSync(agentsMd, content);
+        return;
+      }
+    }
+  } catch {
+    /* best-effort */
+  }
+
+  // Fallback: copy from project's source instructions
+  try {
+    const projectRoot = path.resolve(selfDir, '../../../');
+    const src = path.join(projectRoot, 'claude-md', 'plansync-instructions.md');
+    if (fs.existsSync(src)) {
+      fs.writeFileSync(agentsMd, fs.readFileSync(src, 'utf8'));
+    }
+  } catch {
+    /* best-effort */
+  }
+}
+
+// ─── Filesystem helpers ───────────────────────────────────────────────────────
+
+function isWritable(dir: string): boolean {
+  try {
+    fs.accessSync(dir, fs.constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ─── Settings helpers ─────────────────────────────────────────────────────────
 
 function getSettingsPath(): string {
@@ -104,10 +231,21 @@ export function rawOn(): void {
 export function launchCode(): ReturnType<typeof spawn> {
   const projectRoot = path.resolve(selfDir, '../../../');
   const original = patchProjectInSettings(cfg.project);
+  const engine = detectEngine();
+
+  // Codex doesn't read .claude/settings.json — register MCP via codex mcp add
+  // Codex reads AGENTS.md, not CLAUDE.md — ensure instructions exist
+  if (engine === 'codex') {
+    setupCodexMcp();
+    ensureAgentsMd(projectRoot);
+  }
+
+  // Codex: --full-auto avoids repeated MCP tool permission prompts
+  const codeArgs = engine === 'codex' ? ['--', '--full-auto'] : [];
 
   console.log(`\n${c.blue}→ Entering PlanSync Coding Mode${c.reset}\n`);
   rawOff();
-  const child = spawn(cfg.genieOrClaude, [], {
+  const child = spawn(cfg.genieOrClaude, codeArgs, {
     stdio: 'inherit',
     env: { ...process.env },
     cwd: projectRoot,
@@ -115,6 +253,7 @@ export function launchCode(): ReturnType<typeof spawn> {
 
   const restore = () => {
     restoreProjectInSettings(original);
+    if (engine === 'codex') cleanupCodexMcp();
     rawOn();
   };
   child.on('close', () => {
@@ -172,11 +311,25 @@ export async function launchExec(
 
   const projectRoot = path.resolve(selfDir, '../../../');
   const original = patchProjectInSettings(cfg.project);
-  const restore = () => restoreProjectInSettings(original);
+  const engine = detectEngine();
+
+  // Codex doesn't read .claude/settings.json — register MCP via codex mcp add
+  // Codex reads AGENTS.md, not CLAUDE.md — ensure instructions exist
+  if (engine === 'codex') {
+    setupCodexMcp();
+    ensureAgentsMd(projectRoot);
+  }
+
+  const restore = () => {
+    restoreProjectInSettings(original);
+    if (engine === 'codex') cleanupCodexMcp();
+  };
+
+  const spawnArgs = engine === 'codex' ? ['--', '--full-auto', execPrompt] : ['-p', execPrompt];
 
   console.log(`\n${c.blue}→ Entering PlanSync Coding Mode (task: ${taskId})${c.reset}\n`);
   rawOff();
-  const child = spawn(cfg.genieOrClaude, ['-p', execPrompt], {
+  const child = spawn(cfg.genieOrClaude, spawnArgs, {
     stdio: 'inherit',
     env: { ...process.env },
     cwd: projectRoot,
@@ -196,6 +349,193 @@ export async function launchExec(
       resolve();
     });
   });
+}
+
+// ─── /exec direct (takes taskPack, no apiGet) ────────────────────────────────
+
+function buildExecPrompt(taskPack: unknown): string {
+  return [
+    'You are about to execute a PlanSync task. Read the task pack below carefully.',
+    '',
+    'IMPORTANT: Do NOT write any code yet.',
+    'First enter plan mode — present your implementation approach for user approval.',
+    'Only after approval: call plansync_execution_start, implement with real tools (Edit/Write/Bash), then plansync_execution_complete.',
+    '',
+    'FORBIDDEN: Do NOT call plansync_plan_create, plansync_plan_propose, or plansync_plan_activate.',
+    'A plan already exists. You are here to EXECUTE a task within the existing plan, not to create a new one.',
+    '',
+    'Task Pack:',
+    JSON.stringify(taskPack, null, 2),
+  ].join('\n');
+}
+
+async function launchExecDirect(
+  taskId: string,
+  runId: string,
+  projectId: string,
+  taskPack: unknown,
+  options: { autonomous?: boolean },
+): Promise<void> {
+  const pack = taskPack as { driftAlerts?: Array<{ status: string; reason: string }> };
+  const openDrifts = (pack.driftAlerts ?? []).filter((d) => d.status === 'open');
+  if (openDrifts.length > 0) {
+    console.log(
+      `\n${c.yellow}⚠ Task has ${openDrifts.length} unresolved drift alert(s). Resolve them first.${c.reset}\n`,
+    );
+    openDrifts.forEach((d) => console.log(`  • ${d.reason}`));
+    console.log('');
+    return;
+  }
+
+  const engine = detectEngine();
+  const sessionId = crypto.randomUUID();
+  const mcpConfigArg = buildMcpConfigArg(runId, taskId, projectId, sessionId);
+  const cwd = process.cwd();
+
+  console.log(`\n${c.blue}→ Launching Genie for task ${taskId} (Run: ${runId})${c.reset}`);
+  console.log(
+    `  ${c.dim}Mode: ${options.autonomous ? 'autonomous' : 'interactive'} (no worktree — read-only install)${c.reset}`,
+  );
+  console.log(`  ${c.dim}Engine: ${engine}${c.reset}\n`);
+
+  // Setup codex MCP and instructions if needed
+  if (engine === 'codex') {
+    setupCodexMcp(runId, taskId, projectId, sessionId);
+    ensureAgentsMd(cwd);
+  }
+
+  const phase1Prompt = options.autonomous
+    ? buildAutonomousPrompt(cwd)
+    : [
+        'start',
+        '',
+        'PHASE 1 INSTRUCTION: After entering plan mode and writing your implementation plan',
+        'to the plan file, STOP. Do NOT call ExitPlanMode in this phase.',
+        'The user will review and approve your plan in the next interactive phase.',
+      ].join('\n');
+  const phase1Label = options.autonomous
+    ? `Executing task autonomously (${taskId})...`
+    : 'Generating implementation plan...';
+
+  let codexThreadId: string | null = null;
+
+  const phase1ExitCode = await new Promise<number | null>((resolve) => {
+    let spawnArgs: string[];
+    if (engine === 'codex') {
+      spawnArgs = [
+        '--',
+        'exec',
+        phase1Prompt,
+        '--json',
+        ...(options.autonomous ? ['--dangerously-bypass-approvals-and-sandbox'] : ['--full-auto']),
+      ];
+    } else {
+      spawnArgs = [
+        '-p',
+        phase1Prompt,
+        '--session-id',
+        sessionId,
+        '--mcp-config',
+        mcpConfigArg,
+        ...(options.autonomous ? ['--dangerously-skip-permissions'] : []),
+      ];
+    }
+    const spinner = createSpinner(phase1Label);
+    spinner.start();
+    if (!options.autonomous) rawOff();
+    const child = spawn(cfg.genieOrClaude, spawnArgs, {
+      stdio: [options.autonomous ? 'ignore' : 'inherit', 'pipe', 'pipe'],
+      env: { ...process.env },
+      cwd,
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (d: Buffer) => {
+      const chunk = d.toString();
+      stdout += chunk;
+      if (engine === 'codex' && !codexThreadId) {
+        for (const line of chunk.split('\n')) {
+          if (!line.trim()) continue;
+          try {
+            const evt = JSON.parse(line);
+            if (evt.type === 'thread.started' && evt.thread_id) {
+              codexThreadId = evt.thread_id;
+            }
+          } catch {
+            /* not JSON */
+          }
+        }
+      }
+    });
+    child.stderr?.on('data', (d: Buffer) => {
+      stderr += d.toString();
+    });
+    const cleanup = () => {
+      spinner.stop();
+      child.kill('SIGINT');
+    };
+    process.once('SIGINT', cleanup);
+    child.on('close', (code) => {
+      process.removeListener('SIGINT', cleanup);
+      if (code === 0)
+        spinner.done(
+          options.autonomous ? 'Autonomous execution complete.' : 'Plan generation complete.',
+        );
+      else if (code === 130)
+        spinner.fail(
+          options.autonomous
+            ? 'Execution interrupted by user.'
+            : 'Plan generation interrupted by user.',
+        );
+      else spinner.fail(`Exited with status ${code ?? 'unknown'}.`);
+      // Codex --json outputs JSONL events — not useful for the user
+      if (engine !== 'codex' && stdout.trim()) process.stdout.write(stdout);
+      if (engine !== 'codex' && stderr.trim()) process.stderr.write(stderr);
+      if (!options.autonomous) rawOn();
+      resolve(code);
+    });
+    child.on('error', (err) => {
+      process.removeListener('SIGINT', cleanup);
+      spinner.fail(`Failed: ${err.message}`);
+      if (!options.autonomous) rawOn();
+      resolve(null);
+    });
+  });
+
+  let isEarlyExit = phase1ExitCode !== 0 && phase1ExitCode !== null;
+  if (!options.autonomous && !isEarlyExit) {
+    let phase2Args: string[];
+    if (engine === 'codex') {
+      phase2Args = codexThreadId
+        ? ['--', 'resume', codexThreadId, '--full-auto']
+        : ['--', 'resume', '--last', '--full-auto'];
+    } else {
+      phase2Args = ['--resume', sessionId, '--mcp-config', mcpConfigArg];
+    }
+    console.log(`\n${c.blue}→ Resuming session for interactive review…${c.reset}\n`);
+    rawOff();
+    const phase2 = spawnSync(cfg.genieOrClaude, phase2Args, {
+      stdio: 'inherit',
+      env: { ...process.env },
+      cwd,
+    });
+    rawOn();
+    if (phase2.status !== 0 && phase2.status !== null) isEarlyExit = true;
+  }
+
+  // Cleanup codex MCP
+  if (engine === 'codex') {
+    cleanupCodexMcp();
+  }
+
+  if (isEarlyExit) {
+    const reason =
+      phase1ExitCode === 130
+        ? 'Execution interrupted by user (SIGINT).'
+        : `Genie exited with status ${phase1ExitCode}.`;
+    failRun(projectId, taskId, runId, reason);
+  }
+  console.log(`\n${c.blue}← Genie closed (task: ${taskId}, run: ${runId})${c.reset}\n`);
 }
 
 // ─── Worktree helpers ─────────────────────────────────────────────────────────
@@ -300,6 +640,11 @@ function preserveAndRemoveWorktree(
     } catch {
       /* ignore — CLAUDE.md may not exist at HEAD */
     }
+    try {
+      execSync(`git -C "${worktreeDir}" checkout HEAD -- AGENTS.md`, { stdio: 'pipe' });
+    } catch {
+      /* ignore — AGENTS.md may not exist at HEAD */
+    }
 
     const status = execSync(`git -C "${worktreeDir}" status --porcelain`, {
       encoding: 'utf8',
@@ -331,9 +676,14 @@ function preserveAndRemoveWorktree(
 
       // Prompt to push and create a GitHub PR (only if a remote is configured)
       let prUrl: string | undefined;
+      let remoteUrl = '';
       let hasRemote = false;
       try {
-        execSync(`git remote get-url origin`, { cwd: projectRoot, stdio: 'pipe' });
+        remoteUrl = execSync(`git remote get-url origin`, {
+          cwd: projectRoot,
+          encoding: 'utf8',
+          stdio: 'pipe',
+        }).trim();
         hasRemote = true;
       } catch {
         /* no remote configured — skip prompt */
@@ -355,9 +705,16 @@ function preserveAndRemoveWorktree(
           console.log();
 
           if (answer === 'y' || answer === 'yes') {
+            let pushOk = false;
             try {
               execSync(`git push origin "${branchName}"`, { cwd: projectRoot, stdio: 'inherit' });
+              pushOk = true;
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : String(err);
+              console.log(`${c.red}✗ Push failed: ${msg}${c.reset}\n`);
+            }
 
+            if (pushOk) {
               let defaultBranch = 'master';
               try {
                 defaultBranch =
@@ -372,22 +729,56 @@ function preserveAndRemoveWorktree(
                 /* fallback to master */
               }
 
-              const prTitle = `chore: PlanSync task execution (${taskId.slice(0, 8)})`;
-              const prBody = `Automated execution of PlanSync task \`${taskId}\`.\n\nCreated by PlanSync /exec.`;
-              const prOutput = execSync(
-                `gh pr create --head "${branchName}" --base "${defaultBranch}" --title "${prTitle}" --body "${prBody}"`,
-                { encoding: 'utf8', cwd: projectRoot, stdio: 'pipe' },
-              ).trim();
-              prUrl = prOutput.match(/https?:\/\/\S+/)?.[0] ?? prOutput;
-              if (prUrl) {
-                console.log(`\n${c.green}✓ PR created: ${prUrl}${c.reset}\n`);
+              try {
+                const prTitle = `chore: PlanSync task execution (${taskId.slice(0, 8)})`;
+                const prBody = `Automated execution of PlanSync task (${taskId}).\n\nCreated by PlanSync /exec.`;
+                const prResult = spawnSync(
+                  'gh',
+                  [
+                    'pr',
+                    'create',
+                    '--head',
+                    branchName,
+                    '--base',
+                    defaultBranch,
+                    '--title',
+                    prTitle,
+                    '--body',
+                    prBody,
+                  ],
+                  { encoding: 'utf8', cwd: projectRoot, stdio: 'pipe' },
+                );
+                if (prResult.status !== 0) {
+                  throw new Error(prResult.stderr || prResult.stdout || 'gh pr create failed');
+                }
+                prUrl =
+                  (prResult.stdout ?? '').trim().match(/https?:\/\/\S+/)?.[0] ??
+                  (prResult.stdout ?? '').trim();
+                if (prUrl) {
+                  console.log(`\n${c.green}✓ PR created: ${prUrl}${c.reset}\n`);
+                }
+              } catch (err: unknown) {
+                const msg = err instanceof Error ? err.message : String(err);
+                if (msg.includes('Enterprise Managed User')) {
+                  console.log(
+                    `${c.yellow}⚠ PR creation skipped: GitHub Enterprise Managed User accounts cannot create PRs via API.${c.reset}`,
+                  );
+                  const match = remoteUrl.match(/github\.com[:/](.+?)(?:\.git)?$/);
+                  const webUrl = match
+                    ? `https://github.com/${match[1]}/pull/new/${branchName}`
+                    : '';
+                  if (webUrl) {
+                    console.log(`  Create PR in browser: ${webUrl}\n`);
+                  } else {
+                    console.log(
+                      `  Create it manually in the GitHub web UI for branch: ${branchName}\n`,
+                    );
+                  }
+                } else {
+                  console.log(`${c.red}✗ PR creation failed: ${msg}${c.reset}`);
+                  console.log(`  Run manually: gh pr create --head ${branchName}\n`);
+                }
               }
-            } catch (err: unknown) {
-              const msg = err instanceof Error ? err.message : String(err);
-              console.log(`${c.red}✗ Push/PR failed: ${msg}${c.reset}`);
-              console.log(
-                `  Run manually: git push origin ${branchName} && gh pr create --head ${branchName}\n`,
-              );
             }
           }
         } // end else (interactive mode)
@@ -455,6 +846,12 @@ export async function launchAutoExec(
   options: { autonomous?: boolean } = {},
 ): Promise<void> {
   const projectRoot = path.resolve(selfDir, '../../../');
+
+  // Non-owner: cannot create worktrees in admin's directory, fall back to launchExec
+  if (!isWritable(projectRoot)) {
+    return launchExecDirect(taskId, runId, projectId, _taskPack, options);
+  }
+
   const worktreeDir = path.join(projectRoot, '.plansync-exec', runId);
 
   try {
@@ -478,23 +875,32 @@ export async function launchAutoExec(
     ),
   );
 
-  // Layer 2: append path constraint to worktree's CLAUDE.md so both phases are protected
+  // Layer 2: append path constraint to instruction files so both phases are protected
+  const constraint = [
+    '',
+    '---',
+    '',
+    '## EXEC WORKTREE PATH CONSTRAINT',
+    '',
+    'You are running inside an isolated exec worktree.',
+    `Working directory: ${worktreeDir}`,
+    '',
+    'ALL file operations (Edit, Write) must use paths within this directory.',
+    `If Glob or Grep returns a path like ${projectRoot}/packages/..., use ${worktreeDir}/packages/... instead.`,
+    `NEVER edit files whose path starts with ${projectRoot}/ — those are the main repository.`,
+  ].join('\n');
+
+  // Claude Code reads CLAUDE.md
   const claudeMdPath = path.join(worktreeDir, 'CLAUDE.md');
   if (fs.existsSync(claudeMdPath)) {
-    const constraint = [
-      '',
-      '---',
-      '',
-      '## EXEC WORKTREE PATH CONSTRAINT',
-      '',
-      'You are running inside an isolated exec worktree.',
-      `Working directory: ${worktreeDir}`,
-      '',
-      'ALL file operations (Edit, Write) must use paths within this directory.',
-      `If Glob or Grep returns a path like ${projectRoot}/packages/..., use ${worktreeDir}/packages/... instead.`,
-      `NEVER edit files whose path starts with ${projectRoot}/ — those are the main repository.`,
-    ].join('\n');
     fs.appendFileSync(claudeMdPath, constraint);
+  }
+
+  // Codex reads AGENTS.md — ensure instructions + constraint exist
+  const agentsMdPath = path.join(worktreeDir, 'AGENTS.md');
+  ensureAgentsMd(worktreeDir);
+  if (fs.existsSync(agentsMdPath)) {
+    fs.appendFileSync(agentsMdPath, constraint);
   }
 
   const phase1Prompt = options.autonomous
@@ -510,21 +916,44 @@ export async function launchAutoExec(
     ? `Executing task autonomously (${taskId})...`
     : 'Generating implementation plan...';
 
+  const engine = detectEngine();
+
   console.log(`\n${c.blue}→ Launching Genie sandbox for task ${taskId} (Run: ${runId})${c.reset}`);
   console.log(`  ${c.dim}Mode:     ${options.autonomous ? 'autonomous' : 'interactive'}${c.reset}`);
+  console.log(`  ${c.dim}Engine:   ${engine}${c.reset}`);
   console.log(`  ${c.dim}Worktree: ${worktreeDir}${c.reset}`);
   console.log(`  ${c.dim}Session:  ${sessionId}${c.reset}\n`);
 
+  // Setup codex MCP if needed (codex uses `mcp add`, not `--mcp-config`)
+  if (engine === 'codex') {
+    setupCodexMcp(runId, taskId, projectId, sessionId);
+  }
+
+  // ─── Phase 1: generate plan (behind spinner) ──────────────────────────────
+
+  let codexThreadId: string | null = null;
+
   const phase1ExitCode = await new Promise<number | null>((resolve) => {
-    const spawnArgs = [
-      '-p',
-      phase1Prompt,
-      '--session-id',
-      sessionId,
-      '--mcp-config',
-      mcpConfigArg,
-      ...(options.autonomous ? ['--dangerously-skip-permissions'] : []),
-    ];
+    let spawnArgs: string[];
+    if (engine === 'codex') {
+      spawnArgs = [
+        '--',
+        'exec',
+        phase1Prompt,
+        '--json',
+        ...(options.autonomous ? ['--dangerously-bypass-approvals-and-sandbox'] : ['--full-auto']),
+      ];
+    } else {
+      spawnArgs = [
+        '-p',
+        phase1Prompt,
+        '--session-id',
+        sessionId,
+        '--mcp-config',
+        mcpConfigArg,
+        ...(options.autonomous ? ['--dangerously-skip-permissions'] : []),
+      ];
+    }
 
     // Both modes: buffer output behind a spinner
     // Autonomous: stdin ignored; Interactive: stdin inherited (safety net for permission prompts)
@@ -541,7 +970,23 @@ export async function launchAutoExec(
     let stdout = '';
     let stderr = '';
     child.stdout?.on('data', (d: Buffer) => {
-      stdout += d.toString();
+      const chunk = d.toString();
+      stdout += chunk;
+
+      // Codex: parse thread_id from first JSONL event
+      if (engine === 'codex' && !codexThreadId) {
+        for (const line of chunk.split('\n')) {
+          if (!line.trim()) continue;
+          try {
+            const evt = JSON.parse(line);
+            if (evt.type === 'thread.started' && evt.thread_id) {
+              codexThreadId = evt.thread_id;
+            }
+          } catch {
+            /* not JSON, skip */
+          }
+        }
+      }
     });
     child.stderr?.on('data', (d: Buffer) => {
       stderr += d.toString();
@@ -568,8 +1013,9 @@ export async function launchAutoExec(
       } else {
         spinner.fail(`Exited with status ${code ?? 'unknown'}.`);
       }
-      if (stdout.trim()) process.stdout.write(stdout);
-      if (stderr.trim()) process.stderr.write(stderr);
+      // Codex --json outputs JSONL events — not useful for the user
+      if (engine !== 'codex' && stdout.trim()) process.stdout.write(stdout);
+      if (engine !== 'codex' && stderr.trim()) process.stderr.write(stderr);
       if (!options.autonomous) rawOn();
       resolve(code);
     });
@@ -581,6 +1027,20 @@ export async function launchAutoExec(
     });
   });
 
+  // ─── Persist codex thread ID for interrupted run recovery ─────────────────
+
+  if (engine === 'codex' && codexThreadId) {
+    try {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+      meta.codexThreadId = codexThreadId;
+      fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  // ─── Phase 2: interactive review ──────────────────────────────────────────
+
   let isEarlyExit = phase1ExitCode !== 0 && phase1ExitCode !== null;
 
   if (!options.autonomous) {
@@ -588,24 +1048,39 @@ export async function launchAutoExec(
       // Phase 1 was interrupted — skip resume session (nothing to resume)
       console.log(`${c.dim}Skipping interactive review (session was interrupted).${c.reset}\n`);
     } else {
-      // Interactive mode: resume session for human plan review
+      // Resume session for human plan review
+      let phase2Args: string[];
+      if (engine === 'codex') {
+        if (!codexThreadId) {
+          console.log(
+            `${c.yellow}⚠ Could not parse codex thread ID — falling back to --last${c.reset}`,
+          );
+          phase2Args = ['--', 'resume', '--last', '--full-auto'];
+        } else {
+          phase2Args = ['--', 'resume', codexThreadId, '--full-auto'];
+        }
+      } else {
+        phase2Args = ['--resume', sessionId, '--mcp-config', mcpConfigArg];
+      }
+
       console.log(`\n${c.blue}→ Resuming session for interactive review…${c.reset}\n`);
       rawOff();
-      const phase2 = spawnSync(
-        cfg.genieOrClaude,
-        ['--resume', sessionId, '--mcp-config', mcpConfigArg],
-        {
-          stdio: 'inherit',
-          env: { ...process.env },
-          cwd: worktreeDir,
-        },
-      );
+      const phase2 = spawnSync(cfg.genieOrClaude, phase2Args, {
+        stdio: 'inherit',
+        env: { ...process.env },
+        cwd: worktreeDir,
+      });
       rawOn();
       // If phase 2 was also interrupted, treat as early exit
       if (phase2.status !== 0 && phase2.status !== null) {
         isEarlyExit = true;
       }
     }
+  }
+
+  // Cleanup codex MCP registration
+  if (engine === 'codex') {
+    cleanupCodexMcp();
   }
 
   const branchName = preserveAndRemoveWorktree(worktreeDir, taskId, runId, projectId, {
@@ -640,6 +1115,7 @@ export interface InterruptedExec {
   sessionId: string;
   projectId: string;
   worktreeDir: string;
+  codexThreadId?: string;
 }
 
 export function scanInterruptedExecs(): InterruptedExec[] {
@@ -667,14 +1143,32 @@ export function scanInterruptedExecs(): InterruptedExec[] {
 }
 
 export function resumeInterruptedExec(run: InterruptedExec): void {
-  const mcpCfg = buildMcpConfigArg(run.runId, run.taskId, run.projectId, run.sessionId);
+  const engine = detectEngine();
+
   console.log(`\n${c.blue}→ Resuming Genie for task ${run.taskId.slice(0, 8)}…${c.reset}\n`);
   rawOff();
-  spawnSync(cfg.genieOrClaude, ['--resume', run.sessionId, '--mcp-config', mcpCfg], {
-    stdio: 'inherit',
-    env: { ...process.env },
-    cwd: run.worktreeDir,
-  });
+
+  if (engine === 'codex') {
+    setupCodexMcp(run.runId, run.taskId, run.projectId, run.sessionId);
+    const resumeId = run.codexThreadId || run.sessionId;
+    const resumeArgs = run.codexThreadId
+      ? ['--', 'resume', resumeId, '--full-auto']
+      : ['--', 'resume', '--last', '--full-auto'];
+    spawnSync(cfg.genieOrClaude, resumeArgs, {
+      stdio: 'inherit',
+      env: { ...process.env },
+      cwd: run.worktreeDir,
+    });
+    cleanupCodexMcp();
+  } else {
+    const mcpCfg = buildMcpConfigArg(run.runId, run.taskId, run.projectId, run.sessionId);
+    spawnSync(cfg.genieOrClaude, ['--resume', run.sessionId, '--mcp-config', mcpCfg], {
+      stdio: 'inherit',
+      env: { ...process.env },
+      cwd: run.worktreeDir,
+    });
+  }
+
   rawOn();
 }
 
@@ -690,6 +1184,11 @@ export function cleanupInterruptedExec(run: InterruptedExec): void {
   }
   try {
     execSync(`git -C "${run.worktreeDir}" checkout HEAD -- CLAUDE.md`, { stdio: 'pipe' });
+  } catch {
+    /* ignore */
+  }
+  try {
+    execSync(`git -C "${run.worktreeDir}" checkout HEAD -- AGENTS.md`, { stdio: 'pipe' });
   } catch {
     /* ignore */
   }
