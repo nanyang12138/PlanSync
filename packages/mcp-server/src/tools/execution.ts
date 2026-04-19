@@ -146,7 +146,7 @@ export function registerExecutionTools(server: McpServer, api: ApiClient) {
 
   server.tool(
     'plansync_execution_complete',
-    'Complete or fail an execution run. When status=completed: (1) deliverablesMet is REQUIRED — list each plan deliverable you met (e.g. ["Implemented login API endpoint", "Added unit tests for auth module"]); (2) for agent executors, AI will verify your list against plan deliverables and return COMPLETION_VERIFICATION_FAILED with specific gaps if insufficient — improve your list and retry.',
+    'Complete or fail an execution run. When status=completed: (1) deliverablesMet is REQUIRED — list each plan deliverable you met (e.g. ["Implemented login API endpoint", "Added unit tests for auth module"]); (2) for agent executors, AI will verify your evidence (claims, filesChanged, outputSummary) against the task context and return COMPLETION_VERIFICATION_FAILED with a score breakdown if insufficient — improve your list and retry.',
     {
       projectId: z.string(),
       taskId: z.string(),
@@ -167,11 +167,49 @@ export function registerExecutionTools(server: McpServer, api: ApiClient) {
     async (args) => {
       const { projectId, taskId, runId, ...body } = args;
       heartbeatManager.stop(runId);
-      const result = await api.post(
-        `/api/projects/${projectId}/tasks/${taskId}/runs/${runId}?action=complete`,
-        body,
-      );
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      try {
+        const result = await api.post(
+          `/api/projects/${projectId}/tasks/${taskId}/runs/${runId}?action=complete`,
+          body,
+        );
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      } catch (err) {
+        if (
+          err instanceof ApiError &&
+          err.status === 422 &&
+          err.code === 'COMPLETION_VERIFICATION_FAILED'
+        ) {
+          const d = err.details as
+            | {
+                score?: number;
+                breakdown?: { specificity: number; coherence: number; coverage: number };
+                gaps?: string[];
+                feedback?: string;
+              }
+            | undefined;
+          const lines = [
+            '⚠ COMPLETION_VERIFICATION_FAILED',
+            '',
+            `Score: ${d?.score ?? '?'}/100 (threshold: 75)`,
+            `  Specificity: ${d?.breakdown?.specificity ?? '?'}/35`,
+            `  Coherence:   ${d?.breakdown?.coherence ?? '?'}/35`,
+            `  Coverage:    ${d?.breakdown?.coverage ?? '?'}/30`,
+            '',
+            'Gaps:',
+            ...(d?.gaps?.map((g) => `  - ${g}`) ?? ['  (none returned)']),
+            '',
+            `Feedback: ${d?.feedback ?? err.message}`,
+            '',
+            'To fix: update your deliverablesMet with SPECIFIC claims that describe',
+            'HOW the work was done (endpoints, files, test results), then retry.',
+            'Vague claims like "all done" or "completed" will be rejected.',
+          ];
+          // Run is still active — restart heartbeat while agent retries
+          heartbeatManager.start(runId, projectId, taskId, api);
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
+        throw err;
+      }
     },
   );
 }

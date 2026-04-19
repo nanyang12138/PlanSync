@@ -57,62 +57,55 @@ export async function POST(req: NextRequest, { params }: Params) {
           );
         }
 
-        // Layer 3: AI verification for agent executors only
+        // AI evidence-based verification for agent executors
         if (run.executorType === 'agent') {
           const task = run.task;
-          const plan = await prisma.plan.findFirst({
-            where: { projectId: params.projectId, version: task.boundPlanVersion },
-          });
-          const planDeliverables =
-            task.planDeliverableRefs && task.planDeliverableRefs.length > 0
-              ? task.planDeliverableRefs
-              : (plan?.deliverables ?? []);
-
-          if (!plan) {
-            console.warn(
-              `[completion-verify] Plan v${task.boundPlanVersion} not found for task ${params.taskId} — skipping AI verification`,
+          try {
+            const raw = await aiClient.complete(
+              COMPLETION_VERIFY_SYSTEM,
+              buildCompletionVerifyUser(body.deliverablesMet, {
+                taskTitle: task.title,
+                taskType: task.type,
+                taskDescription: task.description,
+                expectedOutput: task.expectedOutput,
+                planDeliverableRefs: task.planDeliverableRefs,
+                filesChanged: body.filesChanged,
+                outputSummary: body.outputSummary,
+              }),
             );
-          }
-
-          if (planDeliverables.length > 0) {
-            try {
-              const raw = await aiClient.complete(
-                COMPLETION_VERIFY_SYSTEM,
-                buildCompletionVerifyUser(
-                  body.deliverablesMet,
-                  task.title,
-                  planDeliverables,
-                  task.expectedOutput,
-                ),
-              );
-              if (raw) {
-                const result = JSON.parse(raw) as {
-                  verified: boolean;
-                  score: number;
-                  gaps: string[];
-                  feedback: string;
-                };
-                if (!result.verified || result.score < 75) {
-                  return NextResponse.json(
-                    {
-                      error: 'COMPLETION_VERIFICATION_FAILED',
-                      message: 'deliverablesMet does not cover all plan deliverables.',
-                      gaps: result.gaps,
-                      feedback: result.feedback,
-                      score: result.score,
+            if (raw) {
+              const result = JSON.parse(raw) as {
+                verified: boolean;
+                score: number;
+                breakdown?: { specificity: number; coherence: number; coverage: number };
+                gaps: string[];
+                feedback: string;
+              };
+              if (!result.verified || result.score < 75) {
+                return NextResponse.json(
+                  {
+                    error: {
+                      code: 'COMPLETION_VERIFICATION_FAILED',
+                      message: result.feedback,
+                      details: {
+                        score: result.score,
+                        breakdown: result.breakdown,
+                        gaps: result.gaps,
+                        feedback: result.feedback,
+                      },
                     },
-                    { status: 422 },
-                  );
-                }
+                  },
+                  { status: 422 },
+                );
               }
-              // raw === null: AI unavailable, allow through
-            } catch (err) {
-              // AI error: allow through, don't block on infra failure
-              console.warn(
-                `[completion-verify] AI verification failed for task ${params.taskId}, run ${params.runId} — allowing through:`,
-                err instanceof Error ? err.message : err,
-              );
             }
+            // raw === null: AI unavailable, allow through
+          } catch (err) {
+            // AI error: allow through, don't block on infra failure
+            console.warn(
+              `[completion-verify] AI verification failed for task ${params.taskId}, run ${params.runId} — allowing through:`,
+              err instanceof Error ? err.message : err,
+            );
           }
         }
       }

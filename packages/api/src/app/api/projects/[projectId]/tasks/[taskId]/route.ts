@@ -41,6 +41,11 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     await requireProjectRole(auth, params.projectId);
     const body = await validateBody(req, updateTaskSchema);
 
+    // planDeliverableRefs controls AI verification scope — owner only
+    if (body.planDeliverableRefs !== undefined) {
+      await requireProjectRole(auth, params.projectId, 'owner');
+    }
+
     const task = await prisma.task.findUnique({ where: { id: params.taskId } });
     if (!task) throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
     if (task.projectId !== params.projectId) {
