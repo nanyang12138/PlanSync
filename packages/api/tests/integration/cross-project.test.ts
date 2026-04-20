@@ -287,6 +287,100 @@ describe('X: Cross-Project Features', () => {
     expect(subjectArg).toContain('PlanSync');
   });
 
+  // X9b: plan propose with agent reviewer → sendMail NOT called for agent
+  it('X9b: plan propose with agent reviewer → no email sent to agent', async () => {
+    vi.clearAllMocks();
+
+    const agentReviewerName = 'xp-agent-reviewer';
+
+    const createRes = await plansPost(
+      makeReq(`/api/projects/${projectAId}/plans`, {
+        method: 'POST',
+        userName: owner,
+        body: {
+          title: 'Agent Email Test Plan',
+          goal: 'agent email test goal',
+          scope: 'agent email test scope',
+          constraints: [],
+          standards: [],
+          deliverables: [],
+          openQuestions: [],
+          requiredReviewers: [],
+        },
+      }),
+      { params: { projectId: projectAId } },
+    );
+    expect(createRes.status).toBe(201);
+    const newPlanId = (await createRes.json()).data.id;
+
+    const propRes = await proposePost(
+      makeReq(`/api/projects/${projectAId}/plans/${newPlanId}/propose`, {
+        method: 'POST',
+        userName: owner,
+        body: { reviewers: [{ name: agentReviewerName, type: 'agent' }] },
+      }),
+      { params: { projectId: projectAId, planId: newPlanId } },
+    );
+    expect(propRes.status).toBe(200);
+
+    const member = await testPrisma.projectMember.findUnique({
+      where: { projectId_name: { projectId: projectAId, name: agentReviewerName } },
+    });
+    expect(member).not.toBeNull();
+    expect(member?.type).toBe('agent');
+
+    // sendMail must NOT have been called (only reviewer is an agent)
+    expect(vi.mocked(sendMail)).not.toHaveBeenCalled();
+  });
+
+  // X9c: plan propose with mixed human + agent reviewers → email only to human
+  it('X9c: plan propose with mixed reviewers → email only to human reviewer', async () => {
+    vi.clearAllMocks();
+
+    const mixedAgent = 'xp-mixed-agent';
+
+    const createRes = await plansPost(
+      makeReq(`/api/projects/${projectAId}/plans`, {
+        method: 'POST',
+        userName: owner,
+        body: {
+          title: 'Mixed Email Test Plan',
+          goal: 'mixed email goal',
+          scope: 'mixed email scope',
+          constraints: [],
+          standards: [],
+          deliverables: [],
+          openQuestions: [],
+          requiredReviewers: [],
+        },
+      }),
+      { params: { projectId: projectAId } },
+    );
+    expect(createRes.status).toBe(201);
+    const newPlanId = (await createRes.json()).data.id;
+
+    const propRes = await proposePost(
+      makeReq(`/api/projects/${projectAId}/plans/${newPlanId}/propose`, {
+        method: 'POST',
+        userName: owner,
+        body: {
+          reviewers: [
+            reviewer, // string → defaults to human, already a member
+            { name: mixedAgent, type: 'agent' },
+          ],
+        },
+      }),
+      { params: { projectId: projectAId, planId: newPlanId } },
+    );
+    expect(propRes.status).toBe(200);
+
+    // sendMail should be called once, only with the human reviewer's email
+    expect(vi.mocked(sendMail)).toHaveBeenCalledTimes(1);
+    const [toArg] = vi.mocked(sendMail).mock.calls[0];
+    expect(toArg).toContain(`${reviewer}@amd.com`);
+    expect(toArg).not.toContain(`${mixedAgent}@amd.com`);
+  });
+
   // X10: plan activate → drift alerts trigger sendMail to human task assignee
   it('X10: plan activate → drift triggers sendMail to human task assignee', async () => {
     vi.clearAllMocks();

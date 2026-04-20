@@ -15,7 +15,7 @@ export async function POST(req: NextRequest, { params }: Params) {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId, 'owner');
 
-    type ReviewerSpec = string | { name: string; focusNotes?: string };
+    type ReviewerSpec = string | { name: string; focusNotes?: string; type?: 'human' | 'agent' };
     let body: { reviewers?: ReviewerSpec[] } = {};
     try {
       body = await req.json();
@@ -33,10 +33,12 @@ export async function POST(req: NextRequest, { params }: Params) {
     }
 
     // Normalize reviewer specs to {name, focusNotes} objects
-    const reviewerSpecs: Array<{ name: string; focusNotes?: string }> =
+    const reviewerSpecs: Array<{ name: string; focusNotes?: string; type?: 'human' | 'agent' }> =
       body.reviewers && body.reviewers.length > 0
         ? body.reviewers.map((r) =>
-            typeof r === 'string' ? { name: r } : { name: r.name, focusNotes: r.focusNotes },
+            typeof r === 'string'
+              ? { name: r }
+              : { name: r.name, focusNotes: r.focusNotes, type: r.type },
           )
         : plan.requiredReviewers.map((r) => ({ name: r }));
 
@@ -61,11 +63,11 @@ export async function POST(req: NextRequest, { params }: Params) {
         // Auto-add reviewers as project members if not already members.
         // Reviewers must be members to pass requireProjectRole during review/approve.
         await tx.projectMember.createMany({
-          data: reviewerNames.map((name) => ({
+          data: reviewerSpecs.map((r) => ({
             projectId: params.projectId,
-            name,
+            name: r.name,
             role: 'developer',
-            type: 'human',
+            type: r.type ?? 'human',
           })),
           skipDuplicates: true,
         });

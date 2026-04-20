@@ -116,6 +116,10 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
                 .describe(
                   'What this reviewer should focus on (e.g. "backend feasibility", "security constraints")',
                 ),
+              type: z
+                .enum(['human', 'agent'])
+                .optional()
+                .describe('Member type for auto-added reviewers. Defaults to human.'),
             }),
           ]),
         )
