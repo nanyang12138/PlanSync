@@ -31,4 +31,6 @@ export const cfg = {
   genieOrClaude: process.env.GENIE_BIN || '/proj/verif_release_ro/genie/current/bin/genie',
   mcpServer: process.env.PLANSYNC_MCP_SERVER || _mcpAuto,
   nodeBin: process.env.PLANSYNC_NODE_BIN || process.execPath,
+  maxOutputTokens: Number(process.env.PLANSYNC_MAX_OUTPUT_TOKENS) || 8192,
+  maxTurns: Number(process.env.PLANSYNC_MAX_TURNS) || 12,
 };

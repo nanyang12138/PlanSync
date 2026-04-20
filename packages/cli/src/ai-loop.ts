@@ -22,6 +22,13 @@ export function buildSystemPrompt(status: ProjectStatus): string {
     '- Start work on a task → plansync_task_pack first, then plansync_execution_start',
     '- Always confirm actions with a brief summary after each tool call',
     '',
+    'Large plan edits: when adding more than ~20 items to deliverables / constraints / ' +
+      'standards / openQuestions, call the matching incremental tool ' +
+      '(plansync_plan_deliverables_append, plansync_plan_constraints_append, ' +
+      'plansync_plan_standards_append, plansync_plan_open_questions_append) in batches of ' +
+      '20–30 items per call instead of passing the entire array to plansync_plan_update. ' +
+      'This avoids hitting the per-response token limit on a single huge tool call.',
+    '',
     `Current project: ${status.projectName} (id: ${status.projectId || 'not set'})`,
   ];
   if (status.activePlan) {
@@ -55,9 +62,23 @@ export function buildSystemPrompt(status: ProjectStatus): string {
   return lines.join('\n');
 }
 
+export interface TruncatedTool {
+  name: string;
+  partialInput: string;
+}
+
+export interface InvalidTool {
+  name: string;
+  error: string;
+  rawSnippet: string;
+}
+
 interface StreamResult {
   text: string;
   toolCalls: { id: string; name: string; input: Record<string, unknown> }[];
+  stopReason?: string;
+  truncatedTool?: TruncatedTool;
+  invalidTool?: InvalidTool;
 }
 
 export async function streamOneTurn(
@@ -80,7 +101,7 @@ export async function streamOneTurn(
 
   const requestBody = {
     model: useAnthropic ? cfg.anthropicModel : cfg.llmModel,
-    max_tokens: 4096,
+    max_tokens: cfg.maxOutputTokens,
     stream: true,
     system,
     tools,
@@ -111,6 +132,8 @@ export async function streamOneTurn(
     const prefix = `\n${c.cyan}${c.bold}PlanSync${c.reset} `;
     const toolCalls: { id: string; name: string; input: Record<string, unknown> }[] = [];
     let currentTool: { id: string; name: string; inputRaw: string } | null = null;
+    let stopReason: string | undefined;
+    let invalidTool: InvalidTool | undefined;
 
     const flush = (chunk: string) => {
       // Buffer and process SSE frames delimited by \n\n
@@ -126,7 +149,12 @@ export async function streamOneTurn(
           let evt: {
             type: string;
             content_block?: { type: string; id: string; name: string };
-            delta?: { type: string; text?: string; partial_json?: string };
+            delta?: {
+              type?: string;
+              text?: string;
+              partial_json?: string;
+              stop_reason?: string;
+            };
           };
           try {
             evt = JSON.parse(data);
@@ -155,18 +183,39 @@ export async function streamOneTurn(
             }
           } else if (evt.type === 'content_block_stop') {
             if (currentTool) {
-              let parsed: Record<string, unknown> = {};
               try {
-                parsed = JSON.parse(currentTool.inputRaw || '{}');
-              } catch {
-                /* ignore */
+                const parsed = JSON.parse(currentTool.inputRaw || '{}') as Record<string, unknown>;
+                toolCalls.push({ id: currentTool.id, name: currentTool.name, input: parsed });
+              } catch (e) {
+                // Don't push {} — silently invoking MCP with empty input causes another silent
+                // rejection downstream. Surface this to runAgentLoop so it can retry.
+                invalidTool = {
+                  name: currentTool.name,
+                  error: e instanceof Error ? e.message : String(e),
+                  rawSnippet: currentTool.inputRaw.slice(0, 300),
+                };
               }
-              toolCalls.push({ id: currentTool.id, name: currentTool.name, input: parsed });
               currentTool = null;
             }
+          } else if (evt.type === 'message_delta') {
+            // Anthropic surfaces stop_reason in message_delta — track it so the caller
+            // can detect max_tokens truncation and recover instead of hanging silently.
+            if (evt.delta?.stop_reason) stopReason = evt.delta.stop_reason;
           }
         }
       }
+    };
+
+    const finalize = (extra?: Partial<StreamResult>): StreamResult => {
+      // If the stream ended while a tool_use block was still being filled,
+      // it was cut off mid-JSON by max_tokens (or network). The partial call
+      // is unusable — surface it so the caller can ask the model to retry.
+      let truncatedTool: TruncatedTool | undefined;
+      if (currentTool) {
+        truncatedTool = { name: currentTool.name, partialInput: currentTool.inputRaw };
+        currentTool = null;
+      }
+      return { text: textAcc, toolCalls, stopReason, truncatedTool, invalidTool, ...extra };
     };
 
     const req = mod.request(
@@ -193,7 +242,7 @@ export async function streamOneTurn(
         res.on('end', () => {
           if (sseBuffer.trim()) flush(sseBuffer + '\n\n');
           if (textAcc) process.stdout.write('\n\n');
-          resolve({ text: textAcc, toolCalls });
+          resolve(finalize());
         });
       },
     );
@@ -239,13 +288,71 @@ export async function runAgentLoop(
   const messages: Message[] = [...history, { role: 'user', content: userInput }];
   let finalText = '';
 
-  for (let turn = 0; turn < 8; turn++) {
+  for (let turn = 0; turn < cfg.maxTurns; turn++) {
     if (signal?.aborted) break;
     process.stdout.write(`\n${c.dim}Thinking...${c.reset}`);
 
-    const { text, toolCalls } = await streamOneTurn(messages, system, tools, signal);
+    const { text, toolCalls, stopReason, truncatedTool, invalidTool } = await streamOneTurn(
+      messages,
+      system,
+      tools,
+      signal,
+    );
     if (signal?.aborted) break;
     if (text) finalText = text;
+
+    // Recovery case A: tool_use was cut mid-stream by max_tokens (or similar).
+    // The partial JSON is unusable; retry the whole turn but tell the model to
+    // split big array fields across multiple smaller calls.
+    if (truncatedTool) {
+      console.log(
+        `\n${c.yellow}⚠ Tool '${truncatedTool.name}' was truncated mid-stream ` +
+          `(${truncatedTool.partialInput.length} bytes). Asking model to retry in chunks.${c.reset}`,
+      );
+      // Anthropic requires assistant content to be non-empty; use text or a placeholder.
+      messages.push({ role: 'assistant', content: text || '(previous attempt was truncated)' });
+      messages.push({
+        role: 'user',
+        content:
+          `Your previous \`${truncatedTool.name}\` call was truncated because the response ` +
+          `exceeded max_tokens (${cfg.maxOutputTokens}). Please retry, but split large array ` +
+          `fields (deliverables, constraints, standards, openQuestions) into multiple smaller ` +
+          `tool calls — e.g. use plansync_plan_deliverables_append in batches of 20 instead of ` +
+          `passing the entire array to plansync_plan_update. If that helper is not available, ` +
+          `call plansync_plan_update once with the first chunk, then again with the next chunk ` +
+          `(use changeSummary to track progress).`,
+      });
+      continue;
+    }
+
+    // Recovery case B: model emitted invalid JSON for a tool_use input (rare).
+    // Skip the broken call and ask the model to retry.
+    if (invalidTool) {
+      console.log(
+        `\n${c.red}⚠ Tool '${invalidTool.name}' had invalid JSON: ${invalidTool.error}${c.reset}`,
+      );
+      messages.push({ role: 'assistant', content: text || '(previous attempt had invalid JSON)' });
+      messages.push({
+        role: 'user',
+        content:
+          `Your last \`${invalidTool.name}\` call had invalid JSON input ` +
+          `(${invalidTool.error}). Please retry the same tool with valid JSON.`,
+      });
+      continue;
+    }
+
+    // Recovery case C: pure text response was cut off by max_tokens with no tool calls.
+    // Prefill what we got and ask the model to continue.
+    if (stopReason === 'max_tokens' && toolCalls.length === 0 && text) {
+      console.log(
+        `\n${c.dim}↻ Output truncated at max_tokens (${cfg.maxOutputTokens}); ` +
+          `asking model to continue…${c.reset}`,
+      );
+      messages.push({ role: 'assistant', content: text });
+      messages.push({ role: 'user', content: 'Please continue from where you left off.' });
+      continue;
+    }
+
     if (toolCalls.length === 0) break;
 
     const assistantContent: unknown[] = [];

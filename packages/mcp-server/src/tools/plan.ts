@@ -265,4 +265,45 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   );
+
+  // Incremental array-append tools — preferred over plansync_plan_update when adding many
+  // items to deliverables/constraints/standards/openQuestions, because each call stays small
+  // and avoids LLM token-budget truncation. Idempotent: items that exact-match an existing
+  // entry (after trim) are silently skipped.
+  const makeAppender = (
+    name: string,
+    field: 'deliverables' | 'constraints' | 'standards' | 'openQuestions',
+    label: string,
+  ) =>
+    server.tool(
+      name,
+      `Append items to a draft plan's ${field} array (max 50 per call). OWNER ONLY. ` +
+        `Prefer this over plansync_plan_update when adding many ${label} items — each call ` +
+        `stays small enough to avoid token-budget truncation. Idempotent: duplicates skipped. ` +
+        `Do NOT call this when doing "work as <agent>" delegation — use plansync_plan_suggest instead.`,
+      {
+        projectId: z.string(),
+        planId: z.string(),
+        items: z
+          .array(z.string().min(1).max(2000))
+          .min(1)
+          .max(50)
+          .describe(`Items to append (max 50 per call). Call again for more.`),
+        asAgent: z.string().optional(),
+      },
+      async (args) => {
+        const { projectId, planId, items, asAgent } = args;
+        const effectiveApi = asAgent ? api.withUser(asAgent) : api;
+        const result = await effectiveApi.post(
+          `/api/projects/${projectId}/plans/${planId}/append`,
+          { field, items },
+        );
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      },
+    );
+
+  makeAppender('plansync_plan_deliverables_append', 'deliverables', 'deliverable');
+  makeAppender('plansync_plan_constraints_append', 'constraints', 'constraint');
+  makeAppender('plansync_plan_standards_append', 'standards', 'standard');
+  makeAppender('plansync_plan_open_questions_append', 'openQuestions', 'open question');
 }
