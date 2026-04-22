@@ -43,7 +43,7 @@ export default function LoginPage() {
             <GitBranch className="h-6 w-6 text-white" />
           </div>
           <h1 className="text-xl font-bold text-slate-900">PlanSync</h1>
-          <p className="text-sm text-slate-500 mt-0.5">AI Team Coordination</p>
+          <p className="text-sm text-slate-500 mt-0.5">Where Plans Meet Execution</p>
         </div>
 
         {/* Card */}

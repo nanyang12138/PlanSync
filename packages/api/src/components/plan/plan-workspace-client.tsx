@@ -145,7 +145,6 @@ export function PlanWorkspaceClient({
   }, [isOwner, selectedPlan?.id, selectedPlan?.status]);
 
   const canEditSelectedDraft = isOwner && selectedPlan?.status === 'draft';
-  const canProposeSelectedDraft = canEditSelectedDraft;
   const canActivateSelectedPlan =
     isOwner &&
     selectedPlan?.status === 'proposed' &&
@@ -335,8 +334,8 @@ export function PlanWorkspaceClient({
         body: JSON.stringify({ type, planId: selectedPlan.id }),
         credentials: 'include',
       });
-      const data = (await res.json()) as { sent?: string[]; error?: string };
-      if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
+      const data = (await res.json().catch(() => ({}))) as { sent?: string[]; error?: string };
+      if (!res.ok) throw new Error(data.error ?? `Notify API not available (${res.status})`);
       setNotifySent(data.sent ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send notification');

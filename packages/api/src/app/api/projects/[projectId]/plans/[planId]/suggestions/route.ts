@@ -44,10 +44,10 @@ export async function POST(req: NextRequest, { params }: Params) {
 
     const plan = await prisma.plan.findUnique({ where: { id: params.planId } });
     if (!plan) throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
-    if (plan.status !== 'draft' && plan.status !== 'proposed') {
+    if (!['draft', 'proposed', 'active'].includes(plan.status)) {
       throw new AppError(
         ErrorCode.STATE_CONFLICT,
-        'Suggestions only accepted on draft or proposed plans',
+        `Cannot add suggestions to a ${plan.status} plan`,
       );
     }
 

@@ -49,6 +49,7 @@ export function psRequest<T>(method: string, path: string, body?: unknown): Prom
 }
 
 export const apiGet = <T>(path: string) => psRequest<T>('GET', path);
+export const apiPost = <T>(path: string, body?: unknown) => psRequest<T>('POST', path, body);
 
 // ─── Status fetcher ───────────────────────────────────────────────────────────
 
@@ -423,7 +424,7 @@ export async function handleSlashCommand(
       return 'handled';
     }
     ctx.rawInput.pause();
-    await launchExec(taskId, apiGet);
+    await launchExec(taskId, apiGet, apiPost);
     ctx.rawInput.resume();
     return 'handled';
   }
@@ -561,11 +562,13 @@ export async function handleSlashCommand(
             continue;
           }
 
-          const pack = taskPack as { driftAlerts?: Array<{ status: string }> } | null;
-          const openDrifts = (pack?.driftAlerts ?? []).filter((d) => d.status === 'open');
-          if (openDrifts.length > 0) {
+          // buildTaskPack only returns open drifts (status filtered server-side),
+          // so any non-empty driftAlerts means we must skip.
+          const pack = taskPack as { driftAlerts?: Array<unknown> } | null;
+          const openDriftCount = pack?.driftAlerts?.length ?? 0;
+          if (openDriftCount > 0) {
             console.log(
-              `  ${c.yellow}⚠ Skipping — ${openDrifts.length} unresolved drift alert(s)${c.reset}`,
+              `  ${c.yellow}⚠ Skipping — ${openDriftCount} unresolved drift alert(s)${c.reset}`,
             );
             continue;
           }
@@ -580,6 +583,12 @@ export async function handleSlashCommand(
               executorName: workerTarget,
             });
             const parsed = JSON.parse(startResult);
+            if (parsed?.error?.code) {
+              console.log(
+                `  ${c.yellow}⚠ Skipping — ${parsed.error.code}: ${parsed.error.message}${c.reset}`,
+              );
+              continue;
+            }
             const run = parsed?.data ?? parsed;
             runId = run?.id ?? '';
           } catch (err: unknown) {

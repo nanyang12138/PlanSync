@@ -201,7 +201,11 @@ export class RawInput {
    * Used for MCP notifications.
    */
   printAbove(text: string): void {
-    if (this.paused) {
+    // No live prompt to redraw if paused (subprocess owns terminal) or no
+    // nextLine() is awaiting input (this.resolve === null during AI/tool turns,
+    // see line 276) — otherwise render() draws a phantom prompt that lands
+    // inside a streaming tool block.
+    if (this.paused || !this.resolve) {
       process.stdout.write(text + '\n');
       return;
     }

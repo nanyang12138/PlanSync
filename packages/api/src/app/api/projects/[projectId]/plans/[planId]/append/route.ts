@@ -55,11 +55,13 @@ export async function POST(req: NextRequest, { params }: Params) {
 
     eventBus.publish(params.projectId, 'plan_draft_updated', {
       planId: updated.id,
+      version: updated.version,
       updatedBy: auth.userName,
       fields: [field],
     });
     dispatchWebhooks(params.projectId, 'plan_draft_updated', {
       planId: updated.id,
+      version: updated.version,
       updatedBy: auth.userName,
       fields: [field],
     });

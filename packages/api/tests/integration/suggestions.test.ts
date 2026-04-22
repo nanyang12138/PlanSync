@@ -85,8 +85,25 @@ describe('D: Suggestion System', () => {
     expect(res.status).toBe(201);
   });
 
-  it('D4: suggestion on active plan → 400 STATE_CONFLICT', async () => {
+  it('D4: suggestion on active plan → 201 (humans may suggest improvements to live plans)', async () => {
     const { planId: activePlanId } = await createActivePlan(projectId, owner);
+    const res = await suggestPost(
+      makeReq(`/api/projects/${projectId}/plans/${activePlanId}/suggestions`, {
+        method: 'POST',
+        userName: owner,
+        body: { field: 'goal', action: 'set', value: 'x', reason: 'y' },
+      }),
+      { params: { projectId, planId: activePlanId } },
+    );
+    expect(res.status).toBe(201);
+  });
+
+  it('D4b: suggestion on superseded plan → 409 STATE_CONFLICT', async () => {
+    const { planId: activePlanId } = await createActivePlan(projectId, owner);
+    await testPrisma.plan.update({
+      where: { id: activePlanId },
+      data: { status: 'superseded' },
+    });
     const res = await suggestPost(
       makeReq(`/api/projects/${projectId}/plans/${activePlanId}/suggestions`, {
         method: 'POST',

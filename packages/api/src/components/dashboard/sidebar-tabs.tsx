@@ -1,42 +1,24 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
-import type { Plan, ProjectMember, Task, Activity } from '@prisma/client';
-import { Sparkles, GitBranch, Users, Activity as ActivityIcon } from 'lucide-react';
+import type { Activity } from '@prisma/client';
+import { Sparkles, Activity as ActivityIcon } from 'lucide-react';
 import { AiChatPanel } from './ai-chat-panel';
-import { PlanCard } from './plan-card';
-import { TeamGrid } from './team-grid';
 import { ActivityFeed } from './activity-feed';
 
-type Tab = 'ai' | 'plan' | 'team' | 'activity';
+type Tab = 'ai' | 'activity';
 
 const TABS: { id: Tab; label: string; Icon: React.ElementType }[] = [
   { id: 'ai', label: 'AI', Icon: Sparkles },
-  { id: 'plan', label: 'Plan', Icon: GitBranch },
-  { id: 'team', label: 'Team', Icon: Users },
   { id: 'activity', label: 'Activity', Icon: ActivityIcon },
 ];
 
 type SidebarTabsProps = {
   projectId: string;
-  activePlan: Plan | null;
-  members: ProjectMember[];
-  tasks: Task[];
-  activePlanVersion?: number;
-  driftTaskIds: string[];
   activities: Activity[];
 };
 
-export function SidebarTabs({
-  projectId,
-  activePlan,
-  members,
-  tasks,
-  activePlanVersion,
-  driftTaskIds,
-  activities,
-}: SidebarTabsProps) {
+export function SidebarTabs({ projectId, activities }: SidebarTabsProps) {
   const [activeTab, setActiveTab] = useState<Tab>('ai');
 
   return (
@@ -66,28 +48,6 @@ export function SidebarTabs({
         </div>
       ) : (
         <div className="h-[420px] overflow-y-auto p-5">
-          {activeTab === 'plan' &&
-            (activePlan ? (
-              <PlanCard plan={activePlan} projectId={projectId} />
-            ) : (
-              <div className="text-center py-8 space-y-2">
-                <p className="text-sm text-slate-500 italic">No active plan yet.</p>
-                <Link
-                  href={`/projects/${projectId}/plans`}
-                  className="text-sm text-blue-500 hover:underline"
-                >
-                  Go to Plans →
-                </Link>
-              </div>
-            ))}
-          {activeTab === 'team' && (
-            <TeamGrid
-              members={members}
-              tasks={tasks}
-              activePlanVersion={activePlanVersion}
-              driftTaskIds={driftTaskIds}
-            />
-          )}
           {activeTab === 'activity' && <ActivityFeed activities={activities} />}
         </div>
       )}

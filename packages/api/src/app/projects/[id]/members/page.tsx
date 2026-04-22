@@ -1,15 +1,6 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import {
-  ArrowLeft,
-  GitBranch,
-  Users,
-  LayoutDashboard,
-  FileText,
-  AlertTriangle,
-  CheckCircle2,
-  Circle,
-} from 'lucide-react';
+import { Users, AlertTriangle, CheckCircle2, Circle, ChevronRight } from 'lucide-react';
 import { prisma } from '@/lib/prisma';
 import { MemberInvite } from '@/components/member/member-invite';
 import { MemberList } from '@/components/member/member-list';
@@ -69,39 +60,17 @@ export default async function ProjectMembersPage({ params }: { params: { id: str
       <div className="page-shell">
         <PageHeader
           breadcrumbs={
-            <Link href={`/projects/${params.id}`} className="btn-ghost !px-2 !py-1.5">
-              <ArrowLeft className="h-4 w-4" />
+            <Link
+              href={`/projects/${params.id}`}
+              className="flex items-center gap-1 text-xs text-slate-400 hover:text-slate-700 transition-colors font-medium"
+              title={`Back to ${project.name}`}
+            >
+              <ChevronRight className="h-3.5 w-3.5 rotate-180 text-slate-300" />
+              {project.name}
             </Link>
           }
-          title={
-            <div className="flex items-center gap-3">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-600 to-violet-600 shadow-sm shrink-0">
-                <GitBranch className="h-3.5 w-3.5 text-white" />
-              </div>
-              <div className="min-w-0">
-                <h1 className="text-base font-bold text-slate-900 truncate leading-tight">
-                  {project.name}
-                </h1>
-              </div>
-            </div>
-          }
-          navigation={[
-            {
-              label: 'Dashboard',
-              href: `/projects/${params.id}`,
-              icon: <LayoutDashboard className="h-4 w-4" />,
-            },
-            {
-              label: 'Plans',
-              href: `/projects/${params.id}/plans`,
-              icon: <FileText className="h-4 w-4" />,
-            },
-            {
-              label: 'Members',
-              href: `/projects/${params.id}/members`,
-              icon: <Users className="h-4 w-4" />,
-            },
-          ]}
+          title={<span className="text-sm font-bold text-slate-900">Members</span>}
+          navigation={[]}
           actions={
             <div className="flex items-center gap-1.5 text-xs text-slate-500 font-medium">
               <Users className="h-4 w-4" />

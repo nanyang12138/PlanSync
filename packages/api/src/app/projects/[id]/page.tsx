@@ -2,20 +2,13 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { prisma } from '@/lib/prisma';
 import { DriftAlertCard } from '@/components/dashboard/drift-alert-card';
-import { TaskList } from '@/components/dashboard/task-list';
+import { TaskViewToggle } from '@/components/dashboard/task-view-toggle';
+import { NewTaskButton } from '@/components/dashboard/new-task-button';
 import { SidebarTabs } from '@/components/dashboard/sidebar-tabs';
-import {
-  GitBranch,
-  Users,
-  AlertTriangle,
-  CheckCircle2,
-  FileText,
-  LayoutDashboard,
-  ListChecks,
-} from 'lucide-react';
+import { GitBranch, Users, AlertTriangle, ListChecks } from 'lucide-react';
 import { RealtimeWrapper } from '@/components/realtime-wrapper';
 import { PageHeader } from '@/components/shared/page-header';
-import { SummaryStrip } from '@/components/shared/summary-strip';
+import { DeleteProjectButton } from '@/components/shared/delete-project-button';
 import { StatusBlock } from '@/components/shared/status-block';
 import { SectionShell } from '@/components/shared/section-shell';
 
@@ -44,81 +37,105 @@ export default async function ProjectDashboard({ params }: { params: { id: strin
 
   const tasksDone = project.tasks.filter((t) => t.status === 'done').length;
   const tasksTotal = project.tasks.length;
-  const progress = tasksTotal > 0 ? Math.round((tasksDone / tasksTotal) * 100) : 0;
 
   return (
     <RealtimeWrapper projectId={params.id}>
       <div className="page-shell">
         <PageHeader
           title={
-            <div className="flex items-center gap-3">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-600 to-violet-600 shadow-sm shrink-0">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-blue-600 to-violet-600 shrink-0">
                 <GitBranch className="h-3.5 w-3.5 text-white" />
               </div>
               <div className="min-w-0">
-                <h1 className="text-base font-bold text-slate-900 truncate leading-tight">
+                <h1 className="text-sm font-bold text-slate-900 truncate leading-tight">
                   {project.name}
                 </h1>
                 {project.description && (
-                  <p className="text-xs text-slate-500 truncate">{project.description}</p>
+                  <p className="text-xs text-slate-400 truncate">{project.description}</p>
                 )}
               </div>
             </div>
           }
-          navigation={[
-            {
-              label: 'Dashboard',
-              href: `/projects/${params.id}`,
-              icon: <LayoutDashboard className="h-4 w-4" />,
-            },
-            {
-              label: 'Plans',
-              href: `/projects/${params.id}/plans`,
-              icon: <FileText className="h-4 w-4" />,
-            },
-            {
-              label: 'Members',
-              href: `/projects/${params.id}/members`,
-              icon: <Users className="h-4 w-4" />,
-            },
-          ]}
+          navigation={[]}
+          actions={<DeleteProjectButton projectId={params.id} projectName={project.name} />}
         />
 
         <main className="page-container space-y-6">
           {/* Top Summary Strip */}
-          <SummaryStrip
-            items={[
-              {
-                label: 'Active Plan',
-                value: activePlan ? `v${activePlan.version}` : 'None',
-                icon: <GitBranch className="h-5 w-5" />,
-                color: activePlan ? 'blue' : 'slate',
-              },
-              {
-                label: 'Project Health',
-                value: driftAlerts.length > 0 ? 'At Risk' : 'Healthy',
-                icon:
-                  driftAlerts.length > 0 ? (
-                    <AlertTriangle className="h-5 w-5" />
-                  ) : (
-                    <CheckCircle2 className="h-5 w-5" />
-                  ),
-                color: driftAlerts.length > 0 ? 'amber' : 'emerald',
-              },
-              {
-                label: 'Task Progress',
-                value: `${progress}%`,
-                icon: <CheckCircle2 className="h-5 w-5" />,
-                color: 'emerald',
-              },
-              {
-                label: 'Team Size',
-                value: project.members.length,
-                icon: <Users className="h-5 w-5" />,
-                color: 'violet',
-              },
-            ]}
-          />
+          <div className="grid grid-cols-3 gap-4">
+            {/* Active Plan */}
+            <Link
+              href={`/projects/${params.id}/plans`}
+              className="panel p-4 flex items-center gap-3 hover:shadow-md hover:-translate-y-0.5 transition-all"
+              title="View and manage plans"
+            >
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-50">
+                <GitBranch className="h-5 w-5 text-blue-500" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs text-slate-400 mb-1">Active Plan</p>
+                <p className="text-xl font-bold text-blue-700 leading-none">
+                  {activePlan ? `v${activePlan.version}` : 'None'}
+                </p>
+                {activePlan?.title && (
+                  <p className="text-[11px] text-slate-400 truncate mt-0.5">{activePlan.title}</p>
+                )}
+              </div>
+            </Link>
+
+            {/* Task Progress */}
+            <div className="panel p-4 flex items-center gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50">
+                <ListChecks className="h-5 w-5 text-emerald-500" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs text-slate-400 mb-1">Task Progress</p>
+                <p className="text-xl font-bold text-slate-800 leading-none tabular-nums">
+                  {tasksDone} / {tasksTotal}
+                </p>
+                {tasksTotal > 0 && (
+                  <div className="mt-1.5 h-1 w-full rounded-full bg-slate-100 overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-emerald-500 transition-all"
+                      style={{ width: `${Math.round((tasksDone / tasksTotal) * 100)}%` }}
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Team Members */}
+            <Link
+              href={`/projects/${params.id}/members`}
+              className="panel p-4 flex items-center gap-3 hover:shadow-md hover:-translate-y-0.5 transition-all"
+              title="View, add or remove team members"
+            >
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-violet-50">
+                <Users className="h-5 w-5 text-violet-500" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs text-slate-400 mb-1.5">Team Members</p>
+                <div className="flex items-center gap-1 flex-wrap">
+                  {project.members.slice(0, 5).map((m) => (
+                    <span
+                      key={m.name}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-violet-100 text-[10px] font-bold text-violet-700"
+                      title={`${m.name} (${m.role})`}
+                    >
+                      {m.name[0].toUpperCase()}
+                    </span>
+                  ))}
+                  {project.members.length > 5 && (
+                    <span className="text-xs text-slate-400">+{project.members.length - 5}</span>
+                  )}
+                  {project.members.length === 0 && (
+                    <span className="text-xs text-slate-300 italic">No members</span>
+                  )}
+                </div>
+              </div>
+            </Link>
+          </div>
 
           {/* Main grid: 8 + 4 columns */}
           <div className="grid lg:grid-cols-12 gap-6 items-start">
@@ -155,9 +172,17 @@ export default async function ProjectDashboard({ params }: { params: { id: strin
                 title="Tasks"
                 description="Current tasks and their execution status"
                 icon={<ListChecks className="h-5 w-5" />}
+                action={
+                  <NewTaskButton
+                    projectId={params.id}
+                    memberNames={project.members.map((m) => m.name)}
+                    disabled={!activePlan}
+                    disabledReason="Activate a plan first to add tasks"
+                  />
+                }
               >
-                <div className="max-h-[560px] overflow-y-auto">
-                  <TaskList
+                <div className="max-h-[600px] overflow-y-auto">
+                  <TaskViewToggle
                     tasks={project.tasks}
                     activePlanVersion={activePlan?.version}
                     projectId={params.id}
@@ -168,15 +193,7 @@ export default async function ProjectDashboard({ params }: { params: { id: strin
 
             {/* Right sidebar - Sticky */}
             <div className="lg:col-span-4 sticky top-24">
-              <SidebarTabs
-                projectId={params.id}
-                activePlan={activePlan ?? null}
-                members={project.members}
-                tasks={project.tasks}
-                activePlanVersion={activePlan?.version}
-                driftTaskIds={driftAlerts.map((a) => a.taskId)}
-                activities={activities}
-              />
+              <SidebarTabs projectId={params.id} activities={activities} />
             </div>
           </div>
         </main>

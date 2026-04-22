@@ -6,7 +6,7 @@ import { PlanTimeline } from '@/components/plan/plan-timeline';
 import { PlanWorkspaceClient } from '@/components/plan/plan-workspace-client';
 import { SuggestionPanel } from '@/components/plan/suggestion-panel';
 import { CommentThread } from '@/components/plan/comment-thread';
-import { ArrowLeft, GitBranch, FileText, Users, LayoutDashboard, History } from 'lucide-react';
+import { ArrowLeft, GitBranch, History } from 'lucide-react';
 import { RealtimeWrapper } from '@/components/realtime-wrapper';
 import { PageHeader } from '@/components/shared/page-header';
 import { SectionShell } from '@/components/shared/section-shell';
@@ -85,39 +85,17 @@ export default async function ProjectPlansPage({
       <div className="page-shell">
         <PageHeader
           breadcrumbs={
-            <Link href={`/projects/${params.id}`} className="btn-ghost !px-2 !py-1.5">
-              <ArrowLeft className="h-4 w-4" />
+            <Link
+              href={`/projects/${params.id}`}
+              className="flex items-center gap-1 text-xs text-slate-400 hover:text-slate-700 transition-colors font-medium"
+              title={`Back to ${project.name}`}
+            >
+              <ArrowLeft className="h-3.5 w-3.5 text-slate-300" />
+              {project.name}
             </Link>
           }
-          title={
-            <div className="flex items-center gap-3">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-600 to-violet-600 shadow-sm shrink-0">
-                <GitBranch className="h-3.5 w-3.5 text-white" />
-              </div>
-              <div className="min-w-0">
-                <h1 className="text-base font-bold text-slate-900 truncate leading-tight">
-                  {project.name}
-                </h1>
-              </div>
-            </div>
-          }
-          navigation={[
-            {
-              label: 'Dashboard',
-              href: `/projects/${params.id}`,
-              icon: <LayoutDashboard className="h-4 w-4" />,
-            },
-            {
-              label: 'Plans',
-              href: `/projects/${params.id}/plans`,
-              icon: <FileText className="h-4 w-4" />,
-            },
-            {
-              label: 'Members',
-              href: `/projects/${params.id}/members`,
-              icon: <Users className="h-4 w-4" />,
-            },
-          ]}
+          title={<span className="text-sm font-bold text-slate-900">Plans</span>}
+          navigation={[]}
         />
 
         <main className="page-container">

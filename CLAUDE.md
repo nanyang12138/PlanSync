@@ -133,7 +133,7 @@ What would you like to do?
 
 ## During Work
 
-- Call `plansync_execution_start` to register the execution (binds your work to the current plan version)
+- Call `plansync_execution_start` with `executorName` set EXACTLY equal to the task's `assignee` field (from `plansync_task_pack`). The API rejects any mismatch with 403. Only one running execution is allowed per task — if another is already active you'll get 409 STATE_CONFLICT; wait for it to complete or go stale (5 min heartbeat timeout) before retrying.
 - Heartbeat runs automatically every 30s
 - If the plan has issues, use `plansync_plan_suggest` — not ad-hoc comments
 - Document significant decisions with `plansync_comment_create`

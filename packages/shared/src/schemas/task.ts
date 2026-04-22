@@ -1,39 +1,80 @@
 import { z } from 'zod';
 
-export const taskTypeSchema = z.enum(['code', 'research', 'design', 'bug', 'refactor']);
+export const TASK_TYPES = [
+  'code',
+  'research',
+  'design',
+  'bug',
+  'refactor',
+  'test',
+  'docs',
+] as const;
+export const TASK_PRIORITIES = [
+  { value: 'p0', label: 'P0 — Critical' },
+  { value: 'p1', label: 'P1 — Normal' },
+  { value: 'p2', label: 'P2 — Low' },
+] as const;
+
+export const taskTypeSchema = z.enum(TASK_TYPES);
 export const taskPrioritySchema = z.enum(['p0', 'p1', 'p2']);
 export const taskStatusSchema = z.enum(['todo', 'in_progress', 'blocked', 'done', 'cancelled']);
 export const assigneeTypeSchema = z.enum(['human', 'agent', 'unassigned']);
 
-export const createTaskSchema = z.object({
-  title: z.string().min(1).max(200),
-  description: z.string().max(5000).optional(),
-  type: taskTypeSchema,
-  priority: taskPrioritySchema.default('p1'),
-  assignee: z.string().optional(),
-  assigneeType: assigneeTypeSchema.default('unassigned'),
-  branchName: z.string().optional(),
-  agentContext: z.string().optional(),
-  expectedOutput: z.string().optional(),
-  agentConstraints: z.array(z.string()).default([]),
-  planDeliverableRefs: z.array(z.string()).default([]),
-});
+const dateRangeRefinement = {
+  check: (d: { startDate?: Date | null; dueDate?: Date | null }) =>
+    !d.startDate || !d.dueDate || d.startDate <= d.dueDate,
+  message: 'startDate must be on or before dueDate',
+  path: ['dueDate'] as const,
+};
 
-export const updateTaskSchema = z.object({
-  title: z.string().min(1).max(200).optional(),
-  description: z.string().max(5000).optional(),
-  type: taskTypeSchema.optional(),
-  priority: taskPrioritySchema.optional(),
-  status: taskStatusSchema.optional(),
-  assignee: z.string().nullable().optional(),
-  assigneeType: assigneeTypeSchema.optional(),
-  branchName: z.string().nullable().optional(),
-  prUrl: z.string().url().nullable().optional(),
-  agentContext: z.string().nullable().optional(),
-  expectedOutput: z.string().nullable().optional(),
-  agentConstraints: z.array(z.string()).optional(),
-  planDeliverableRefs: z.array(z.string()).optional(),
-});
+export const createTaskSchema = z
+  .object({
+    title: z.string().min(1).max(200),
+    description: z.string().max(5000).optional(),
+    type: taskTypeSchema,
+    priority: taskPrioritySchema.default('p1'),
+    assignee: z.string().optional(),
+    assigneeType: assigneeTypeSchema.default('unassigned'),
+    branchName: z.string().optional(),
+    agentContext: z.string().optional(),
+    expectedOutput: z.string().optional(),
+    agentConstraints: z.array(z.string()).default([]),
+    planDeliverableRefs: z.array(z.string()).default([]),
+    startDate: z.coerce.date().optional(),
+    dueDate: z.coerce.date().optional(),
+  })
+  .refine(dateRangeRefinement.check, {
+    message: dateRangeRefinement.message,
+    path: [...dateRangeRefinement.path],
+  });
+
+export const updateTaskSchema = z
+  .object({
+    title: z.string().min(1).max(200).optional(),
+    description: z.string().max(5000).optional(),
+    type: taskTypeSchema.optional(),
+    priority: taskPrioritySchema.optional(),
+    status: taskStatusSchema.optional(),
+    assignee: z.string().nullable().optional(),
+    assigneeType: assigneeTypeSchema.optional(),
+    branchName: z.string().nullable().optional(),
+    prUrl: z
+      .string()
+      .url()
+      .refine((u) => /^https?:\/\//i.test(u), 'PR URL must use http(s)')
+      .nullable()
+      .optional(),
+    agentContext: z.string().nullable().optional(),
+    expectedOutput: z.string().nullable().optional(),
+    agentConstraints: z.array(z.string()).optional(),
+    planDeliverableRefs: z.array(z.string()).optional(),
+    startDate: z.coerce.date().nullable().optional(),
+    dueDate: z.coerce.date().nullable().optional(),
+  })
+  .refine(dateRangeRefinement.check, {
+    message: dateRangeRefinement.message,
+    path: [...dateRangeRefinement.path],
+  });
 
 export const claimTaskSchema = z.object({
   assigneeType: assigneeTypeSchema.default('agent'),
@@ -59,6 +100,8 @@ export const taskSchema = z.object({
   expectedOutput: z.string().nullable(),
   agentConstraints: z.array(z.string()),
   planDeliverableRefs: z.array(z.string()),
+  startDate: z.coerce.date().nullable(),
+  dueDate: z.coerce.date().nullable(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 });

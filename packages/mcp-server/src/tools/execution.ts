@@ -120,7 +120,25 @@ export function registerExecutionTools(server: McpServer, api: ApiClient) {
             '  plansync_drift_resolve <driftId> action=no_impact  → change does not affect this task',
             '  plansync_drift_resolve <driftId> action=cancel     → release the task',
           ].join('\n');
-          return { content: [{ type: 'text', text: guidance }] };
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(
+                  {
+                    error: {
+                      code: 'DRIFT_UNRESOLVED',
+                      message: err.message,
+                      details: { drifts },
+                      guidance,
+                    },
+                  },
+                  null,
+                  2,
+                ),
+              },
+            ],
+          };
         }
         throw err;
       }

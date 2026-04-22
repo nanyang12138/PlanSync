@@ -114,7 +114,7 @@ describe('X: Cross-Project Features', () => {
     const res = await myWorkGet(makeReq('/api/my-work', { userName: 'x-nobody' }));
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual({ reviews: [], drifts: [], tasks: [] });
+    expect(body).toEqual({ reviews: [], drifts: [], tasks: [], unreadActivityCount: 0 });
   });
 
   // X2: pending review visible across projects

@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as http from 'http';
 import * as https from 'https';
+import * as os from 'os';
 import { execSync, spawn, spawnSync } from 'child_process';
 import crypto from 'crypto';
 import { cfg, selfDir } from './config.js';
@@ -14,6 +15,7 @@ export function buildMcpConfigArg(
   taskId: string,
   projectId: string,
   sessionId: string,
+  apiKeyOverride?: string,
 ): string {
   const projectRoot = path.resolve(selfDir, '../../../');
   const localNodeBin = path.join(projectRoot, '.local-runtime', 'node', 'bin', 'node');
@@ -26,7 +28,7 @@ export function buildMcpConfigArg(
         args: [mcpServerDist],
         env: {
           PLANSYNC_API_URL: process.env.PLANSYNC_API_URL ?? 'http://localhost:3001',
-          PLANSYNC_API_KEY: process.env.PLANSYNC_API_KEY ?? '',
+          PLANSYNC_API_KEY: apiKeyOverride ?? process.env.PLANSYNC_API_KEY ?? '',
           PLANSYNC_USER: process.env.PLANSYNC_USER ?? process.env.USER ?? '',
           PLANSYNC_SECRET: process.env.PLANSYNC_SECRET ?? '',
           PLANSYNC_PROJECT: projectId,
@@ -38,6 +40,82 @@ export function buildMcpConfigArg(
       },
     },
   });
+}
+
+// ─── Exec-scoped API key ──────────────────────────────────────────────────────
+//
+// Issued by the API just before spawning Genie; injected as PLANSYNC_API_KEY
+// in the child process env. Carries an execRunId claim that the API uses to
+// reject task/plan creation (POST /tasks, /plans, /propose, /activate) even
+// when Genie tries to bypass MCP via raw bash + curl.
+
+function postJson<T>(urlStr: string, body: unknown): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(urlStr);
+    const mod = parsed.protocol === 'https:' ? https : http;
+    const bodyStr = JSON.stringify(body);
+    const req = mod.request(
+      {
+        hostname: parsed.hostname,
+        port: parsed.port,
+        path: parsed.pathname + (parsed.search || ''),
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${cfg.apiKey}`,
+          'x-user-name': cfg.user,
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(bodyStr),
+        },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk: Buffer) => (data += chunk.toString()));
+        res.on('end', () => {
+          if (!res.statusCode || res.statusCode >= 400) {
+            reject(new Error(`HTTP ${res.statusCode}: ${data}`));
+            return;
+          }
+          try {
+            resolve(JSON.parse(data) as T);
+          } catch (err) {
+            reject(err);
+          }
+        });
+      },
+    );
+    req.setTimeout(10_000, () => req.destroy(new Error('request timeout')));
+    req.on('error', reject);
+    req.write(bodyStr);
+    req.end();
+  });
+}
+
+export async function issueExecScopedKey(
+  runId: string,
+  taskId: string,
+  projectId: string,
+): Promise<string | null> {
+  try {
+    const resp = await postJson<{ data?: { key?: string } }>(
+      `${cfg.apiUrl}/api/exec-sessions/issue-token`,
+      { runId, taskId, projectId },
+    );
+    return resp.data?.key ?? null;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.log(
+      `${c.yellow}⚠ Could not issue exec-scoped key (${msg}); spawned session will use full owner key.${c.reset}`,
+    );
+    return null;
+  }
+}
+
+export async function revokeExecScopedKey(runId: string): Promise<void> {
+  try {
+    await postJson(`${cfg.apiUrl}/api/exec-sessions/revoke-token`, { runId });
+  } catch {
+    /* best-effort — TTL on the key will eventually expire it anyway */
+  }
 }
 
 // ─── Engine detection ─────────────────────────────────────────────────────────
@@ -77,6 +155,7 @@ function setupCodexMcp(
   taskId?: string,
   projectId?: string,
   sessionId?: string,
+  apiKeyOverride?: string,
 ): void {
   const projectRoot = path.resolve(selfDir, '../../../');
   const localNodeBin = path.join(projectRoot, '.local-runtime', 'node', 'bin', 'node');
@@ -90,7 +169,7 @@ function setupCodexMcp(
     '--env',
     `PLANSYNC_API_URL=${process.env.PLANSYNC_API_URL ?? 'http://localhost:3001'}`,
     '--env',
-    `PLANSYNC_API_KEY=${process.env.PLANSYNC_API_KEY ?? ''}`,
+    `PLANSYNC_API_KEY=${apiKeyOverride ?? process.env.PLANSYNC_API_KEY ?? ''}`,
     '--env',
     `PLANSYNC_USER=${process.env.PLANSYNC_USER ?? process.env.USER ?? ''}`,
     '--env',
@@ -167,7 +246,9 @@ function patchProjectInSettings(projectId: string): string {
     if (settings.mcpServers?.plansync?.env) {
       original = settings.mcpServers.plansync.env.PLANSYNC_PROJECT || '';
       settings.mcpServers.plansync.env.PLANSYNC_PROJECT = projectId;
-      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+      const tmp = settingsPath + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(settings, null, 2));
+      fs.renameSync(tmp, settingsPath);
     }
   } catch {
     /* ignore */
@@ -181,7 +262,9 @@ function restoreProjectInSettings(original: string): void {
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
     if (settings.mcpServers?.plansync?.env) {
       settings.mcpServers.plansync.env.PLANSYNC_PROJECT = original;
-      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+      const tmp = settingsPath + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(settings, null, 2));
+      fs.renameSync(tmp, settingsPath);
     }
   } catch {
     /* ignore */
@@ -260,6 +343,7 @@ export function launchCode(): ReturnType<typeof spawn> {
 export async function launchExec(
   taskId: string,
   apiGet: <T>(path: string) => Promise<T>,
+  apiPost: <T>(path: string, body?: unknown) => Promise<T>,
 ): Promise<void> {
   let taskPack: unknown;
   try {
@@ -270,7 +354,10 @@ export async function launchExec(
     return;
   }
 
-  const pack = taskPack as { driftAlerts?: Array<{ status: string; reason: string }> };
+  const pack = taskPack as {
+    driftAlerts?: Array<{ status: string; reason: string }>;
+    task?: { assignee?: string | null; assigneeType?: string | null };
+  };
   const openDrifts = (pack.driftAlerts ?? []).filter((d) => d.status === 'open');
   if (openDrifts.length > 0) {
     console.log(
@@ -281,12 +368,48 @@ export async function launchExec(
     return;
   }
 
+  // /exec must be invoked on an agent-assigned task; the executor identity is the assignee.
+  const taskInfo = pack.task ?? {};
+  const assignee = taskInfo.assignee;
+  const assigneeType = taskInfo.assigneeType;
+  if (!assignee || assigneeType !== 'agent') {
+    console.log(
+      `\n${c.red}✗ /exec requires the task to be assigned to an agent member. Current assignee: ${assignee ?? 'none'} (${assigneeType ?? 'unassigned'}).${c.reset}\n`,
+    );
+    return;
+  }
+
+  // Pre-register the execution run as the assigned agent. The spawned engine
+  // receives runId via PLANSYNC_EXEC_RUN_ID env (see buildMcpConfigArg) and
+  // calls plansync_exec_context to retrieve it — no execution_start from the LLM.
+  let runId: string;
+  try {
+    const startResp = await apiPost<{ data?: { id?: string } }>(
+      `/api/projects/${cfg.project}/tasks/${taskId}/runs`,
+      { executorType: 'agent', executorName: assignee },
+    );
+    runId = startResp?.data?.id ?? '';
+    if (!runId) throw new Error('execution_start returned no runId');
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.log(`\n${c.red}✗ Failed to register execution: ${msg}${c.reset}\n`);
+    return;
+  }
+
   const execPrompt = [
-    'You are about to execute a PlanSync task. Read the task pack below carefully.',
+    `You are about to execute PlanSync task ${taskId}.`,
+    '',
+    'This session is launched in PlanSync exec mode. The execution run has ALREADY',
+    'been registered for you (runId in env PLANSYNC_EXEC_RUN_ID). Call',
+    'plansync_exec_context FIRST to retrieve runId and full task context.',
+    '',
+    'Do NOT call plansync_execution_start — only one running execution is allowed',
+    'per task and yours is already active.',
     '',
     'IMPORTANT: Do NOT write any code yet.',
     'First, present your implementation approach for user approval.',
-    'Only after approval: call plansync_execution_start, implement the solution using your available tools, then plansync_execution_complete.',
+    'After approval: implement using your tools, then call plansync_execution_complete',
+    'with the runId from plansync_exec_context.',
     '',
     'FORBIDDEN: Do NOT call plansync_plan_create, plansync_plan_propose, or plansync_plan_activate.',
     'A plan already exists. You are here to EXECUTE a task within the existing plan, not to create a new one.',
@@ -298,11 +421,21 @@ export async function launchExec(
   const projectRoot = path.resolve(selfDir, '../../../');
   const original = patchProjectInSettings(cfg.project);
   const engine = detectEngine();
+  const sessionId = crypto.randomUUID();
 
-  // Codex doesn't read .claude/settings.json — register MCP via codex mcp add
+  const scopedKey = await issueExecScopedKey(runId, taskId, cfg.project);
+  const mcpConfigArg = buildMcpConfigArg(
+    runId,
+    taskId,
+    cfg.project,
+    sessionId,
+    scopedKey ?? undefined,
+  );
+
+  // Codex doesn't read .claude/settings.json — register MCP via codex mcp add (with exec env vars)
   // Codex reads AGENTS.md, not CLAUDE.md — ensure instructions exist
   if (engine === 'codex') {
-    setupCodexMcp();
+    setupCodexMcp(runId, taskId, cfg.project, sessionId, scopedKey ?? undefined);
     ensureAgentsMd(projectRoot);
   }
 
@@ -311,26 +444,33 @@ export async function launchExec(
     if (engine === 'codex') cleanupCodexMcp();
   };
 
-  const spawnArgs = engine === 'codex' ? ['--', '--full-auto', execPrompt] : ['-p', execPrompt];
+  const spawnArgs =
+    engine === 'codex'
+      ? ['--', '--full-auto', execPrompt]
+      : ['-p', execPrompt, '--session-id', sessionId, '--mcp-config', mcpConfigArg];
 
-  console.log(`\n${c.blue}→ Entering PlanSync Coding Mode (task: ${taskId})${c.reset}\n`);
+  console.log(
+    `\n${c.blue}→ Entering PlanSync Coding Mode (task: ${taskId}, run: ${runId}, executor: ${assignee})${c.reset}\n`,
+  );
   rawOff();
   const child = spawn(cfg.genieOrClaude, spawnArgs, {
     stdio: 'inherit',
-    env: { ...process.env },
+    env: scopedKey ? { ...process.env, PLANSYNC_API_KEY: scopedKey } : { ...process.env },
     cwd: projectRoot,
   });
 
   await new Promise<void>((resolve) => {
-    child.on('close', () => {
+    child.on('close', async () => {
       restore();
       rawOn();
+      await revokeExecScopedKey(runId);
       console.log(`\n${c.blue}← Returned to PlanSync Terminal${c.reset}\n`);
       resolve();
     });
-    child.on('error', (err) => {
+    child.on('error', async (err) => {
       restore();
       rawOn();
+      await revokeExecScopedKey(runId);
       console.log(`\n${c.red}✗ ${err.message}${c.reset}\n`);
       resolve();
     });
@@ -343,9 +483,16 @@ function buildExecPrompt(taskPack: unknown): string {
   return [
     'You are about to execute a PlanSync task. Read the task pack below carefully.',
     '',
+    'This session is launched in PlanSync exec mode. The execution run has ALREADY',
+    'been registered (runId in env PLANSYNC_EXEC_RUN_ID). Call plansync_exec_context',
+    'FIRST to retrieve runId and task context.',
+    '',
+    'Do NOT call plansync_execution_start — only one running execution is allowed',
+    'per task and yours is already active.',
+    '',
     'IMPORTANT: Do NOT write any code yet.',
     'First, present your implementation approach for user approval.',
-    'Only after approval: call plansync_execution_start, implement the solution using your available tools, then plansync_execution_complete.',
+    'After approval: implement using your tools, then call plansync_execution_complete.',
     '',
     'FORBIDDEN: Do NOT call plansync_plan_create, plansync_plan_propose, or plansync_plan_activate.',
     'A plan already exists. You are here to EXECUTE a task within the existing plan, not to create a new one.',
@@ -375,8 +522,18 @@ async function launchExecDirect(
 
   const engine = detectEngine();
   const sessionId = crypto.randomUUID();
-  const mcpConfigArg = buildMcpConfigArg(runId, taskId, projectId, sessionId);
+  const scopedKey = await issueExecScopedKey(runId, taskId, projectId);
+  const mcpConfigArg = buildMcpConfigArg(
+    runId,
+    taskId,
+    projectId,
+    sessionId,
+    scopedKey ?? undefined,
+  );
   const cwd = process.cwd();
+  const childEnv: NodeJS.ProcessEnv = scopedKey
+    ? { ...process.env, PLANSYNC_API_KEY: scopedKey }
+    : { ...process.env };
 
   console.log(`\n${c.blue}→ Launching Genie for task ${taskId} (Run: ${runId})${c.reset}`);
   console.log(
@@ -386,7 +543,7 @@ async function launchExecDirect(
 
   // Setup codex MCP and instructions if needed
   if (engine === 'codex') {
-    setupCodexMcp(runId, taskId, projectId, sessionId);
+    setupCodexMcp(runId, taskId, projectId, sessionId, scopedKey ?? undefined);
     ensureAgentsMd(cwd);
   }
 
@@ -431,7 +588,7 @@ async function launchExecDirect(
     if (!options.autonomous) rawOff();
     const child = spawn(cfg.genieOrClaude, spawnArgs, {
       stdio: [options.autonomous ? 'ignore' : 'inherit', 'pipe', 'pipe'],
-      env: { ...process.env },
+      env: childEnv,
       cwd,
     });
     let stdout = '';
@@ -502,7 +659,7 @@ async function launchExecDirect(
     rawOff();
     const phase2 = spawnSync(cfg.genieOrClaude, phase2Args, {
       stdio: 'inherit',
-      env: { ...process.env },
+      env: childEnv,
       cwd,
     });
     rawOn();
@@ -513,6 +670,8 @@ async function launchExecDirect(
   if (engine === 'codex') {
     cleanupCodexMcp();
   }
+
+  await revokeExecScopedKey(runId);
 
   if (isEarlyExit) {
     const reason =
@@ -831,6 +990,24 @@ export async function launchAutoExec(
   _taskPack: unknown,
   options: { autonomous?: boolean } = {},
 ): Promise<void> {
+  // Auto-repair ~/.claude.json if corrupted (e.g. from a previous concurrent write).
+  // claude-code rebuilds its own fields on startup, so resetting to {} is safe.
+  const claudeConfigPath = path.join(os.homedir(), '.claude.json');
+  try {
+    JSON.parse(fs.readFileSync(claudeConfigPath, 'utf8'));
+  } catch {
+    const bak = claudeConfigPath + '.bak';
+    try {
+      fs.copyFileSync(claudeConfigPath, bak);
+    } catch {
+      /* file may not exist */
+    }
+    fs.writeFileSync(claudeConfigPath, '{}');
+    console.log(
+      `${c.yellow}⚠ ~/.claude.json was corrupted and has been reset (backup: ${bak})${c.reset}`,
+    );
+  }
+
   const projectRoot = path.resolve(selfDir, '../../../');
 
   // Non-owner: cannot create worktrees in admin's directory, fall back to launchExec
@@ -849,7 +1026,17 @@ export async function launchAutoExec(
   }
 
   const sessionId = crypto.randomUUID();
-  const mcpConfigArg = buildMcpConfigArg(runId, taskId, projectId, sessionId);
+  const scopedKey = await issueExecScopedKey(runId, taskId, projectId);
+  const mcpConfigArg = buildMcpConfigArg(
+    runId,
+    taskId,
+    projectId,
+    sessionId,
+    scopedKey ?? undefined,
+  );
+  const childEnv: NodeJS.ProcessEnv = scopedKey
+    ? { ...process.env, PLANSYNC_API_KEY: scopedKey }
+    : { ...process.env };
 
   const metaPath = path.join(worktreeDir, '.exec-meta.json');
   fs.writeFileSync(
@@ -912,7 +1099,7 @@ export async function launchAutoExec(
 
   // Setup codex MCP if needed (codex uses `mcp add`, not `--mcp-config`)
   if (engine === 'codex') {
-    setupCodexMcp(runId, taskId, projectId, sessionId);
+    setupCodexMcp(runId, taskId, projectId, sessionId, scopedKey ?? undefined);
   }
 
   // ─── Phase 1: generate plan (behind spinner) ──────────────────────────────
@@ -949,7 +1136,7 @@ export async function launchAutoExec(
 
     const child = spawn(cfg.genieOrClaude, spawnArgs, {
       stdio: [options.autonomous ? 'ignore' : 'inherit', 'pipe', 'pipe'],
-      env: { ...process.env },
+      env: childEnv,
       cwd: worktreeDir,
     });
 
@@ -1053,7 +1240,7 @@ export async function launchAutoExec(
       rawOff();
       const phase2 = spawnSync(cfg.genieOrClaude, phase2Args, {
         stdio: 'inherit',
-        env: { ...process.env },
+        env: childEnv,
         cwd: worktreeDir,
       });
       rawOn();
@@ -1068,6 +1255,8 @@ export async function launchAutoExec(
   if (engine === 'codex') {
     cleanupCodexMcp();
   }
+
+  await revokeExecScopedKey(runId);
 
   const branchName = preserveAndRemoveWorktree(worktreeDir, taskId, runId, projectId, {
     autonomous: options.autonomous,

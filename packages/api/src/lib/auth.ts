@@ -6,6 +6,7 @@ import { prisma } from './prisma';
 export interface AuthContext {
   userName: string;
   projectRole?: 'owner' | 'developer';
+  execRunId?: string;
 }
 
 // Password verification (same scrypt scheme as login/route.ts)
@@ -34,7 +35,7 @@ export function invalidatePasswordCache(userName: string): void {
 
 async function verifyApiKey(
   rawKey: string,
-): Promise<{ userName: string; projectId: string | null } | null> {
+): Promise<{ userName: string; projectId: string | null; execRunId: string | null } | null> {
   const prefix = rawKey.slice(0, 15);
   const keys = await prisma.apiKey.findMany({ where: { keyPrefix: prefix } });
 
@@ -43,14 +44,23 @@ async function verifyApiKey(
     const salt = Buffer.from(saltHex, 'hex');
     const isValid = await new Promise<boolean>((resolve) => {
       crypto.scrypt(rawKey, salt, 64, (err, derivedKey) => {
-        if (err) resolve(false);
-        else resolve(derivedKey.toString('hex') === hashHex);
+        if (err) {
+          resolve(false);
+          return;
+        }
+        const expected = Buffer.from(hashHex, 'hex');
+        resolve(
+          derivedKey.length === expected.length && crypto.timingSafeEqual(derivedKey, expected),
+        );
       });
     });
 
     if (isValid) {
+      if (key.expiresAt && key.expiresAt.getTime() < Date.now()) {
+        return null;
+      }
       await prisma.apiKey.update({ where: { id: key.id }, data: { lastUsedAt: new Date() } });
-      return { userName: key.createdBy, projectId: key.projectId };
+      return { userName: key.createdBy, projectId: key.projectId, execRunId: key.execRunId };
     }
   }
   return null;
@@ -63,7 +73,8 @@ export async function authenticate(req: NextRequest): Promise<AuthContext> {
 
   const authHeader = req.headers.get('authorization');
   const tokenFromHeader = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  const token = tokenFromHeader ?? qpToken;
+  const cookieKey = req.cookies.get('plansync-apikey')?.value ?? null;
+  const token = tokenFromHeader ?? qpToken ?? cookieKey;
 
   // Master delegation: PLANSYNC_SECRET lets the server owner act as any registered user.
   // Used for multi-user simulation in dev/testing. Requires a non-default secret value.
@@ -109,7 +120,10 @@ export async function authenticate(req: NextRequest): Promise<AuthContext> {
     if (!apiAuth) {
       throw new AppError(ErrorCode.UNAUTHORIZED, 'Invalid API key');
     }
-    return { userName: apiAuth.userName };
+    return {
+      userName: apiAuth.userName,
+      ...(apiAuth.execRunId ? { execRunId: apiAuth.execRunId } : {}),
+    };
   }
 
   if (authDisabled) {
@@ -141,4 +155,20 @@ export async function requireProjectRole(
   }
 
   return { ...auth, projectRole: member.role as 'owner' | 'developer' };
+}
+
+/**
+ * Reject when caller is using an exec-scoped API key (issued for a specific
+ * execution run). Used to block task / plan creation from Genie sessions
+ * spawned by /exec or /worker, even when those sessions try to bypass MCP
+ * via raw bash + curl.
+ */
+export function requireNotExecScoped(auth: AuthContext): void {
+  if (auth.execRunId) {
+    throw new AppError(
+      ErrorCode.FORBIDDEN,
+      'Exec-scoped session cannot create tasks or plan versions. ' +
+        'Use plansync_plan_suggest to propose a plan change instead.',
+    );
+  }
 }

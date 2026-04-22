@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { authenticate, requireProjectRole } from '@/lib/auth';
+import { authenticate, requireProjectRole, requireNotExecScoped } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { AppError, ErrorCode } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
@@ -13,6 +13,7 @@ type Params = { params: { projectId: string; planId: string } };
 export async function POST(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
+    requireNotExecScoped(auth);
     await requireProjectRole(auth, params.projectId, 'owner');
 
     type ReviewerSpec = string | { name: string; focusNotes?: string; type?: 'human' | 'agent' };
@@ -103,19 +104,14 @@ export async function POST(req: NextRequest, { params }: Params) {
         const body = [
           `${auth.userName} submitted plan "${plan.title}" (v${plan.version}) for your review.`,
           '',
-          `Please log in to PlanSync to complete your review.`,
-          `Project ID: ${params.projectId}`,
-          `Plan ID: ${plan.id}`,
+          `Please log in to PlanSync to approve or reject this plan.`,
         ].join('\n');
-        try {
-          sendMail(
-            humanReviewers.map(userEmail),
-            `[PlanSync] Review requested: "${plan.title}"`,
-            body,
-          );
-        } catch (err) {
-          logger.warn({ err, planId: plan.id }, 'Failed to send review notification email');
-        }
+        const ok = sendMail(
+          humanReviewers.map(userEmail),
+          `[PlanSync] Review requested: "${plan.title}"`,
+          body,
+        );
+        if (!ok) logger.warn({ planId: plan.id }, 'Failed to send review notification email');
       }
     }
 

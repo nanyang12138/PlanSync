@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { authenticate, requireProjectRole } from '@/lib/auth';
+import { authenticate, requireProjectRole, requireNotExecScoped } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { AppError, ErrorCode } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
@@ -14,6 +14,7 @@ type Params = { params: { projectId: string; planId: string } };
 export async function POST(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
+    requireNotExecScoped(auth);
     await requireProjectRole(auth, params.projectId, 'owner');
 
     const plan = await prisma.plan.findUnique({

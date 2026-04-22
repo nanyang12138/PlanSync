@@ -70,7 +70,13 @@ install_local_node_runtime() {
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/plansync-node-XXXXXX")"
   archive_path="$tmp_dir/$LOCAL_NODE_ARCHIVE"
 
-  rm -rf "$LOCAL_NODE_DIR"
+  # NFS-safe removal: retry up to 3 times for silly-rename lingering files
+  local retries=3
+  while [ "$retries" -gt 0 ] && [ -e "$LOCAL_NODE_DIR" ]; do
+    rm -rf "$LOCAL_NODE_DIR" 2>/dev/null || true
+    [ -e "$LOCAL_NODE_DIR" ] && sleep 1
+    retries=$((retries - 1))
+  done
   mkdir -p "$LOCAL_RUNTIME_DIR"
 
   log_step "Installing local Node.js runtime (v${PLANSYNC_NODE_VERSION})"

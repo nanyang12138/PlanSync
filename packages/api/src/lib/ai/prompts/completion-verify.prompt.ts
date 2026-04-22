@@ -1,3 +1,13 @@
+// Task types whose completion evidence must include filesChanged when claims describe
+// concrete file work. Decoupling this from the prompt text makes it cheap to add new
+// task types (just update this set + TASK_TYPES in shared) without rewriting the prompt.
+// `ops` is reserved for future use; not yet in the TASK_TYPES enum.
+const FILE_PRODUCING_TASK_TYPES = new Set(['code', 'bug', 'refactor', 'test', 'docs', 'ops']);
+
+export function isFileProducingType(t: string): boolean {
+  return FILE_PRODUCING_TASK_TYPES.has(t);
+}
+
 export const COMPLETION_VERIFY_SYSTEM = `You are a task completion verifier for a project management system.
 
 Your job: evaluate whether an agent's submitted evidence demonstrates genuine, specific completion of the assigned task.
@@ -23,8 +33,8 @@ Score on a 0-100 scale across three dimensions:
 
 ### Coherence (up to 35 points)
 - Do claims, filesChanged, and outputSummary tell a consistent story?
-- For code/bug/refactor tasks: if filesChanged is empty but claims describe code changes (e.g. "implemented", "created", "modified", "added file") — this is suspicious, max 10 points for coherence
-- For research/design tasks: filesChanged being empty is expected and normal — do NOT penalize. Evaluate coherence between claims and outputSummary instead.
+- For "file-producing" tasks (code, bug, refactor, test, docs, ops): if filesChanged is empty but claims describe file work (e.g. "implemented", "created", "wrote test", "updated README", "added Dockerfile") — this is suspicious, max 10 points for coherence
+- For "file-optional" tasks (research, design): filesChanged being empty is expected and normal — do NOT penalize. Evaluate coherence between claims and outputSummary instead.
 - Claims mention specific files not listed in filesChanged — deduct points
 - Strong signal: filesChanged aligns with claimed work areas
 

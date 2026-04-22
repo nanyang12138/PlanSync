@@ -4,6 +4,9 @@ import { cookies } from 'next/headers';
 import { ArrowLeft, ClipboardList, Home } from 'lucide-react';
 import { prisma } from '@/lib/prisma';
 import { TaskDetail } from '@/components/task/task-detail';
+import { TaskEditor } from '@/components/task/task-editor';
+import { TaskDatesEditor } from '@/components/task/task-dates-editor';
+import { TaskCompleteHuman } from '@/components/task/task-complete-human';
 import { ExecutionHistory } from '@/components/task/execution-history';
 import { TaskActions } from '@/components/task/task-actions';
 import { DriftAlertCard } from '@/components/dashboard/drift-alert-card';
@@ -16,7 +19,10 @@ export default async function TaskDetailPage({
 }: {
   params: { id: string; taskId: string };
 }) {
-  const project = await prisma.project.findUnique({ where: { id: params.id } });
+  const project = await prisma.project.findUnique({
+    where: { id: params.id },
+    include: { members: { select: { name: true } } },
+  });
   if (!project) notFound();
 
   const task = await prisma.task.findUnique({
@@ -37,6 +43,7 @@ export default async function TaskDetailPage({
   const canRebind = !!activePlan && task.boundPlanVersion !== activePlan.version;
   const canClaim = task.status === 'todo' && !task.assignee;
   const canDecline = task.status === 'todo' && task.assignee === currentUser;
+  const canCompleteHuman = task.status === 'in_progress' && task.assigneeType !== 'agent';
 
   // Derive execution state for new components
   const runningRun = task.executionRuns.find((r) => r.status === 'running') ?? null;
@@ -64,7 +71,11 @@ export default async function TaskDetailPage({
                 <ClipboardList className="h-4 w-4 text-blue-500" />
                 <span className="text-sm font-semibold text-slate-700">Task Detail</span>
               </div>
-              <span className="text-xs text-slate-400 font-mono">{task.id.slice(-8)}</span>
+              <TaskEditor
+                task={task}
+                projectId={params.id}
+                memberNames={project.members.map((m) => m.name)}
+              />
             </div>
 
             <div className="p-6 space-y-6">
@@ -83,6 +94,13 @@ export default async function TaskDetailPage({
                 }
               />
 
+              <TaskDatesEditor
+                projectId={params.id}
+                taskId={params.taskId}
+                startDate={task.startDate}
+                dueDate={task.dueDate}
+              />
+
               <TaskActions
                 projectId={params.id}
                 taskId={params.taskId}
@@ -90,6 +108,10 @@ export default async function TaskDetailPage({
                 canClaim={canClaim}
                 canDecline={canDecline}
               />
+
+              {canCompleteHuman && (
+                <TaskCompleteHuman projectId={params.id} taskId={params.taskId} />
+              )}
 
               {/* Latest execution summary */}
               <ExecutionSummary run={latestCompletedRun} />

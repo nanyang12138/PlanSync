@@ -117,13 +117,13 @@ export async function persistDriftAlerts(
         lines,
         '',
         `Please log in to PlanSync to review and resolve these drift alerts.`,
-        `Project ID: ${projectId}`,
       ].join('\n');
-      try {
-        sendMail([userEmail(assignee)], `[PlanSync] Drift alert: your tasks need attention`, body);
-      } catch (err) {
-        logger.warn({ err, assignee, projectId }, 'Failed to send drift notification email');
-      }
+      const ok = sendMail(
+        [userEmail(assignee)],
+        `[PlanSync] Drift alert: your tasks need attention`,
+        body,
+      );
+      if (!ok) logger.warn({ assignee, projectId }, 'Failed to send drift notification email');
     }
   }
 

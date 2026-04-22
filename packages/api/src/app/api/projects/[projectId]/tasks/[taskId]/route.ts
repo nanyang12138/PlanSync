@@ -61,15 +61,16 @@ export async function PATCH(req: NextRequest, { params }: Params) {
         );
       }
 
-      // Layer 1: direct status=done requires a completed ExecutionRun
-      if (body.status === 'done') {
+      // Agent tasks require a completed ExecutionRun to be marked done
+      // Human / unassigned tasks can be marked done directly
+      if (body.status === 'done' && task.assigneeType === 'agent') {
         const completedRun = await prisma.executionRun.findFirst({
           where: { taskId: params.taskId, status: 'completed' },
         });
         if (!completedRun) {
           throw new AppError(
             ErrorCode.STATE_CONFLICT,
-            'Task cannot be marked done without a completed execution run. Use plansync_execution_complete.',
+            'Agent task cannot be marked done without a completed execution run.',
           );
         }
       }

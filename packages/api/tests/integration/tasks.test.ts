@@ -69,7 +69,7 @@ describe('F: Task Management', () => {
   });
 
   it('F3: type enum valid → 201, invalid → 400', async () => {
-    for (const type of ['code', 'research', 'design', 'bug', 'refactor']) {
+    for (const type of ['code', 'research', 'design', 'bug', 'refactor', 'test', 'docs']) {
       const res = await tasksPost(
         makeReq(`/api/projects/${projectId}/tasks`, {
           method: 'POST',

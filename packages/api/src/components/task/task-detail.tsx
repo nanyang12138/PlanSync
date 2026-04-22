@@ -96,6 +96,36 @@ export function TaskDetail({ task, activePlan }: TaskDetailProps) {
         </div>
       </div>
 
+      {/* Timeline dates */}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4">
+          <p className="section-label mb-1.5">Start Date</p>
+          <div className="flex items-center gap-1.5">
+            <Calendar className="h-3.5 w-3.5 text-slate-400" />
+            <p className="text-sm text-slate-700">
+              {task.startDate ? (
+                task.startDate.toLocaleDateString(undefined, { dateStyle: 'medium' })
+              ) : (
+                <span className="text-slate-400 italic">Not set</span>
+              )}
+            </p>
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4">
+          <p className="section-label mb-1.5">Due Date</p>
+          <div className="flex items-center gap-1.5">
+            <Calendar className="h-3.5 w-3.5 text-slate-400" />
+            <p className="text-sm text-slate-700">
+              {task.dueDate ? (
+                task.dueDate.toLocaleDateString(undefined, { dateStyle: 'medium' })
+              ) : (
+                <span className="text-slate-400 italic">Not set</span>
+              )}
+            </p>
+          </div>
+        </div>
+      </div>
+
       {/* Branch & PR info */}
       {(task.branchName || task.prUrl) && (
         <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4 space-y-3">

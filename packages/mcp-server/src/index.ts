@@ -344,6 +344,10 @@ async function main() {
   process.on('SIGTERM', cleanup);
   process.on('SIGINT', cleanup);
 
+  process.stdout.on('error', (err) => {
+    if ((err as NodeJS.ErrnoException).code === 'EPIPE') process.exit(0);
+  });
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

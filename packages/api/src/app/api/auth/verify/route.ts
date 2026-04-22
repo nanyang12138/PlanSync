@@ -2,6 +2,16 @@ import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { prisma } from '@/lib/prisma';
 
+async function hashPassword(password: string): Promise<string> {
+  const salt = crypto.randomBytes(16);
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(password, salt, 64, (err, dk) => {
+      if (err) reject(err);
+      else resolve(`${salt.toString('hex')}:${dk.toString('hex')}`);
+    });
+  });
+}
+
 async function verifyPassword(password: string, stored: string): Promise<boolean> {
   const [saltHex, hashHex] = stored.split(':');
   if (!saltHex || !hashHex) return false;
@@ -15,8 +25,8 @@ async function verifyPassword(password: string, stored: string): Promise<boolean
   });
 }
 
-// Read-only credential check — does NOT create or delete API keys.
-// Used by CLI tools (bin/plansync) to verify credentials without invalidating browser sessions.
+// Credential check + account creation for new users.
+// Does NOT create or delete web-session API keys — safe for CLI use without invalidating browser sessions.
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -30,7 +40,10 @@ export async function POST(req: NextRequest) {
     const account = await prisma.userAccount.findUnique({ where: { userName: name } });
 
     if (!account) {
-      return NextResponse.json({ success: false, error: 'User not found' }, { status: 401 });
+      // First login via CLI: create account without touching web-session keys
+      const passwordHash = await hashPassword(password);
+      await prisma.userAccount.create({ data: { userName: name, passwordHash } });
+      return NextResponse.json({ success: true, userName: name, isNewUser: true });
     }
 
     const ok = await verifyPassword(password, account.passwordHash);

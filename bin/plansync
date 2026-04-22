@@ -165,11 +165,12 @@ _ensure_credentials() {
     fi
     printf 'Passwords do not match. Please try again.\n' >&2
   done
-  # Verify credentials via server. Use node to safely handle special chars (e.g. !).
+  # Verify credentials via /api/auth/verify — safe for CLI use, does NOT invalidate browser sessions.
+  # This endpoint also creates a new account if the user does not exist yet.
   _ec_ok=$(
     _EC_URL="$PLANSYNC_API_URL" _EC_U="$_ec_user" _EC_P="$_ec_pass" \
     "$LOCAL_NODE_BIN" -e "
-      const h=require('http'),u=new URL('/api/auth/login',process.env._EC_URL);
+      const h=require('http'),u=new URL('/api/auth/verify',process.env._EC_URL);
       const b=JSON.stringify({userName:process.env._EC_U,password:process.env._EC_P});
       const req=h.request({hostname:u.hostname,port:u.port||80,path:u.pathname,
         method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(b)}},r=>{
@@ -177,7 +178,7 @@ _ensure_credentials() {
         r.on('end',()=>{
           try{
             const j=JSON.parse(d);
-            if(j.success){process.stdout.write('ok');}
+            if(j.success){process.stdout.write(j.isNewUser?'new':'ok');}
             else{process.stdout.write('ERR:'+(j.error||'unknown error'));}
           }catch{process.stdout.write('ERR:invalid response');}
         });
@@ -186,7 +187,7 @@ _ensure_credentials() {
       req.write(b);req.end();
     " 2>/dev/null
   )
-  if [ "$_ec_ok" = "ok" ]; then
+  if [ "$_ec_ok" = "ok" ] || [ "$_ec_ok" = "new" ]; then
     mkdir -p "$HOME/.config/plansync"
     # Write via node — avoids shell ! expansion issues with special chars in passwords
     _EC_F="$HOME/.config/plansync/env" _EC_P="$_ec_pass" _EC_U="$_ec_user" \
@@ -198,53 +199,15 @@ _ensure_credentials() {
     export PLANSYNC_API_KEY="$_ec_pass"
     export PLANSYNC_USER="$_ec_user"
     printf 'Credentials saved to %s\n' "$HOME/.config/plansync/env" >&2
-    printf '\nWelcome to PlanSync, %s! Your account is ready.\n\n' "$_ec_user" >&2
+    if [ "$_ec_ok" = "new" ]; then
+      printf '\nWelcome to PlanSync, %s! Your account is ready.\n\n' "$_ec_user" >&2
+    else
+      printf '\nWelcome back, %s!\n\n' "$_ec_user" >&2
+    fi
   else
     _ec_err="${_ec_ok#ERR:}"
-    if [[ "$_ec_err" == *"Invalid username or password"* ]]; then
-      printf 'Account already exists. Please enter your existing password: ' >&2
-      read -rs _ec_pass
-      printf '\n' >&2
-      _ec_ok2=$(
-        _EC_URL="$PLANSYNC_API_URL" _EC_U="$_ec_user" _EC_P="$_ec_pass" \
-        "$LOCAL_NODE_BIN" -e "
-          const h=require('http'),u=new URL('/api/auth/verify',process.env._EC_URL);
-          const b=JSON.stringify({userName:process.env._EC_U,password:process.env._EC_P});
-          const req=h.request({hostname:u.hostname,port:u.port||80,path:u.pathname,
-            method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(b)}},r=>{
-            let d='';r.on('data',c=>d+=c);
-            r.on('end',()=>{
-              try{
-                const j=JSON.parse(d);
-                if(j.success){process.stdout.write('ok');}
-                else{process.stdout.write('ERR:'+(j.error||'unknown error'));}
-              }catch{process.stdout.write('ERR:invalid response');}
-            });
-          });
-          req.on('error',e=>process.stdout.write('ERR:'+e.message));
-          req.write(b);req.end();
-        " 2>/dev/null
-      )
-      if [ "$_ec_ok2" = "ok" ]; then
-        mkdir -p "$HOME/.config/plansync"
-        _EC_F="$HOME/.config/plansync/env" _EC_P="$_ec_pass" _EC_U="$_ec_user" \
-        "$LOCAL_NODE_BIN" -e "
-          require('fs').writeFileSync(process.env._EC_F,
-            'PLANSYNC_API_KEY='+process.env._EC_P+'\nPLANSYNC_USER='+process.env._EC_U+'\n',
-            {mode:0o600});
-        "
-        export PLANSYNC_API_KEY="$_ec_pass"
-        export PLANSYNC_USER="$_ec_user"
-        printf 'Credentials saved to %s\n' "$HOME/.config/plansync/env" >&2
-        printf '\nWelcome to PlanSync, %s!\n\n' "$_ec_user" >&2
-      else
-        printf 'Login failed: %s\n' "${_ec_ok2#ERR:}" >&2
-        exit 1
-      fi
-    else
-      printf 'Login failed: %s\n' "${_ec_err:-no response from server}" >&2
-      exit 1
-    fi
+    printf 'Login failed: %s\n' "${_ec_err:-no response from server}" >&2
+    exit 1
   fi
 }
 

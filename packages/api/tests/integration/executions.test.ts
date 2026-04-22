@@ -95,18 +95,7 @@ describe('G: Execution Management', () => {
   });
 
   it('G8: heartbeat on completed run → 400 STATE_CONFLICT', async () => {
-    // Create another run and complete it first
-    const res2 = await runsPost(
-      makeReq(`/api/projects/${projectId}/tasks/${taskId}/runs`, {
-        method: 'POST',
-        userName: owner,
-        body: { executorType: 'human', executorName: owner },
-      }),
-      { params: { projectId, taskId } },
-    );
-    const run2Id = (await res2.json()).data.id;
-
-    // Complete the original run first so task can have a new run
+    // Complete the original run first — mutex (one running per task) blocks parallel creates.
     await runActionPost(
       makeReq(`/api/projects/${projectId}/tasks/${taskId}/runs/${runId}?action=complete`, {
         method: 'POST',
@@ -119,6 +108,19 @@ describe('G: Execution Management', () => {
       }),
       { params: { projectId, taskId, runId } },
     );
+
+    // Reset task back to in_progress so a new run can be started for the next assertions
+    await testPrisma.task.update({ where: { id: taskId }, data: { status: 'in_progress' } });
+
+    const res2 = await runsPost(
+      makeReq(`/api/projects/${projectId}/tasks/${taskId}/runs`, {
+        method: 'POST',
+        userName: owner,
+        body: { executorType: 'human', executorName: owner },
+      }),
+      { params: { projectId, taskId } },
+    );
+    const run2Id = (await res2.json()).data.id;
 
     // Try to heartbeat the completed run
     const hbRes = await runActionPost(
@@ -300,7 +302,13 @@ describe('G: Execution Management', () => {
   });
 
   it('G11: drift → 409 DRIFT_UNRESOLVED → resolve → 201 (核心链路)', async () => {
-    // Reset task to a state where it can start execution
+    // Reset task to a state where it can start execution. Also clear any leftover
+    // running runs from prior tests — the one-running-per-task mutex would otherwise
+    // block this test's runsPost calls.
+    await testPrisma.executionRun.updateMany({
+      where: { taskId, status: 'running' },
+      data: { status: 'failed', endedAt: new Date() },
+    });
     await testPrisma.task.update({ where: { id: taskId }, data: { status: 'in_progress' } });
 
     // Inject an open drift alert directly to simulate plan version change

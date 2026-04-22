@@ -54,11 +54,20 @@ export async function POST(req: NextRequest, { params }: Params) {
       throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
     }
 
-    // Authorization: humans cannot impersonate other users; agents must be registered members
+    // Authorization: humans cannot impersonate other users; agents must match task.assignee.
     if (body.executorType === 'human' && body.executorName !== auth.userName) {
       throw new AppError(ErrorCode.FORBIDDEN, 'Cannot start execution as another user');
     }
     if (body.executorType === 'agent') {
+      // Identity check: prevent one agent from silently taking over another agent's task.
+      // Cross-type claim (agent picking up a human-assigned or unassigned task) is allowed —
+      // it falls through to the todo→in_progress claim path which sets assignee atomically.
+      if (task.assigneeType === 'agent' && task.assignee && task.assignee !== body.executorName) {
+        throw new AppError(
+          ErrorCode.FORBIDDEN,
+          `Task is assigned to agent "${task.assignee}" — cannot execute as "${body.executorName}". Use task_claim/task_decline to change assignee.`,
+        );
+      }
       // Auto-register agent as a project member on first execution — no manual setup required
       await prisma.projectMember.upsert({
         where: { projectId_name: { projectId: params.projectId, name: body.executorName } },
@@ -105,28 +114,52 @@ export async function POST(req: NextRequest, { params }: Params) {
         );
       }
     } else if (task.status === 'in_progress') {
-      // Task already running — allow additional runs (e.g. retry after stale run).
-      // Not a concurrent claim risk: /worker only polls status=todo tasks.
-      await prisma.task.update({
-        where: { id: params.taskId },
-        data: { assignee: body.executorName, assigneeType: body.executorType },
+      // Mutex: only one running run per task. Stale/failed/completed runs allow retry.
+      // task.assignee is preserved — set on the original todo→in_progress claim, not rewritten here.
+      const activeRun = await prisma.executionRun.findFirst({
+        where: { taskId: params.taskId, status: 'running' },
+        select: { id: true, executorName: true, lastHeartbeatAt: true },
       });
+      if (activeRun) {
+        throw new AppError(
+          ErrorCode.STATE_CONFLICT,
+          `Task already has an active execution by "${activeRun.executorName}" (runId: ${activeRun.id}). Wait for it to complete, fail, or go stale (5min heartbeat timeout).`,
+        );
+      }
     }
 
-    const run = await prisma.executionRun.create({
-      data: {
-        taskId: params.taskId,
-        executorType: body.executorType,
-        executorName: body.executorName,
-        boundPlanVersion: task.boundPlanVersion,
-        status: 'running',
-        taskPackSnapshot: taskPack as object,
-        lastHeartbeatAt: new Date(),
-        filesChanged: [],
-        blockers: [],
-        driftSignals: [],
-      },
-    });
+    let run;
+    try {
+      run = await prisma.executionRun.create({
+        data: {
+          taskId: params.taskId,
+          executorType: body.executorType,
+          executorName: body.executorName,
+          boundPlanVersion: task.boundPlanVersion,
+          status: 'running',
+          taskPackSnapshot: taskPack as object,
+          lastHeartbeatAt: new Date(),
+          filesChanged: [],
+          blockers: [],
+          driftSignals: [],
+        },
+      });
+    } catch (err) {
+      // P2002 = unique constraint violation from the partial index
+      // (execution_runs_one_running_per_task). Race with another concurrent start.
+      if (
+        err &&
+        typeof err === 'object' &&
+        'code' in err &&
+        (err as { code: string }).code === 'P2002'
+      ) {
+        throw new AppError(
+          ErrorCode.STATE_CONFLICT,
+          'Task already has an active execution — another executor just started one. Retry after it finishes or goes stale.',
+        );
+      }
+      throw err;
+    }
 
     await createActivity({
       projectId: params.projectId,

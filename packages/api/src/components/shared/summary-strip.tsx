@@ -1,9 +1,11 @@
 import React from 'react';
+import Link from 'next/link';
 
 interface SummaryItem {
   label: string;
   value: React.ReactNode;
   icon?: React.ReactNode;
+  href?: string;
   trend?: {
     value: string;
     direction: 'up' | 'down' | 'neutral';
@@ -31,8 +33,8 @@ export function SummaryStrip({ items, className = '' }: SummaryStripProps) {
       {items.map((item, index) => {
         const colors = colorMap[item.color || 'slate'];
 
-        return (
-          <div key={index} className="panel p-4 flex items-center justify-between">
+        const inner = (
+          <div className="panel p-4 flex items-center justify-between w-full">
             <div>
               <p className="text-xs font-medium text-slate-500 mb-1">{item.label}</p>
               <div className="flex items-baseline gap-2">
@@ -65,6 +67,19 @@ export function SummaryStrip({ items, className = '' }: SummaryStripProps) {
               </div>
             )}
           </div>
+        );
+
+        return item.href ? (
+          <Link
+            key={index}
+            href={item.href}
+            className="block hover:shadow-md hover:-translate-y-0.5 transition-all rounded-xl"
+            title={`Go to ${item.label}`}
+          >
+            {inner}
+          </Link>
+        ) : (
+          <div key={index}>{inner}</div>
         );
       })}
     </div>

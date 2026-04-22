@@ -146,6 +146,8 @@ model Task {
   expectedOutput   String?  @map("expected_output")
   agentConstraints    String[] @map("agent_constraints")
   planDeliverableRefs String[] @default([]) @map("plan_deliverable_refs")
+  startDate           DateTime? @map("start_date")
+  dueDate             DateTime? @map("due_date")
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt        DateTime @updatedAt @map("updated_at")
 
@@ -232,7 +234,10 @@ model ApiKey {
   createdBy   String
   lastUsedAt  DateTime?
   createdAt   DateTime  @default(now())
+  execRunId   String?   @map("exec_run_id")
+  expiresAt   DateTime? @map("expires_at")
 
+  @@index([execRunId])
   @@map("api_keys")
 }
 

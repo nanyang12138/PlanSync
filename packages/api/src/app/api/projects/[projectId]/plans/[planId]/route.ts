@@ -84,11 +84,13 @@ export async function PATCH(req: NextRequest, { params }: Params) {
 
     eventBus.publish(params.projectId, 'plan_draft_updated', {
       planId: updated.id,
+      version: updated.version,
       updatedBy: auth.userName,
       fields: Object.keys(body),
     });
     dispatchWebhooks(params.projectId, 'plan_draft_updated', {
       planId: updated.id,
+      version: updated.version,
       updatedBy: auth.userName,
       fields: Object.keys(body),
     });

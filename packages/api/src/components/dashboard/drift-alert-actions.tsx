@@ -26,6 +26,10 @@ export function DriftAlertActions({ projectId, driftId }: DriftAlertActionsProps
         credentials: 'include',
       });
       if (!res.ok) {
+        if (res.status === 401) {
+          router.push('/login');
+          return;
+        }
         const body = (await res.json().catch(() => ({}))) as {
           error?: string | { message?: string };
         };

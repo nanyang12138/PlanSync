@@ -30,8 +30,8 @@ export function TaskList({ tasks, activePlanVersion, projectId }: TaskListProps)
   }
 
   return (
-    <div className="divide-y divide-slate-100">
-      {tasks.map((t) => {
+    <div className="divide-y divide-slate-100 text-sm">
+      {tasks.map((t, index) => {
         const drift = activePlanVersion !== undefined && t.boundPlanVersion !== activePlanVersion;
         const label = statusLabel(t, drift);
         const isAgent = t.assigneeType === 'agent';
@@ -40,30 +40,49 @@ export function TaskList({ tasks, activePlanVersion, projectId }: TaskListProps)
           <Link
             key={t.id}
             href={`/projects/${projectId}/tasks/${t.id}`}
-            className="group flex items-center px-5 py-3 gap-4 text-sm hover:bg-slate-50/80 transition-colors"
+            className="group grid grid-cols-[2rem_1fr_auto_auto_1.25rem_auto_1.5rem] sm:grid-cols-[2rem_1fr_7rem_3rem_1.25rem_6rem_1.5rem] items-center gap-2 px-5 py-3 hover:bg-slate-50/80 transition-colors"
           >
-            <span className="font-mono text-slate-400 w-12 flex-shrink-0 text-xs">
-              {t.id.slice(-6)}
-            </span>
+            {/* # */}
+            <span className="text-right text-xs text-slate-400 tabular-nums">#{index + 1}</span>
+
+            {/* Title */}
             <span
-              className={`font-medium flex-1 min-w-0 truncate ${t.status === 'cancelled' ? 'text-slate-400 line-through' : 'text-slate-700'}`}
+              className={`font-medium truncate ${t.status === 'cancelled' ? 'text-slate-400 line-through' : 'text-slate-700'}`}
             >
               {t.title}
             </span>
-            <div className="hidden sm:flex items-center gap-1.5 w-28 flex-shrink-0">
+
+            {/* Assignee */}
+            <span className="hidden sm:flex items-center gap-1.5 min-w-0">
               {isAgent ? (
-                <Bot className="h-3.5 w-3.5 text-violet-400" />
+                <Bot className="h-3.5 w-3.5 text-violet-400 shrink-0" />
               ) : t.assignee ? (
-                <User className="h-3.5 w-3.5 text-slate-400" />
+                <User className="h-3.5 w-3.5 text-slate-400 shrink-0" />
               ) : null}
-              <span className="text-slate-500 truncate text-xs">{t.assignee || '—'}</span>
-            </div>
-            <span className="badge badge-brand font-mono text-[10px] hidden sm:inline-flex">
-              v{t.boundPlanVersion}
+              <span className="text-xs text-slate-500 truncate">{t.assignee || '—'}</span>
             </span>
-            {drift && <AlertTriangle className="h-3.5 w-3.5 text-amber-500 flex-shrink-0" />}
-            <span className={`badge text-[10px] whitespace-nowrap ${label.cls}`}>{label.text}</span>
-            <ArrowUpRight className="h-3.5 w-3.5 text-slate-300 group-hover:text-blue-500 transition-colors shrink-0 hidden sm:block" />
+
+            {/* Plan version */}
+            <span className="hidden sm:inline-flex justify-center">
+              <span className="badge badge-brand font-mono text-[10px]">v{t.boundPlanVersion}</span>
+            </span>
+
+            {/* Drift */}
+            <span className="hidden sm:flex justify-center">
+              {drift && <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />}
+            </span>
+
+            {/* Status */}
+            <span className="flex justify-center">
+              <span className={`badge text-[10px] whitespace-nowrap ${label.cls}`}>
+                {label.text}
+              </span>
+            </span>
+
+            {/* Arrow */}
+            <span className="hidden sm:inline-flex justify-end">
+              <ArrowUpRight className="h-3.5 w-3.5 text-slate-300 group-hover:text-blue-500 transition-colors" />
+            </span>
           </Link>
         );
       })}
