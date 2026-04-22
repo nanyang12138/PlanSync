@@ -7,6 +7,7 @@ import { POST as tasksPost } from '@/app/api/projects/[projectId]/tasks/route';
 import { POST as plansPost } from '@/app/api/projects/[projectId]/plans/route';
 import { POST as proposePost } from '@/app/api/projects/[projectId]/plans/[planId]/propose/route';
 import { POST as activatePost } from '@/app/api/projects/[projectId]/plans/[planId]/activate/route';
+import { POST as reactivatePost } from '@/app/api/projects/[projectId]/plans/[planId]/reactivate/route';
 import {
   makeReq,
   createTestProject,
@@ -168,6 +169,32 @@ describe('Exec-scoped API key', () => {
       { params: { projectId, planId: proposed.id } },
     );
     expect(res.status).toBe(403);
+  });
+
+  it('blocks POST /plans/:id/reactivate when called with scoped key', async () => {
+    const superseded = await testPrisma.plan.create({
+      data: {
+        projectId,
+        title: 'Superseded for reactivate-block test',
+        goal: 'g',
+        scope: 's',
+        version: activePlanVersion + 300,
+        status: 'superseded',
+        createdBy: owner,
+      },
+    });
+    const res = await reactivatePost(
+      makeReq(`/api/projects/${projectId}/plans/${superseded.id}/reactivate`, {
+        method: 'POST',
+        userName: owner,
+        authToken: scopedKey,
+        body: {},
+      }),
+      { params: { projectId, planId: superseded.id } },
+    );
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error.message).toMatch(/Exec-scoped/i);
   });
 
   it('owner key (non-scoped) can still create tasks (regression)', async () => {

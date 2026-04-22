@@ -411,7 +411,7 @@ export async function launchExec(
     'After approval: implement using your tools, then call plansync_execution_complete',
     'with the runId from plansync_exec_context.',
     '',
-    'FORBIDDEN: Do NOT call plansync_plan_create, plansync_plan_propose, or plansync_plan_activate.',
+    'FORBIDDEN: Do NOT call plansync_plan_create, plansync_plan_propose, plansync_plan_activate, or plansync_plan_reactivate.',
     'A plan already exists. You are here to EXECUTE a task within the existing plan, not to create a new one.',
     '',
     'Task Pack:',
@@ -494,7 +494,7 @@ function buildExecPrompt(taskPack: unknown): string {
     'First, present your implementation approach for user approval.',
     'After approval: implement using your tools, then call plansync_execution_complete.',
     '',
-    'FORBIDDEN: Do NOT call plansync_plan_create, plansync_plan_propose, or plansync_plan_activate.',
+    'FORBIDDEN: Do NOT call plansync_plan_create, plansync_plan_propose, plansync_plan_activate, or plansync_plan_reactivate.',
     'A plan already exists. You are here to EXECUTE a task within the existing plan, not to create a new one.',
     '',
     'Task Pack:',
@@ -977,7 +977,7 @@ function buildAutonomousPrompt(worktreeDir: string): string {
     '   GOOD: "Implemented POST /auth/login with JWT; 12/12 tests pass (npm test)"',
     '   BAD: "all done", "completed", "requirements met" → REJECTED by verifier',
     '',
-    'FORBIDDEN: plansync_plan_create, plansync_plan_propose, plansync_plan_activate',
+    'FORBIDDEN: plansync_plan_create, plansync_plan_propose, plansync_plan_activate, plansync_plan_reactivate',
   ].join('\n');
 }
 
