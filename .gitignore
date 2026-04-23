@@ -58,3 +58,6 @@ claude.local.md
 
 # Codex runtime data (user-specific, machine-specific)
 .codex/
+
+# Demo recordings (binary video/cast files)
+demo-recordings/
