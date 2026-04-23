@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import type { Task } from '@prisma/client';
 import { AlertTriangle, Bot, User, ArrowUpRight } from 'lucide-react';
+import { TaskCompleteQuick } from '@/components/task/task-complete-quick';
 
 type TaskListProps = {
   tasks: Task[];
@@ -40,7 +41,7 @@ export function TaskList({ tasks, activePlanVersion, projectId }: TaskListProps)
           <Link
             key={t.id}
             href={`/projects/${projectId}/tasks/${t.id}`}
-            className="group grid grid-cols-[2rem_1fr_auto_auto_1.25rem_auto_1.5rem] sm:grid-cols-[2rem_1fr_7rem_3rem_1.25rem_6rem_1.5rem] items-center gap-2 px-5 py-3 hover:bg-slate-50/80 transition-colors"
+            className="group grid grid-cols-[2rem_1fr_auto_auto_1.25rem_auto_2rem_1.5rem] sm:grid-cols-[2rem_1fr_7rem_3rem_1.25rem_6rem_2rem_1.5rem] items-center gap-2 px-5 py-3 hover:bg-slate-50/80 transition-colors"
           >
             {/* # */}
             <span className="text-right text-xs text-slate-400 tabular-nums">#{index + 1}</span>
@@ -77,6 +78,15 @@ export function TaskList({ tasks, activePlanVersion, projectId }: TaskListProps)
               <span className={`badge text-[10px] whitespace-nowrap ${label.cls}`}>
                 {label.text}
               </span>
+            </span>
+
+            {/* Quick complete */}
+            <span className="hidden sm:flex justify-center">
+              {(t.status === 'in_progress' || t.status === 'todo') &&
+                !!t.assignee &&
+                t.assigneeType !== 'agent' && (
+                  <TaskCompleteQuick projectId={projectId} taskId={t.id} />
+                )}
             </span>
 
             {/* Arrow */}

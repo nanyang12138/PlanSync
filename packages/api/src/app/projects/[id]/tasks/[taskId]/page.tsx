@@ -39,15 +39,19 @@ export default async function TaskDetailPage({
     where: { projectId: params.id, status: 'active' },
   });
 
-  const currentUser = cookies().get('plansync-user')?.value ?? 'anonymous';
   const canRebind = !!activePlan && task.boundPlanVersion !== activePlan.version;
   const canClaim = task.status === 'todo' && !task.assignee;
-  const canDecline = task.status === 'todo' && task.assignee === currentUser;
-  const canCompleteHuman = task.status === 'in_progress' && task.assigneeType !== 'agent';
+  const canDecline = task.status === 'todo' && !!task.assignee && task.assigneeType !== 'agent';
 
   // Derive execution state for new components
   const runningRun = task.executionRuns.find((r) => r.status === 'running') ?? null;
   const latestCompletedRun = task.executionRuns.find((r) => r.status === 'completed') ?? null;
+
+  const canCompleteHuman =
+    (task.status === 'in_progress' || task.status === 'todo') &&
+    !!task.assignee &&
+    task.assigneeType !== 'agent' &&
+    !runningRun;
 
   return (
     <RealtimeWrapper projectId={params.id}>

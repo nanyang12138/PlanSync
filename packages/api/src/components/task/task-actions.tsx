@@ -94,65 +94,50 @@ export function TaskActions({
   }
 
   return (
-    <div
-      className={cn('space-y-3 rounded-xl border border-slate-200 bg-slate-50/50 p-4', className)}
-    >
-      <div className="flex flex-wrap items-end gap-4">
-        {canRebind && (
-          <div className="space-y-1.5">
-            <p className="section-label">Plan alignment</p>
-            <button
-              type="button"
-              disabled={pending !== null}
-              onClick={() => void rebind()}
-              className="btn-primary"
-            >
-              {pending === 'rebind' ? '...' : 'Rebind to active plan'}
-            </button>
-          </div>
-        )}
-        {canClaim && (
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="space-y-1.5">
-              <label htmlFor="claim-assignee-type" className="section-label">
-                Claim as
-              </label>
-              <select
-                id="claim-assignee-type"
-                className="select-field w-auto"
-                value={claimAssigneeType}
-                onChange={(e) => setClaimAssigneeType(e.target.value as 'human' | 'agent')}
-                disabled={pending !== null}
-              >
-                <option value="human">Human</option>
-                <option value="agent">Agent</option>
-              </select>
-            </div>
-            <button
-              type="button"
-              disabled={pending !== null}
-              onClick={() => void claim()}
-              className="btn-secondary"
-            >
-              {pending === 'claim' ? '...' : 'Claim task'}
-            </button>
-          </div>
-        )}
-        {canDecline && (
-          <div className="space-y-1.5">
-            <p className="section-label">Decline assignment</p>
-            <button
-              type="button"
-              disabled={pending !== null}
-              onClick={() => void decline()}
-              className="btn-danger"
-            >
-              {pending === 'decline' ? '...' : 'Decline task'}
-            </button>
-          </div>
-        )}
-      </div>
-      {error && <p className="text-sm text-rose-600">{error}</p>}
+    <div className={cn('flex flex-wrap items-center gap-2', className)}>
+      {canRebind && (
+        <button
+          type="button"
+          disabled={pending !== null}
+          onClick={() => void rebind()}
+          className="btn-secondary text-xs"
+        >
+          {pending === 'rebind' ? '…' : 'Rebind to active plan'}
+        </button>
+      )}
+      {canClaim && (
+        <>
+          <select
+            className="select-field !py-1 !text-xs w-auto"
+            value={claimAssigneeType}
+            onChange={(e) => setClaimAssigneeType(e.target.value as 'human' | 'agent')}
+            disabled={pending !== null}
+            title="Claim as"
+          >
+            <option value="human">Claim as Human</option>
+            <option value="agent">Claim as Agent</option>
+          </select>
+          <button
+            type="button"
+            disabled={pending !== null}
+            onClick={() => void claim()}
+            className="btn-primary text-xs"
+          >
+            {pending === 'claim' ? '…' : 'Claim task'}
+          </button>
+        </>
+      )}
+      {canDecline && (
+        <button
+          type="button"
+          disabled={pending !== null}
+          onClick={() => void decline()}
+          className="btn-ghost text-xs !text-slate-400 hover:!text-red-500 hover:!bg-red-50"
+        >
+          {pending === 'decline' ? '…' : 'Decline'}
+        </button>
+      )}
+      {error && <p className="text-xs text-rose-600">{error}</p>}
     </div>
   );
 }

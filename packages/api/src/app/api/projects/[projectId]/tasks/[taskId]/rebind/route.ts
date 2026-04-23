@@ -30,9 +30,21 @@ export async function POST(req: NextRequest, { params }: Params) {
     }
 
     const oldVersion = task.boundPlanVersion;
-    const updated = await prisma.task.update({
-      where: { id: params.taskId },
-      data: { boundPlanVersion: activePlan.version },
+    const updated = await prisma.$transaction(async (tx) => {
+      const t = await tx.task.update({
+        where: { id: params.taskId },
+        data: { boundPlanVersion: activePlan.version },
+      });
+      await tx.driftAlert.updateMany({
+        where: { taskId: params.taskId, projectId: params.projectId, status: 'open' },
+        data: {
+          status: 'resolved',
+          resolvedAction: 'rebind',
+          resolvedAt: new Date(),
+          resolvedBy: auth.userName,
+        },
+      });
+      return t;
     });
 
     await createActivity({

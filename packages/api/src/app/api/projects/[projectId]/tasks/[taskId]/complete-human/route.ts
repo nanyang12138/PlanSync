@@ -37,13 +37,29 @@ export async function POST(req: NextRequest, { params }: Params) {
         'Agent tasks must be completed via execution_complete',
       );
     }
-    if (task.status !== 'in_progress') {
+    if (!task.assignee) {
       throw new AppError(
         ErrorCode.STATE_CONFLICT,
-        `Task must be in_progress to complete (current: ${task.status})`,
+        'Task must be claimed before it can be completed',
       );
     }
-    if (task.assignee && task.assignee !== auth.userName) {
+    if (task.status !== 'in_progress' && task.status !== 'todo') {
+      throw new AppError(
+        ErrorCode.STATE_CONFLICT,
+        `Task must be in_progress or todo to complete (current: ${task.status})`,
+      );
+    }
+    const activeRun = await prisma.executionRun.findFirst({
+      where: { taskId: params.taskId, status: 'running' },
+      select: { id: true, executorName: true },
+    });
+    if (activeRun) {
+      throw new AppError(
+        ErrorCode.STATE_CONFLICT,
+        `Task has an active execution by "${activeRun.executorName}". Wait for it to complete.`,
+      );
+    }
+    if (task.assignee !== auth.userName) {
       const member = await prisma.projectMember.findUnique({
         where: { projectId_name: { projectId: params.projectId, name: auth.userName } },
       });
