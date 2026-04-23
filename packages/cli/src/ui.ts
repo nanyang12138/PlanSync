@@ -34,15 +34,15 @@ export async function showSplash(): Promise<void> {
   });
   process.stdout.write('\r' + ' '.repeat(40) + '\r');
 
-  // Wide terminal → big ASCII banner; narrow → compact box.
+  // Wide terminal → big ASCII banner (left-aligned, 2-space indent like the rest of the UI).
+  // Narrow → compact box.
   if (termCols >= BANNER_WIDTH + 4) {
-    const lp = Math.max(0, Math.floor((termCols - BANNER_WIDTH) / 2));
-    const tagPad = Math.max(0, Math.floor((termCols - TAGLINE.length) / 2));
+    const indent = '  ';
     process.stdout.write('\n');
     for (const line of BANNER_LINES) {
-      process.stdout.write(`${' '.repeat(lp)}\x1b[35m\x1b[1m${line}\x1b[0m\n`);
+      process.stdout.write(`${indent}\x1b[35m\x1b[1m${line}\x1b[0m\n`);
     }
-    process.stdout.write(`\n${' '.repeat(tagPad)}\x1b[2m${TAGLINE}\x1b[0m\n\n`);
+    process.stdout.write(`${indent}\x1b[2m${TAGLINE}\x1b[0m\n\n`);
   } else {
     const cols = Math.min(termCols, 60);
     const inner = cols - 4;
