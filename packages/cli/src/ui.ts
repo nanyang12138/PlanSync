@@ -2,10 +2,21 @@ import * as readline from 'readline';
 
 // ─── Startup splash animation ─────────────────────────────────────────────────
 
+// 6-line ASCII banner — width 70 cols. Falls back to a compact box on narrow terminals.
+const BANNER_LINES = [
+  '██████╗ ██╗      █████╗ ███╗   ██╗███████╗██╗   ██╗███╗   ██╗ ██████╗',
+  '██╔══██╗██║     ██╔══██╗████╗  ██║██╔════╝╚██╗ ██╔╝████╗  ██║██╔════╝',
+  '██████╔╝██║     ███████║██╔██╗ ██║███████╗ ╚████╔╝ ██╔██╗ ██║██║     ',
+  '██╔═══╝ ██║     ██╔══██║██║╚██╗██║╚════██║  ╚██╔╝  ██║╚██╗██║██║     ',
+  '██║     ███████╗██║  ██║██║ ╚████║███████║   ██║   ██║ ╚████║╚██████╗',
+  '╚═╝     ╚══════╝╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝   ╚═╝   ╚═╝  ╚═══╝ ╚═════╝',
+];
+const BANNER_WIDTH = 70;
+const TAGLINE = 'Where Plans Meet Execution';
+
 export async function showSplash(): Promise<void> {
   const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-  const title = 'PlanSync Terminal';
-  const cols = Math.min(process.stdout.columns || 60, 60);
+  const termCols = process.stdout.columns || 80;
 
   // Clear screen and show animated spinner for ~400ms
   process.stdout.write('\x1b[2J\x1b[H'); // clear screen, cursor to top
@@ -13,7 +24,7 @@ export async function showSplash(): Promise<void> {
     let i = 0;
     const t = setInterval(() => {
       const f = frames[i % frames.length];
-      process.stdout.write(`\r  \x1b[34m${f}\x1b[0m  \x1b[1m${title}\x1b[0m  `);
+      process.stdout.write(`\r  \x1b[34m${f}\x1b[0m  \x1b[1mPlanSync Terminal\x1b[0m  `);
       i++;
       if (i >= 8) {
         clearInterval(t);
@@ -21,18 +32,30 @@ export async function showSplash(): Promise<void> {
       }
     }, 50);
   });
+  process.stdout.write('\r' + ' '.repeat(40) + '\r');
 
-  // Reveal the header box
-  process.stdout.write('\r' + ' '.repeat(cols) + '\r');
-  const inner = cols - 4;
-  const pad = Math.max(0, inner - title.length);
-  const lp = Math.floor(pad / 2);
-  const rp = Math.ceil(pad / 2);
-  process.stdout.write(`\n  \x1b[34m\x1b[1m╭${'─'.repeat(inner + 2)}╮\x1b[0m\n`);
-  process.stdout.write(
-    `  \x1b[34m\x1b[1m│\x1b[0m ${' '.repeat(lp)}\x1b[1m${title}\x1b[0m${' '.repeat(rp)} \x1b[34m\x1b[1m│\x1b[0m\n`,
-  );
-  process.stdout.write(`  \x1b[34m\x1b[1m╰${'─'.repeat(inner + 2)}╯\x1b[0m\n\n`);
+  // Wide terminal → big ASCII banner; narrow → compact box.
+  if (termCols >= BANNER_WIDTH + 4) {
+    const lp = Math.max(0, Math.floor((termCols - BANNER_WIDTH) / 2));
+    const tagPad = Math.max(0, Math.floor((termCols - TAGLINE.length) / 2));
+    process.stdout.write('\n');
+    for (const line of BANNER_LINES) {
+      process.stdout.write(`${' '.repeat(lp)}\x1b[35m\x1b[1m${line}\x1b[0m\n`);
+    }
+    process.stdout.write(`\n${' '.repeat(tagPad)}\x1b[2m${TAGLINE}\x1b[0m\n\n`);
+  } else {
+    const cols = Math.min(termCols, 60);
+    const inner = cols - 4;
+    const title = 'PlanSync Terminal';
+    const pad = Math.max(0, inner - title.length);
+    const lp = Math.floor(pad / 2);
+    const rp = Math.ceil(pad / 2);
+    process.stdout.write(`\n  \x1b[34m\x1b[1m╭${'─'.repeat(inner + 2)}╮\x1b[0m\n`);
+    process.stdout.write(
+      `  \x1b[34m\x1b[1m│\x1b[0m ${' '.repeat(lp)}\x1b[1m${title}\x1b[0m${' '.repeat(rp)} \x1b[34m\x1b[1m│\x1b[0m\n`,
+    );
+    process.stdout.write(`  \x1b[34m\x1b[1m╰${'─'.repeat(inner + 2)}╯\x1b[0m\n\n`);
+  }
 }
 
 // ─── Colors ───────────────────────────────────────────────────────────────────
