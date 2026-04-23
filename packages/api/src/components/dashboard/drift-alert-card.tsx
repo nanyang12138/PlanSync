@@ -6,9 +6,10 @@ type DriftAlertCardProps = {
   alert: DriftAlert;
   task: Task;
   projectId: string;
+  isOwner: boolean;
 };
 
-export function DriftAlertCard({ alert, task, projectId }: DriftAlertCardProps) {
+export function DriftAlertCard({ alert, task, projectId, isOwner }: DriftAlertCardProps) {
   const isAgent = task.assigneeType === 'agent';
 
   return (
@@ -40,7 +41,7 @@ export function DriftAlertCard({ alert, task, projectId }: DriftAlertCardProps) 
           {alert.severity}
         </span>
       </div>
-      <DriftAlertActions projectId={projectId} driftId={alert.id} />
+      <DriftAlertActions projectId={projectId} driftId={alert.id} isOwner={isOwner} />
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { cookies } from 'next/headers';
 import { prisma } from '@/lib/prisma';
 import { DriftAlertCard } from '@/components/dashboard/drift-alert-card';
 import { TaskViewToggle } from '@/components/dashboard/task-view-toggle';
@@ -24,6 +25,8 @@ export default async function ProjectDashboard({ params }: { params: { id: strin
   if (!project) notFound();
 
   const activePlan = project.plans.find((p) => p.status === 'active');
+  const currentUser = cookies().get('plansync-user')?.value ?? 'anonymous';
+  const isOwner = project.members.some((m) => m.name === currentUser && m.role === 'owner');
   const driftAlerts = await prisma.driftAlert.findMany({
     where: { projectId: params.id, status: 'open' },
     include: { task: true },
@@ -156,6 +159,7 @@ export default async function ProjectDashboard({ params }: { params: { id: strin
                         alert={alert}
                         task={alert.task}
                         projectId={params.id}
+                        isOwner={isOwner}
                       />
                     ))}
                   </div>

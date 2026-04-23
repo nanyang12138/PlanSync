@@ -21,7 +21,7 @@ export default async function TaskDetailPage({
 }) {
   const project = await prisma.project.findUnique({
     where: { id: params.id },
-    include: { members: { select: { name: true } } },
+    include: { members: { select: { name: true, role: true } } },
   });
   if (!project) notFound();
 
@@ -52,6 +52,9 @@ export default async function TaskDetailPage({
     !!task.assignee &&
     task.assigneeType !== 'agent' &&
     !runningRun;
+
+  const currentUser = cookies().get('plansync-user')?.value ?? 'anonymous';
+  const isOwner = project.members.some((m) => m.name === currentUser && m.role === 'owner');
 
   return (
     <RealtimeWrapper projectId={params.id}>
@@ -130,6 +133,7 @@ export default async function TaskDetailPage({
                         alert={alert}
                         task={task}
                         projectId={params.id}
+                        isOwner={isOwner}
                       />
                     ))}
                   </div>

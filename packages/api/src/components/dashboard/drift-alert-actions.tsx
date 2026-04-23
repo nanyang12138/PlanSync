@@ -8,9 +8,10 @@ type Action = 'rebind' | 'cancel' | 'no_impact';
 type DriftAlertActionsProps = {
   projectId: string;
   driftId: string;
+  isOwner: boolean;
 };
 
-export function DriftAlertActions({ projectId, driftId }: DriftAlertActionsProps) {
+export function DriftAlertActions({ projectId, driftId, isOwner }: DriftAlertActionsProps) {
   const router = useRouter();
   const [pending, setPending] = useState<Action | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -52,29 +53,31 @@ export function DriftAlertActions({ projectId, driftId }: DriftAlertActionsProps
 
   return (
     <div>
-      <div className="flex gap-2 mt-1.5">
-        <button
-          onClick={() => resolve('rebind')}
-          disabled={pending !== null}
-          className="btn-primary !py-1 !px-2.5 !text-[11px]"
-        >
-          {pending === 'rebind' ? '...' : 'Rebind'}
-        </button>
-        <button
-          onClick={() => resolve('cancel')}
-          disabled={pending !== null}
-          className="btn-secondary !py-1 !px-2.5 !text-[11px]"
-        >
-          {pending === 'cancel' ? '...' : 'Cancel'}
-        </button>
-        <button
-          onClick={() => resolve('no_impact')}
-          disabled={pending !== null}
-          className="btn-secondary !py-1 !px-2.5 !text-[11px]"
-        >
-          {pending === 'no_impact' ? '...' : 'No Impact'}
-        </button>
-      </div>
+      {isOwner && (
+        <div className="flex gap-2 mt-1.5">
+          <button
+            onClick={() => resolve('rebind')}
+            disabled={pending !== null}
+            className="btn-primary !py-1 !px-2.5 !text-[11px]"
+          >
+            {pending === 'rebind' ? '...' : 'Rebind'}
+          </button>
+          <button
+            onClick={() => resolve('cancel')}
+            disabled={pending !== null}
+            className="btn-secondary !py-1 !px-2.5 !text-[11px]"
+          >
+            {pending === 'cancel' ? '...' : 'Cancel'}
+          </button>
+          <button
+            onClick={() => resolve('no_impact')}
+            disabled={pending !== null}
+            className="btn-secondary !py-1 !px-2.5 !text-[11px]"
+          >
+            {pending === 'no_impact' ? '...' : 'No Impact'}
+          </button>
+        </div>
+      )}
       {error && <p className="text-xs text-rose-600 mt-1.5">{error}</p>}
     </div>
   );
