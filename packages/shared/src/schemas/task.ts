@@ -51,7 +51,7 @@ export const createTaskSchema = z
 export const updateTaskSchema = z
   .object({
     title: z.string().min(1).max(200).optional(),
-    description: z.string().max(5000).optional(),
+    description: z.string().max(5000).nullable().optional(),
     type: taskTypeSchema.optional(),
     priority: taskPrioritySchema.optional(),
     status: taskStatusSchema.optional(),
