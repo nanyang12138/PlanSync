@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { prisma } from '@/lib/prisma';
+import { signAccessToken, generateRefreshToken } from '@/lib/jwt';
 
 async function hashPassword(password: string): Promise<string> {
   const salt = crypto.randomBytes(16);
@@ -21,6 +22,15 @@ async function verifyPassword(password: string, stored: string): Promise<boolean
     crypto.scrypt(password, salt, 64, (err, dk) => {
       if (err) reject(err);
       else resolve(crypto.timingSafeEqual(dk, expected));
+    });
+  });
+}
+
+async function scryptHash(raw: string, salt: Buffer): Promise<string> {
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(raw, salt, 64, (err, dk) => {
+      if (err) reject(err);
+      else resolve(`${salt.toString('hex')}:${dk.toString('hex')}`);
     });
   });
 }
@@ -78,12 +88,32 @@ export async function POST(req: NextRequest) {
       },
     });
 
+    // Issue JWT access token (15 min) and refresh token (7 days)
+    const accessToken = signAccessToken(name);
+    const rawRefresh = generateRefreshToken();
+    const refreshSalt = crypto.randomBytes(16);
+    const refreshHash = await scryptHash(rawRefresh, refreshSalt);
+    await prisma.apiKey.deleteMany({ where: { createdBy: name, name: 'jwt-refresh' } });
+    await prisma.apiKey.create({
+      data: {
+        name: 'jwt-refresh',
+        keyHash: refreshHash,
+        keyPrefix: rawRefresh.slice(0, 15),
+        permissions: ['refresh'],
+        createdBy: name,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      },
+    });
+
     const isFirstLogin = !account;
     const response = NextResponse.json({
       success: true,
       userName: name,
       isFirstLogin,
       key: rawKey,
+      accessToken,
+      refreshToken: rawRefresh,
+      expiresIn: 900,
     });
 
     // httpOnly: JS cannot read or tamper with this cookie
