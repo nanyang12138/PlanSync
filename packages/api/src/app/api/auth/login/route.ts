@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { prisma } from '@/lib/prisma';
+import { signAccessToken, signRefreshToken, REFRESH_TTL_SECONDS } from '@/lib/jwt';
 
 async function hashPassword(password: string): Promise<string> {
   const salt = crypto.randomBytes(16);
@@ -21,6 +22,16 @@ async function verifyPassword(password: string, stored: string): Promise<boolean
     crypto.scrypt(password, salt, 64, (err, dk) => {
       if (err) reject(err);
       else resolve(crypto.timingSafeEqual(dk, expected));
+    });
+  });
+}
+
+async function hashToken(raw: string): Promise<string> {
+  const salt = crypto.randomBytes(16);
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(raw, salt, 64, (err, dk) => {
+      if (err) reject(err);
+      else resolve(`${salt.toString('hex')}:${dk.toString('hex')}`);
     });
   });
 }
@@ -56,7 +67,7 @@ export async function POST(req: NextRequest) {
       where: { createdBy: name, name: 'web-session' },
     });
 
-    // Generate new personal API key
+    // Generate new personal API key (kept for backwards-compat with existing clients)
     const rawKey = `ps_key_${crypto.randomBytes(24).toString('hex')}`;
     const keyPrefix = rawKey.slice(0, 15);
     const salt = crypto.randomBytes(16);
@@ -67,7 +78,6 @@ export async function POST(req: NextRequest) {
       });
     });
 
-    // Omit projectId so Prisma leaves the column NULL (global web-session key)
     await prisma.apiKey.create({
       data: {
         name: 'web-session',
@@ -78,12 +88,31 @@ export async function POST(req: NextRequest) {
       },
     });
 
+    // Issue JWT access token + refresh token
+    const accessToken = await signAccessToken(name);
+
+    const jti = crypto.randomBytes(16).toString('hex');
+    const rawRefresh = `${jti}.${crypto.randomBytes(24).toString('hex')}`;
+    const rfHash = await hashToken(rawRefresh);
+    const rfExpiry = new Date(Date.now() + REFRESH_TTL_SECONDS * 1000);
+
+    // Clean up expired refresh tokens for this user before creating a new one
+    await prisma.refreshToken.deleteMany({
+      where: { userName: name, expiresAt: { lt: new Date() } },
+    });
+
+    await prisma.refreshToken.create({
+      data: { id: jti, userName: name, tokenHash: rfHash, expiresAt: rfExpiry },
+    });
+
     const isFirstLogin = !account;
     const response = NextResponse.json({
       success: true,
       userName: name,
       isFirstLogin,
       key: rawKey,
+      accessToken,
+      refreshToken: rawRefresh,
     });
 
     // httpOnly: JS cannot read or tamper with this cookie
@@ -98,6 +127,13 @@ export async function POST(req: NextRequest) {
       path: '/',
       maxAge: 31536000,
       sameSite: 'lax',
+    });
+    // Refresh token in httpOnly cookie scoped to the refresh endpoint
+    response.cookies.set('plansync-refresh', rawRefresh, {
+      path: '/api/auth/refresh',
+      maxAge: REFRESH_TTL_SECONDS,
+      sameSite: 'lax',
+      httpOnly: true,
     });
 
     return response;

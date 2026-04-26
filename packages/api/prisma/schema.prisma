@@ -302,3 +302,15 @@ model UserState {
 
   @@map("user_state")
 }
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userName  String    @map("user_name")
+  tokenHash String    @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([userName])
+  @@map("refresh_tokens")
+}
