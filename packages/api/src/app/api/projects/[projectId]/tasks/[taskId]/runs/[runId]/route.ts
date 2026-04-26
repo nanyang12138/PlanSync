@@ -35,17 +35,41 @@ export async function POST(req: NextRequest, { params }: Params) {
       if (run.status !== 'running') {
         throw new AppError(ErrorCode.STATE_CONFLICT, 'Can only heartbeat running executions');
       }
-      const updated = await prisma.executionRun.update({
-        where: { id: params.runId },
-        data: { lastHeartbeatAt: new Date() },
-      });
-      return NextResponse.json({ data: updated });
+      const [updated, driftAlerts] = await Promise.all([
+        prisma.executionRun.update({
+          where: { id: params.runId },
+          data: { lastHeartbeatAt: new Date() },
+        }),
+        prisma.driftAlert.findMany({
+          where: { taskId: params.taskId, status: 'open' },
+          select: { id: true, severity: true, reason: true },
+        }),
+      ]);
+      return NextResponse.json({ data: { ...updated, driftAlerts } });
     }
 
     if (action === 'complete') {
       if (run.status !== 'running') {
         throw new AppError(ErrorCode.STATE_CONFLICT, 'Can only complete running executions');
       }
+
+      const openDrifts = await prisma.driftAlert.findMany({
+        where: { taskId: params.taskId, status: 'open' },
+        select: { id: true, severity: true, reason: true },
+      });
+      if (openDrifts.length > 0) {
+        return NextResponse.json(
+          {
+            error: {
+              code: 'DRIFT_UNRESOLVED',
+              message: `Cannot complete execution: ${openDrifts.length} open drift alert(s). Resolve all drift alerts before completing.`,
+              details: { drifts: openDrifts },
+            },
+          },
+          { status: 409 },
+        );
+      }
+
       const body = await validateBody(req, completeExecutionRunSchema);
 
       if (body.status === 'completed') {

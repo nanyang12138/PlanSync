@@ -13,7 +13,7 @@ type Params = { params: { projectId: string; driftId: string } };
 export async function POST(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
-    await requireProjectRole(auth, params.projectId, 'owner');
+    const member = await requireProjectRole(auth, params.projectId);
     const body = await validateBody(req, resolveDriftSchema);
 
     const drift = await prisma.driftAlert.findUnique({
@@ -24,6 +24,16 @@ export async function POST(req: NextRequest, { params }: Params) {
     if (drift.projectId !== params.projectId) {
       throw new AppError(ErrorCode.NOT_FOUND, 'Drift alert not found');
     }
+
+    const isOwner = member.projectRole === 'owner';
+    const isAssignee = drift.task.assignee === auth.userName;
+    if (!isOwner && !isAssignee) {
+      throw new AppError(
+        ErrorCode.FORBIDDEN,
+        'Only project owners or the task assignee can resolve this drift alert',
+      );
+    }
+
     if (drift.status !== 'open') {
       throw new AppError(ErrorCode.STATE_CONFLICT, 'Drift alert already resolved');
     }

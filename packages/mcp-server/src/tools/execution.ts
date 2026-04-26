@@ -3,19 +3,31 @@ import { z } from 'zod';
 import { ApiClient, ApiError } from '../api-client';
 import { logger } from '../logger';
 
+type DriftAlert = { id: string; severity: string; reason: string };
+
 const HEARTBEAT_INTERVAL_MS = 30_000;
 
 class HeartbeatManager {
   private intervals = new Map<string, ReturnType<typeof setInterval>>();
 
-  start(runId: string, projectId: string, taskId: string, api: ApiClient): void {
+  start(
+    runId: string,
+    projectId: string,
+    taskId: string,
+    api: ApiClient,
+    onDrift?: (drifts: DriftAlert[]) => void,
+  ): void {
     if (this.intervals.has(runId)) return;
     const id = setInterval(async () => {
       try {
-        await api.post(
+        const response = await api.post(
           `/api/projects/${projectId}/tasks/${taskId}/runs/${runId}?action=heartbeat`,
           {},
         );
+        const driftAlerts = (response as any)?.data?.driftAlerts as DriftAlert[] | undefined;
+        if (driftAlerts && driftAlerts.length > 0 && onDrift) {
+          onDrift(driftAlerts);
+        }
         logger.debug({ runId }, 'Heartbeat sent');
       } catch (err) {
         logger.warn({ err, runId }, 'Heartbeat failed');
@@ -44,6 +56,33 @@ class HeartbeatManager {
 export const heartbeatManager = new HeartbeatManager();
 
 export function registerExecutionTools(server: McpServer, api: ApiClient) {
+  function makeDriftCallback(srv: McpServer) {
+    return (drifts: DriftAlert[]) => {
+      const highCount = drifts.filter((d) => d.severity === 'high').length;
+      const lines = drifts
+        .map(
+          (d) =>
+            `  [${d.severity.toUpperCase()}] ${d.reason}  →  plansync_drift_resolve ${d.id} action=rebind`,
+        )
+        .join('\n');
+      const msg =
+        `⚠ DRIFT DETECTED: ${drifts.length} alert(s) (${highCount} high). ` +
+        `Pause execution immediately and resolve before continuing.\n` +
+        lines;
+      Promise.resolve()
+        .then(() =>
+          srv.server.sendLoggingMessage({
+            level: 'warning',
+            logger: 'plansync',
+            data: { message: msg, drifts },
+          }),
+        )
+        .catch((err: unknown) => {
+          logger.warn({ err }, 'Failed to send drift notification');
+        });
+    };
+  }
+
   server.tool(
     'plansync_exec_context',
     'Call this at session start to check if this session was launched for task execution. Returns task context and runId if so — skip normal session start and present your implementation approach immediately.',
@@ -59,6 +98,7 @@ export function registerExecutionTools(server: McpServer, api: ApiClient) {
 
       try {
         const taskPack = await api.get(`/api/projects/${projectId}/tasks/${taskId}/pack`);
+        heartbeatManager.start(runId, projectId, taskId, api, makeDriftCallback(server));
         return {
           content: [
             {
@@ -95,7 +135,7 @@ export function registerExecutionTools(server: McpServer, api: ApiClient) {
         const result = await api.post(`/api/projects/${projectId}/tasks/${args.taskId}/runs`, body);
         const runId = (result as { data?: { id?: string } })?.data?.id;
         if (runId) {
-          heartbeatManager.start(runId, projectId, args.taskId, api);
+          heartbeatManager.start(runId, projectId, args.taskId, api, makeDriftCallback(server));
         }
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       } catch (err) {
@@ -192,6 +232,28 @@ export function registerExecutionTools(server: McpServer, api: ApiClient) {
         );
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       } catch (err) {
+        if (err instanceof ApiError && err.code === 'DRIFT_UNRESOLVED') {
+          const drifts = (err.details as { drifts?: DriftAlert[] })?.drifts ?? [];
+          const driftLines = drifts
+            .map(
+              (d) =>
+                `  [${d.severity.toUpperCase()}] ${d.reason}  →  plansync_drift_resolve ${d.id} action=rebind`,
+            )
+            .join('\n');
+          const guidance = [
+            '⚠ Execution blocked — unresolved drifts on this task',
+            '',
+            'The plan changed while you were executing. Resolve each drift alert before completing:',
+            driftLines || '  (see plansync_drift_list for details)',
+            '',
+            '  plansync_drift_resolve <driftId> action=rebind     → accept new plan, continue',
+            '  plansync_drift_resolve <driftId> action=no_impact  → change does not affect this task',
+            '  plansync_drift_resolve <driftId> action=cancel     → release the task',
+          ].join('\n');
+          // Restart heartbeat while agent resolves drift
+          heartbeatManager.start(runId, projectId, taskId, api, makeDriftCallback(server));
+          return { content: [{ type: 'text', text: guidance }] };
+        }
         if (
           err instanceof ApiError &&
           err.status === 422 &&
