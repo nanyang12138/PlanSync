@@ -190,6 +190,8 @@ Members do **not** need to edit `.env` — `bin/plansync` and `bin/ps-connect` h
 - `--host claude` — needs `claude` CLI in `PATH`
 - `--host cursor` — writes `.cursor/mcp.json`, then open Cursor yourself
 
+> 💡 `--dir <path>` sets the working directory the AI tool sees as your code project — Genie/Claude/Terminal launch from there, Cursor writes its config into it, and PlanSync's instruction file lands there. Defaults to your current shell directory, so usually `cd` to your project first and you're done.
+
 ### (Optional) Multi-user demo
 
 ```bash
