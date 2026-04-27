@@ -192,12 +192,6 @@ Members do **not** need to edit `.env` — `bin/plansync` and `bin/ps-connect` h
 
 > 💡 `--dir <path>` sets the working directory the AI tool sees as your code project — Genie/Claude/Terminal launch from there, Cursor writes its config into it, and PlanSync's instruction file lands there. Defaults to your current shell directory, so usually `cd` to your project first and you're done.
 
-### (Optional) Multi-user demo
-
-```bash
-bash scripts/demo-terminal.sh
-```
-
 > 💡 **No global Node/npm needed.** Both launchers prepare a project-local runtime in `.local-runtime/node`.
 
 ---
