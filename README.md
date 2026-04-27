@@ -142,7 +142,12 @@ PlanSync has two roles, but they're not mutually exclusive: **the Owner is also 
 ./bin/ps-admin start
 ```
 
-> **Edit `.env` first if either applies:**
+> **Edit `.env` first if either applies** (otherwise skip — `ps-admin start` auto-generates `.env` for you):
+>
+> ```bash
+> cp .env.example .env    # only needed if .env doesn't exist yet
+> $EDITOR .env
+> ```
 >
 > - **Shared host / cluster** — change `PG_PORT` so you don't collide with other users on the same machine:
 >   `PG_PORT=$(expr 15000 + $(id -u) % 1000)`
