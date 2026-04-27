@@ -132,24 +132,62 @@ flowchart LR
 
 ## 🚀 Quick Start
 
+PlanSync has two roles. Pick whichever applies and follow the matching track.
+
+### 👑 Owner — set up the team
+
 ```bash
-# 1. Owner — start the local PlanSync service (auto-installs Node, Postgres, runs migrations)
+# 1. Bring up the server. Auto-installs Node + Postgres into .local-runtime/,
+#    auto-creates .env from .env.example, runs migrations, no prompts.
 ./bin/ps-admin start
+```
 
-# 2. Member — connect your AI tool (pick one)
-./bin/plansync --host claude    # Claude Code
-./bin/plansync --host cursor    # Cursor
-./bin/plansync --host genie     # Genie  (default)
+> **Edit `.env` first if either applies:**
+>
+> - **Shared host / cluster** — change `PG_PORT` so you don't collide with other users on the same machine:
+>   `PG_PORT=$(expr 15000 + $(id -u) % 1000)`
+> - **AI features** (semantic diff, completion verify, conflict prediction) — set `LLM_API_KEY` (AMD internal LLM) or `ANTHROPIC_API_KEY`.
 
-# 3. Open the Web UI
-open http://localhost:3001
+```bash
+# 2. Pick your identity. First run prompts for username + password, auto-creates
+#    your account, and saves the password as PLANSYNC_API_KEY in
+#    ~/.config/plansync/env. Subsequent launches skip the prompt.
+./bin/plansync --host genie
 
-# 4. (optional) Run the multi-user demo
+# 3. Create a project + add members. In the AI chat, or in the Web UI at
+#    http://localhost:3001:
+#       > create project "auth-module"
+#       > add member alice (developer)
+#       > add member bob   (developer)
+```
+
+### 🧑‍💻 Member — join the team
+
+```bash
+# 1. Connect (the very first run prompts for username + password — same as the
+#    Owner step 2; the account is created automatically on the server).
+./bin/plansync --host genie       # local: same machine as the Owner
+./bin/ps-connect --host genie     # remote / NFS: SSHes to the Owner's host
+```
+
+Then ask in chat: `> what tasks do I have?` (after the Owner has added you).
+
+Members do **not** need to edit `.env` — `bin/plansync` and `bin/ps-connect` handle identity for you.
+
+### Other AI hosts
+
+`--host genie` is recommended (zero extra install on AMD hosts). Alternatives:
+
+- `--host claude` — needs `claude` CLI in `PATH`
+- `--host cursor` — writes `.cursor/mcp.json`, then open Cursor yourself
+
+### (Optional) Multi-user demo
+
+```bash
 bash scripts/demo-terminal.sh
 ```
 
 > 💡 **No global Node/npm needed.** Both launchers prepare a project-local runtime in `.local-runtime/node`.
-> 💡 **Cluster / NFS users:** run [`./bin/ps-connect`](bin/ps-connect) from any machine — it SSHes to the server, forwards the port, and sets your identity from `$USER`.
 
 ---
 

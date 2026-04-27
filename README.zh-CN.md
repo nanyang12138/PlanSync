@@ -124,24 +124,59 @@ flowchart LR
 
 ## 🚀 快速开始
 
+PlanSync 有两种角色，选你对应的那条走。
+
+### 👑 Owner —— 搭起团队
+
 ```bash
-# 1. Owner —— 启动本地 PlanSync 服务（自动安装 Node、Postgres、跑 migration）
+# 1. 启动服务端。自动把 Node + Postgres 装到 .local-runtime/，
+#    自动从 .env.example 生成 .env，跑 migration，全程不提问。
 ./bin/ps-admin start
+```
 
-# 2. 成员 —— 接入你的 AI 工具（任选其一）
-./bin/plansync --host claude    # Claude Code
-./bin/plansync --host cursor    # Cursor
-./bin/plansync --host genie     # Genie（默认）
+> **以下两种情况，启动前先编辑 `.env`：**
+>
+> - **共享主机 / 集群** —— 修改 `PG_PORT`，避免与同机其他用户冲突：
+>   `PG_PORT=$(expr 15000 + $(id -u) % 1000)`
+> - **想用 AI 功能**（语义 diff、完成验收、冲突预测）—— 设置 `LLM_API_KEY`（AMD 内部 LLM）或 `ANTHROPIC_API_KEY`。
 
-# 3. 打开网页 UI
-open http://localhost:3001
+```bash
+# 2. 设置身份。首次运行会交互式询问用户名 + 密码，自动建账号，
+#    密码作为 PLANSYNC_API_KEY 写到 ~/.config/plansync/env。之后直接进入。
+./bin/plansync --host genie
 
-# 4.（可选）跑一遍多用户演示
+# 3. 在 AI 对话或网页 UI（http://localhost:3001）里建项目 + 加成员：
+#       > 创建项目 "auth-module"
+#       > 添加成员 alice（developer）
+#       > 添加成员 bob（developer）
+```
+
+### 🧑‍💻 Member —— 加入团队
+
+```bash
+# 1. 接入（首次同样会问用户名 + 密码 —— 和 Owner 步骤 2 一样，账号自动建）。
+./bin/plansync --host genie       # 本机：与 Owner 在同一台机器
+./bin/ps-connect --host genie     # 远程 / NFS：自动 SSH 到 Owner 服务器
+```
+
+然后在对话中：`> 我有哪些任务？`（Owner 把你加进项目之后）。
+
+成员**不需要**编辑 `.env`，`bin/plansync` 和 `bin/ps-connect` 会替你处理身份。
+
+### 其他 AI 工具
+
+`--host genie` 是推荐路径（AMD 内部主机零额外安装）。备选：
+
+- `--host claude` —— 需要 `claude` CLI 在 `PATH` 中
+- `--host cursor` —— 写出 `.cursor/mcp.json`，然后自己打开 Cursor
+
+### （可选）多用户演示
+
+```bash
 bash scripts/demo-terminal.sh
 ```
 
 > 💡 **不需要全局 Node/npm。** 两个启动脚本都会在 `.local-runtime/node` 准备项目本地运行时。
-> 💡 **集群 / NFS 用户：** 在任何一台机器上跑 [`./bin/ps-connect`](bin/ps-connect) —— 它会 SSH 到服务器、转发端口、根据 `$USER` 设置身份。
 
 ---
 
