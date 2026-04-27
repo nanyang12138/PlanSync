@@ -136,16 +136,10 @@ PlanSync has two roles, but they're not mutually exclusive: **the Owner is also 
 
 ### 👑 Owner — set up the team (then work like everyone else)
 
-```bash
-# 1. Bring up the server. Auto-installs Node + Postgres into .local-runtime/,
-#    auto-creates .env from .env.example, runs migrations, no prompts.
-./bin/ps-admin start
-```
-
-> **Edit `.env` first if either applies** (otherwise skip — `ps-admin start` auto-generates `.env` for you):
+> **Before step 1, edit `.env` if either applies** (otherwise skip — `ps-admin start` auto-generates a default `.env` for you):
 >
 > ```bash
-> cp .env.example .env    # only needed if .env doesn't exist yet
+> cp .env.example .env
 > $EDITOR .env
 > ```
 >
@@ -154,6 +148,11 @@ PlanSync has two roles, but they're not mutually exclusive: **the Owner is also 
 > - **AI features** (semantic diff, completion verify, conflict prediction) — set `LLM_API_KEY` (AMD internal LLM) or `ANTHROPIC_API_KEY`.
 
 ```bash
+# 1. Bring up the server. Auto-installs Node + Postgres into .local-runtime/,
+#    auto-creates .env from .env.example if you skipped the step above,
+#    runs migrations, no prompts.
+./bin/ps-admin start
+
 # 2. Pick your identity. First run prompts for username + password, auto-creates
 #    your account, and saves the password as PLANSYNC_API_KEY in
 #    ~/.config/plansync/env. Subsequent launches skip the prompt.
