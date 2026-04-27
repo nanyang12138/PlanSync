@@ -1,242 +1,321 @@
+<div align="center">
+
 # PlanSync
 
-> **[阅读英文版](./README.md)**
+### _面向 AI Agent 与人类协作的「计划感知」执行层_
 
-**让 AI Agent 和人类开发者在同一份计划下协作，计划变了，所有人立刻知道。**
+[![AMD AI Hackathon CDC 2026](https://img.shields.io/badge/AMD%20AI%20Hackathon-CDC%202026-ED1C24?style=flat-square)](https://aihackathoncdc2026.amd.com/)
+[![MCP Native](https://img.shields.io/badge/MCP-native-7C3AED?style=flat-square)](https://modelcontextprotocol.io/)
+[![Next.js 14](https://img.shields.io/badge/Next.js-14-000000?style=flat-square&logo=next.js)](https://nextjs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178C6?style=flat-square&logo=typescript)](https://www.typescriptlang.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-13%2B-4169E1?style=flat-square&logo=postgresql)](https://www.postgresql.org/)
+[![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](#license)
 
----
+**计划在变，Agent 不知道，工作在悄悄漂移。**
+PlanSync 给 AI Coding Agent 一份共享的、带版本的"权威计划"——并在它发生变化的瞬间通知所有人。
 
-## 它解决什么问题？
+[English](./README.md) · [快速开始](#-快速开始) · [架构](#-架构) · [MCP 工具清单](#-mcp-工具清单)
 
-多人协作中最容易出事的不是写代码，而是**信息不同步**——Owner 改了计划，但有人还在按旧版干活。
-
-PlanSync 的做法：
-
-- Owner 写计划（Plan），拆成任务（Task），分配给成员
-- 成员在自己的 AI 工具（Cursor / Claude Code / Genie）里直接领任务、干活、汇报
-- 计划一旦变更，所有相关成员立刻收到 **Drift Alert**
-
-所有操作都通过 AI 对话完成，不需要切换到别的界面。
+</div>
 
 ---
 
-## 快速开始
+## 🎯 30 秒讲清楚
 
-```bash
-# Owner：启动本地 PlanSync 服务
-cd /path/to/PlanSync
-./bin/ps-admin start
-```
+AI 协作团队里最致命的 Bug 不在代码里——而是某人聊天窗口里那份**过时的计划**。
+Owner 改了 spec。三个 agent 加两个人类继续按上周的版本写代码，没人发觉，直到合并那天才爆。
 
-```bash
-# 成员：连接你的 AI 工具
-./bin/plansync --host cursor    # Cursor
-./bin/plansync --host claude    # Claude Code
-./bin/plansync --host genie     # Genie（默认）
-```
+**PlanSync 让计划漂移无处藏身：**
 
-本机单人使用**不需要全局安装 Node / npm**。`./bin/ps-admin` 和 `./bin/plansync` 都会自动准备仓库内的固定运行时 `.local-runtime/node`，不会依赖 `home` 目录里的 Node。
-
-`./bin/ps-admin start` 会自动补齐服务端所需内容（runtime、依赖、数据库、migration）再启动 API。`./bin/plansync --host ...` 会自动补齐客户端所需内容（runtime、依赖、MCP 构建产物）再连接 AI 工具。
+- 📝 **版本化计划** — 每次变更都是一个不可变的新版本，自带 reviewer 评审流程。
+- 🚨 **自动漂移检测** — 新计划一被激活，所有进行中的任务都会被扫描并按严重度打标（正在执行中 = HIGH）。
+- 🔄 **执行心跳** — 运行中的任务每 30 秒上报一次，僵尸任务自动回收。
+- 🔌 **AI 工具原生集成** — 52 个 MCP 工具直接接入 **Claude Code、Cursor、Genie**，无需切换面板。
+- 🌐 **三种界面，同一份真相** — 网页 UI 用于规划、CLI REPL 给键盘党、MCP 给 IDE 内的 agent，全部 SSE 实时同步。
 
 ---
 
-## 配置
+## 🎬 演示
 
-所有配置集中在项目根目录的 **`.env`** 文件中。首次执行 `./bin/ps-admin` 或 `./bin/plansync` 时，如果 `.env` 不存在，会自动从 `.env.example` 生成。
+```text
+██████╗ ██╗      █████╗ ███╗   ██╗███████╗██╗   ██╗███╗   ██╗ ██████╗
+██╔══██╗██║     ██╔══██╗████╗  ██║██╔════╝╚██╗ ██╔╝████╗  ██║██╔════╝
+██████╔╝██║     ███████║██╔██╗ ██║███████╗ ╚████╔╝ ██╔██╗ ██║██║
+██╔═══╝ ██║     ██╔══██║██║╚██╗██║╚════██║  ╚██╔╝  ██║╚██╗██║██║
+██║     ███████╗██║  ██║██║ ╚████║███████║   ██║   ██║ ╚████║╚██████╗
+╚═╝     ╚══════╝╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝   ╚═╝   ╚═╝  ╚═══╝ ╚═════╝
 
-### 本机单人
+PlanSync [Terminal Mode] · alice · auth-module
+─────────────────────────────────────────────────
+Active Plan   v2 "OAuth2 with OIDC integration"
+Goal          用 OIDC 后端的 JWT 替换旧的 session 鉴权
+─────────────────────────────────────────────────
+Tasks         12 · 5 done / 2 in progress / 5 todo
+Drift         ⚠ 2 alerts (rebind required)
+─────────────────────────────────────────────────
 
-不用改任何东西，默认值就能用。
-
-### 多人团队
-
-编辑 `.env`，填入 Owner 提供的信息：
-
-```bash
-PLANSYNC_USER=alice                        # 你的身份（默认使用系统用户名 $USER）
-PLANSYNC_API_URL=http://192.168.1.10:3001  # API 地址（本机开发可省略）
-PLANSYNC_SECRET=your-team-secret           # 认证密钥（向 Owner 获取）
-```
-
-`bin/plansync` 启动时会自动读取 `.env`，不需要在命令行传环境变量。
-
-> **完整变量列表见** [配置参考](#配置参考)
-
----
-
-## 多人协作流程
-
-### Owner 做什么
-
-1. 在服务器上运行 `./bin/ps-admin start`
-2. 在 `.env` 中设置一个 `PLANSYNC_SECRET`，把 **API 地址** 和 **密钥** 告诉团队
-3. Owner 现在有两条可选工作流：
-   - 网页：打开浏览器进入 `Plans` 页，直接创建 draft、编辑、propose、activate、reactivate
-   - AI：运行 `./bin/plansync --user <owner-name> --host cursor`，然后通过 `plansync_plan_*` MCP 工具推进计划
-4. 在 AI 对话或网页里创建项目和成员：
-
-```
-> 创建项目 "登录系统"
-> 添加成员 alice（developer）
-> 添加成员 bob（developer）
-```
-
-5. 分配任务：
-
-```
-> 创建任务 "实现登录 API"，分配给 alice
-> 创建任务 "实现登录页 UI"，暂不分配
-```
-
-> **成员名 = 身份凭证**，必须和成员 `.env` 中的 `PLANSYNC_USER` 完全一致（区分大小写）。
-> 不确定就让对方跑 `echo $USER`。
-
-### 成员做什么
-
-1. 从 Owner 获取 API 地址和密钥
-2. 编辑 `.env`（见上方"多人团队"示例）
-3. 启动：`./bin/plansync --host cursor`
-4. 在 AI 对话中操作：
-
-```
-> 看看我有什么任务
 > 开始任务 TASK-42
-> 把 TASK-42 标记为完成
+
+⚠ 计划已变更 — 执行已暂停
+  任务 "Implement /auth/callback" 绑定的是 v1，当前激活计划是 v2
+  原因：scope 扩展，新增 PKCE 流程要求
+  → 解决方式：rebind | no_impact | cancel
 ```
 
-### 共享服务器（NFS / 集群环境）
+|               网页面板               |              漂移告警              |            计划 Diff            |
+| :----------------------------------: | :--------------------------------: | :-----------------------------: |
+| ![Dashboard](docs/img/dashboard.png) | ![Drift](docs/img/drift-alert.png) | ![Diff](docs/img/plan-diff.png) |
 
-如果 Owner 的机器在**共享文件系统**上（例如集群的 `/proj/`），成员无需克隆仓库或修改任何配置即可连接。
+---
 
-**Owner** — 在服务器上运行一次：
+## ✨ 为什么是 PlanSync？
+
+|     | 特性                       | 看点                                                                                                                             | 代码                                                        |
+| :-: | :------------------------- | :------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------- |
+| 🚨  | **自动漂移检测**           | 计划被激活后，扫描每一个任务，按执行状态打严重度（运行中 = HIGH），并把 AI 加工后的影响分析推送给负责人。                        | [`drift-engine.ts`](packages/api/src/lib/drift-engine.ts)   |
+| ✅  | **AI 验收任务完成**        | Agent 调用 `execution_complete` 时，LLM 会拿 `deliverablesMet` 与 plan / task brief 做比对，含糊其词的"完成"会被打分驳回。       | [`lib/ai/`](packages/api/src/lib/ai/)                       |
+| 🔮  | **AI 任务冲突预测**        | `plansync_check_task_conflicts` 在分配前预演范围重叠、依赖关系、资源冲突。                                                       | [`lib/ai/`](packages/api/src/lib/ai/)                       |
+| 🤝  | **多 Agent 委托**          | 一个人可以驱动多个 agent —— `asAgent` / `asUser` 让你以任何成员身份评审、评论、执行。Owner 专属操作在 API 层硬性拦截，安全可控。 | [`lib/auth.ts`](packages/api/src/lib/auth.ts)               |
+| 🔁  | **`/exec` 子会话派发**     | Terminal Mode 预加载任务上下文，`/exec` 把工作派发给 Genie/Claude 的全 IDE 工具。注册执行、心跳、AI 验收一条龙自动接好。         | [`exec-sessions/`](packages/api/src/app/api/exec-sessions/) |
+| 📜  | **版本化计划 + 评审流**    | 计划不可变：`draft → proposed → active → superseded → 可回滚 reactivate`。每个 reviewer 可被指定 focus 关注点。                  | [`tools/plan.ts`](packages/mcp-server/src/tools/plan.ts)    |
+| 🌐  | **一套后端，三种界面**     | Web UI（Next.js）、CLI REPL（raw-mode）、MCP server（52 工具）。共用鉴权、状态、SSE，无需切换上下文。                            | [`packages/`](packages/)                                    |
+| 🪝  | **GitHub Action 漂移闸门** | 一个可复用的 Action，如果 PR 关联的任务已与当前激活计划脱节，则 PR 检查失败。漂移别想从合并环节溜进来。                          | [`github-action/`](packages/integrations/github-action/)    |
+
+---
+
+## 🏗 架构
+
+```mermaid
+flowchart LR
+    H["👩 人类 / 🤖 Agent"]
+
+    subgraph Surfaces["三种界面"]
+        WEB["Web UI<br/>(Next.js + React)"]
+        CLI["CLI REPL<br/>(raw-mode + 斜杠命令)"]
+        MCP["MCP Server<br/>(52 工具，stdio)"]
+    end
+
+    H --> WEB
+    H --> CLI
+    H --> MCP
+
+    API["Next.js API<br/>REST + SSE"]
+    DRIFT["Drift Engine"]
+    HB["心跳扫描器<br/>30s ping · 5min 超时"]
+    AI["AI Client<br/>(AMD LLM / Anthropic)"]
+
+    WEB -->|HTTPS| API
+    CLI -->|HTTPS| API
+    MCP -->|HTTPS| API
+
+    API --> DRIFT
+    API --> HB
+    API --> AI
+
+    DB[("PostgreSQL<br/>via Prisma")]
+    API --> DB
+    DRIFT --> DB
+    HB --> DB
+```
+
+**三个包，同一份真相：** `packages/api`（服务端 + Web UI）、`packages/cli`（终端）、`packages/mcp-server`（IDE 桥接），加 `packages/shared` 提供跨包共享的 Zod schema。
+
+---
+
+## 🚀 快速开始
 
 ```bash
-./bin/ps-admin start   # 启动 API 并将服务器主机名写入 data/server_host
+# 1. Owner —— 启动本地 PlanSync 服务（自动安装 Node、Postgres、跑 migration）
+./bin/ps-admin start
+
+# 2. 成员 —— 接入你的 AI 工具（任选其一）
+./bin/plansync --host claude    # Claude Code
+./bin/plansync --host cursor    # Cursor
+./bin/plansync --host genie     # Genie（默认）
+
+# 3. 打开网页 UI
+open http://localhost:3001
+
+# 4.（可选）跑一遍多用户演示
+bash scripts/demo-terminal.sh
 ```
 
-**成员** — 从任何有 SSH 访问权限的机器：
+> 💡 **不需要全局 Node/npm。** 两个启动脚本都会在 `.local-runtime/node` 准备项目本地运行时。
+> 💡 **集群 / NFS 用户：** 在任何一台机器上跑 [`./bin/ps-connect`](bin/ps-connect) —— 它会 SSH 到服务器、转发端口、根据 `$USER` 设置身份。
 
-```bash
-/path/to/PlanSync/bin/ps-connect              # 交互式终端
-/path/to/PlanSync/bin/ps-connect --host cursor  # 连接 Cursor
-/path/to/PlanSync/bin/ps-connect --host claude  # 连接 Claude Code
+---
+
+## 🔄 一图看懂生命周期
+
+```text
+   Owner                         成员 / Agent
+   ─────                         ────────────
+   plan_create  ─┐
+   plan_propose  │  reviewers ─► review_approve / review_reject
+   plan_activate ┘
+        │
+        ▼
+   task_create ─► assignee ─► task_pack ─► execution_start
+                                              │ (心跳 30s)
+                                              ▼
+                                          execution_complete (AI 验收)
+                                              │
+   ┌────────────────────────────────────────────────────────────┐
+   │ Owner 编辑 + 激活计划 v2                                    │
+   │   ▼                                                        │
+   │ drift-engine 扫描全部任务 ─► DriftAlert (HIGH/MED/LOW)      │
+   │   ▼                                                        │
+   │ 负责人选择：rebind   →  对齐到 v2                           │
+   │             no_impact → 不影响，保持 v1                     │
+   │             cancel   →  释放任务                            │
+   └────────────────────────────────────────────────────────────┘
 ```
 
-`ps-connect` 自动：
+---
 
-- 读取 `data/server_host` 找到 API 所在的服务器
-- 如果你在不同机器上，SSH 进入服务器
-- 自动将 `PLANSYNC_USER` 设置为你的系统 `$USER`——无需手动配置
+## 🧰 MCP 工具清单
 
-> 为方便使用，添加到 shell 配置文件：
->
-> ```bash
-> alias ps-connect='/proj/.../PlanSync/bin/ps-connect'
-> ```
+52 个工具，专为 AI 对话原生体验设计。
+
+| 域                | 数量 | 重点说明                                                                                                                                                                                                                                       |
+| :---------------- | :--: | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **状态 & 上下文** |  3   | `plansync_status`、`plansync_my_work`、`plansync_exec_context`（识别 `/exec` 子会话并自动绑定 run）                                                                                                                                            |
+| **项目**          |  6   | `plansync_project_create` / `_show` / `_list` / `_update` / `_switch` / `_delete`                                                                                                                                                              |
+| **成员**          |  4   | `plansync_member_add`（人类 + agent） / `_list` / `_update` / `_remove`                                                                                                                                                                        |
+| **计划**          |  14  | `_create`、`_propose`、`_activate`、`_reactivate`（回滚！）、`_diff`（AI 语义 diff）、`_suggest`（agent 可用的安全提案），外加四个 `_append` 助手（`constraints` / `deliverables` / `standards` / `openQuestions`），规避大计划下的 token 截断 |
+| **评审 & 评论**   |  6   | `plansync_review_approve` / `_reject`（按用户名自动定位评审；委托用 `asUser`），完整评论 CRUD                                                                                                                                                  |
+| **任务**          |  8   | `plansync_task_pack`（brief + 漂移闸门）、`_claim`、`_rebind`、`_decline`，完整 CRUD                                                                                                                                                           |
+| **执行**          |  3   | `_start`、`_heartbeat`、`_complete` —— complete 时会走 **`deliverablesMet` 的 AI 验收**                                                                                                                                                        |
+| **漂移**          |  2   | `plansync_drift_list`、`_resolve`（`rebind` / `no_impact` / `cancel`）                                                                                                                                                                         |
+| **建议**          |  2   | `plansync_suggestion_list`、`_resolve`（owner 接受 / 拒绝）                                                                                                                                                                                    |
+| **AI Assist**     |  1   | `plansync_check_task_conflicts` —— 预测正在进行的任务间的范围重叠与资源冲突                                                                                                                                                                    |
+| **委托 & 活动**   |  3   | `plansync_my_work agentName=…`、`_delegation_clear`、`plansync_who`、`plansync_activity_list`                                                                                                                                                  |
+
+实现位于 [`packages/mcp-server/src/tools/`](packages/mcp-server/src/tools/)。
 
 ---
 
-### 任务生命周期
+## 🛠 技术栈
 
-| 动作            | 说明                                            |
-| --------------- | ----------------------------------------------- |
-| **分配**        | Owner 创建任务并指定 assignee，成员自动收到通知 |
-| **接受 / 拒绝** | 成员可接受开始工作，或拒绝退回给 Owner          |
-| **领取**        | 未分配的任务可以主动领取                        |
-| **完成**        | 标记为 done                                     |
-
----
-
-## 配置参考
-
-| 变量                              | 默认值                                            | 用途                    |
-| --------------------------------- | ------------------------------------------------- | ----------------------- |
-| **客户端（`bin/plansync` 使用）** |                                                   |                         |
-| `PLANSYNC_USER`                   | `$USER`                                           | 你在 PlanSync 中的身份  |
-| `PLANSYNC_API_URL`                | `http://localhost:3001`                           | API 服务地址            |
-| `PLANSYNC_SECRET`                 | `dev-secret`                                      | 认证密钥（全团队统一）  |
-| **服务端（API 服务使用）**        |                                                   |                         |
-| `DATABASE_URL`                    | `postgresql://$USER@localhost:15432/plansync_dev` | PostgreSQL 连接串       |
-| `PG_PORT`                         | `15432`                                           | PostgreSQL 端口         |
-| `PORT`                            | `3001`                                            | API 服务端口            |
-| `AUTH_DISABLED`                   | `false`                                           | 跳过认证（仅本地开发）  |
-| `LOG_LEVEL`                       | `info`                                            | 日志级别                |
-| **AI 功能（可选）**               |                                                   |                         |
-| `LLM_API_KEY`                     | —                                                 | AMD 内部 LLM API 密钥   |
-| `LLM_API_BASE`                    | `https://llm-api.amd.com`                         | LLM API 地址            |
-| `LLM_MODEL_NAME`                  | `Claude-Sonnet-4.5`                               | 模型名                  |
-| `ANTHROPIC_API_KEY`               | —                                                 | Anthropic 官方 API 密钥 |
+| 层级           | 选型                                                        |
+| :------------- | :---------------------------------------------------------- |
+| **后端**       | Next.js 14（App Router）· TypeScript 5.7                    |
+| **数据库**     | PostgreSQL 13+ via Prisma 5.22                              |
+| **Web UI**     | React 18 · Tailwind CSS 3 · Radix UI                        |
+| **CLI**        | Node.js raw-mode REPL · 斜杠命令 · MCP 客户端               |
+| **MCP Server** | `@modelcontextprotocol/sdk` 1.3 · esbuild 打包 · stdio 传输 |
+| **实时**       | Server-Sent Events（按项目 + 按用户两种流）                 |
+| **鉴权**       | `crypto.scrypt` 密码哈希 · Bearer Token · 执行级临时密钥    |
+| **AI**         | AMD 内部 LLM API（Anthropic 兼容）**或** Anthropic SDK      |
+| **Schemas**    | Zod 3.24，跨 api / cli / mcp 共享                           |
 
 ---
 
-## 常用命令
+## ⚙️ 配置
 
-| 命令                           | 说明                                         |
-| ------------------------------ | -------------------------------------------- |
-| `./bin/ps-admin start`         | 自动补齐服务端依赖并启动 PlanSync API        |
-| `./bin/ps-connect`             | 连接到共享 PlanSync 服务器（必要时通过 SSH） |
-| `./bin/plansync --host cursor` | 自动补齐客户端依赖并接入 Cursor              |
-| `bash scripts/build.sh`        | 用仓库本地运行时构建所有 workspace 包        |
-| `bash scripts/npm.sh test`     | 通过仓库本地 npm 运行测试                    |
-| `bash scripts/lint.sh`         | 通过仓库本地运行时执行 eslint                |
-| `bash scripts/format.sh`       | 通过仓库本地运行时执行 prettier              |
-| `bash scripts/db-reset.sh`     | 清空数据库重新开始                           |
-| `bash scripts/db-psql.sh`      | 进入 PostgreSQL 命令行                       |
+仓库根目录的 **`.env`** 是唯一配置入口。`./bin/ps-admin` 和 `./bin/plansync` 首次运行会从 [`.env.example`](.env.example) 自动生成。
 
-高级 / 手动入口：
-
-- `bash scripts/setup.sh`：显式执行完整 Owner 初始化
-- `bash scripts/dev.sh`：环境已就绪时直接启动 API
-
----
-
-## 核心概念
-
-**身份模型** — 没有注册、没有密码。Owner 通过 `plansync_member_add` 添加成员名，成员在 `.env` 中用 `PLANSYNC_USER` 声明自己是谁。系统按名字匹配权限和任务。名字区分大小写。
-
-**角色** — **Owner** 负责建项目、写计划、管成员；**Developer / Agent** 负责领任务、干活、汇报进度。
-
-**Drift Alert** — 计划更新后，系统自动检测哪些任务基于旧版本计划创建，向相关成员推送预警。收到预警应停下当前工作，确认影响后再继续。
+| 变量                                              | 默认                                              | 用途                                           |
+| :------------------------------------------------ | :------------------------------------------------ | :--------------------------------------------- |
+| `PLANSYNC_USER`                                   | `$USER`                                           | 你在 PlanSync 中的身份                         |
+| `PLANSYNC_API_URL`                                | `http://localhost:3001`                           | API 服务地址                                   |
+| `PLANSYNC_API_KEY`                                | _(交互式获取)_                                    | 个人 API Key                                   |
+| `PLANSYNC_PROJECT`                                | —                                                 | 预选当前项目                                   |
+| `DATABASE_URL`                                    | `postgresql://$USER@localhost:15432/plansync_dev` | Postgres 连接串                                |
+| `PG_PORT`                                         | `15432`                                           | Postgres 端口（共享主机建议 `15000+UID%1000`） |
+| `PORT`                                            | `3001`                                            | API 端口                                       |
+| `LOG_LEVEL`                                       | `info`                                            | `debug \| info \| warn \| error`               |
+| `EMAIL_DOMAIN`                                    | `amd.com`                                         | 拼到 `$USER` 后用于漂移通知                    |
+| `LLM_API_KEY` / `LLM_API_BASE` / `LLM_MODEL_NAME` | —                                                 | AMD 内部 LLM（Anthropic 兼容）                 |
+| `ANTHROPIC_API_KEY`                               | —                                                 | Anthropic 官方 API（备选）                     |
 
 ---
 
-## 项目结构
+## 📁 项目结构
 
 ```
 PlanSync/
 ├── packages/
-│   ├── api/          # REST API（Next.js + Prisma + PostgreSQL）
-│   ├── mcp-server/   # MCP Server（AI 工具通过这里接入）
-│   ├── shared/       # 共享类型与 Zod 校验
-│   └── cli/          # CLI 工具
-├── bin/plansync      # 一键启动脚本（自动注入 MCP 配置）
-├── bin/ps-connect    # 共享服务器连接工具（SSH 透明代理）
-├── claude-md/        # AI Agent 行为指令
-└── scripts/          # 数据库与运维脚本
+│   ├── api/             # Next.js REST + SSE 后端、Web UI、Prisma schema
+│   │   ├── src/app/api/ # 58 个路由 handler
+│   │   ├── src/lib/     # drift-engine · heartbeat-scanner · ai/ · auth · webhook
+│   │   └── prisma/      # schema.prisma + migrations
+│   ├── mcp-server/      # 52 个 MCP 工具，esbuild 打包，stdio 传输
+│   ├── cli/             # raw-mode REPL，含斜杠命令与 SSE 监听
+│   ├── shared/          # Zod schema + 共享类型
+│   └── integrations/
+│       └── github-action/  # PR 检查：你的任务还和当前计划对齐吗？
+├── bin/
+│   ├── ps-admin         # Owner：bootstrap + 启动 API
+│   ├── plansync         # 成员：启动终端 / Claude / Cursor / Genie
+│   ├── ps-connect       # NFS / 集群：SSH + 端口转发 + 接入
+│   └── start-mcp        # MCP 入口（被 .claude/settings.json 调用）
+├── scripts/
+│   ├── demo-terminal.sh # 多用户端到端演示
+│   ├── demo-webui.js    # 浏览器驱动的 Web UI 演示
+│   ├── setup.sh · dev.sh · build.sh
+│   └── db-reset.sh · db-psql.sh
+├── CLAUDE.md            # Terminal Mode 行为规约
+├── AGENTS.md            # Agent 执行规则（漂移处理、执行流程）
+└── PLAN.md              # 内部设计文档
 ```
 
-详细设计见 [PLAN.md](./PLAN.md)。
+---
+
+## 📚 深入阅读
+
+- **[CLAUDE.md](./CLAUDE.md)** —— PlanSync Terminal Mode 行为规约（会话开始、exec 模式、委托）
+- **[AGENTS.md](./AGENTS.md)** —— 每个 agent 必须遵守的执行规则
+- **[PLAN.md](./PLAN.md)** —— 内部设计笔记
+- **[README.md](./README.md)** —— 英文版（hackathon 主版本）
+
+### 常用命令
+
+| 命令                                             | 用途                                   |
+| :----------------------------------------------- | :------------------------------------- |
+| `./bin/ps-admin start`                           | Bootstrap 服务端运行时 + DB 并启动 API |
+| `./bin/plansync --host <claude\|cursor\|genie>`  | 启动客户端，自动注入 MCP 配置          |
+| `./bin/ps-connect --host claude`                 | 远程 / NFS 服务器上同上                |
+| `bash scripts/build.sh`                          | 构建所有 workspace 包                  |
+| `bash scripts/test.sh` / `lint.sh` / `format.sh` | 质量检查                               |
+| `bash scripts/db-reset.sh`                       | 清空并重建数据库                       |
+| `bash scripts/db-psql.sh`                        | 打开 `psql` 终端                       |
 
 ---
 
-## 常见问题
+## 🛟 FAQ
 
-| 问题                               | 解决方法                                                    |
-| ---------------------------------- | ----------------------------------------------------------- |
-| 看不到任务                         | `.env` 中 `PLANSYNC_USER` 是否和 Owner 登记的名字完全一致？ |
-| `assignee is not a project member` | 先让 Owner 添加成员，或核对拼写                             |
-| `permission denied`                | `.env` 中 `PLANSYNC_SECRET` 和服务端不匹配                  |
-| 忘了有哪些成员                     | AI 对话中输入"列出项目成员"                                 |
-| 想重新开始                         | `bash scripts/db-reset.sh`                                  |
+| 问题                               | 解决                                                                        |
+| :--------------------------------- | :-------------------------------------------------------------------------- |
+| 看不到任务                         | `.env` 中 `PLANSYNC_USER` 必须和 Owner 注册时的名字完全一致（区分大小写）。 |
+| `assignee is not a project member` | 让 Owner 先跑 `plansync_member_add`。                                       |
+| `permission denied`                | `.env` 中的 `PLANSYNC_API_KEY` 与服务端不匹配。                             |
+| 想重新开始                         | `bash scripts/db-reset.sh`。                                                |
+| 共享主机上忘了端口                 | 每个用户需要独立的 `PG_PORT`，建议 `expr 15000 + $(id -u) % 1000`。         |
 
 ---
 
-## NFS 环境适配
+## 📦 NFS / 集群环境说明
 
-本项目在 NFS 挂载文件系统上做了以下处理：
+本项目针对共享 NFS 文件系统做了优化：
 
-- PostgreSQL 数据存在 `/tmp`（本地磁盘，规避 NFS 文件锁）
+- PostgreSQL 数据存放在 `/tmp`（避开 NFS 文件锁问题）
 - npm 缓存重定向到 `/tmp/npm-cache-$USER`
 - Node 运行时安装到仓库内的 `.local-runtime/node`
-- MCP Server 用 esbuild 打包（避免 tsc 在 NFS 上 OOM）
+- MCP server 用 `esbuild` 打包（避免 `tsc` 在 NFS 上 OOM）
+
+---
+
+## 📝 License
+
+MIT —— 见仓库 `LICENSE` 文件，无则继承项目默认。
+
+---
+
+<div align="center">
+
+**为 [AMD AI Hackathon CDC 2026](https://aihackathoncdc2026.amd.com/) 而生** 🚀
+
+<sub>由 PlanSync 团队设计与构建。欢迎贡献代码、提 issue、贡献想法。</sub>
+
+</div>

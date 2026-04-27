@@ -30,7 +30,7 @@ The Owner edits the spec. Three agents and two humans keep building against last
 - 📝 **Versioned plans** — every change is a new immutable version with a reviewer-approval workflow.
 - 🚨 **Automatic drift detection** — the moment a new plan is activated, every in-flight task is scanned and flagged with severity (HIGH if currently executing).
 - 🔄 **Execution heartbeats** — running tasks ping every 30 s; zombie work is auto-killed.
-- 🔌 **Native to your AI tool** — 48 MCP tools plug straight into **Claude Code, Cursor, and Genie**. No new dashboard to babysit.
+- 🔌 **Native to your AI tool** — 52 MCP tools plug straight into **Claude Code, Cursor, and Genie**. No new dashboard to babysit.
 - 🌐 **Three surfaces, one truth** — Web UI for planning, CLI REPL for the keyboard-first, MCP for in-IDE agents. All real-time via SSE.
 
 ---
@@ -78,13 +78,16 @@ Drift         ⚠ 2 alerts (rebind required)
 
 ## ✨ Why PlanSync?
 
-|     | Feature                                 | What makes it interesting                                                                                                                                | Code                                                        |
-| :-: | :-------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------- |
-| 🚨  | **Automatic Drift Detection**           | On plan activation, scans every task, ranks severity by execution state (HIGH if a run is alive), and ships AI-enriched impact analysis to the assignee. | [`drift-engine.ts`](packages/api/src/lib/drift-engine.ts)   |
-| 🔐  | **Execution-Scoped Ephemeral Keys**     | Agents mint short-lived keys bound to a single execution run. TTL 1 s – 7 d. Scoped sessions cannot mint nested tokens — kills key sprawl.               | [`exec-sessions/`](packages/api/src/app/api/exec-sessions/) |
-| 📜  | **Versioned Plans + Reviewer Workflow** | Plans are immutable. `draft → proposed → active → superseded`. Per-reviewer focus notes let the owner tell each reviewer what to look at.                | [`plans/`](packages/api/src/app/api/projects/)              |
-| 🌐  | **One Backend, Three Surfaces**         | Web UI (Next.js), CLI REPL (raw-mode), MCP server (48 tools). All share auth, state, and SSE — no context switch.                                        | [`packages/`](packages/)                                    |
-| 🤖  | **AI-Powered Semantic Diff & Verify**   | Plan diffs go through an LLM to surface _meaningful_ changes. Task completion is checked against deliverables before being accepted.                     | [`lib/ai/`](packages/api/src/lib/ai/)                       |
+|     | Feature                                 | What makes it interesting                                                                                                                                                          | Code                                                        |
+| :-: | :-------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------- |
+| 🚨  | **Automatic Drift Detection**           | On plan activation, scans every task, ranks severity by execution state (HIGH if a run is alive), and ships AI-enriched impact analysis to the assignee.                           | [`drift-engine.ts`](packages/api/src/lib/drift-engine.ts)   |
+| ✅  | **AI-Verified Task Completion**         | When an agent calls `execution_complete`, an LLM cross-checks `deliverablesMet` against the plan and the task brief. Hand-wavy claims get rejected with a score breakdown.         | [`lib/ai/`](packages/api/src/lib/ai/)                       |
+| 🔮  | **AI Conflict Prediction**              | `plansync_check_task_conflicts` previews scope overlap, dependencies, and resource contention across active tasks _before_ assignments collide.                                    | [`lib/ai/`](packages/api/src/lib/ai/)                       |
+| 🤝  | **Multi-Agent Delegation**              | One human can drive many agents — `asAgent` / `asUser` lets you review, comment, or execute on behalf of any member. Owner-only writes are blocked at the API layer for safety.    | [`lib/auth.ts`](packages/api/src/lib/auth.ts)               |
+| 🔁  | **`/exec` Subagent Hand-off**           | Terminal Mode pre-loads task context, then `/exec` spawns Genie/Claude with full IDE tools. Execution registration, heartbeat, and AI verification are wired automatically.        | [`exec-sessions/`](packages/api/src/app/api/exec-sessions/) |
+| 📜  | **Versioned Plans + Reviewer Workflow** | Plans are immutable: `draft → proposed → active → superseded → reactivated`. Per-reviewer focus notes let the owner tell each reviewer what to look at. Rollback is one tool call. | [`tools/plan.ts`](packages/mcp-server/src/tools/plan.ts)    |
+| 🌐  | **One Backend, Three Surfaces**         | Web UI (Next.js), CLI REPL (raw-mode), MCP server (52 tools). All share auth, state, and SSE — no context switch.                                                                  | [`packages/`](packages/)                                    |
+| 🪝  | **GitHub Action Drift Gate**            | A reusable action that fails the PR check if the touched task is no longer aligned with the active plan version. Drift can't sneak in via merge.                                   | [`github-action/`](packages/integrations/github-action/)    |
 
 ---
 
@@ -97,7 +100,7 @@ flowchart LR
     subgraph Surfaces["Three Surfaces"]
         WEB["Web UI<br/>(Next.js + React)"]
         CLI["CLI REPL<br/>(raw-mode + slash cmds)"]
-        MCP["MCP Server<br/>(48 tools, stdio)"]
+        MCP["MCP Server<br/>(52 tools, stdio)"]
     end
 
     H --> WEB
@@ -180,19 +183,21 @@ bash scripts/demo-terminal.sh
 
 ## 🧰 MCP Tool Surface
 
-48 tools, designed to feel native inside an AI chat.
+52 tools, designed to feel native inside an AI chat.
 
-| Domain                    | Tools | Examples                                                                                        |
-| :------------------------ | :---: | :---------------------------------------------------------------------------------------------- |
-| **Status & Context**      |   4   | `plansync_status`, `plansync_my_work`, `plansync_exec_context`                                  |
-| **Projects & Members**    |   9   | `plansync_project_create`, `plansync_member_add`                                                |
-| **Plans**                 |   9   | `plansync_plan_create`, `plansync_plan_propose`, `plansync_plan_activate`, `plansync_plan_diff` |
-| **Reviews & Comments**    |   5   | `plansync_review_approve`, `plansync_comment_create`                                            |
-| **Tasks**                 |   8   | `plansync_task_pack`, `plansync_task_claim`, `plansync_task_rebind`                             |
-| **Execution**             |   4   | `plansync_execution_start`, `plansync_execution_complete` (auto-heartbeat)                      |
-| **Drift**                 |   2   | `plansync_drift_list`, `plansync_drift_resolve`                                                 |
-| **Suggestions**           |   2   | `plansync_plan_suggest`, `plansync_suggestion_list`                                             |
-| **Delegation & Activity** |   5   | `plansync_my_work agentName=…`, `plansync_delegation_clear`, `plansync_who`                     |
+| Domain                    | Tools | Highlights                                                                                                                                                                                                                                                                          |
+| :------------------------ | :---: | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Status & Context**      |   3   | `plansync_status`, `plansync_my_work`, `plansync_exec_context` (detects `/exec` sub-sessions and auto-binds the run)                                                                                                                                                                |
+| **Projects**              |   6   | `plansync_project_create` / `_show` / `_list` / `_update` / `_switch` / `_delete`                                                                                                                                                                                                   |
+| **Members**               |   4   | `plansync_member_add` (humans + agents) / `_list` / `_update` / `_remove`                                                                                                                                                                                                           |
+| **Plans**                 |  14   | `plansync_plan_create`, `_propose`, `_activate`, `_reactivate` (rollback!), `_diff` (AI semantic), `_suggest` (agent-safe edits), plus four `_append` helpers (`constraints` / `deliverables` / `standards` / `openQuestions`) that sidestep token-budget truncation on large plans |
+| **Reviews & Comments**    |   6   | `plansync_review_approve` / `_reject` (auto-finds your review by username; `asUser` for delegation), full comment CRUD                                                                                                                                                              |
+| **Tasks**                 |   8   | `plansync_task_pack` (brief + drift gate), `_claim`, `_rebind`, `_decline`, full CRUD                                                                                                                                                                                               |
+| **Execution**             |   3   | `plansync_execution_start`, `_heartbeat`, `_complete` — completes go through **AI verification** of `deliverablesMet`                                                                                                                                                               |
+| **Drift**                 |   2   | `plansync_drift_list`, `_resolve` (`rebind` / `no_impact` / `cancel`)                                                                                                                                                                                                               |
+| **Suggestions**           |   2   | `plansync_suggestion_list`, `_resolve` (owner accept / reject)                                                                                                                                                                                                                      |
+| **AI Assist**             |   1   | `plansync_check_task_conflicts` — predicts scope overlap & resource contention across in-flight tasks                                                                                                                                                                               |
+| **Delegation & Activity** |   3   | `plansync_my_work agentName=…`, `_delegation_clear`, `plansync_who`, `plansync_activity_list`                                                                                                                                                                                       |
 
 Implementation lives in [`packages/mcp-server/src/tools/`](packages/mcp-server/src/tools/).
 
@@ -243,7 +248,7 @@ PlanSync/
 │   │   ├── src/app/api/ # 58 route handlers
 │   │   ├── src/lib/     # drift-engine · heartbeat-scanner · ai/ · auth · webhook
 │   │   └── prisma/      # schema.prisma + migrations
-│   ├── mcp-server/      # 48 MCP tools, esbuild-bundled, stdio transport
+│   ├── mcp-server/      # 52 MCP tools, esbuild-bundled, stdio transport
 │   ├── cli/             # Raw-mode REPL with slash commands & SSE listener
 │   ├── shared/          # Zod schemas + shared types
 │   └── integrations/
