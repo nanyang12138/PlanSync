@@ -146,8 +146,6 @@ PlanSync has two roles, but they're not mutually exclusive: **the Owner is also 
 > - **AI features** — set `LLM_API_KEY` (AMD internal LLM) or `ANTHROPIC_API_KEY`. **Without one of these**, semantic plan diff, AI completion verification, and conflict prediction all silently no-op — half the product. Don't skip this.
 > - **Shared host / cluster** — change `PG_PORT` so you don't collide with other users on the same machine:
 >   `PG_PORT=$(expr 15000 + $(id -u) % 1000)`
->
-> Local single-user laptop without AI? `ps-admin start` will auto-generate a default `.env` and you can move on to step 1.
 
 ```bash
 # 1. Bring up the server. Auto-installs Node + Postgres into .local-runtime/,
