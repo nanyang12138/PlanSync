@@ -85,7 +85,7 @@ Environment:
 
 AI (pick one):
   LLM_API_KEY        AMD internal LLM API subscription key
-  LLM_API_BASE       AMD LLM API base URL (default: https://llm-api.amd.com)
+  LLM_API_BASE       AMD LLM API base URL (default: https://llm-api.amd.com/Anthropic)
   LLM_MODEL_NAME     Model name (default: Claude-Sonnet-4.5)
   ANTHROPIC_API_KEY  Anthropic API key (external users)
 
