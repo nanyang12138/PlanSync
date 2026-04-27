@@ -124,9 +124,9 @@ flowchart LR
 
 ## 🚀 快速开始
 
-PlanSync 有两种角色，选你对应的那条走。
+PlanSync 有两种角色，但**不是互斥的：Owner 默认也是开发者**，setup 完成后就能给自己派任务、跟着干活。选你当前要做的那条走就行。
 
-### 👑 Owner —— 搭起团队
+### 👑 Owner —— 搭起团队（然后和大家一样干活）
 
 ```bash
 # 1. 启动服务端。自动把 Node + Postgres 装到 .local-runtime/，
@@ -149,6 +149,11 @@ PlanSync 有两种角色，选你对应的那条走。
 #       > 创建项目 "auth-module"
 #       > 添加成员 alice（developer）
 #       > 添加成员 bob（developer）
+
+# 4.（可选）把自己也加进来当开发者，给自己派活：
+#       > 添加成员 <你的名字>（developer）
+#       > 创建任务 "实现 /auth/callback"，分配给 <你的名字>
+#       > 我有哪些任务？
 ```
 
 ### 🧑‍💻 Member —— 加入团队

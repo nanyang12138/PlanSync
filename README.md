@@ -132,9 +132,9 @@ flowchart LR
 
 ## 🚀 Quick Start
 
-PlanSync has two roles. Pick whichever applies and follow the matching track.
+PlanSync has two roles, but they're not mutually exclusive: **the Owner is also a developer by default** and can assign tasks to themselves once setup is done. Pick the track that matches what you're doing right now.
 
-### 👑 Owner — set up the team
+### 👑 Owner — set up the team (then work like everyone else)
 
 ```bash
 # 1. Bring up the server. Auto-installs Node + Postgres into .local-runtime/,
@@ -159,6 +159,11 @@ PlanSync has two roles. Pick whichever applies and follow the matching track.
 #       > create project "auth-module"
 #       > add member alice (developer)
 #       > add member bob   (developer)
+
+# 4. (optional) Assign yourself some work — you're a developer too.
+#       > add member <your-name> (developer)
+#       > create task "wire up /auth/callback", assign to <your-name>
+#       > what tasks do I have?
 ```
 
 ### 🧑‍💻 Member — join the team
