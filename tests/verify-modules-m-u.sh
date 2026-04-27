@@ -1,5 +1,5 @@
 #!/bin/bash
-# VERIFICATION_SPEC: Modules M-U automated tests
+# Modules M-U automated tests
 # Runs against API at localhost:3001 with AUTH_DISABLED=true
 set -uo pipefail
 

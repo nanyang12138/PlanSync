@@ -264,8 +264,7 @@ PlanSync/
 │   ├── setup.sh · dev.sh · build.sh
 │   └── db-reset.sh · db-psql.sh
 ├── CLAUDE.md            # Terminal Mode behaviour spec
-├── AGENTS.md            # Agent execution rules (drift handling, exec flow)
-└── PLAN.md              # Internal design doc
+└── AGENTS.md            # Agent execution rules (drift handling, exec flow)
 ```
 
 ---
@@ -274,7 +273,6 @@ PlanSync/
 
 - **[CLAUDE.md](./CLAUDE.md)** — how PlanSync Terminal Mode behaves (session start, exec mode, delegation)
 - **[AGENTS.md](./AGENTS.md)** — execution rules every agent must follow
-- **[PLAN.md](./PLAN.md)** — internal design notes
 - **[README.zh-CN.md](./README.zh-CN.md)** — Chinese mirror of this README
 
 ### Common commands

@@ -256,8 +256,7 @@ PlanSync/
 │   ├── setup.sh · dev.sh · build.sh
 │   └── db-reset.sh · db-psql.sh
 ├── CLAUDE.md            # Terminal Mode 行为规约
-├── AGENTS.md            # Agent 执行规则（漂移处理、执行流程）
-└── PLAN.md              # 内部设计文档
+└── AGENTS.md            # Agent 执行规则（漂移处理、执行流程）
 ```
 
 ---
@@ -266,7 +265,6 @@ PlanSync/
 
 - **[CLAUDE.md](./CLAUDE.md)** —— PlanSync Terminal Mode 行为规约（会话开始、exec 模式、委托）
 - **[AGENTS.md](./AGENTS.md)** —— 每个 agent 必须遵守的执行规则
-- **[PLAN.md](./PLAN.md)** —— 内部设计笔记
 - **[README.md](./README.md)** —— 英文版（hackathon 主版本）
 
 ### 常用命令
