@@ -147,7 +147,7 @@ PlanSync 有两种角色，但**不是互斥的：Owner 默认也是开发者**�
 
 # 2. 设置身份。首次运行会交互式询问用户名 + 密码，自动建账号，
 #    密码作为 PLANSYNC_API_KEY 写到 ~/.config/plansync/env。之后直接进入。
-./bin/plansync --host genie
+./bin/plansync
 
 # 3. 在 AI 对话或网页 UI（http://localhost:3001）里建项目 + 加成员：
 #       > 创建项目 "auth-module"
@@ -164,8 +164,8 @@ PlanSync 有两种角色，但**不是互斥的：Owner 默认也是开发者**�
 
 ```bash
 # 1. 接入（首次同样会问用户名 + 密码 —— 和 Owner 步骤 2 一样，账号自动建）。
-./bin/plansync --host genie       # 本机：与 Owner 在同一台机器
-./bin/ps-connect --host genie     # 远程 / NFS：自动 SSH 到 Owner 服务器
+./bin/plansync       # 本机：与 Owner 在同一台机器
+./bin/ps-connect     # 远程 / NFS：自动 SSH 到 Owner 服务器
 ```
 
 然后在对话中：`> 我有哪些任务？`（Owner 把你加进项目之后）。
@@ -174,9 +174,10 @@ PlanSync 有两种角色，但**不是互斥的：Owner 默认也是开发者**�
 
 ### 其他 AI 工具
 
-`--host genie` 是推荐路径（AMD 内部主机零额外安装）。备选：
+`./bin/plansync` 默认启动 PlanSync Terminal 模式（推荐）。如需跳过 Terminal、直接以 AI 工具接入（CI / 高级用法）：
 
-- `--host claude` —— 需要 `claude` CLI 在 `PATH` 中
+- `--host genie` —— 直接启动 Genie（AMD 内部主机零额外安装）
+- `--host claude` —— 直接启动 Claude Code（需要 `claude` CLI 在 `PATH` 中）
 - `--host cursor` —— 写出 `.cursor/mcp.json`，然后自己打开 Cursor
 
 > 💡 `--dir <path>` 指定 AI 工具看到的"项目根目录"—— Genie/Claude/Terminal 启动前会 `cd` 到这里，Cursor 的配置文件写到这里，PlanSync 的指令文件也注入到这里。默认就是你当前 shell 所在目录，所以一般 `cd` 到自己的项目里再跑就行。
@@ -309,15 +310,16 @@ PlanSync/
 
 ### 常用命令
 
-| 命令                                             | 用途                                   |
-| :----------------------------------------------- | :------------------------------------- |
-| `./bin/ps-admin start`                           | Bootstrap 服务端运行时 + DB 并启动 API |
-| `./bin/plansync --host <claude\|cursor\|genie>`  | 启动客户端，自动注入 MCP 配置          |
-| `./bin/ps-connect --host claude`                 | 远程 / NFS 服务器上同上                |
-| `bash scripts/build.sh`                          | 构建所有 workspace 包                  |
-| `bash scripts/test.sh` / `lint.sh` / `format.sh` | 质量检查                               |
-| `bash scripts/db-reset.sh`                       | 清空并重建数据库                       |
-| `bash scripts/db-psql.sh`                        | 打开 `psql` 终端                       |
+| 命令                                             | 用途                                     |
+| :----------------------------------------------- | :--------------------------------------- |
+| `./bin/ps-admin start`                           | Bootstrap 服务端运行时 + DB 并启动 API   |
+| `./bin/plansync`                                 | 启动 PlanSync Terminal（推荐）           |
+| `./bin/plansync --host <genie\|claude\|cursor>`  | 跳过 Terminal，直接开 AI 工具（CI/高级） |
+| `./bin/ps-connect`                               | 同上，但用于远程 / NFS 服务器            |
+| `bash scripts/build.sh`                          | 构建所有 workspace 包                    |
+| `bash scripts/test.sh` / `lint.sh` / `format.sh` | 质量检查                                 |
+| `bash scripts/db-reset.sh`                       | 清空并重建数据库                         |
+| `bash scripts/db-psql.sh`                        | 打开 `psql` 终端                         |
 
 ---
 

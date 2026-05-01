@@ -156,7 +156,7 @@ PlanSync has two roles, but they're not mutually exclusive: **the Owner is also 
 # 2. Pick your identity. First run prompts for username + password, auto-creates
 #    your account, and saves the password as PLANSYNC_API_KEY in
 #    ~/.config/plansync/env. Subsequent launches skip the prompt.
-./bin/plansync --host genie
+./bin/plansync
 
 # 3. Create a project + add members. In the AI chat, or in the Web UI at
 #    http://localhost:3001:
@@ -175,8 +175,8 @@ PlanSync has two roles, but they're not mutually exclusive: **the Owner is also 
 ```bash
 # 1. Connect (the very first run prompts for username + password — same as the
 #    Owner step 2; the account is created automatically on the server).
-./bin/plansync --host genie       # local: same machine as the Owner
-./bin/ps-connect --host genie     # remote / NFS: SSHes to the Owner's host
+./bin/plansync       # local: same machine as the Owner
+./bin/ps-connect     # remote / NFS: SSHes to the Owner's host
 ```
 
 Then ask in chat: `> what tasks do I have?` (after the Owner has added you).
@@ -185,9 +185,10 @@ Members do **not** need to edit `.env` — `bin/plansync` and `bin/ps-connect` h
 
 ### Other AI hosts
 
-`--host genie` is recommended (zero extra install on AMD hosts). Alternatives:
+By default `./bin/plansync` launches PlanSync Terminal mode (recommended). To skip Terminal and open an AI tool directly with PlanSync MCP (advanced / CI use):
 
-- `--host claude` — needs `claude` CLI in `PATH`
+- `--host genie` — launch Genie directly (zero extra install on AMD hosts)
+- `--host claude` — launch Claude Code directly (needs `claude` CLI in `PATH`)
 - `--host cursor` — writes `.cursor/mcp.json`, then open Cursor yourself
 
 > 💡 `--dir <path>` sets the working directory the AI tool sees as your code project — Genie/Claude/Terminal launch from there, Cursor writes its config into it, and PlanSync's instruction file lands there. Defaults to your current shell directory, so usually `cd` to your project first and you're done.
@@ -320,15 +321,16 @@ PlanSync/
 
 ### Common commands
 
-| Command                                          | Purpose                                         |
-| :----------------------------------------------- | :---------------------------------------------- |
-| `./bin/ps-admin start`                           | Bootstrap server runtime + DB and start the API |
-| `./bin/plansync --host <claude\|cursor\|genie>`  | Start client, auto-inject MCP config            |
-| `./bin/ps-connect --host claude`                 | Same, but on a remote / NFS server              |
-| `bash scripts/build.sh`                          | Build all workspace packages                    |
-| `bash scripts/test.sh` / `lint.sh` / `format.sh` | Quality checks                                  |
-| `bash scripts/db-reset.sh`                       | Wipe and recreate the database                  |
-| `bash scripts/db-psql.sh`                        | Open a `psql` shell                             |
+| Command                                          | Purpose                                            |
+| :----------------------------------------------- | :------------------------------------------------- |
+| `./bin/ps-admin start`                           | Bootstrap server runtime + DB and start the API    |
+| `./bin/plansync`                                 | Start PlanSync Terminal (recommended)              |
+| `./bin/plansync --host <genie\|claude\|cursor>`  | Skip Terminal, open AI tool directly (CI/advanced) |
+| `./bin/ps-connect`                               | Same as plansync, but on a remote / NFS server     |
+| `bash scripts/build.sh`                          | Build all workspace packages                       |
+| `bash scripts/test.sh` / `lint.sh` / `format.sh` | Quality checks                                     |
+| `bash scripts/db-reset.sh`                       | Wipe and recreate the database                     |
+| `bash scripts/db-psql.sh`                        | Open a `psql` shell                                |
 
 ---
 
