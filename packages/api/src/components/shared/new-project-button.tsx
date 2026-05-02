@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { Plus, X } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
+import { Alert } from '@/components/ui/alert';
 
 export function NewProjectButton() {
   const router = useRouter();
@@ -63,15 +65,23 @@ export function NewProjectButton() {
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
             onClick={(e) => e.target === e.currentTarget && handleClose()}
           >
-            <div className="panel w-full max-w-md p-6 shadow-2xl">
+            <div
+              className="panel w-full max-w-md p-6 shadow-2xl"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="new-project-title"
+            >
               <div className="flex items-center justify-between mb-5">
-                <h2 className="text-base font-semibold text-slate-900">New Project</h2>
+                <h2 id="new-project-title" className="text-base font-semibold text-fg">
+                  New Project
+                </h2>
                 <button
                   type="button"
                   onClick={handleClose}
-                  className="rounded-lg p-1 text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+                  aria-label="Close dialog"
+                  className="rounded-lg p-1 text-fg-subtle hover:text-fg hover:bg-surface-2 transition-colors"
                 >
-                  <X className="h-4 w-4" />
+                  <X className="h-4 w-4" aria-hidden />
                 </button>
               </div>
 
@@ -101,14 +111,33 @@ export function NewProjectButton() {
                   />
                 </div>
 
-                {error && <p className="text-sm text-rose-600">{error}</p>}
+                {error && (
+                  <Alert intent="danger" live>
+                    {error}
+                  </Alert>
+                )}
 
                 <div className="flex justify-end gap-2 pt-1">
-                  <button type="button" onClick={handleClose} className="btn-secondary">
+                  <button
+                    type="button"
+                    onClick={handleClose}
+                    disabled={loading}
+                    className="btn-secondary"
+                  >
                     Cancel
                   </button>
                   <button type="submit" disabled={loading || !name.trim()} className="btn-primary">
-                    {loading ? 'Creating…' : 'Create Project'}
+                    {loading ? (
+                      <>
+                        <Spinner size="xs" className="text-primary-foreground" />
+                        Creating…
+                      </>
+                    ) : (
+                      <>
+                        <Plus className="h-3.5 w-3.5" aria-hidden />
+                        Create Project
+                      </>
+                    )}
                   </button>
                 </div>
               </form>

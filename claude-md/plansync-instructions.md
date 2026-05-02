@@ -42,12 +42,21 @@ You are working on a project managed by **PlanSync**, an AI team collaboration p
 
 ## If You Detect Drift
 
-If `plansync_task_pack` shows drift alerts:
+If `plansync_task_pack` shows drift alerts (or you receive a `plansync` warning notification mid-execution):
 
 1. **STOP** your current work
-2. Read the drift alert details to understand what changed
-3. Notify the user: "⚠ Plan has changed since this task was created"
-4. Wait for the user/owner to resolve the drift (rebind, cancel, or mark as no_impact)
+2. Surface the alert verbatim — same compact format used everywhere in PlanSync:
+
+   ```
+   ⚠ DRIFT DETECTED: {N} alert(s) ({H} high). Pause execution immediately and resolve before continuing.
+     [HIGH] {reason}  →  plansync_drift_resolve {driftId} action=rebind
+
+   Other actions per drift:
+     action=no_impact  → change does not affect this task
+     action=cancel     → release the task entirely
+   ```
+
+3. Wait for the user/owner to choose. Don't pick `no_impact` or `cancel` on their behalf.
 
 ## Important Rules
 

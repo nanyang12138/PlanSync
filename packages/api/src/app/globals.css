@@ -4,26 +4,133 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   DESIGN TOKENS
+   Semantic names. Components reference these — never raw color scales.
+   Light theme is the default; .dark overrides below.
+   ───────────────────────────────────────────────────────────────────────────── */
+
 @layer base {
   :root {
-    --background: 220 20% 97%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-    --primary: 221.2 83.2% 53.3%;
+    /* Surfaces (page → cards → hover) */
+    --surface-page: 220 20% 97%;
+    --surface-1: 0 0% 100%;
+    --surface-2: 220 14% 96%;
+    --surface-3: 220 14% 92%;
+
+    /* Foreground (primary → muted → subtle) */
+    --fg: 222 47% 11%;
+    --fg-muted: 215 16% 47%;
+    --fg-subtle: 215 16% 65%;
+
+    /* Borders */
+    --border-subtle: 214 32% 91%;
+    --border-strong: 214 32% 82%;
+
+    /* Brand */
+    --primary: 221 83% 53%;
+    --primary-foreground: 210 40% 98%;
+    --primary-soft: 214 100% 97%;
+    --primary-soft-fg: 224 76% 40%;
+
+    /* Semantic intents — each role gets exactly one hue */
+    --success: 158 64% 40%;
+    --success-soft: 152 81% 96%;
+    --success-soft-fg: 158 64% 30%;
+
+    --danger: 0 72% 51%;
+    --danger-soft: 0 86% 97%;
+    --danger-soft-fg: 0 70% 42%;
+
+    --warning: 38 92% 50%;
+    --warning-soft: 48 96% 95%;
+    --warning-soft-fg: 32 95% 38%;
+
+    /* Drift gets its own hue so it stops colliding with generic warnings */
+    --drift: 22 92% 52%;
+    --drift-soft: 24 100% 96%;
+    --drift-soft-fg: 18 88% 40%;
+
+    /* Agent (LLM-authored) */
+    --agent: 262 83% 58%;
+    --agent-soft: 250 100% 97%;
+    --agent-soft-fg: 263 70% 45%;
+
+    --info: 199 89% 48%;
+    --info-soft: 204 100% 97%;
+    --info-soft-fg: 201 96% 32%;
+
+    /* Focus rings — per-intent */
+    --ring-primary: 221 83% 53%;
+    --ring-danger: 0 72% 51%;
+    --ring-drift: 22 92% 52%;
+    --ring-success: 158 64% 40%;
+
+    /* Radii */
+    --radius: 0.625rem;
+    --radius-sm: 0.375rem;
+    --radius-lg: 0.875rem;
+
+    /* Compatibility aliases (legacy code references these) */
+    --background: var(--surface-page);
+    --foreground: var(--fg);
+    --card: var(--surface-1);
+    --card-foreground: var(--fg);
     --primary-foreground: 210 40% 98%;
     --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
+    --secondary-foreground: 222 47% 11%;
     --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
+    --muted-foreground: 215 16% 47%;
     --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: var(--danger);
     --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 221.2 83.2% 53.3%;
-    --radius: 0.625rem;
+    --border: var(--border-subtle);
+    --input: var(--border-subtle);
+    --ring: var(--ring-primary);
+  }
+
+  .dark {
+    --surface-page: 224 30% 7%;
+    --surface-1: 224 25% 11%;
+    --surface-2: 224 22% 14%;
+    --surface-3: 224 20% 18%;
+
+    --fg: 210 40% 98%;
+    --fg-muted: 215 20% 70%;
+    --fg-subtle: 215 16% 50%;
+
+    --border-subtle: 224 20% 20%;
+    --border-strong: 224 20% 30%;
+
+    --primary: 217 91% 60%;
+    --primary-foreground: 222 47% 11%;
+    --primary-soft: 217 80% 16%;
+    --primary-soft-fg: 213 94% 78%;
+
+    --success: 156 60% 45%;
+    --success-soft: 158 50% 14%;
+    --success-soft-fg: 152 70% 75%;
+
+    --danger: 0 70% 60%;
+    --danger-soft: 0 60% 18%;
+    --danger-soft-fg: 0 90% 85%;
+
+    --warning: 38 88% 55%;
+    --warning-soft: 38 60% 16%;
+    --warning-soft-fg: 48 90% 78%;
+
+    --drift: 22 88% 58%;
+    --drift-soft: 22 60% 18%;
+    --drift-soft-fg: 28 95% 78%;
+
+    --agent: 262 80% 70%;
+    --agent-soft: 262 50% 20%;
+    --agent-soft-fg: 262 90% 85%;
+
+    --info: 199 85% 55%;
+    --info-soft: 200 70% 16%;
+    --info-soft-fg: 199 90% 80%;
   }
 
   * {
@@ -42,104 +149,179 @@
   }
 
   ::selection {
-    background-color: hsl(221.2 83.2% 53.3% / 0.15);
+    background-color: hsl(var(--primary) / 0.18);
   }
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   COMPONENT PRIMITIVES
+   Use semantic tokens. Spacing comes from a small fixed scale (px-card,
+   px-cell — defined in tailwind.config.ts).
+   ───────────────────────────────────────────────────────────────────────────── */
+
 @layer components {
   .section-label {
-    @apply text-xs font-semibold uppercase tracking-wider text-slate-500;
+    @apply text-xs font-semibold uppercase tracking-wider text-fg-muted;
   }
 
   .panel {
-    @apply rounded-xl border border-slate-200/80 bg-white shadow-sm;
+    @apply rounded-xl border border-subtle bg-surface-1 shadow-sm;
   }
 
   .panel-header {
-    @apply flex items-center justify-between px-5 py-4 border-b border-slate-100;
+    @apply flex items-center justify-between border-b border-subtle px-card py-3;
   }
 
   .page-shell {
-    @apply min-h-screen bg-[#f8f9fb];
+    @apply min-h-screen bg-background;
   }
 
   .page-header {
-    @apply sticky top-0 z-30 border-b border-slate-200/60 bg-white/80 backdrop-blur-lg;
+    @apply sticky top-0 z-30 border-b border-subtle bg-surface-1/80 backdrop-blur-lg;
   }
 
   .page-container {
     @apply mx-auto max-w-7xl px-6 py-8;
   }
 
+  /* Single badge size. No ad-hoc text-[10px]/[11px] overrides in components. */
   .badge {
-    @apply inline-flex items-center rounded-md px-2.5 py-0.5 text-xs font-medium;
+    @apply inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-medium leading-4;
   }
 
   .badge-brand {
-    @apply bg-blue-50 text-blue-700 border border-blue-200/60;
+    background-color: hsl(var(--primary-soft));
+    color: hsl(var(--primary-soft-fg));
+    border-color: hsl(var(--primary) / 0.2);
   }
-
   .badge-success {
-    @apply bg-emerald-50 text-emerald-700 border border-emerald-200/60;
+    background-color: hsl(var(--success-soft));
+    color: hsl(var(--success-soft-fg));
+    border-color: hsl(var(--success) / 0.2);
   }
-
   .badge-warning {
-    @apply bg-amber-50 text-amber-700 border border-amber-200/60;
+    background-color: hsl(var(--warning-soft));
+    color: hsl(var(--warning-soft-fg));
+    border-color: hsl(var(--warning) / 0.2);
   }
-
   .badge-danger {
-    @apply bg-rose-50 text-rose-700 border border-rose-200/60;
+    background-color: hsl(var(--danger-soft));
+    color: hsl(var(--danger-soft-fg));
+    border-color: hsl(var(--danger) / 0.2);
   }
-
+  .badge-drift {
+    background-color: hsl(var(--drift-soft));
+    color: hsl(var(--drift-soft-fg));
+    border-color: hsl(var(--drift) / 0.25);
+  }
+  .badge-agent {
+    background-color: hsl(var(--agent-soft));
+    color: hsl(var(--agent-soft-fg));
+    border-color: hsl(var(--agent) / 0.2);
+  }
+  .badge-info {
+    background-color: hsl(var(--info-soft));
+    color: hsl(var(--info-soft-fg));
+    border-color: hsl(var(--info) / 0.2);
+  }
   .badge-neutral {
-    @apply bg-slate-100 text-slate-500 border border-slate-200/60;
-  }
-
-  .badge-violet {
-    @apply bg-violet-50 text-violet-700 border border-violet-200/60;
+    background-color: hsl(var(--surface-2));
+    color: hsl(var(--fg-muted));
+    border-color: hsl(var(--border-subtle));
   }
 
   .btn-primary {
-    @apply inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm shadow-blue-600/20 transition-all hover:bg-blue-700 hover:shadow-md hover:shadow-blue-600/25 active:scale-[0.97] disabled:opacity-50 disabled:pointer-events-none;
+    @apply inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-semibold shadow-sm transition-all hover:shadow-md active:scale-[0.97] disabled:opacity-50 disabled:pointer-events-none;
+    background-color: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
+    box-shadow: 0 1px 2px 0 hsl(var(--primary) / 0.2);
+  }
+  .btn-primary:hover {
+    background-color: hsl(var(--primary) / 0.92);
+  }
+  .btn-primary:focus-visible {
+    @apply outline-none ring-2;
+    --tw-ring-color: hsl(var(--ring-primary) / 0.5);
   }
 
   .btn-secondary {
-    @apply inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-semibold text-slate-600 shadow-sm transition-all hover:bg-slate-50 hover:border-slate-300 active:scale-[0.97] disabled:opacity-50 disabled:pointer-events-none;
+    @apply inline-flex items-center gap-1.5 rounded-lg border border-subtle bg-surface-1 px-3.5 py-1.5 text-xs font-semibold text-fg-muted shadow-sm transition-all hover:bg-surface-2 hover:border-strong active:scale-[0.97] disabled:opacity-50 disabled:pointer-events-none;
+  }
+  .btn-secondary:focus-visible {
+    @apply outline-none ring-2;
+    --tw-ring-color: hsl(var(--ring-primary) / 0.4);
   }
 
   .btn-ghost {
-    @apply inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-slate-500 transition-all hover:bg-slate-100 hover:text-slate-700 disabled:opacity-50;
+    @apply inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-fg-muted transition-all hover:bg-surface-2 hover:text-fg disabled:opacity-50;
   }
 
   .btn-danger {
-    @apply inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-white px-3.5 py-1.5 text-xs font-semibold text-rose-600 shadow-sm transition-all hover:bg-rose-50 hover:border-rose-300 active:scale-[0.97] disabled:opacity-50;
+    @apply inline-flex items-center gap-1.5 rounded-lg border bg-surface-1 px-3.5 py-1.5 text-xs font-semibold shadow-sm transition-all active:scale-[0.97] disabled:opacity-50;
+    color: hsl(var(--danger));
+    border-color: hsl(var(--danger) / 0.3);
+  }
+  .btn-danger:hover {
+    background-color: hsl(var(--danger-soft));
+    border-color: hsl(var(--danger) / 0.5);
+  }
+  .btn-danger:focus-visible {
+    @apply outline-none ring-2;
+    --tw-ring-color: hsl(var(--ring-danger) / 0.4);
   }
 
-
   .input-field {
-    @apply h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm shadow-sm transition-colors placeholder:text-slate-400 focus:outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:opacity-50;
+    @apply h-9 w-full rounded-lg border border-subtle bg-surface-1 px-3 text-sm text-fg shadow-sm transition-colors placeholder:text-fg-subtle focus:outline-none focus:ring-2 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .input-field:focus {
+    border-color: hsl(var(--primary) / 0.5);
+    --tw-ring-color: hsl(var(--ring-primary) / 0.18);
   }
 
   .select-field {
-    @apply h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm shadow-sm transition-colors focus:outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:opacity-50;
+    @apply h-9 w-full rounded-lg border border-subtle bg-surface-1 px-3 text-sm text-fg shadow-sm transition-colors focus:outline-none focus:ring-2 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .select-field:focus {
+    border-color: hsl(var(--primary) / 0.5);
+    --tw-ring-color: hsl(var(--ring-primary) / 0.18);
+  }
+
+  /* Inline status row — used for error/retry under buttons */
+  .status-row {
+    @apply mt-2 flex items-center gap-2 text-xs;
+  }
+  .status-row-danger {
+    color: hsl(var(--danger-soft-fg));
+  }
+  .status-row-info {
+    color: hsl(var(--info-soft-fg));
   }
 }
 
 @layer utilities {
   .text-gradient {
     @apply bg-clip-text text-transparent;
-    background-image: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 50%, #06b6d4 100%);
+    background-image: linear-gradient(
+      135deg,
+      hsl(var(--primary)) 0%,
+      hsl(var(--agent)) 50%,
+      hsl(var(--info)) 100%
+    );
   }
 
   .bg-grid {
     background-image:
-      linear-gradient(to right, rgba(0,0,0,0.02) 1px, transparent 1px),
-      linear-gradient(to bottom, rgba(0,0,0,0.02) 1px, transparent 1px);
+      linear-gradient(to right, hsl(var(--fg) / 0.03) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(var(--fg) / 0.03) 1px, transparent 1px);
     background-size: 32px 32px;
   }
 
   .bg-radial-glow {
-    background-image: radial-gradient(ellipse 60% 50% at 50% 0%, rgba(59,130,246,0.04), transparent);
+    background-image: radial-gradient(
+      ellipse 60% 50% at 50% 0%,
+      hsl(var(--primary) / 0.05),
+      transparent
+    );
   }
 
   .animate-pulse-slow {
@@ -158,5 +340,13 @@
   @keyframes fadeIn {
     from { opacity: 0; transform: translateY(4px); }
     to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Reconnecting indicator (NotificationProvider fallback state) */
+  .pill-reconnecting {
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-medium;
+    background-color: hsl(var(--warning-soft));
+    color: hsl(var(--warning-soft-fg));
+    border: 1px solid hsl(var(--warning) / 0.2);
   }
 }

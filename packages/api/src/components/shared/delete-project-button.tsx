@@ -51,11 +51,13 @@ export function DeleteProjectButton({
   return (
     <>
       <button
+        type="button"
         onClick={() => setOpen(true)}
-        className="btn-ghost !text-slate-400 hover:!text-red-500 hover:!bg-red-50 !px-2 !py-1.5"
+        aria-label={`Delete project ${projectName}`}
+        className="btn-ghost hover:!text-danger hover:!bg-danger-soft !px-2 !py-1.5"
         title={`Delete "${projectName}"`}
       >
-        <Trash2 className="h-3.5 w-3.5" />
+        <Trash2 className="h-3.5 w-3.5" aria-hidden />
       </button>
 
       {open && (
@@ -67,39 +69,57 @@ export function DeleteProjectButton({
         >
           <div
             className="panel w-full max-w-sm p-6 shadow-2xl mx-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-project-title"
+            aria-describedby="delete-project-desc"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Header */}
             <div className="flex items-start justify-between mb-4">
               <div className="flex items-center gap-2.5">
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-red-50">
-                  <AlertTriangle className="h-5 w-5 text-red-500" />
+                <div
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-danger-soft text-danger-soft-fg"
+                  aria-hidden
+                >
+                  <AlertTriangle className="h-5 w-5" />
                 </div>
                 <div>
-                  <p className="text-sm font-semibold text-slate-900">Delete project?</p>
-                  <p className="text-xs text-slate-400 mt-0.5">This action cannot be undone.</p>
+                  <p id="delete-project-title" className="text-sm font-semibold text-fg">
+                    Delete project?
+                  </p>
+                  <p id="delete-project-desc" className="text-xs text-fg-subtle mt-0.5">
+                    This action cannot be undone.
+                  </p>
                 </div>
               </div>
               <button
+                type="button"
                 onClick={() => setOpen(false)}
                 disabled={loading}
+                aria-label="Close dialog"
                 className="btn-ghost !p-1 shrink-0"
               >
-                <X className="h-4 w-4" />
+                <X className="h-4 w-4" aria-hidden />
               </button>
             </div>
 
             {/* Project name */}
-            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 mb-4">
-              <p className="text-xs text-slate-400 mb-0.5">Project</p>
-              <p className="text-sm font-medium text-slate-800 truncate">{projectName}</p>
+            <div className="rounded-lg border border-subtle bg-surface-2 px-3 py-2 mb-4">
+              <p className="text-xs text-fg-subtle mb-0.5">Project</p>
+              <p className="text-sm font-medium text-fg truncate">{projectName}</p>
             </div>
 
-            {error && <p className="text-xs text-red-600 mb-3">{error}</p>}
+            {error && (
+              <div className="mb-3 text-xs text-danger-soft-fg" role="alert">
+                {error}
+              </div>
+            )}
 
             {/* Actions */}
             <div className="flex gap-2 justify-end">
               <button
+                type="button"
                 onClick={() => setOpen(false)}
                 disabled={loading}
                 className="btn-secondary text-xs"
@@ -107,14 +127,15 @@ export function DeleteProjectButton({
                 Cancel
               </button>
               <button
+                type="button"
                 onClick={handleDelete}
                 disabled={loading}
                 className="btn-danger text-xs gap-1.5"
               >
                 {loading ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
                 ) : (
-                  <Trash2 className="h-3.5 w-3.5" />
+                  <Trash2 className="h-3.5 w-3.5" aria-hidden />
                 )}
                 {loading ? 'Deleting…' : 'Delete project'}
               </button>

@@ -8,15 +8,18 @@
  *   - Shows toast notifications for key events
  *   - Warning-level toasts are sticky (no auto-dismiss); info toasts dismiss after 6 s
  *   - Optional browser notifications when the tab is hidden (opt-in via Notification API permission)
+ *   - Circuit breaker: 5 failed reconnects → switch to a 30 s probe loop and surface a
+ *     visible "Reconnecting…" pill so the user knows live updates are paused
  */
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { X } from 'lucide-react';
+import { RefreshCw, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Level = 'info' | 'warning';
+type ConnState = 'connected' | 'reconnecting' | 'down';
 
 interface Toast {
   id: string;
@@ -33,11 +36,28 @@ interface NotifyFn {
 
 const MAX_TOASTS = 8;
 const AUTO_DISMISS_MS = 6000;
+const MAX_RECONNECT_ATTEMPTS = 5;
+const PROBE_INTERVAL_MS = 30_000;
+const BACKOFF_BASE_MS = 1000;
+const BACKOFF_CAP_MS = 30_000;
 
 // ── Context ───────────────────────────────────────────────────────────────────
 
 const NotifyContext = createContext<NotifyFn>(() => {});
 export const useNotify = () => useContext(NotifyContext);
+
+// ── Cookie helper ─────────────────────────────────────────────────────────────
+
+function readCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null;
+  const m = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+  if (!m) return null;
+  try {
+    return decodeURIComponent(m[1]);
+  } catch {
+    return null;
+  }
+}
 
 // ── Toast item ────────────────────────────────────────────────────────────────
 
@@ -46,21 +66,54 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
     <div
       role="alert"
       className={cn(
-        'flex items-start gap-3 rounded-md border border-border bg-card px-4 py-3 shadow-lg',
+        'flex items-start gap-3 rounded-lg border bg-surface-1 px-4 py-3 shadow-lg',
         toast.level === 'warning'
-          ? 'border-l-4 border-l-amber-500'
-          : 'border-l-4 border-l-blue-500',
+          ? 'border-l-4 border-l-warning border-subtle'
+          : 'border-l-4 border-l-primary border-subtle',
       )}
     >
-      <span className="mt-0.5 shrink-0 text-base">{toast.level === 'warning' ? '⚠' : 'ℹ'}</span>
-      <p className="flex-1 text-sm text-foreground">{toast.message}</p>
+      <span className="mt-0.5 shrink-0 text-base" aria-hidden>
+        {toast.level === 'warning' ? '⚠' : 'ℹ'}
+      </span>
+      <p className="flex-1 text-sm text-fg">{toast.message}</p>
       <button
+        type="button"
         onClick={onDismiss}
-        className="shrink-0 text-muted-foreground hover:text-foreground"
-        aria-label="Dismiss"
+        className="shrink-0 text-fg-subtle hover:text-fg"
+        aria-label="Dismiss notification"
       >
         <X className="h-3.5 w-3.5" />
       </button>
+    </div>
+  );
+}
+
+// ── Connection-status pill ────────────────────────────────────────────────────
+
+function ConnectionPill({
+  state,
+  onRetry,
+}: {
+  state: Exclude<ConnState, 'connected'>;
+  onRetry: () => void;
+}) {
+  const label = state === 'down' ? 'Live updates paused' : 'Reconnecting…';
+  return (
+    <div className="pill-reconnecting" role="status" aria-live="polite">
+      <RefreshCw
+        className={cn('h-3 w-3', state === 'reconnecting' && 'animate-spin')}
+        aria-hidden
+      />
+      <span>{label}</span>
+      {state === 'down' ? (
+        <button
+          type="button"
+          onClick={onRetry}
+          className="ml-1 underline underline-offset-2 hover:no-underline"
+        >
+          Retry
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -155,7 +208,9 @@ const ALL_EVENT_TYPES = [
 
 export function NotificationProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [connState, setConnState] = useState<ConnState>('connected');
   const notifyRef = useRef<NotifyFn | null>(null);
+  const retryRef = useRef<() => void>(() => {});
 
   const notify: NotifyFn = useCallback((message, level = 'info', opts) => {
     const sticky = opts?.sticky ?? false;
@@ -167,7 +222,6 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       }, AUTO_DISMISS_MS);
     }
 
-    // Browser notification fallback when tab is hidden and user has granted permission.
     if (
       typeof window !== 'undefined' &&
       typeof Notification !== 'undefined' &&
@@ -189,22 +243,28 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  // Subscribe to user-level SSE — receives events from all user's projects.
-  // Reconnects on its own membership change so a brand-new project the user
-  // was just added to is picked up without a page reload.
+  // ── SSE subscription with circuit breaker ─────────────────────────────────
   useEffect(() => {
-    const currentUser = (() => {
-      const m = document.cookie.match(/(?:^|; )plansync-user=([^;]*)/);
-      return m ? decodeURIComponent(m[1]) : null;
-    })();
+    const currentUser = readCookie('plansync-user');
 
     let es: EventSource | null = null;
+    let backoffTimer: ReturnType<typeof setTimeout> | null = null;
+    let probeTimer: ReturnType<typeof setInterval> | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let attempts = 0;
     let cancelled = false;
+
+    const clearTimers = () => {
+      if (backoffTimer) clearTimeout(backoffTimer);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (probeTimer) clearInterval(probeTimer);
+      backoffTimer = reconnectTimer = null;
+      probeTimer = null;
+    };
 
     const scheduleReconnect = () => {
       if (cancelled) return;
-      if (reconnectTimer) return; // debounce: coalesce a burst of memberships
+      if (reconnectTimer) return;
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
         if (cancelled) return;
@@ -213,14 +273,66 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       }, 200);
     };
 
+    const probe = async () => {
+      try {
+        const r = await fetch('/api/health', { method: 'HEAD', cache: 'no-store' });
+        if (r.ok && !cancelled) {
+          attempts = 0;
+          if (probeTimer) clearInterval(probeTimer);
+          probeTimer = null;
+          connect();
+        }
+      } catch {
+        // still down — wait for next probe tick
+      }
+    };
+
+    const openCircuit = () => {
+      if (cancelled) return;
+      setConnState('down');
+      if (probeTimer) clearInterval(probeTimer);
+      probeTimer = setInterval(probe, PROBE_INTERVAL_MS);
+    };
+
+    const handleError = () => {
+      if (cancelled) return;
+      attempts += 1;
+      es?.close();
+      es = null;
+      if (attempts >= MAX_RECONNECT_ATTEMPTS) {
+        openCircuit();
+        return;
+      }
+      setConnState('reconnecting');
+      const delay = Math.min(BACKOFF_BASE_MS * 2 ** (attempts - 1), BACKOFF_CAP_MS);
+      backoffTimer = setTimeout(() => {
+        backoffTimer = null;
+        if (cancelled) return;
+        connect();
+      }, delay);
+    };
+
     const connect = () => {
-      es = new EventSource('/api/user-events');
+      if (cancelled) return;
+      try {
+        es = new EventSource('/api/user-events');
+      } catch {
+        handleError();
+        return;
+      }
+
+      es.onopen = () => {
+        attempts = 0;
+        setConnState('connected');
+      };
+
+      const listeners: Array<{ type: string; fn: EventListener }> = [];
       for (const type of ALL_EVENT_TYPES) {
-        es.addEventListener(type, (e: Event) => {
+        const fn: EventListener = (e: Event) => {
           try {
             const data = JSON.parse((e as MessageEvent).data) as Record<string, unknown>;
 
-            // Membership change targeting the current user → reconnect so the
+            // Membership change targeting current user → reconnect so the
             // subscription set is refreshed (gain a new project, drop a removed one).
             if (
               currentUser &&
@@ -239,18 +351,35 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
           } catch {
             // ignore malformed payloads
           }
-        });
+        };
+        listeners.push({ type, fn });
+        es.addEventListener(type, fn);
       }
-      es.onerror = () => {
-        // EventSource auto-reconnects on transport errors
+
+      const removeListeners = () => {
+        for (const { type, fn } of listeners) es?.removeEventListener(type, fn);
       };
+
+      es.onerror = () => {
+        removeListeners();
+        handleError();
+      };
+    };
+
+    retryRef.current = () => {
+      if (cancelled) return;
+      attempts = 0;
+      clearTimers();
+      es?.close();
+      setConnState('reconnecting');
+      connect();
     };
 
     connect();
 
     return () => {
       cancelled = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
+      clearTimers();
       es?.close();
     };
   }, []);
@@ -271,6 +400,9 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     <NotifyContext.Provider value={notify}>
       {children}
       <div aria-live="polite" className="fixed right-4 top-4 z-50 flex w-80 flex-col gap-2">
+        {connState !== 'connected' ? (
+          <ConnectionPill state={connState} onRetry={() => retryRef.current()} />
+        ) : null}
         {toasts.map((t) => (
           <ToastItem key={t.id} toast={t} onDismiss={() => dismiss(t.id)} />
         ))}

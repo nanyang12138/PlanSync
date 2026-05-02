@@ -10,6 +10,8 @@ import { ArrowLeft, GitBranch, History } from 'lucide-react';
 import { RealtimeWrapper } from '@/components/realtime-wrapper';
 import { PageHeader } from '@/components/shared/page-header';
 import { SectionShell } from '@/components/shared/section-shell';
+import { getOrCreatePlanDiff, type PlanDiffResult } from '@/lib/ai/plan-diff';
+import { Alert } from '@/components/ui/alert';
 
 export default async function ProjectPlansPage({
   params,
@@ -62,23 +64,20 @@ export default async function ProjectPlansPage({
   const memberNames = project.members.map((member) => member.name);
   const nextVersion = (plans[0]?.version ?? 0) + 1;
 
-  // Helper function to generate mock diff summary since we don't have real diff data in schema
-  const getMockDiffSummary = (currentVersion: number) => {
-    if (currentVersion === 1) return null;
-
-    // Deterministic mock data based on version number
-    const diffs = [
-      { type: 'added', text: 'Added 2 new constraints regarding API rate limits' },
-      { type: 'modified', text: 'Updated the primary goal to include mobile responsiveness' },
-      { type: 'removed', text: 'Removed deprecated authentication requirements' },
-      { type: 'impact', text: '3 tasks may need to be updated due to constraint changes' },
-    ];
-
-    // Pick 2-3 diffs based on version to make it look dynamic
-    return diffs.filter((_, i) => (currentVersion + i) % 2 === 0 || i === 3);
-  };
-
-  const diffSummary = selectedPlan ? getMockDiffSummary(selectedPlan.version) : null;
+  // Real plan diff: only attempt if we have both a previous and a selected plan, and the
+  // selected plan is past v1. Cached entries return immediately; first call blocks on AI
+  // (which is acceptable for a server component the user is already waiting on). If AI is
+  // unavailable, we render the prior versions side-by-side without a synthesized summary.
+  let planDiff: PlanDiffResult | null = null;
+  let planDiffUnavailable = false;
+  if (selectedPlan && previousPlan && selectedPlan.version > 1) {
+    try {
+      planDiff = await getOrCreatePlanDiff(params.id, previousPlan.id, selectedPlan.id);
+      if (!planDiff) planDiffUnavailable = true;
+    } catch {
+      planDiffUnavailable = true;
+    }
+  }
 
   return (
     <RealtimeWrapper projectId={params.id}>
@@ -87,14 +86,14 @@ export default async function ProjectPlansPage({
           breadcrumbs={
             <Link
               href={`/projects/${params.id}`}
-              className="flex items-center gap-1 text-xs text-slate-400 hover:text-slate-700 transition-colors font-medium"
+              className="flex items-center gap-1 text-xs text-fg-subtle hover:text-fg transition-colors font-medium"
               title={`Back to ${project.name}`}
             >
-              <ArrowLeft className="h-3.5 w-3.5 text-slate-300" />
+              <ArrowLeft className="h-3.5 w-3.5 text-fg-subtle" />
               {project.name}
             </Link>
           }
-          title={<span className="text-sm font-bold text-slate-900">Plans</span>}
+          title={<span className="text-sm font-bold text-fg">Plans</span>}
           navigation={[]}
         />
 
@@ -103,7 +102,7 @@ export default async function ProjectPlansPage({
             <SectionShell
               title="Version History"
               icon={<History className="h-5 w-5" />}
-              action={<span className="text-sm text-slate-500">{plans.length} versions</span>}
+              action={<span className="text-sm text-fg-muted">{plans.length} versions</span>}
             >
               {plans.length > 0 ? (
                 <PlanTimeline
@@ -113,8 +112,8 @@ export default async function ProjectPlansPage({
                 />
               ) : (
                 <div className="py-6 text-center">
-                  <p className="text-base font-semibold text-slate-700">No plans yet</p>
-                  <p className="mt-1 text-sm text-slate-500">
+                  <p className="text-base font-semibold text-fg">No plans yet</p>
+                  <p className="mt-1 text-sm text-fg-muted">
                     {isOwner
                       ? 'Use the panel below to draft your first plan.'
                       : 'The project owner can create the first plan from this page.'}
@@ -125,48 +124,91 @@ export default async function ProjectPlansPage({
 
             <div className="grid lg:grid-cols-12 gap-6 items-start">
               <div className="lg:col-span-7 space-y-6">
-                {selectedPlan && diffSummary && diffSummary.length > 0 && (
-                  <SectionShell
-                    title={`Changes in v${selectedPlan.version}`}
-                    description={`Compared to v${selectedPlan.version - 1}`}
-                    icon={<GitBranch className="h-5 w-5" />}
-                    className="border-blue-200/60 bg-blue-50/10"
-                  >
-                    <div className="space-y-3">
-                      {diffSummary.map((diff, i) => (
-                        <div key={i} className="flex items-start gap-3">
-                          <div className="mt-0.5 shrink-0">
-                            {diff.type === 'added' && (
-                              <div className="h-4 w-4 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center text-[10px] font-bold">
-                                +
-                              </div>
-                            )}
-                            {diff.type === 'modified' && (
-                              <div className="h-4 w-4 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-[10px] font-bold">
-                                ~
-                              </div>
-                            )}
-                            {diff.type === 'removed' && (
-                              <div className="h-4 w-4 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center text-[10px] font-bold">
-                                -
-                              </div>
-                            )}
-                            {diff.type === 'impact' && (
-                              <div className="h-4 w-4 rounded-full bg-amber-100 text-amber-600 flex items-center justify-center text-[10px] font-bold">
-                                !
-                              </div>
-                            )}
+                {selectedPlan &&
+                  previousPlan &&
+                  selectedPlan.version > 1 &&
+                  (planDiff || planDiffUnavailable) && (
+                    <SectionShell
+                      title={`Changes in v${selectedPlan.version}`}
+                      description={`Compared to v${previousPlan.version}`}
+                      icon={<GitBranch className="h-5 w-5" />}
+                      className="border-subtle"
+                    >
+                      {planDiff ? (
+                        <div className="space-y-4">
+                          {planDiff.breakingChanges && (
+                            <Alert intent="drift" title="Breaking changes detected">
+                              Tasks bound to v{previousPlan.version} may need to be rebound to the
+                              new plan. Open the project dashboard to resolve drift alerts.
+                            </Alert>
+                          )}
+
+                          {planDiff.summary && (
+                            <p className="text-sm text-fg-muted leading-relaxed">
+                              {planDiff.summary}
+                            </p>
+                          )}
+
+                          <div className="space-y-3">
+                            {planDiff.changes.map((change, i) => {
+                              const typeStyle =
+                                change.type === 'added'
+                                  ? 'bg-success-soft text-success-soft-fg'
+                                  : change.type === 'removed'
+                                    ? 'bg-danger-soft text-danger-soft-fg'
+                                    : change.type === 'modified'
+                                      ? 'bg-info-soft text-info-soft-fg'
+                                      : 'bg-surface-2 text-fg-muted';
+                              const glyph =
+                                change.type === 'added'
+                                  ? '+'
+                                  : change.type === 'removed'
+                                    ? '−'
+                                    : change.type === 'modified'
+                                      ? '~'
+                                      : '•';
+                              return (
+                                <div key={i} className="flex items-start gap-3">
+                                  <div
+                                    className={`mt-0.5 shrink-0 h-5 w-5 rounded-full ${typeStyle} flex items-center justify-center text-[11px] font-bold`}
+                                    aria-label={change.type}
+                                  >
+                                    {glyph}
+                                  </div>
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-xs font-semibold text-fg uppercase tracking-wider">
+                                      {change.aspect}
+                                    </p>
+                                    <p className="text-sm text-fg mt-0.5">{change.description}</p>
+                                    {change.impact && (
+                                      <p className="text-xs text-fg-muted mt-1">
+                                        <span className="font-medium">Impact:</span> {change.impact}
+                                      </p>
+                                    )}
+                                    {change.affectedAreas && change.affectedAreas.length > 0 && (
+                                      <div className="flex flex-wrap gap-1 mt-1.5">
+                                        {change.affectedAreas.map((area) => (
+                                          <span key={area} className="badge badge-neutral">
+                                            {area}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
-                          <p
-                            className={`text-sm ${diff.type === 'impact' ? 'text-amber-700 font-medium' : 'text-slate-700'}`}
-                          >
-                            {diff.text}
-                          </p>
                         </div>
-                      ))}
-                    </div>
-                  </SectionShell>
-                )}
+                      ) : (
+                        <Alert intent="info">
+                          AI-generated diff is unavailable. Set <code>LLM_API_KEY</code> or{' '}
+                          <code>ANTHROPIC_API_KEY</code> in <code>.env</code> to enable change
+                          summaries. You can still compare versions manually using the timeline.
+                        </Alert>
+                      )}
+                    </SectionShell>
+                  )}
 
                 <PlanWorkspaceClient
                   projectId={params.id}
