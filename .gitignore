@@ -61,3 +61,9 @@ claude.local.md
 
 # Demo recordings (binary video/cast files)
 demo-recordings/
+
+# Local-only docs and build artifacts (not committed)
+plansync-dist.zip
+AI_Usage_Log.md
+DOCUMENTATION.md
+DOCUMENTATION.zh-CN.md

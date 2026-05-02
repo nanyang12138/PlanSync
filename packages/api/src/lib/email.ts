@@ -20,10 +20,11 @@ export function sendMail(to: string[], subject: string, body: string): boolean {
   const deliverable = to.filter(isDeliverable);
   if (deliverable.length === 0) return false;
   to = deliverable;
-  // Strip newlines from subject to prevent email header injection
+  // Strip newlines from all headers to prevent email header injection
   const safeSubject = subject.replace(/[\r\n]+/g, ' ');
+  const safeTo = to.map((addr) => addr.replace(/[\r\n]+/g, '')).filter(Boolean);
   const message = [
-    `To: ${to.join(', ')}`,
+    `To: ${safeTo.join(', ')}`,
     `From: ${FROM}`,
     `Subject: ${safeSubject}`,
     `Content-Type: text/plain; charset=utf-8`,

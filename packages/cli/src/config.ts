@@ -28,7 +28,10 @@ export const cfg = {
   anthropicHostname: _anthropicUrl.hostname,
   anthropicPathPrefix: _anthropicUrl.pathname.replace(/\/$/, ''),
   anthropicCustomHeaders: parseCustomHeaders(process.env.ANTHROPIC_CUSTOM_HEADERS || ''),
-  genieOrClaude: process.env.GENIE_BIN || '/proj/verif_release_ro/genie/current/bin/genie',
+  genieOrClaude:
+    process.env.PLANSYNC_CODE_BIN ||
+    process.env.GENIE_BIN ||
+    '/proj/verif_release_ro/genie/current/bin/genie',
   mcpServer: process.env.PLANSYNC_MCP_SERVER || _mcpAuto,
   nodeBin: process.env.PLANSYNC_NODE_BIN || process.execPath,
   maxOutputTokens: Number(process.env.PLANSYNC_MAX_OUTPUT_TOKENS) || 8192,

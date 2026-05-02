@@ -67,8 +67,8 @@ Options:
   --exec-host genie|claude     AI tool to use for --exec (default: genie)
   --host terminal|genie|claude|cursor
                                Interface to use (default: terminal)
-                               terminal: PlanSync Terminal REPL (recommended)
-                               genie/claude: launch AI tool directly with MCP (CI/advanced)
+                               terminal/genie: PlanSync Terminal, /code uses Genie (default)
+                               claude: PlanSync Terminal, /code uses Claude Code
                                cursor: configure Cursor MCP integration
   --project PROJECT_ID         PlanSync project ID (optional)
   --user USER_NAME             Identity for this session (overrides PLANSYNC_USER)
@@ -93,8 +93,8 @@ Examples:
   plansync                          # Launch PlanSync Terminal (default; first run prompts for credentials)
   plansync --project clxyz123       # Specify project, then launch terminal
   plansync --user alice             # Set identity for this session
-  plansync --host genie             # Launch Genie directly with PlanSync MCP (no terminal)
-  plansync --host claude            # Launch Claude Code with PlanSync MCP
+  plansync --host genie             # Terminal mode, /code uses Genie (same as default)
+  plansync --host claude            # Terminal mode, /code uses Claude Code
   plansync --host cursor            # Configure Cursor (writes .cursor/mcp.json)
   plansync --run --project <id>     # Run as agent: process all pending work, then exit
   plansync --exec abc123 --project xyz456   # Open task in /code for implementation
@@ -396,11 +396,19 @@ _cleanup_codex_mcp() {
 # ─── Host-specific launch ───
 case "$HOST" in
 
-  terminal)
+  terminal|genie|claude)
+    # genie/claude only affect which tool /code launches inside Terminal
+    if [ "$HOST" = "claude" ]; then
+      CODE_BIN="$CLAUDE_BIN"
+    else
+      CODE_BIN="$GENIE_BIN"
+    fi
+
     echo "" >&2
     echo "🚀 Starting PlanSync Terminal..." >&2
     echo "   User: $PLANSYNC_USER | API: $PLANSYNC_API_URL" >&2
     [[ -n "$PLANSYNC_PROJECT" ]] && echo "   Project: $PLANSYNC_PROJECT" >&2 || true
+    [ "$HOST" = "claude" ] && echo "   /code → Claude Code" >&2 || echo "   /code → Genie" >&2
     echo "" >&2
 
     CLI_DIST="$PROJECT_DIR/packages/cli/dist/index.js"
@@ -412,51 +420,9 @@ case "$HOST" in
 
     PLANSYNC_MCP_SERVER="$MCP_SERVER" \
     PLANSYNC_NODE_BIN="$LOCAL_NODE_BIN" \
+    PLANSYNC_CODE_BIN="$CODE_BIN" \
     GENIE_BIN="$GENIE_BIN" \
     exec "$LOCAL_NODE_BIN" "$CLI_DIST"
-    ;;
-
-  genie|claude)
-    inject_instructions "$WORK_DIR_ABS"
-
-    echo "" >&2
-    echo "🚀 Launching ${HOST} with PlanSync MCP..." >&2
-    echo "   User: $PLANSYNC_USER | API: $PLANSYNC_API_URL" >&2
-    echo "   Working dir: $WORK_DIR_ABS" >&2
-    echo "" >&2
-
-    # Build --mcp-config JSON inline (same mechanism that works for genie -p in E2E tests)
-    MCP_CONFIG_JSON="$("$LOCAL_NODE_BIN" -e '
-      const cfg = {
-        mcpServers: {
-          plansync: {
-            command: process.env._PS_NODE_BIN,
-            args: [process.env._PS_MCP_SERVER],
-            env: {
-              PLANSYNC_API_URL: process.env._PS_API_URL,
-              PLANSYNC_API_KEY: process.env._PS_API_KEY,
-              PLANSYNC_USER: process.env._PS_USER,
-              PLANSYNC_PROJECT: process.env._PS_PROJECT || "",
-              LOG_LEVEL: "warn",
-            },
-          },
-        },
-      };
-      process.stdout.write(JSON.stringify(cfg));
-    ')"
-
-    cd "$WORK_DIR_ABS"
-    if [ "$HOST" = "genie" ]; then
-      ENGINE=$(_detect_engine)
-      if [ "$ENGINE" = "codex" ]; then
-        _setup_codex_mcp
-        exec "$GENIE_BIN" -- --full-auto "${PASSTHROUGH_ARGS[@]}"
-      else
-        exec "$GENIE_BIN" --mcp-config "$MCP_CONFIG_JSON" "${PASSTHROUGH_ARGS[@]}"
-      fi
-    else
-      exec "$CLAUDE_BIN" --mcp-config "$MCP_CONFIG_JSON" "${PASSTHROUGH_ARGS[@]}"
-    fi
     ;;
 
   cursor)

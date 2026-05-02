@@ -185,10 +185,10 @@ Members do **not** need to edit `.env` — `bin/plansync` and `bin/ps-connect` h
 
 ### Other AI hosts
 
-By default `./bin/plansync` launches PlanSync Terminal mode (recommended). To skip Terminal and open an AI tool directly with PlanSync MCP (advanced / CI use):
+`--host` controls which AI tool the `/code` command inside Terminal uses — Terminal mode is always the entry point:
 
-- `--host genie` — launch Genie directly (zero extra install on AMD hosts)
-- `--host claude` — launch Claude Code directly (needs `claude` CLI in `PATH`)
+- `--host genie` — `/code` uses Genie (default; zero extra install on AMD hosts)
+- `--host claude` — `/code` uses Claude Code (needs `claude` CLI in `PATH`)
 - `--host cursor` — writes `.cursor/mcp.json`, then open Cursor yourself
 
 > 💡 `--dir <path>` sets the working directory the AI tool sees as your code project — Genie/Claude/Terminal launch from there, Cursor writes its config into it, and PlanSync's instruction file lands there. Defaults to your current shell directory, so usually `cd` to your project first and you're done.
@@ -321,16 +321,16 @@ PlanSync/
 
 ### Common commands
 
-| Command                                          | Purpose                                            |
-| :----------------------------------------------- | :------------------------------------------------- |
-| `./bin/ps-admin start`                           | Bootstrap server runtime + DB and start the API    |
-| `./bin/plansync`                                 | Start PlanSync Terminal (recommended)              |
-| `./bin/plansync --host <genie\|claude\|cursor>`  | Skip Terminal, open AI tool directly (CI/advanced) |
-| `./bin/ps-connect`                               | Same as plansync, but on a remote / NFS server     |
-| `bash scripts/build.sh`                          | Build all workspace packages                       |
-| `bash scripts/test.sh` / `lint.sh` / `format.sh` | Quality checks                                     |
-| `bash scripts/db-reset.sh`                       | Wipe and recreate the database                     |
-| `bash scripts/db-psql.sh`                        | Open a `psql` shell                                |
+| Command                                          | Purpose                                         |
+| :----------------------------------------------- | :---------------------------------------------- |
+| `./bin/ps-admin start`                           | Bootstrap server runtime + DB and start the API |
+| `./bin/plansync`                                 | Start PlanSync Terminal (recommended)           |
+| `./bin/plansync --host claude`                   | Terminal mode, `/code` uses Claude Code         |
+| `./bin/ps-connect`                               | Same as plansync, but on a remote / NFS server  |
+| `bash scripts/build.sh`                          | Build all workspace packages                    |
+| `bash scripts/test.sh` / `lint.sh` / `format.sh` | Quality checks                                  |
+| `bash scripts/db-reset.sh`                       | Wipe and recreate the database                  |
+| `bash scripts/db-psql.sh`                        | Open a `psql` shell                             |
 
 ---
 

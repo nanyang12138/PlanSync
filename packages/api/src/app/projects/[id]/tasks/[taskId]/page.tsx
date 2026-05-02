@@ -76,7 +76,7 @@ export default async function TaskDetailPage({
             <div className="panel-header">
               <div className="flex items-center gap-2">
                 <ClipboardList className="h-4 w-4 text-blue-500" />
-                <span className="text-sm font-semibold text-slate-700">Task Detail</span>
+                <span className="text-sm font-semibold text-fg">Task Detail</span>
               </div>
               <TaskEditor
                 task={task}

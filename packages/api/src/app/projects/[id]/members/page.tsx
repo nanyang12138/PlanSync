@@ -62,17 +62,17 @@ export default async function ProjectMembersPage({ params }: { params: { id: str
           breadcrumbs={
             <Link
               href={`/projects/${params.id}`}
-              className="flex items-center gap-1 text-xs text-slate-400 hover:text-slate-700 transition-colors font-medium"
+              className="flex items-center gap-1 text-xs text-fg-subtle hover:text-fg transition-colors font-medium"
               title={`Back to ${project.name}`}
             >
-              <ChevronRight className="h-3.5 w-3.5 rotate-180 text-slate-300" />
+              <ChevronRight className="h-3.5 w-3.5 rotate-180 text-fg-subtle" />
               {project.name}
             </Link>
           }
-          title={<span className="text-sm font-bold text-slate-900">Members</span>}
+          title={<span className="text-sm font-bold text-fg">Members</span>}
           navigation={[]}
           actions={
-            <div className="flex items-center gap-1.5 text-xs text-slate-500 font-medium">
+            <div className="flex items-center gap-1.5 text-xs text-fg-muted font-medium">
               <Users className="h-4 w-4" />
               {members.length} members
             </div>
@@ -108,7 +108,7 @@ export default async function ProjectMembersPage({ params }: { params: { id: str
             <SectionShell
               title="Idle"
               description="No active tasks assigned."
-              icon={<Circle className="h-5 w-5 text-slate-400" />}
+              icon={<Circle className="h-5 w-5 text-fg-subtle" />}
             >
               <MemberList members={idleMembers} projectId={params.id} showStatus={true} />
             </SectionShell>

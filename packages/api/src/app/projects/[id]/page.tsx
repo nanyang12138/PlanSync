@@ -51,11 +51,9 @@ export default async function ProjectDashboard({ params }: { params: { id: strin
                 <GitBranch className="h-3.5 w-3.5 text-white" />
               </div>
               <div className="min-w-0">
-                <h1 className="text-sm font-bold text-slate-900 truncate leading-tight">
-                  {project.name}
-                </h1>
+                <h1 className="text-sm font-bold text-fg truncate leading-tight">{project.name}</h1>
                 {project.description && (
-                  <p className="text-xs text-slate-400 truncate">{project.description}</p>
+                  <p className="text-xs text-fg-subtle truncate">{project.description}</p>
                 )}
               </div>
             </div>
@@ -77,12 +75,12 @@ export default async function ProjectDashboard({ params }: { params: { id: strin
                 <GitBranch className="h-5 w-5 text-blue-500" />
               </div>
               <div className="min-w-0">
-                <p className="text-xs text-slate-400 mb-1">Active Plan</p>
+                <p className="text-xs text-fg-subtle mb-1">Active Plan</p>
                 <p className="text-xl font-bold text-blue-700 leading-none">
                   {activePlan ? `v${activePlan.version}` : 'None'}
                 </p>
                 {activePlan?.title && (
-                  <p className="text-[11px] text-slate-400 truncate mt-0.5">{activePlan.title}</p>
+                  <p className="text-[11px] text-fg-subtle truncate mt-0.5">{activePlan.title}</p>
                 )}
               </div>
             </Link>
@@ -93,12 +91,12 @@ export default async function ProjectDashboard({ params }: { params: { id: strin
                 <ListChecks className="h-5 w-5 text-emerald-500" />
               </div>
               <div className="min-w-0 flex-1">
-                <p className="text-xs text-slate-400 mb-1">Task Progress</p>
-                <p className="text-xl font-bold text-slate-800 leading-none tabular-nums">
+                <p className="text-xs text-fg-subtle mb-1">Task Progress</p>
+                <p className="text-xl font-bold text-fg leading-none tabular-nums">
                   {tasksDone} / {tasksTotal}
                 </p>
                 {tasksTotal > 0 && (
-                  <div className="mt-1.5 h-1 w-full rounded-full bg-slate-100 overflow-hidden">
+                  <div className="mt-1.5 h-1 w-full rounded-full bg-surface-2 overflow-hidden">
                     <div
                       className="h-full rounded-full bg-emerald-500 transition-all"
                       style={{ width: `${Math.round((tasksDone / tasksTotal) * 100)}%` }}
@@ -118,7 +116,7 @@ export default async function ProjectDashboard({ params }: { params: { id: strin
                 <Users className="h-5 w-5 text-violet-500" />
               </div>
               <div className="min-w-0">
-                <p className="text-xs text-slate-400 mb-1.5">Team Members</p>
+                <p className="text-xs text-fg-subtle mb-1.5">Team Members</p>
                 <div className="flex items-center gap-1 flex-wrap">
                   {project.members.slice(0, 5).map((m) => (
                     <span
@@ -130,10 +128,10 @@ export default async function ProjectDashboard({ params }: { params: { id: strin
                     </span>
                   ))}
                   {project.members.length > 5 && (
-                    <span className="text-xs text-slate-400">+{project.members.length - 5}</span>
+                    <span className="text-xs text-fg-subtle">+{project.members.length - 5}</span>
                   )}
                   {project.members.length === 0 && (
-                    <span className="text-xs text-slate-300 italic">No members</span>
+                    <span className="text-xs text-fg-subtle italic">No members</span>
                   )}
                 </div>
               </div>

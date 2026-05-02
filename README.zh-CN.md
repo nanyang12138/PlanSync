@@ -174,10 +174,10 @@ PlanSync 有两种角色，但**不是互斥的：Owner 默认也是开发者**�
 
 ### 其他 AI 工具
 
-`./bin/plansync` 默认启动 PlanSync Terminal 模式（推荐）。如需跳过 Terminal、直接以 AI 工具接入（CI / 高级用法）：
+`--host` 控制 Terminal 内 `/code` 命令调用哪个 AI 工具，Terminal 模式始终是入口：
 
-- `--host genie` —— 直接启动 Genie（AMD 内部主机零额外安装）
-- `--host claude` —— 直接启动 Claude Code（需要 `claude` CLI 在 `PATH` 中）
+- `--host genie` —— `/code` 使用 Genie（默认；AMD 内部主机零额外安装）
+- `--host claude` —— `/code` 使用 Claude Code（需要 `claude` CLI 在 `PATH` 中）
 - `--host cursor` —— 写出 `.cursor/mcp.json`，然后自己打开 Cursor
 
 > 💡 `--dir <path>` 指定 AI 工具看到的"项目根目录"—— Genie/Claude/Terminal 启动前会 `cd` 到这里，Cursor 的配置文件写到这里，PlanSync 的指令文件也注入到这里。默认就是你当前 shell 所在目录，所以一般 `cd` 到自己的项目里再跑就行。
@@ -310,16 +310,16 @@ PlanSync/
 
 ### 常用命令
 
-| 命令                                             | 用途                                     |
-| :----------------------------------------------- | :--------------------------------------- |
-| `./bin/ps-admin start`                           | Bootstrap 服务端运行时 + DB 并启动 API   |
-| `./bin/plansync`                                 | 启动 PlanSync Terminal（推荐）           |
-| `./bin/plansync --host <genie\|claude\|cursor>`  | 跳过 Terminal，直接开 AI 工具（CI/高级） |
-| `./bin/ps-connect`                               | 同上，但用于远程 / NFS 服务器            |
-| `bash scripts/build.sh`                          | 构建所有 workspace 包                    |
-| `bash scripts/test.sh` / `lint.sh` / `format.sh` | 质量检查                                 |
-| `bash scripts/db-reset.sh`                       | 清空并重建数据库                         |
-| `bash scripts/db-psql.sh`                        | 打开 `psql` 终端                         |
+| 命令                                             | 用途                                    |
+| :----------------------------------------------- | :-------------------------------------- |
+| `./bin/ps-admin start`                           | Bootstrap 服务端运行时 + DB 并启动 API  |
+| `./bin/plansync`                                 | 启动 PlanSync Terminal（推荐）          |
+| `./bin/plansync --host claude`                   | Terminal 模式，`/code` 使用 Claude Code |
+| `./bin/ps-connect`                               | 同上，但用于远程 / NFS 服务器           |
+| `bash scripts/build.sh`                          | 构建所有 workspace 包                   |
+| `bash scripts/test.sh` / `lint.sh` / `format.sh` | 质量检查                                |
+| `bash scripts/db-reset.sh`                       | 清空并重建数据库                        |
+| `bash scripts/db-psql.sh`                        | 打开 `psql` 终端                        |
 
 ---
 

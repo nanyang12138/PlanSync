@@ -1,12 +1,15 @@
 {
+  "permissions": {
+    "allow": ["mcp__plansync__*"]
+  },
+  "enableAllProjectMcpServers": true,
   "mcpServers": {
     "plansync": {
       "command": "bin/start-mcp",
       "args": []
     }
   },
-  "permissions": {
-    "allow": ["mcp__plansync__*"]
-  },
-  "enableAllProjectMcpServers": true
+  "enabledPlugins": {
+    "andrej-karpathy-skills@karpathy-skills": true
+  }
 }
