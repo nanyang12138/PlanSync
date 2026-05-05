@@ -156,6 +156,14 @@ export function printToolError(message: string, ms: number): void {
   );
 }
 
+// ─── Progress bar ─────────────────────────────────────────────────────────────
+
+export function progressBar(done: number, total: number, width = 10): string {
+  if (total === 0) return '░'.repeat(width);
+  const filled = Math.round((done / total) * width);
+  return `${c.green}${'█'.repeat(filled)}${c.reset}${c.dim}${'░'.repeat(width - filled)}${c.reset}`;
+}
+
 // ─── Project status types ─────────────────────────────────────────────────────
 
 export interface ProjectStatus {
@@ -250,7 +258,7 @@ export function banner(status: ProjectStatus, toolCount: number, user: string) {
     console.log(`          ${c.dim}${g}${status.activePlan.goal.length > 80 ? '…' : ''}${c.reset}`);
   }
   console.log(
-    `  ${c.gray}Tasks${c.reset}   ${t.total} · ${c.green}${t.done} done${c.reset} / ${c.blue}${t.inProgress} in progress${c.reset} / ${t.todo} todo / ${c.yellow}${t.blocked} blocked${c.reset}`,
+    `  ${c.gray}Tasks${c.reset}   ${progressBar(t.done, t.total)}  ${t.done}/${t.total}  · ${c.blue}${t.inProgress} in-progress${c.reset} / ${c.yellow}${t.blocked} blocked${c.reset}`,
   );
   console.log(`  ${c.gray}Drift${c.reset}   ${driftStr}`);
   if (status.driftAlerts.length > 0) {
@@ -286,8 +294,9 @@ export function printTasks(status: ProjectStatus) {
     console.log(`\n  ${c.dim}No tasks.${c.reset}\n`);
     return;
   }
+  const t = status.tasks;
   console.log(
-    `\n  ${c.bold}Tasks — ${status.projectName}${c.reset}  ${c.dim}(${status.taskList.length})${c.reset}\n`,
+    `\n  ${c.bold}Tasks — ${status.projectName}${c.reset}  ${progressBar(t.done, t.total)}  ${c.dim}${t.done}/${t.total} done${c.reset}\n`,
   );
   const groups: Record<string, typeof status.taskList> = {
     in_progress: [],

@@ -1,9 +1,17 @@
 import * as https from 'https';
 import * as http from 'http';
 import { cfg } from './config.js';
-import { c, banner, printTasks, printHelp, ProjectStatus, emptyStatus } from './ui.js';
+import { c, banner, printTasks, printHelp, progressBar, ProjectStatus, emptyStatus } from './ui.js';
 import { McpClient } from './mcp-client.js';
-import { RawInput } from './input.js';
+// Minimal interface satisfied by both RawInput and InkSession
+interface InputAPI {
+  pause(): void;
+  resume(): void;
+  stop(): void;
+  clearDisplay(): void;
+  setStatus(line: string): void;
+  onSigint: (() => void) | null;
+}
 import { launchCode, launchExec, launchAutoExec } from './exec.js';
 
 // ─── API helpers ──────────────────────────────────────────────────────────────
@@ -240,7 +248,7 @@ export async function selectProject(ask: AskFn): Promise<void> {
 // ─── Command handler ──────────────────────────────────────────────────────────
 
 export interface CommandContext {
-  rawInput: RawInput;
+  rawInput: InputAPI;
   mcp: McpClient;
   getStatus: () => ProjectStatus;
   setStatus: (s: ProjectStatus) => void;
@@ -630,6 +638,22 @@ export async function handleSlashCommand(
 }
 
 // ─── Prompt helpers ───────────────────────────────────────────────────────────
+
+export function buildStatusLine(status: ProjectStatus): string {
+  if (!status.projectName || status.projectName === '(no project)') return '';
+  const { total, done } = status.tasks;
+  const bar = progressBar(done, total);
+  const plan = status.activePlan
+    ? `v${status.activePlan.version} "${status.activePlan.title.slice(0, 20)}${status.activePlan.title.length > 20 ? '…' : ''}"`
+    : status.proposedPlan
+      ? `${c.yellow}v${status.proposedPlan.version}?${c.reset} (proposed)`
+      : `${c.dim}no plan${c.reset}`;
+  const drift =
+    status.driftAlerts.length > 0
+      ? `  ${c.yellow}⚠ ${status.driftAlerts.length} drift${status.driftAlerts.length > 1 ? 's' : ''}${c.reset}`
+      : '';
+  return `${c.dim}${status.projectName}${c.reset} · ${plan}  ${bar}  ${c.dim}${done}/${total}${c.reset}${drift}`;
+}
 
 export function buildPrompt(status: ProjectStatus): string {
   const name = status.projectName !== '(no project)' ? status.projectName : '';

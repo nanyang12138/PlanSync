@@ -14,7 +14,13 @@ import { cfg, selfDir } from './config.js';
 import { c, banner, showSplash } from './ui.js';
 import { McpClient } from './mcp-client.js';
 import { buildSystemPrompt, runAgentLoop, Message } from './ai-loop.js';
-import { fetchStatus, handleSlashCommand, buildPrompt, selectProject } from './commands.js';
+import {
+  fetchStatus,
+  handleSlashCommand,
+  buildPrompt,
+  buildStatusLine,
+  selectProject,
+} from './commands.js';
 import {
   scanInterruptedExecs,
   resumeInterruptedExec,
@@ -22,7 +28,7 @@ import {
   launchAutoExec,
 } from './exec.js';
 import { startSession, appendToSession, loadInputHistory } from './session.js';
-import { RawInput, SlashCmd } from './input.js';
+import { InkSession, SlashCmd } from './prompt.js';
 import { CliSseListener, describeEvent } from './sse-listener.js';
 
 // ─── Genie settings writer ────────────────────────────────────────────────────
@@ -53,17 +59,17 @@ function writeGenieSettings(): void {
 // ─── Slash commands registry ──────────────────────────────────────────────────
 
 const SLASH_CMDS: SlashCmd[] = [
-  { cmd: '/status', desc: 'Refresh project status' },
-  { cmd: '/tasks', desc: 'Show task list' },
-  { cmd: '/project', desc: 'Switch project' },
-  { cmd: '/resume', desc: 'Restore a previous session' },
-  { cmd: '/clear', desc: 'Clear conversation history' },
-  { cmd: '/exec', desc: 'Execute a task in Genie' },
-  { cmd: '/worker', desc: 'Auto-execute agent tasks (worker mode)' },
-  { cmd: '/code', desc: 'Open Genie coding mode' },
-  { cmd: '/tools', desc: 'List MCP tools' },
-  { cmd: '/help', desc: 'Show help' },
-  { cmd: '/quit', desc: 'Exit' },
+  { cmd: '/status', desc: 'Refresh project status', group: 'Project' },
+  { cmd: '/tasks', desc: 'Show task list', group: 'Project' },
+  { cmd: '/project', desc: 'Switch project', group: 'Project' },
+  { cmd: '/exec', desc: 'Execute a task in Genie', group: 'Execution' },
+  { cmd: '/worker', desc: 'Auto-execute agent tasks (worker mode)', group: 'Execution' },
+  { cmd: '/code', desc: 'Open Genie coding mode', group: 'Execution' },
+  { cmd: '/resume', desc: 'Restore a previous session', group: 'Session' },
+  { cmd: '/clear', desc: 'Clear conversation history', group: 'Session' },
+  { cmd: '/tools', desc: 'List MCP tools', group: 'Session' },
+  { cmd: '/help', desc: 'Show help', group: 'Session' },
+  { cmd: '/quit', desc: 'Exit', group: 'Session' },
   // /exit is kept functional but not shown (alias for /quit)
 ];
 
@@ -74,7 +80,7 @@ async function main() {
   writeGenieSettings();
 
   const interrupted = scanInterruptedExecs();
-  const rawInput = new RawInput(SLASH_CMDS);
+  const rawInput = new InkSession(SLASH_CMDS);
   const savedHistory = loadInputHistory();
 
   // ─── Start raw mode first — eliminates readline→rawmode transition issues ──
@@ -137,6 +143,7 @@ async function main() {
         currentStatus = fresh;
         currentSystem = buildSystemPrompt(fresh);
         rawInput.setPrompt(buildPrompt(fresh));
+        rawInput.setStatus(buildStatusLine(fresh));
       } catch {
         /* ignore — keep showing last known status */
       }

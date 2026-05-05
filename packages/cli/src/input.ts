@@ -49,6 +49,7 @@ function strWidth(s: string): number {
 export interface SlashCmd {
   cmd: string;
   desc: string;
+  group?: string;
 }
 
 // ─── RawInput ─────────────────────────────────────────────────────────────────
@@ -194,6 +195,11 @@ export class RawInput {
       if (leading) process.stdout.write(leading);
       this.render();
     }
+  }
+
+  /** Update the live status line — shows once above the prompt when status changes. */
+  setStatus(line: string): void {
+    if (line) this.printAbove(`${c.dim} ${line}${c.reset}`);
   }
 
   /**
@@ -629,11 +635,19 @@ export class RawInput {
     // Write prompt + buffer
     process.stdout.write(this.promptStr + bufStr);
 
-    // Write suggestions
+    // Write suggestions (with optional group headers)
+    let totalRenderedLines = 0;
     if (newSuggLines > 0) {
       process.stdout.write('\n');
+      totalRenderedLines++;
+      let lastGroup: string | undefined = undefined;
       for (let i = 0; i < this.suggestions.length; i++) {
-        const { cmd, desc } = this.suggestions[i];
+        const { cmd, desc, group } = this.suggestions[i];
+        if (group !== undefined && group !== lastGroup) {
+          process.stdout.write(`  ${c.dim}── ${group} ──${c.reset}\n`);
+          totalRenderedLines++;
+          lastGroup = group;
+        }
         const isSelected = i === this.selIdx;
         const prefix = isSelected ? `${c.bold}▶${c.reset} ` : '  ';
         const cmdPart = isSelected
@@ -641,12 +655,13 @@ export class RawInput {
           : `${c.cyan}${cmd.padEnd(12)}${c.reset}`;
         const descPart = `${c.dim}${desc}${c.reset}`;
         process.stdout.write(`${prefix}${cmdPart} ${descPart}\n`);
+        totalRenderedLines++;
       }
       // Move cursor back up to prompt line
-      process.stdout.write(`\x1b[${newSuggLines + 1}A\r`);
+      process.stdout.write(`\x1b[${totalRenderedLines}A\r`);
     }
 
-    this.suggestionLines = newSuggLines;
+    this.suggestionLines = totalRenderedLines;
 
     // Position cursor correctly on the prompt line
     const promptWidth = strWidth(promptVisible);
