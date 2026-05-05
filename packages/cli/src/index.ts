@@ -158,6 +158,28 @@ async function main() {
   };
   installNotifyPrinter();
 
+  // ─── Batched notification printer ────────────────────────────────────────
+  // Urgent events print immediately; routine events are batched over 1.2 s
+  // so that bulk operations (e.g. 4 tasks assigned at once) produce 1 line.
+  const URGENT_EVENTS = new Set(['drift_detected', 'execution_stale', 'plan_activated']);
+  const notifBuf: string[] = [];
+  let notifTimer: ReturnType<typeof setTimeout> | null = null;
+  const notify = (msg: string, urgent: boolean) => {
+    if (urgent) {
+      rawInput.printAbove(`${c.yellow}[PlanSync] ${msg}${c.reset}`);
+      return;
+    }
+    notifBuf.push(msg);
+    if (notifTimer) return;
+    notifTimer = setTimeout(() => {
+      notifTimer = null;
+      const msgs = notifBuf.splice(0);
+      const line =
+        msgs.length === 1 ? msgs[0] : `${msgs.length} updates (${msgs[0].replace(/^.*\] /, '')}…)`;
+      rawInput.printAbove(`${c.yellow}[PlanSync] ${line}${c.reset}`);
+    }, 1200);
+  };
+
   // ─── Direct SSE subscription ─────────────────────────────────────────────
   // The MCP server has its own event listener, but its notifications can be
   // delayed or dropped by the MCP transport (logging-capability gating, paused
@@ -167,7 +189,7 @@ async function main() {
   // aren't double-printed.
   const sseListener = new CliSseListener((eventType, data) => {
     const msg = describeEvent(eventType, data);
-    if (msg) rawInput.printAbove(`${c.yellow}[PlanSync] ${msg}${c.reset}`);
+    if (msg) notify(msg, URGENT_EVENTS.has(eventType));
     // If this user was just added to or removed from a project, reconnect SSE
     // so the new subscription set takes effect.
     if (
