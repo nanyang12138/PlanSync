@@ -499,16 +499,16 @@ export async function handleSlashCommand(
       ),
     );
     console.log('');
-    console.log(`  ${c.dim}[a] all  [1,2,3] specific numbers  [n] cancel${c.reset}`);
+    console.log(`  ${c.dim}[Enter/a] all  [1,2,3] specific numbers  [n] cancel${c.reset}`);
 
-    const answer = await ctx.ask(`  Execute: `);
+    const answer = await ctx.ask(`  Execute [Enter = all]: `);
     const trimmed = answer.trim().toLowerCase();
 
     let selectedIds: string[] = [];
-    if (!trimmed || trimmed === 'n') {
+    if (trimmed === 'n') {
       console.log(`  ${c.yellow}Cancelled.${c.reset}\n`);
       return 'handled';
-    } else if (trimmed === 'a') {
+    } else if (!trimmed || trimmed === 'a') {
       selectedIds = pending.map((t) => t.id);
     } else {
       // Parse numbers like "1,2,3" or "1 2 3"
