@@ -14,6 +14,20 @@ import { type SlashCmd } from './input.js';
 
 export type { SlashCmd };
 
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface Notif {
+  text: string;
+  ts: number;
+}
+
+const NOTIF_TTL = 10 * 60 * 1000; // 10 minutes in ms
+
+function ageStr(ts: number): string {
+  const mins = Math.floor((Date.now() - ts) / 60_000);
+  return mins === 0 ? 'just now' : `${mins}m ago`;
+}
+
 // ─── PromptUI component ───────────────────────────────────────────────────────
 
 interface PromptProps {
@@ -22,6 +36,7 @@ interface PromptProps {
   history: string[];
   events: EventEmitter;
   initialStatusLine?: string;
+  initialNotifs?: Notif[];
 }
 
 function PromptUI({
@@ -30,6 +45,7 @@ function PromptUI({
   history,
   events,
   initialStatusLine,
+  initialNotifs,
 }: PromptProps) {
   const [value, setValue] = useState('');
   const [cursor, setCursor] = useState(0);
@@ -37,18 +53,32 @@ function PromptUI({
   const [histSaved, setHistSaved] = useState('');
   const [suggestions, setSuggestions] = useState<SlashCmd[]>([]);
   const [selIdx, setSelIdx] = useState(-1);
-  const [notifs, setNotifs] = useState<string[]>([]);
+  const [notifs, setNotifs] = useState<Notif[]>(
+    (initialNotifs ?? []).filter((n) => Date.now() - n.ts < NOTIF_TTL),
+  );
   const [statusLine, setStatusLine] = useState(initialStatusLine ?? '');
   const [promptStr, setPromptStr] = useState(initialPrompt);
   const [disabled, setDisabled] = useState(false);
 
   useEffect(() => {
-    const handler = (text: string) => setNotifs((prev) => [...prev.slice(-4), text]);
+    const handler = (text: string) =>
+      setNotifs((prev) => [
+        ...prev.filter((n) => Date.now() - n.ts < NOTIF_TTL).slice(-4),
+        { text, ts: Date.now() },
+      ]);
     events.on('notify', handler);
     return () => {
       events.off('notify', handler);
     };
   }, [events]);
+
+  // Auto-expire notifications every minute
+  useEffect(() => {
+    const id = setInterval(() => {
+      setNotifs((prev) => prev.filter((n) => Date.now() - n.ts < NOTIF_TTL));
+    }, 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     const handler = (line: string) => setStatusLine(line);
@@ -256,11 +286,12 @@ function PromptUI({
 
   return (
     <Box flexDirection="column">
-      {/* Queued notifications */}
+      {/* Recent notifications with age */}
       {notifs.map((n, i) => (
-        <Text key={i} color="yellow">
-          {n}
-        </Text>
+        <Box key={i}>
+          <Text color="yellow">{n.text}</Text>
+          <Text dimColor>{'  ' + ageStr(n.ts)}</Text>
+        </Box>
       ))}
 
       {/* Live status line */}
@@ -323,6 +354,7 @@ export class InkSession {
   private instance: Instance | null = null;
   private paused = false;
   private statusLine = '';
+  private notifLog: Notif[] = [];
   // Pause/resume gate: nextLine() waits for this before rendering Ink
   private resumeGate: Promise<void> | null = null;
   private resolveGate: (() => void) | null = null;
@@ -375,6 +407,7 @@ export class InkSession {
           history={this.history}
           events={this.events}
           initialStatusLine={this.statusLine}
+          initialNotifs={this.notifLog.filter((n) => Date.now() - n.ts < NOTIF_TTL)}
         />,
         { patchConsole: false },
       );
@@ -406,11 +439,18 @@ export class InkSession {
     });
   }
 
+  /** Returns the notification log (entries within the last 10 min). */
+  getNotifLog(): Notif[] {
+    return this.notifLog.filter((n) => Date.now() - n.ts < NOTIF_TTL);
+  }
+
   /**
    * Print a message above the current input line without corrupting it.
    * If no prompt is active, writes directly to stdout.
    */
   printAbove(text: string): void {
+    this.notifLog.push({ text, ts: Date.now() });
+    if (this.notifLog.length > 100) this.notifLog.shift();
     if (this.instance) {
       this.events.emit('notify', text);
     } else {

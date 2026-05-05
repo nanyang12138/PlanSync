@@ -67,6 +67,7 @@ const SLASH_CMDS: SlashCmd[] = [
   { cmd: '/code', desc: 'Open Genie coding mode', group: 'Execution' },
   { cmd: '/resume', desc: 'Restore a previous session', group: 'Session' },
   { cmd: '/clear', desc: 'Clear conversation history', group: 'Session' },
+  { cmd: '/notifs', desc: 'View recent notifications (last 10 min)', group: 'Session' },
   { cmd: '/tools', desc: 'List MCP tools', group: 'Session' },
   { cmd: '/help', desc: 'Show help', group: 'Session' },
   { cmd: '/quit', desc: 'Exit', group: 'Session' },
@@ -226,6 +227,7 @@ async function main() {
     getSystem: () => currentSystem,
     history,
     currentSessionId,
+    getNotifLog: () => rawInput.getNotifLog(),
     // Ask a question using raw mode. setPrompt() renders the question as the prompt string,
     // then nextLine() re-renders it (same content) and waits for Enter.
     // Do NOT call rawInput.pause() here — that would block handleKey and deadlock nextLine().

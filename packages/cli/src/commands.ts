@@ -255,6 +255,7 @@ export interface CommandContext {
   getSystem: () => string;
   history: import('./ai-loop.js').Message[];
   currentSessionId: string;
+  getNotifLog: () => Array<{ text: string; ts: number }>;
   /** Show a prompt and wait for one line of input. */
   ask: (prompt: string) => Promise<string>;
 }
@@ -344,6 +345,22 @@ export async function handleSlashCommand(
     console.log(
       `\n${c.green}✔${c.reset} Resumed session ${c.dim}${chosenId}${c.reset}${dateStr ? ` (${dateStr})` : ''} — ${Math.floor(msgs.length / 2)} turns loaded.\n`,
     );
+    return 'handled';
+  }
+
+  if (cmd === '/notifs') {
+    const log = ctx.getNotifLog();
+    if (log.length === 0) {
+      console.log(`\n${c.dim}No notifications in the last 10 minutes.${c.reset}\n`);
+    } else {
+      console.log(`\n${c.bold}Recent notifications (last 10 min):${c.reset}\n`);
+      for (const { text, ts } of log) {
+        const mins = Math.floor((Date.now() - ts) / 60_000);
+        const age = mins === 0 ? 'just now' : `${mins}m ago`;
+        console.log(`  ${c.dim}${age.padStart(8)}${c.reset}  ${text}`);
+      }
+      console.log('');
+    }
     return 'handled';
   }
 
