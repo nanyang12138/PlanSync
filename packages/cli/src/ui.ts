@@ -220,28 +220,28 @@ function phaseIndicator(phase: string): string {
 
 function nextStep(status: ProjectStatus): string {
   if (status.phase === 'completed') {
-    return `${c.dim}Project is closed. "reopen project" to continue.${c.reset}`;
+    return `${c.dim}Project closed — type "reopen project" to continue${c.reset}`;
   }
   if (status.driftAlerts.length > 0) {
-    return `${c.yellow}Resolve ${status.driftAlerts.length} drift alert(s) before continuing${c.reset}`;
+    return `${c.yellow}⚠ Resolve drift before continuing${c.reset}  ${c.dim}→ type "resolve drift"${c.reset}`;
   }
   if (!status.activePlan && !status.proposedPlan) {
-    return `${c.cyan}Create your first plan${c.reset}  ${c.dim}→ "create a plan: <goal>"${c.reset}`;
+    return `${c.cyan}Type: "create a plan: <one-line goal>"${c.reset}`;
   }
   if (status.proposedPlan && !status.activePlan) {
-    return `${c.cyan}Review & activate plan v${status.proposedPlan.version}${c.reset}  ${c.dim}→ "review plan v${status.proposedPlan.version}"${c.reset}`;
+    return `${c.cyan}Type: "review plan v${status.proposedPlan.version}"${c.reset}`;
   }
   const t = status.tasks;
   if (t.total === 0) {
-    return `${c.cyan}Create tasks for this plan${c.reset}  ${c.dim}→ "create tasks" or ask me${c.reset}`;
+    return `${c.cyan}Type: "create tasks for this plan"${c.reset}`;
   }
   if (t.done === t.total) {
-    return `${c.green}All tasks complete${c.reset}  ${c.dim}→ "close project" when ready${c.reset}`;
+    return `${c.green}All done — type "close project"${c.reset}`;
   }
   if (t.inProgress > 0) {
-    return `${c.cyan}${t.inProgress} task(s) in progress${c.reset}  ${c.dim}→ /tasks to see details${c.reset}`;
+    return `${c.cyan}Type: "/tasks" to see what's in progress${c.reset}`;
   }
-  return `${c.cyan}${t.todo} task(s) ready to start${c.reset}  ${c.dim}→ /tasks or "start task <id>"${c.reset}`;
+  return `${c.cyan}Type: "/tasks" to pick a task and start${c.reset}`;
 }
 
 // ─── Banner ───────────────────────────────────────────────────────────────────
