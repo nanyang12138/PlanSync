@@ -250,7 +250,16 @@ function nextStep(status: ProjectStatus): string {
   return `${c.cyan}Type: "/tasks" to pick a task and start${c.reset}`;
 }
 
-// ─── Banner ───────────────────────────────────────────────────────────────────
+// ─── Banner (two-column layout) ──────────────────────────────────────────────
+
+function stripAnsi(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+function padTo(s: string, width: number): string {
+  return s + ' '.repeat(Math.max(0, width - stripAnsi(s).length));
+}
 
 const REVIEW_ICON: Record<string, string> = {
   approved: `${c.green}✓${c.reset}`,
@@ -258,77 +267,113 @@ const REVIEW_ICON: Record<string, string> = {
   pending: `${c.dim}○${c.reset}`,
 };
 
-export function banner(status: ProjectStatus, toolCount: number, user: string) {
-  const cols = process.stdout.columns || 70;
-  const width = Math.min(cols - 2, 70);
-  const title = 'PlanSync Terminal';
-  const pad = Math.max(0, width - 2 - title.length);
+export function banner(
+  status: ProjectStatus,
+  _toolCount: number,
+  user: string,
+  recentActivity: Array<{ text: string; urgent?: boolean; ts: number }> = [],
+) {
+  const cols = process.stdout.columns || 80;
+  const rightInner = 27;
+  // Left box inner width; cap at 45 for readability, min 20 before degraded
+  const leftInner = Math.min(45, cols - rightInner - 10);
 
-  console.log('');
-  console.log(`${c.blue}${c.bold}╔${'═'.repeat(width - 2)}╗${c.reset}`);
-  console.log(
-    `${c.blue}${c.bold}║${c.reset}${c.bold}${' '.repeat(Math.floor(pad / 2))}${title}${' '.repeat(Math.ceil(pad / 2))}${c.reset}${c.blue}${c.bold}║${c.reset}`,
-  );
-  console.log(`${c.blue}${c.bold}╚${'═'.repeat(width - 2)}╝${c.reset}`);
-  console.log('');
+  // ── Degraded (narrow terminal) ─────────────────────────────────────────────
+  if (leftInner < 20) {
+    console.log('');
+    console.log(`  ${c.bold}${c.cyan}PlanSync Terminal${c.reset}  ${c.dim}${user}${c.reset}`);
+    console.log(`  ${c.bold}${status.projectName}${c.reset}  ${phaseIndicator(status.phase)}`);
+    console.log(`  ${c.yellow}▸${c.reset}  ${nextStep(status)}`);
+    console.log('');
+    return;
+  }
 
-  let planStr: string;
+  // ── Left column rows ───────────────────────────────────────────────────────
+  let planLine: string;
   if (status.activePlan) {
-    planStr = `v${status.activePlan.version} "${status.activePlan.title}"`;
+    const maxTitle = leftInner - 6;
+    const t = status.activePlan.title;
+    const title = t.length > maxTitle ? t.slice(0, maxTitle - 1) + '…' : t;
+    planLine = `${c.cyan}v${status.activePlan.version}${c.reset}  ${c.dim}"${title}"${c.reset}`;
   } else if (status.proposedPlan) {
     const p = status.proposedPlan;
+    const allApproved = p.reviews.length > 0 && p.reviews.every((r) => r.status === 'approved');
+    const label = allApproved
+      ? `${c.green}Ready to Activate${c.reset}`
+      : `${c.yellow}Pending Review${c.reset}`;
     const reviewStr =
       p.reviews.length > 0
         ? '  ' +
           p.reviews
             .map((r) => `${c.dim}${r.reviewer}${c.reset} ${REVIEW_ICON[r.status] ?? '○'}`)
             .join('  ')
-        : `  ${c.dim}awaiting approval${c.reset}`;
-    const allApproved = p.reviews.length > 0 && p.reviews.every((r) => r.status === 'approved');
-    const reviewLabel = allApproved
-      ? `${c.green}Ready to Activate${c.reset}`
-      : `${c.yellow}Pending Review${c.reset}`;
-    planStr = `${reviewLabel}  v${p.version} "${p.title}"${reviewStr}`;
+        : '';
+    planLine = `${label}  v${p.version}${reviewStr}`;
   } else {
-    planStr = `${c.dim}(no active plan)${c.reset}`;
+    planLine = `${c.dim}(no plan yet)${c.reset}`;
   }
 
-  const t = status.tasks;
+  const tk = status.tasks;
+  const bar = progressBar(tk.done, tk.total);
+  const inProgStr =
+    tk.inProgress > 0 ? `  ${c.blue}${tk.inProgress}▶${c.reset}` : `  ${c.dim}0▶${c.reset}`;
   const driftStr =
     status.driftAlerts.length > 0
-      ? `${c.yellow}⚠ ${status.driftAlerts.length}${c.reset}`
-      : `${c.green}✓ none${c.reset}`;
+      ? `  ${c.yellow}⚠ ${status.driftAlerts.length} drift${c.reset}`
+      : `  ${c.green}✓ no drift${c.reset}`;
 
-  console.log(
-    `  ${c.gray}User${c.reset}    ${c.bold}${user}${c.reset}   ${c.gray}Project${c.reset}  ${c.cyan}${status.projectName}${c.reset}`,
-  );
-  console.log(`  ${c.gray}Phase${c.reset}   ${phaseIndicator(status.phase)}`);
-  console.log(`  ${c.gray}Plan${c.reset}    ${planStr}`);
-  if (status.activePlan?.goal) {
-    const g = status.activePlan.goal.slice(0, Math.min(cols - 12, 80));
-    console.log(`          ${c.dim}${g}${status.activePlan.goal.length > 80 ? '…' : ''}${c.reset}`);
-  }
-  console.log(
-    `  ${c.gray}Tasks${c.reset}   ${progressBar(t.done, t.total)}  ${t.done}/${t.total}  · ${c.blue}${t.inProgress} in-progress${c.reset} / ${c.yellow}${t.blocked} blocked${c.reset}`,
-  );
-  console.log(`  ${c.gray}Drift${c.reset}   ${driftStr}`);
-  if (status.driftAlerts.length > 0) {
-    status.driftAlerts.forEach((d) => {
-      let ownerTag: string;
-      if (!d.assignee) {
-        ownerTag = `  ${c.dim}(unassigned)${c.reset}`;
-      } else if (d.assignee === user) {
-        ownerTag = `  ${c.yellow}← yours to resolve${c.reset}`;
-      } else {
-        ownerTag = `  ${c.dim}→ @${d.assignee}${c.reset}`;
-      }
-      console.log(`          ${c.yellow}⚠${c.reset} [${d.severity}] "${d.taskTitle}"${ownerTag}`);
-    });
-  }
-  console.log(`  ${c.gray}Next${c.reset}    ${nextStep(status)}`);
+  const leftRows: string[] = [
+    `  ${c.bold}${c.cyan}PlanSync Terminal${c.reset}  ${c.dim}${user}${c.reset}`,
+    ``,
+    `  ${c.bold}${status.projectName}${c.reset}`,
+    `  ${planLine}`,
+    ``,
+    `  ${phaseIndicator(status.phase)}`,
+    `  ${bar}  ${c.dim}${tk.done}/${tk.total}${c.reset}${inProgStr}${driftStr}`,
+    ``,
+    `  ${c.yellow}▸${c.reset}  ${nextStep(status)}`,
+  ];
+
+  // ── Right column rows ──────────────────────────────────────────────────────
+  const acts = recentActivity.slice(-5).reverse();
+  const actRows: string[] = acts.length
+    ? acts.map((a) => {
+        const icon = a.urgent ? `${c.red}⚠${c.reset}` : `${c.yellow}◆${c.reset}`;
+        const mins = Math.floor((Date.now() - a.ts) / 60_000);
+        const age = mins === 0 ? 'now' : `${mins}m`;
+        const ageFormatted = `${c.dim}${age}${c.reset}`;
+        // visible chars: icon(1) + "  " + text + spaces + age
+        const prefixVis = 4; // "  x  "
+        const maxText = rightInner - prefixVis - age.length - 1;
+        const txt = a.text.length > maxText ? a.text.slice(0, maxText - 1) + '…' : a.text;
+        const spaces = Math.max(1, rightInner - prefixVis - txt.length - age.length);
+        return `  ${icon}  ${txt}${' '.repeat(spaces)}${ageFormatted}`;
+      })
+    : [`  ${c.dim}(no recent activity)${c.reset}`];
+
+  const rightRows: string[] = [
+    `  ${c.bold}Recent Activity${c.reset}`,
+    ``,
+    ...actRows,
+    ``,
+    `  ${c.dim}/notifs for full history${c.reset}`,
+  ];
+
+  // ── Render two-column box ──────────────────────────────────────────────────
+  const height = Math.max(leftRows.length, rightRows.length);
+  const lw = leftInner + 2; // inner + one space each side
+  const rw = rightInner + 2;
+
   console.log('');
-  console.log(`  ${c.dim}Chat with PlanSync AI — it will call tools automatically.${c.reset}`);
-  console.log(`  ${c.dim}! runs shell commands  /help for all commands${c.reset}`);
+  console.log(`  ${c.dim}╭${'─'.repeat(lw)}╮  ╭${'─'.repeat(rw)}╮${c.reset}`);
+  for (let i = 0; i < height; i++) {
+    const l = padTo(leftRows[i] ?? '', lw);
+    const r = padTo(rightRows[i] ?? '', rw);
+    console.log(`  ${c.dim}│${c.reset}${l}${c.dim}│  │${c.reset}${r}${c.dim}│${c.reset}`);
+  }
+  console.log(`  ${c.dim}╰${'─'.repeat(lw)}╯  ╰${'─'.repeat(rw)}╯${c.reset}`);
+  console.log('');
+  console.log(`  ${c.dim}Chat with PlanSync AI.  /help for all commands${c.reset}`);
   console.log('');
 }
 

@@ -14,13 +14,7 @@ import { cfg, selfDir } from './config.js';
 import { c, banner, showSplash } from './ui.js';
 import { McpClient } from './mcp-client.js';
 import { buildSystemPrompt, runAgentLoop, Message } from './ai-loop.js';
-import {
-  fetchStatus,
-  handleSlashCommand,
-  buildPrompt,
-  buildStatusLine,
-  selectProject,
-} from './commands.js';
+import { fetchStatus, handleSlashCommand, buildPrompt, selectProject } from './commands.js';
 import {
   scanInterruptedExecs,
   resumeInterruptedExec,
@@ -119,7 +113,7 @@ async function main() {
   // ─── Status + banner ──────────────────────────────────────────────────────
   const status = await fetchStatus();
   process.stdout.write(' '.repeat(40) + '\r');
-  banner(status, mcp.getAnthropicTools().length, cfg.user);
+  banner(status, mcp.getAnthropicTools().length, cfg.user, rawInput.getNotifLog());
 
   // ─── Session + history ────────────────────────────────────────────────────
   const history: Message[] = [];
@@ -142,7 +136,6 @@ async function main() {
         currentStatus = fresh;
         currentSystem = buildSystemPrompt(fresh);
         rawInput.setPrompt(buildPrompt(fresh));
-        rawInput.setStatus(buildStatusLine(fresh));
       } catch {
         /* ignore — keep showing last known status */
       }
@@ -158,54 +151,13 @@ async function main() {
   installNotifyPrinter();
 
   // ─── Notification engine ──────────────────────────────────────────────────
-  // Notifications render as a single line above the ━━━ separator (never in
-  // the scroll zone). While AI is busy, all events are held and flushed after
-  // the reply completes. Routine events are batched over 800ms. Each
-  // notification auto-clears after 10 minutes.
+  // All events go to notifLog (visible in banner + /notifs).
+  // Urgent events (drift, stale, plan_activated) also trigger a 5s flash
+  // in the Ink prompt area above the input line.
   const URGENT_EVENTS = new Set(['drift_detected', 'execution_stale', 'plan_activated']);
-  const NOTIF_TTL = 10 * 60 * 1000;
-  let aiIsBusy = false;
-  const pendingWhileBusy: Array<{ msg: string; urgent: boolean }> = [];
-  let notifAccum: string[] = [];
-  let notifFlushTimer: ReturnType<typeof setTimeout> | null = null;
-  let notifClearTimer: ReturnType<typeof setTimeout> | null = null;
-
-  const showNotif = (text: string, urgent: boolean) => {
-    if (notifClearTimer) clearTimeout(notifClearTimer);
-    rawInput.setNotifyLine(text, urgent);
-    notifClearTimer = setTimeout(() => rawInput.clearNotifyLine(), NOTIF_TTL);
-  };
-
-  const flushPendingNotifs = () => {
-    const pending = pendingWhileBusy.splice(0);
-    if (pending.length === 0) return;
-    const urgents = pending.filter((p) => p.urgent);
-    const routines = pending.filter((p) => !p.urgent);
-    if (urgents.length > 0) {
-      showNotif(urgents.map((p) => p.msg).join(' · '), true);
-    } else if (routines.length > 0) {
-      const txt =
-        routines.length === 1 ? routines[0].msg : `${routines[0].msg} +${routines.length - 1} more`;
-      showNotif(txt, false);
-    }
-  };
 
   const notify = (msg: string, urgent: boolean) => {
-    if (aiIsBusy) {
-      pendingWhileBusy.push({ msg, urgent });
-      return;
-    }
-    if (urgent) {
-      showNotif(msg, true);
-      return;
-    }
-    notifAccum.push(msg);
-    if (notifFlushTimer) clearTimeout(notifFlushTimer);
-    notifFlushTimer = setTimeout(() => {
-      notifFlushTimer = null;
-      const msgs = notifAccum.splice(0);
-      showNotif(msgs.length === 1 ? msgs[0] : `${msgs[0]} +${msgs.length - 1} more`, false);
-    }, 800);
+    rawInput.setNotifyLine(msg, urgent);
   };
 
   // ─── Direct SSE subscription ─────────────────────────────────────────────
@@ -251,7 +203,6 @@ async function main() {
       currentStatus = s;
       currentSystem = buildSystemPrompt(s);
       rawInput.setPrompt(buildPrompt(s));
-      rawInput.setStatus(buildStatusLine(s));
     },
     getSystem: () => currentSystem,
     history,
@@ -350,7 +301,6 @@ async function main() {
       }
     };
 
-    aiIsBusy = true;
     const reply = await runAgentLoop(
       input,
       history,
@@ -366,8 +316,6 @@ async function main() {
       },
     );
 
-    aiIsBusy = false;
-    flushPendingNotifs();
     currentAbort = null;
     rawInput.onSigint = origSigint;
 
@@ -386,7 +334,6 @@ async function main() {
   // ─── Main input loop ──────────────────────────────────────────────────────
   while (true) {
     rawInput.setPrompt(buildPrompt(currentStatus));
-    rawInput.setStatus(buildStatusLine(currentStatus));
     const input = await rawInput.nextLine();
     if (input === null) break; // EOF / Ctrl+D
     await handleInput(input);

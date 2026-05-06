@@ -9,7 +9,6 @@ interface InputAPI {
   resume(): void;
   stop(): void;
   clearDisplay(): void;
-  setStatus(line: string): void;
   onSigint: (() => void) | null;
   /** Unmount Ink before printing a multi-line menu (no-op if not mounted). */
   unmountForMenu(): void;
@@ -417,7 +416,7 @@ export async function handleSlashCommand(
     ctx.setStatus(s);
     process.stdout.write(' '.repeat(40) + '\r');
     ctx.rawInput.unmountForMenu();
-    banner(s, ctx.mcp.getAnthropicTools().length, cfg.user);
+    banner(s, ctx.mcp.getAnthropicTools().length, cfg.user, ctx.getNotifLog());
     return 'handled';
   }
 
@@ -692,36 +691,6 @@ export async function handleSlashCommand(
 }
 
 // ─── Prompt helpers ───────────────────────────────────────────────────────────
-
-export function buildStatusLine(status: ProjectStatus): string {
-  if (!status.projectName || status.projectName === '(no project)') return '';
-  const { total, done, inProgress } = status.tasks;
-  const bar = progressBar(done, total);
-
-  const titleMax = 18;
-  const planTitle = status.activePlan?.title ?? status.proposedPlan?.title ?? '';
-  const titleTrunc = planTitle.length > titleMax ? planTitle.slice(0, titleMax) + '…' : planTitle;
-
-  const plan = status.activePlan
-    ? `v${status.activePlan.version} "${titleTrunc}"`
-    : status.proposedPlan
-      ? `${c.yellow}v${status.proposedPlan.version}? "${titleTrunc}"${c.reset}`
-      : `${c.dim}no plan${c.reset}`;
-
-  const phase = `${c.cyan}[${status.phase}]${c.reset}`;
-  const taskStr = `${bar}  ${c.dim}${done}/${total}${c.reset}`;
-  const activeStr = inProgress > 0 ? `  ${c.blue}${inProgress}▶${c.reset}` : '';
-  const driftStr =
-    status.driftAlerts.length > 0 ? `  ${c.yellow}${status.driftAlerts.length}⚠${c.reset}` : '';
-
-  const sep = `${c.dim}  │  ${c.reset}`;
-  return [
-    `${c.bold}${status.projectName}${c.reset}`,
-    plan,
-    phase,
-    `${taskStr}${activeStr}${driftStr}`,
-  ].join(sep);
-}
 
 export function buildPrompt(status: ProjectStatus): string {
   const name = status.projectName !== '(no project)' ? status.projectName : '';

@@ -20,20 +20,10 @@ export type { SlashCmd };
 export interface Notif {
   text: string;
   ts: number;
-}
-
-interface NotifLine {
-  text: string;
-  ts: number;
-  urgent: boolean;
+  urgent?: boolean;
 }
 
 const NOTIF_TTL = 10 * 60 * 1000; // 10 minutes in ms
-
-function ageStr(ts: number): string {
-  const mins = Math.floor((Date.now() - ts) / 60_000);
-  return mins === 0 ? 'just now' : `${mins}m ago`;
-}
 
 // ─── PromptUI component ───────────────────────────────────────────────────────
 
@@ -42,47 +32,32 @@ interface PromptProps {
   commands: SlashCmd[];
   history: string[];
   events: EventEmitter;
-  initialStatusLine?: string;
-  initialNotifs?: Notif[];
 }
 
-function PromptUI({
-  promptStr: initialPrompt,
-  commands,
-  history,
-  events,
-  initialStatusLine,
-  initialNotifs,
-}: PromptProps) {
+function PromptUI({ promptStr: initialPrompt, commands, history, events }: PromptProps) {
   const [value, setValue] = useState('');
   const [cursor, setCursor] = useState(0);
   const [histIdx, setHistIdx] = useState(-1);
   const [histSaved, setHistSaved] = useState('');
   const [suggestions, setSuggestions] = useState<SlashCmd[]>([]);
   const [selIdx, setSelIdx] = useState(-1);
-  const [latestNotif, setLatestNotif] = useState<NotifLine | null>(null);
-  const [statusLine, setStatusLine] = useState(initialStatusLine ?? '');
+  const [urgentFlash, setUrgentFlash] = useState<string | null>(null);
   const [promptStr, setPromptStr] = useState(initialPrompt);
   const [disabled, setDisabled] = useState(false);
   const [lastSubmitted, setLastSubmitted] = useState('');
 
+  // Urgent-only flash: drift / stale / plan_activated — auto-clears after 5s
   useEffect(() => {
-    const handler = ({ text, urgent }: { text: string; urgent: boolean }) =>
-      setLatestNotif({ text, ts: Date.now(), urgent });
-    const clearHandler = () => setLatestNotif(null);
-    events.on('notifyLine', handler);
-    events.on('clearNotif', clearHandler);
-    return () => {
-      events.off('notifyLine', handler);
-      events.off('clearNotif', clearHandler);
+    let clearTimer: ReturnType<typeof setTimeout> | null = null;
+    const handler = (msg: string) => {
+      if (clearTimer) clearTimeout(clearTimer);
+      setUrgentFlash(msg);
+      clearTimer = setTimeout(() => setUrgentFlash(null), 5000);
     };
-  }, [events]);
-
-  useEffect(() => {
-    const handler = (line: string) => setStatusLine(line);
-    events.on('statusLine', handler);
+    events.on('urgentFlash', handler);
     return () => {
-      events.off('statusLine', handler);
+      events.off('urgentFlash', handler);
+      if (clearTimer) clearTimeout(clearTimer);
     };
   }, [events]);
 
@@ -288,29 +263,13 @@ function PromptUI({
 
   return (
     <Box flexDirection="column">
-      {/* Single notification line — only shown when active */}
-      {latestNotif && (
+      {/* Urgent flash — only drift/stale/plan_activated, auto-clears after 5s */}
+      {urgentFlash && (
         <Box>
-          <Text color={latestNotif.urgent ? 'red' : 'yellow'}>
-            {'  '}
-            {latestNotif.urgent ? '⚠' : '◆'}{' '}
-          </Text>
-          <Text color={latestNotif.urgent ? 'red' : undefined}>{latestNotif.text}</Text>
-          <Text dimColor>{'  ' + ageStr(latestNotif.ts)}</Text>
+          <Text color="red">{'  ⚠  '}</Text>
+          <Text color="red">{urgentFlash}</Text>
         </Box>
       )}
-
-      {/* Status block: two separators sandwiching the status line */}
-      {statusLine ? (
-        <>
-          <Text dimColor>{'─'.repeat(sepWidth)}</Text>
-          <Text dimColor>
-            {'  '}
-            {statusLine}
-          </Text>
-          <Text dimColor>{'─'.repeat(sepWidth)}</Text>
-        </>
-      ) : null}
 
       {/* Slash command suggestion menu */}
       {visibleSuggs.length > 0 && (
@@ -342,6 +301,9 @@ function PromptUI({
         </Box>
       )}
 
+      {/* Top separator */}
+      <Text dimColor>{'─'.repeat(sepWidth)}</Text>
+
       {/* Input line */}
       {disabled ? (
         <Box>
@@ -358,6 +320,9 @@ function PromptUI({
           <Text>{after}</Text>
         </Box>
       )}
+
+      {/* Bottom separator */}
+      <Text dimColor>{'─'.repeat(sepWidth)}</Text>
     </Box>
   );
 }
@@ -371,7 +336,6 @@ export class InkSession {
   private cmds: SlashCmd[];
   private instance: Instance | null = null;
   private paused = false;
-  private statusLine = '';
   private notifLog: Notif[] = [];
   // Pause/resume gate: nextLine() waits for this before rendering Ink
   private resumeGate: Promise<void> | null = null;
@@ -399,28 +363,20 @@ export class InkSession {
     this.events.emit('setPrompt', this.promptStr);
   }
 
-  /** Update the live status line shown above the input. */
-  setStatus(line: string): void {
-    this.statusLine = line;
-    this.events.emit('statusLine', line);
-  }
-
-  /** Show a single notification line above the separator. Stored in notifLog. */
+  /**
+   * Push a notification to the log. Urgent events (drift, stale, plan_activated)
+   * also emit a 5-second flash in the Ink prompt area.
+   */
   setNotifyLine(text: string, urgent = false): void {
-    this.notifLog.push({ text, ts: Date.now() });
+    this.notifLog.push({ text, ts: Date.now(), urgent });
     if (this.notifLog.length > 100) this.notifLog.shift();
-    if (this.instance) {
-      this.events.emit('notifyLine', { text, urgent });
-    } else {
-      const prefix = urgent ? '\x1b[31m⚠' : '\x1b[33m◆';
-      process.stdout.write(`${prefix} ${text}\x1b[0m\n`);
+    if (urgent && this.instance) {
+      this.events.emit('urgentFlash', text);
     }
   }
 
-  /** Clear the notification line. */
-  clearNotifyLine(): void {
-    this.events.emit('clearNotif');
-  }
+  /** No-op — urgent flash auto-clears after 5s in PromptUI. */
+  clearNotifyLine(): void {}
 
   /**
    * Render the Ink prompt and wait for the user to press Enter.
@@ -441,8 +397,6 @@ export class InkSession {
           commands={this.cmds}
           history={this.history}
           events={this.events}
-          initialStatusLine={this.statusLine}
-          initialNotifs={this.notifLog.filter((n) => Date.now() - n.ts < NOTIF_TTL)}
         />,
         { patchConsole: false },
       );
@@ -477,20 +431,6 @@ export class InkSession {
   /** Returns the notification log (entries within the last 10 min). */
   getNotifLog(): Notif[] {
     return this.notifLog.filter((n) => Date.now() - n.ts < NOTIF_TTL);
-  }
-
-  /**
-   * Print a message above the current input line without corrupting it.
-   * If no prompt is active, writes directly to stdout.
-   */
-  printAbove(text: string): void {
-    this.notifLog.push({ text, ts: Date.now() });
-    if (this.notifLog.length > 100) this.notifLog.shift();
-    if (this.instance) {
-      this.events.emit('notify', text);
-    } else {
-      process.stdout.write(text + '\n');
-    }
   }
 
   /**
