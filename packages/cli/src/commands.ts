@@ -102,7 +102,7 @@ export async function fetchStatus(): Promise<ProjectStatus> {
     return {
       projectId: cfg.project,
       projectName: (project.name as string) || cfg.project,
-      phase: (project.phase as string) || 'planning',
+      phase: project.phase === 'completed' ? 'completed' : plan || proposed ? 'active' : 'planning',
       activePlan: plan
         ? {
             version: plan.version as number,
