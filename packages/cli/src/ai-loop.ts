@@ -137,7 +137,7 @@ export async function streamOneTurn(
     let sseBuffer = '';
     let textAcc = '';
     let isFirstText = true;
-    const prefix = `\n${c.cyan}${c.bold}PlanSync${c.reset} `;
+    const prefix = `${c.cyan}${c.bold}PlanSync${c.reset} `;
     const toolCalls: { id: string; name: string; input: Record<string, unknown> }[] = [];
     let currentTool: { id: string; name: string; inputRaw: string } | null = null;
     let stopReason: string | undefined;
@@ -250,7 +250,7 @@ export async function streamOneTurn(
         res.on('data', (chunk: Buffer) => flush(chunk.toString()));
         res.on('end', () => {
           if (sseBuffer.trim()) flush(sseBuffer + '\n\n');
-          if (textAcc) process.stdout.write('\n\n');
+          if (textAcc) process.stdout.write('\n');
           resolve(finalize());
         });
       },
