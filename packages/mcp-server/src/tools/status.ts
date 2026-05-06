@@ -104,6 +104,22 @@ export function registerStatusTools(server: McpServer, api: ApiClient, config: M
       const result = await api.post(`/api/projects/${args.projectId}/drifts/${args.driftId}`, {
         action: args.action,
       });
+      const verify = await api.get<{ data?: { status?: string } }>(
+        `/api/projects/${args.projectId}/drifts/${args.driftId}`,
+      );
+      const verifiedStatus = verify.data?.status ?? 'unknown';
+      if (verifiedStatus !== 'resolved') {
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `Drift resolve call succeeded but drift status is still "${verifiedStatus}", not "resolved". ` +
+                `Tell the user the resolution may have failed.`,
+            },
+          ],
+        };
+      }
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   );

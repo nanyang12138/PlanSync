@@ -159,6 +159,22 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
       const result = await effectiveApi.post(`/api/projects/${projectId}/plans/${planId}/propose`, {
         reviewers,
       });
+      const verify = await effectiveApi.get<{ data?: { status?: string } }>(
+        `/api/projects/${projectId}/plans/${planId}`,
+      );
+      const verifiedStatus = verify.data?.status ?? 'unknown';
+      if (verifiedStatus !== 'proposed') {
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `Propose call succeeded but plan status is still "${verifiedStatus}", not "proposed". ` +
+                `Tell the user the proposal may have failed and suggest checking /status.`,
+            },
+          ],
+        };
+      }
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   );
@@ -182,6 +198,22 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
         `/api/projects/${args.projectId}/plans/${args.planId}/activate`,
         {},
       );
+      const verify = await effectiveApi.get<{ data?: { status?: string } }>(
+        `/api/projects/${args.projectId}/plans/${args.planId}`,
+      );
+      const verifiedStatus = verify.data?.status ?? 'unknown';
+      if (verifiedStatus !== 'active') {
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `Activation call succeeded but plan status is still "${verifiedStatus}", not "active". ` +
+                `Tell the user the activation may have failed and suggest checking /status.`,
+            },
+          ],
+        };
+      }
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   );
@@ -205,6 +237,22 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
         `/api/projects/${args.projectId}/plans/${args.planId}/reactivate`,
         {},
       );
+      const verify = await effectiveApi.get<{ data?: { status?: string } }>(
+        `/api/projects/${args.projectId}/plans/${args.planId}`,
+      );
+      const verifiedStatus = verify.data?.status ?? 'unknown';
+      if (verifiedStatus !== 'active') {
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `Reactivation call succeeded but plan status is still "${verifiedStatus}", not "active". ` +
+                `Tell the user the rollback may have failed and suggest checking /status.`,
+            },
+          ],
+        };
+      }
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   );
