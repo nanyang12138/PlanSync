@@ -296,15 +296,15 @@ function PromptUI({
         </Box>
       )}
 
-      {/* Separator */}
-      <Text dimColor>{'━'.repeat(sepWidth)}</Text>
-
-      {/* Live status line */}
+      {/* Separator + status — only rendered when status has content */}
       {statusLine ? (
-        <Text dimColor>
-          {'  '}
-          {statusLine}
-        </Text>
+        <>
+          <Text dimColor>{'─'.repeat(sepWidth)}</Text>
+          <Text dimColor>
+            {'  '}
+            {statusLine}
+          </Text>
+        </>
       ) : null}
 
       {/* Slash command suggestion menu */}
