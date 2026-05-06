@@ -64,14 +64,19 @@ export const apiPost = <T>(path: string, body?: unknown) => psRequest<T>('POST',
 export async function fetchStatus(): Promise<ProjectStatus> {
   if (!cfg.project) return emptyStatus();
   try {
-    const [proj, drifts, tasksRes, plansRes] = await Promise.all([
+    const [projRes, driftsRes, tasksSettled, plansSettled] = await Promise.allSettled([
       apiGet<{ data?: Record<string, unknown> }>(`/api/projects/${cfg.project}`),
       apiGet<{ data?: unknown[] }>(`/api/projects/${cfg.project}/drifts?status=open`),
       apiGet<{ data?: unknown[] }>(`/api/projects/${cfg.project}/tasks?pageSize=100`),
       apiGet<{ data?: unknown[] }>(`/api/projects/${cfg.project}/plans`),
     ]);
 
-    const project = (proj.data || {}) as Record<string, unknown>;
+    const proj = projRes.status === 'fulfilled' ? projRes.value : null;
+    const drifts = driftsRes.status === 'fulfilled' ? driftsRes.value : { data: [] };
+    const tasksRes = tasksSettled.status === 'fulfilled' ? tasksSettled.value : { data: [] };
+    const plansRes = plansSettled.status === 'fulfilled' ? plansSettled.value : { data: [] };
+
+    const project = (proj?.data || {}) as Record<string, unknown>;
     const plans = (plansRes.data || []) as Array<Record<string, unknown>>;
     const plan = plans.find((p) => p.status === 'active') || null;
     const proposed = !plan ? plans.find((p) => p.status === 'proposed') || null : null;
@@ -101,7 +106,7 @@ export async function fetchStatus(): Promise<ProjectStatus> {
 
     return {
       projectId: cfg.project,
-      projectName: (project.name as string) || cfg.project,
+      projectName: (project.name as string) || cfg.projectName || cfg.project,
       phase: project.phase === 'completed' ? 'completed' : plan || proposed ? 'active' : 'planning',
       activePlan: plan
         ? {
@@ -145,7 +150,11 @@ export async function fetchStatus(): Promise<ProjectStatus> {
       })),
     };
   } catch {
-    return { ...emptyStatus(), projectId: cfg.project, projectName: cfg.project };
+    return {
+      ...emptyStatus(),
+      projectId: cfg.project,
+      projectName: cfg.projectName || cfg.project,
+    };
   }
 }
 
@@ -237,6 +246,7 @@ export async function selectProject(ask: AskFn): Promise<void> {
     const idx = parseInt(choice.trim(), 10) - 1;
     if (idx >= 0 && idx < list.length) {
       cfg.project = list[idx].id as string;
+      cfg.projectName = (list[idx].name as string) || '';
       console.log(`  ${c.green}✓ Selected: ${list[idx].name}${c.reset}`);
     }
   } catch (err: unknown) {

@@ -20,6 +20,7 @@ export const cfg = {
   apiKey: process.env.PLANSYNC_API_KEY || '',
   user: process.env.PLANSYNC_USER || process.env.USER || 'unknown',
   project: process.env.PLANSYNC_PROJECT || '',
+  projectName: '',
   llmKey: process.env.LLM_API_KEY || '',
   llmBase: (process.env.LLM_API_BASE || 'https://llm-api.amd.com/Anthropic').replace(/\/$/, ''),
   llmModel: process.env.LLM_MODEL_NAME || 'claude-opus-4-6',
