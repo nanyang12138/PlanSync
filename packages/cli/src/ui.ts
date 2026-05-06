@@ -261,6 +261,26 @@ function padTo(s: string, width: number): string {
   return s + ' '.repeat(Math.max(0, width - stripAnsi(s).length));
 }
 
+function truncateAnsi(s: string, maxVis: number): string {
+  if (stripAnsi(s).length <= maxVis) return s;
+  let vis = 0,
+    i = 0,
+    result = '';
+  while (i < s.length && vis < maxVis - 1) {
+    if (s[i] === '\x1b') {
+      const end = s.indexOf('m', i);
+      if (end !== -1) {
+        result += s.slice(i, end + 1);
+        i = end + 1;
+        continue;
+      }
+    }
+    result += s[i++];
+    vis++;
+  }
+  return result + `…${c.reset}`;
+}
+
 const REVIEW_ICON: Record<string, string> = {
   approved: `${c.green}✓${c.reset}`,
   rejected: `${c.red}✗${c.reset}`,
@@ -334,7 +354,7 @@ export function banner(
     `  ${lbl('Phase')}${phaseIndicator(status.phase)}`,
     `  ${lbl('Tasks')}${bar}  ${c.dim}${tk.done}/${tk.total}${c.reset}${inProgStr}${driftStr}`,
     ``,
-    `  ${c.yellow}▸${c.reset}  ${nextStep(status)}`,
+    `  ${c.yellow}▸${c.reset}  ${truncateAnsi(nextStep(status), leftInner - 3)}`,
   ];
 
   // ── Right column rows ──────────────────────────────────────────────────────
