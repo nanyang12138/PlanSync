@@ -218,6 +218,32 @@ function phaseIndicator(phase: string): string {
     .join(` ${c.dim}→${c.reset} `);
 }
 
+function nextStep(status: ProjectStatus): string {
+  if (status.phase === 'completed') {
+    return `${c.dim}Project is closed. "reopen project" to continue.${c.reset}`;
+  }
+  if (status.driftAlerts.length > 0) {
+    return `${c.yellow}Resolve ${status.driftAlerts.length} drift alert(s) before continuing${c.reset}`;
+  }
+  if (!status.activePlan && !status.proposedPlan) {
+    return `${c.cyan}Create your first plan${c.reset}  ${c.dim}→ "create a plan: <goal>"${c.reset}`;
+  }
+  if (status.proposedPlan && !status.activePlan) {
+    return `${c.cyan}Review & activate plan v${status.proposedPlan.version}${c.reset}  ${c.dim}→ "review plan v${status.proposedPlan.version}"${c.reset}`;
+  }
+  const t = status.tasks;
+  if (t.total === 0) {
+    return `${c.cyan}Create tasks for this plan${c.reset}  ${c.dim}→ "create tasks" or ask me${c.reset}`;
+  }
+  if (t.done === t.total) {
+    return `${c.green}All tasks complete${c.reset}  ${c.dim}→ "close project" when ready${c.reset}`;
+  }
+  if (t.inProgress > 0) {
+    return `${c.cyan}${t.inProgress} task(s) in progress${c.reset}  ${c.dim}→ /tasks to see details${c.reset}`;
+  }
+  return `${c.cyan}${t.todo} task(s) ready to start${c.reset}  ${c.dim}→ /tasks or "start task <id>"${c.reset}`;
+}
+
 // ─── Banner ───────────────────────────────────────────────────────────────────
 
 const REVIEW_ICON: Record<string, string> = {
@@ -289,6 +315,7 @@ export function banner(status: ProjectStatus, toolCount: number, user: string) {
       console.log(`          ${c.yellow}⚠${c.reset} [${d.severity}] "${d.taskTitle}"${ownerTag}`);
     });
   }
+  console.log(`  ${c.gray}Next${c.reset}    ${nextStep(status)}`);
   console.log('');
   console.log(`  ${c.dim}Chat with PlanSync AI — it will call tools automatically.${c.reset}`);
   console.log(`  ${c.dim}! runs shell commands  /help for all commands${c.reset}`);
