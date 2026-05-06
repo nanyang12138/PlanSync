@@ -153,32 +153,61 @@ async function main() {
 
   const installNotifyPrinter = () => {
     mcp.setNotifyPrinter((text) => {
-      rawInput.printAbove(`${c.yellow}[PlanSync] ${text}${c.reset}`);
+      notify(text, false);
       scheduleStatusRefresh();
     });
   };
   installNotifyPrinter();
 
-  // ─── Batched notification printer ────────────────────────────────────────
-  // Urgent events print immediately; routine events are batched over 1.2 s
-  // so that bulk operations (e.g. 4 tasks assigned at once) produce 1 line.
+  // ─── Notification engine ──────────────────────────────────────────────────
+  // Notifications render as a single line above the ━━━ separator (never in
+  // the scroll zone). While AI is busy, all events are held and flushed after
+  // the reply completes. Routine events are batched over 800ms. Each
+  // notification auto-clears after 10 minutes.
   const URGENT_EVENTS = new Set(['drift_detected', 'execution_stale', 'plan_activated']);
-  const notifBuf: string[] = [];
-  let notifTimer: ReturnType<typeof setTimeout> | null = null;
+  const NOTIF_TTL = 10 * 60 * 1000;
+  let aiIsBusy = false;
+  const pendingWhileBusy: Array<{ msg: string; urgent: boolean }> = [];
+  let notifAccum: string[] = [];
+  let notifFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  let notifClearTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const showNotif = (text: string, urgent: boolean) => {
+    if (notifClearTimer) clearTimeout(notifClearTimer);
+    rawInput.setNotifyLine(text, urgent);
+    notifClearTimer = setTimeout(() => rawInput.clearNotifyLine(), NOTIF_TTL);
+  };
+
+  const flushPendingNotifs = () => {
+    const pending = pendingWhileBusy.splice(0);
+    if (pending.length === 0) return;
+    const urgents = pending.filter((p) => p.urgent);
+    const routines = pending.filter((p) => !p.urgent);
+    if (urgents.length > 0) {
+      showNotif(urgents.map((p) => p.msg).join(' · '), true);
+    } else if (routines.length > 0) {
+      const txt =
+        routines.length === 1 ? routines[0].msg : `${routines[0].msg} +${routines.length - 1} more`;
+      showNotif(txt, false);
+    }
+  };
+
   const notify = (msg: string, urgent: boolean) => {
-    if (urgent) {
-      rawInput.printAbove(`${c.yellow}[PlanSync] ${msg}${c.reset}`);
+    if (aiIsBusy) {
+      pendingWhileBusy.push({ msg, urgent });
       return;
     }
-    notifBuf.push(msg);
-    if (notifTimer) return;
-    notifTimer = setTimeout(() => {
-      notifTimer = null;
-      const msgs = notifBuf.splice(0);
-      const line =
-        msgs.length === 1 ? msgs[0] : `${msgs.length} updates (${msgs[0].replace(/^.*\] /, '')}…)`;
-      rawInput.printAbove(`${c.yellow}[PlanSync] ${line}${c.reset}`);
-    }, 1200);
+    if (urgent) {
+      showNotif(msg, true);
+      return;
+    }
+    notifAccum.push(msg);
+    if (notifFlushTimer) clearTimeout(notifFlushTimer);
+    notifFlushTimer = setTimeout(() => {
+      notifFlushTimer = null;
+      const msgs = notifAccum.splice(0);
+      showNotif(msgs.length === 1 ? msgs[0] : `${msgs[0]} +${msgs.length - 1} more`, false);
+    }, 800);
   };
 
   // ─── Direct SSE subscription ─────────────────────────────────────────────
@@ -321,6 +350,7 @@ async function main() {
       }
     };
 
+    aiIsBusy = true;
     const reply = await runAgentLoop(
       input,
       history,
@@ -336,6 +366,8 @@ async function main() {
       },
     );
 
+    aiIsBusy = false;
+    flushPendingNotifs();
     currentAbort = null;
     rawInput.onSigint = origSigint;
 

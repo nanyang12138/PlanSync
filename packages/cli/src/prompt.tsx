@@ -21,6 +21,12 @@ export interface Notif {
   ts: number;
 }
 
+interface NotifLine {
+  text: string;
+  ts: number;
+  urgent: boolean;
+}
+
 const NOTIF_TTL = 10 * 60 * 1000; // 10 minutes in ms
 
 function ageStr(ts: number): string {
@@ -53,32 +59,22 @@ function PromptUI({
   const [histSaved, setHistSaved] = useState('');
   const [suggestions, setSuggestions] = useState<SlashCmd[]>([]);
   const [selIdx, setSelIdx] = useState(-1);
-  const [notifs, setNotifs] = useState<Notif[]>(
-    (initialNotifs ?? []).filter((n) => Date.now() - n.ts < NOTIF_TTL),
-  );
+  const [latestNotif, setLatestNotif] = useState<NotifLine | null>(null);
   const [statusLine, setStatusLine] = useState(initialStatusLine ?? '');
   const [promptStr, setPromptStr] = useState(initialPrompt);
   const [disabled, setDisabled] = useState(false);
 
   useEffect(() => {
-    const handler = (text: string) =>
-      setNotifs((prev) => [
-        ...prev.filter((n) => Date.now() - n.ts < NOTIF_TTL).slice(-4),
-        { text, ts: Date.now() },
-      ]);
-    events.on('notify', handler);
+    const handler = ({ text, urgent }: { text: string; urgent: boolean }) =>
+      setLatestNotif({ text, ts: Date.now(), urgent });
+    const clearHandler = () => setLatestNotif(null);
+    events.on('notifyLine', handler);
+    events.on('clearNotif', clearHandler);
     return () => {
-      events.off('notify', handler);
+      events.off('notifyLine', handler);
+      events.off('clearNotif', clearHandler);
     };
   }, [events]);
-
-  // Auto-expire notifications every minute
-  useEffect(() => {
-    const id = setInterval(() => {
-      setNotifs((prev) => prev.filter((n) => Date.now() - n.ts < NOTIF_TTL));
-    }, 60_000);
-    return () => clearInterval(id);
-  }, []);
 
   useEffect(() => {
     const handler = (line: string) => setStatusLine(line);
@@ -284,18 +280,32 @@ function PromptUI({
     suggestionRows.push({ type: 'item', cmd: s, idx: itemIdx++ });
   }
 
+  const sepWidth = Math.min(process.stdout.columns || 70, 78);
+
   return (
     <Box flexDirection="column">
-      {/* Recent notifications with age */}
-      {notifs.map((n, i) => (
-        <Box key={i}>
-          <Text color="yellow">{n.text}</Text>
-          <Text dimColor>{'  ' + ageStr(n.ts)}</Text>
+      {/* Single notification line — only shown when active */}
+      {latestNotif && (
+        <Box>
+          <Text color={latestNotif.urgent ? 'red' : 'yellow'}>
+            {'  '}
+            {latestNotif.urgent ? '⚠' : '◆'}{' '}
+          </Text>
+          <Text color={latestNotif.urgent ? 'red' : undefined}>{latestNotif.text}</Text>
+          <Text dimColor>{'  ' + ageStr(latestNotif.ts)}</Text>
         </Box>
-      ))}
+      )}
+
+      {/* Separator */}
+      <Text dimColor>{'━'.repeat(sepWidth)}</Text>
 
       {/* Live status line */}
-      {statusLine ? <Text dimColor> {statusLine}</Text> : null}
+      {statusLine ? (
+        <Text dimColor>
+          {'  '}
+          {statusLine}
+        </Text>
+      ) : null}
 
       {/* Slash command suggestion menu */}
       {visibleSuggs.length > 0 && (
@@ -385,6 +395,23 @@ export class InkSession {
   setStatus(line: string): void {
     this.statusLine = line;
     this.events.emit('statusLine', line);
+  }
+
+  /** Show a single notification line above the separator. Stored in notifLog. */
+  setNotifyLine(text: string, urgent = false): void {
+    this.notifLog.push({ text, ts: Date.now() });
+    if (this.notifLog.length > 100) this.notifLog.shift();
+    if (this.instance) {
+      this.events.emit('notifyLine', { text, urgent });
+    } else {
+      const prefix = urgent ? '\x1b[31m⚠' : '\x1b[33m◆';
+      process.stdout.write(`${prefix} ${text}\x1b[0m\n`);
+    }
+  }
+
+  /** Clear the notification line. */
+  clearNotifyLine(): void {
+    this.events.emit('clearNotif');
   }
 
   /**

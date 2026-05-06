@@ -669,18 +669,32 @@ export async function handleSlashCommand(
 
 export function buildStatusLine(status: ProjectStatus): string {
   if (!status.projectName || status.projectName === '(no project)') return '';
-  const { total, done } = status.tasks;
+  const { total, done, inProgress } = status.tasks;
   const bar = progressBar(done, total);
+
+  const titleMax = 18;
+  const planTitle = status.activePlan?.title ?? status.proposedPlan?.title ?? '';
+  const titleTrunc = planTitle.length > titleMax ? planTitle.slice(0, titleMax) + '…' : planTitle;
+
   const plan = status.activePlan
-    ? `v${status.activePlan.version} "${status.activePlan.title.slice(0, 20)}${status.activePlan.title.length > 20 ? '…' : ''}"`
+    ? `v${status.activePlan.version} "${titleTrunc}"`
     : status.proposedPlan
-      ? `${c.yellow}v${status.proposedPlan.version}?${c.reset} (proposed)`
+      ? `${c.yellow}v${status.proposedPlan.version}? "${titleTrunc}"${c.reset}`
       : `${c.dim}no plan${c.reset}`;
-  const drift =
-    status.driftAlerts.length > 0
-      ? `  ${c.yellow}⚠ ${status.driftAlerts.length} drift${status.driftAlerts.length > 1 ? 's' : ''}${c.reset}`
-      : '';
-  return `${c.dim}${status.projectName}${c.reset} · ${plan}  ${bar}  ${c.dim}${done}/${total}${c.reset}${drift}`;
+
+  const phase = `${c.cyan}[${status.phase}]${c.reset}`;
+  const taskStr = `${bar}  ${c.dim}${done}/${total}${c.reset}`;
+  const activeStr = inProgress > 0 ? `  ${c.blue}${inProgress}▶${c.reset}` : '';
+  const driftStr =
+    status.driftAlerts.length > 0 ? `  ${c.yellow}${status.driftAlerts.length}⚠${c.reset}` : '';
+
+  const sep = `${c.dim}  │  ${c.reset}`;
+  return [
+    `${c.bold}${status.projectName}${c.reset}`,
+    plan,
+    phase,
+    `${taskStr}${activeStr}${driftStr}`,
+  ].join(sep);
 }
 
 export function buildPrompt(status: ProjectStatus): string {
