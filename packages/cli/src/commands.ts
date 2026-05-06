@@ -184,14 +184,11 @@ async function createProject(ask: AskFn): Promise<void> {
 }
 
 async function deleteProject(ask: AskFn, list: Array<Record<string, unknown>>): Promise<void> {
-  const deleteItems = list
-    .map((p, i) => `  ${c.cyan}${i + 1}${c.reset}. ${c.bold}${p.name}${c.reset}`)
-    .join('\n');
-  const choice = await ask(
-    `  ${c.bold}Which project to delete?${c.reset}\n\n` +
-      deleteItems +
-      `\n\n  Enter number [1-${list.length}] or Enter to cancel: `,
+  console.log(`\n  ${c.bold}Which project to delete?${c.reset}\n`);
+  list.forEach((p, i) =>
+    console.log(`  ${c.cyan}${i + 1}${c.reset}. ${c.bold}${p.name}${c.reset}`),
   );
+  const choice = await ask(`\n  Enter number [1-${list.length}] or Enter to cancel: `);
   if (!choice.trim()) {
     console.log(`  ${c.yellow}Cancelled.${c.reset}`);
     return;
@@ -230,16 +227,13 @@ export async function selectProject(ask: AskFn): Promise<void> {
       if (!yn.trim() || yn.trim().toLowerCase() === 'y') await createProject(ask);
       return;
     }
-    const menuItems = list
-      .map((p, i) => `  ${c.cyan}${i + 1}${c.reset}. ${c.bold}${p.name}${c.reset}`)
-      .join('\n');
-    const choice = await ask(
-      `  ${c.bold}Select a project:${c.reset}\n\n` +
-        menuItems +
-        `\n  ${c.cyan}n${c.reset}. ${c.dim}Create new project${c.reset}\n` +
-        `  ${c.cyan}d${c.reset}. ${c.dim}Delete a project${c.reset}\n\n` +
-        `  Enter number [1-${list.length}], n, or d: `,
+    console.log(`\n  ${c.bold}Select a project:${c.reset}\n`);
+    list.forEach((p, i) =>
+      console.log(`  ${c.cyan}${i + 1}${c.reset}. ${c.bold}${p.name}${c.reset}`),
     );
+    console.log(`  ${c.cyan}n${c.reset}. ${c.dim}Create new project${c.reset}`);
+    console.log(`  ${c.cyan}d${c.reset}. ${c.dim}Delete a project${c.reset}`);
+    const choice = await ask(`\n  Enter number [1-${list.length}], n, or d: `);
     if (choice.trim().toLowerCase() === 'n') {
       await createProject(ask);
       return;
@@ -525,9 +519,8 @@ export async function handleSlashCommand(
       ),
     );
     console.log('');
-    const answer = await ctx.ask(
-      `  ${c.dim}[Enter/a] all  [1,2,3] specific numbers  [n] cancel${c.reset}\n\n  Execute [Enter = all]: `,
-    );
+    console.log(`  ${c.dim}[Enter/a] all  [1,2,3] specific numbers  [n] cancel${c.reset}`);
+    const answer = await ctx.ask(`\n  Execute [Enter = all]: `);
     const trimmed = answer.trim().toLowerCase();
 
     let selectedIds: string[] = [];
