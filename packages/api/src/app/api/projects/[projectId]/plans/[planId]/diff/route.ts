@@ -12,12 +12,35 @@ export async function GET(req: NextRequest, { params }: Params) {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);
 
-    const compareWith = req.nextUrl.searchParams.get('compareWith');
+    const compareWithParam = req.nextUrl.searchParams.get('compareWith');
+    let compareWith = compareWithParam;
     if (!compareWith) {
-      throw new AppError(
-        ErrorCode.BAD_REQUEST,
-        'compareWith query param required (plan ID to compare against)',
-      );
+      const currentPlan = await prisma.plan.findUnique({ where: { id: params.planId } });
+      if (!currentPlan) throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
+      if (currentPlan.version <= 1) {
+        return NextResponse.json({
+          data: {
+            changes: [],
+            summary: 'First version — no predecessor to diff against',
+            breakingChanges: false,
+          },
+        });
+      }
+      const predecessor = await prisma.plan.findUnique({
+        where: {
+          projectId_version: { projectId: params.projectId, version: currentPlan.version - 1 },
+        },
+      });
+      if (!predecessor) {
+        return NextResponse.json({
+          data: {
+            changes: [],
+            summary: 'No predecessor found to diff against',
+            breakingChanges: false,
+          },
+        });
+      }
+      compareWith = predecessor.id;
     }
 
     const [planA, planB] = await Promise.all([

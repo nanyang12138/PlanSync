@@ -6,16 +6,19 @@ You are working on a project managed by **PlanSync**, an AI team collaboration p
 
 **When you first open a conversation in this workspace, you MUST immediately:**
 
-1. Call `plansync_status` — do not wait for the user to ask, do this before reading or responding to their first message
-2. If `PLANSYNC_PROJECT` is not set or returns empty, call `plansync_project_list` so the user can choose a project
-3. Greet the user with a structured summary:
+1. Call `plansync_exec_context` (no arguments) — do this before anything else
+   - If response has `execMode: true`: you were launched via `/exec` for a specific task. Follow the exec-mode flow: parse `taskPack` and `runId`, present your implementation approach, implement, then call `plansync_execution_complete`. Do NOT call `plansync_status` or show a banner.
+   - If response has `execMode: false`: continue with the steps below
+2. Call `plansync_status` — do not wait for the user to ask, do this before reading or responding to their first message
+3. If `PLANSYNC_PROJECT` is not set or returns empty, call `plansync_project_list` so the user can choose a project
+4. Greet the user with a structured summary:
    - Project name and current phase
    - Active plan: version, title, goal (one line)
    - Tasks: total count with status breakdown (todo / in_progress / done)
    - Open drift alerts: count — if > 0, mark ⚠️ and name the affected tasks
-4. End with: **"What would you like to work on today?"**
+5. End with: **"What would you like to work on today?"**
 
-**This is automatic — even if the user's first message is "hi" or a direct task request, call `plansync_status` first, then respond.**
+**This is automatic — even if the user's first message is "hi" or a direct task request, call `plansync_exec_context` first (then `plansync_status` if not in exec mode), then respond.**
 
 ## Key Concepts
 
@@ -37,8 +40,7 @@ You are working on a project managed by **PlanSync**, an AI team collaboration p
 
 ## After Work
 
-- Call `plansync_execution_complete` with a summary of what you did
-- Update task status via `plansync_task_update`
+- Call `plansync_execution_complete` with a summary of what you did — this marks the task done
 
 ## If You Detect Drift
 
