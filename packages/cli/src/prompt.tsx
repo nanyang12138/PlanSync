@@ -64,6 +64,7 @@ function PromptUI({
   const [statusLine, setStatusLine] = useState(initialStatusLine ?? '');
   const [promptStr, setPromptStr] = useState(initialPrompt);
   const [disabled, setDisabled] = useState(false);
+  const [lastSubmitted, setLastSubmitted] = useState('');
 
   useEffect(() => {
     const handler = ({ text, urgent }: { text: string; urgent: boolean }) =>
@@ -103,6 +104,7 @@ function PromptUI({
       setSelIdx(-1);
       setHistIdx(-1);
       setHistSaved('');
+      setLastSubmitted('');
     };
     events.on('reset', handler);
     return () => {
@@ -149,6 +151,7 @@ function PromptUI({
       if (selIdx >= 0 && suggestions[selIdx]) {
         final = suggestions[selIdx].cmd;
       }
+      setLastSubmitted(final);
       setDisabled(true);
       setValue('');
       setCursor(0);
@@ -340,7 +343,10 @@ function PromptUI({
 
       {/* Input line */}
       {disabled ? (
-        <Text dimColor>{promptStr}…</Text>
+        <Box>
+          <Text dimColor>{promptStr}</Text>
+          <Text dimColor>{lastSubmitted || '…'}</Text>
+        </Box>
       ) : (
         <Box>
           <Text color="blueBright" bold>
