@@ -97,6 +97,7 @@ Which project? (or "new project: <name>" to create one)
 ```
 **PlanSync [Terminal Mode]** · {userName} · {projectName}
 ───────────────────────────────────────────────
+Phase        planning → [active] → completed
 Active Plan  v{N} "{title}"
 Goal         {goal, first 80 chars}
 ───────────────────────────────────────────────
@@ -106,11 +107,19 @@ Drift        {N pending}   (or "none" if 0)
 What would you like to work on today?
 ```
 
+If `todo = 0` AND `inProgress = 0` (all tasks complete), replace the closing line with:
+
+```
+All tasks complete — ready to close.
+  "close project" to mark it completed, or continue adding tasks.
+```
+
 **Case C2 — `PLANSYNC_PROJECT` is set, no active plan but a PROPOSED plan exists** (awaiting review):
 
 ```
 **PlanSync [Terminal Mode]** · {userName} · {projectName}
 ───────────────────────────────────────────────
+Phase          planning → [active] → completed
 Proposed Plan  v{N} "{title}" — awaiting review
 Goal           {goal, first 80 chars}
 ───────────────────────────────────────────────
@@ -125,6 +134,7 @@ Next step: review the proposed plan ("review plan v{N}") or activate it.
 ```
 **PlanSync [Terminal Mode]** · {userName} · {projectName}
 ───────────────────────────────────────────────
+Phase        [planning] → active → completed
 Active Plan  none — no plan activated yet
 ───────────────────────────────────────────────
 Next step: create your first plan.
@@ -132,6 +142,20 @@ Next step: create your first plan.
 ───────────────────────────────────────────────
 What would you like to do?
 ```
+
+**Case E — `PLANSYNC_PROJECT` is set and `phase = completed`** (check this before C1/C2/D):
+
+```
+**PlanSync [Terminal Mode]** · {userName} · {projectName}
+───────────────────────────────────────────────
+Phase        planning → active → [completed]
+───────────────────────────────────────────────
+This project is closed. All work is archived.
+  "reopen project" to move back to active.
+───────────────────────────────────────────────
+```
+
+> **Banner priority**: Check phase first. If `phase = completed` → Case E. Otherwise use C1/C2/D based on plan state.
 
 5. Wait for the user's response.
 
@@ -143,6 +167,27 @@ What would you like to do?
 - **Task**: Work items bound to a specific plan version. When the plan changes, tasks may drift.
 - **Drift Alert**: The plan changed after this task was bound. Must be resolved before work continues.
 - **Execution Run**: A registered work session, bound to the current plan version. Heartbeats every 30s.
+
+---
+
+## Project Lifecycle
+
+```
+[planning] → [active] → [completed]
+```
+
+| Phase       | Meaning                                    | How to advance                                                         |
+| ----------- | ------------------------------------------ | ---------------------------------------------------------------------- |
+| `planning`  | Setting up — creating plan, adding members | Activate a plan (phase stays planning until owner explicitly advances) |
+| `active`    | Plan activated, tasks executing            | Owner types "close project" when all work is done                      |
+| `completed` | Project closed, all work archived          | Owner types "reopen project" to return to active                       |
+
+**Phase transitions are always owner-initiated** — activating a plan does not auto-advance the phase. The owner decides when the project is truly done.
+
+**Commands:**
+
+- `"close project"` → `plansync_project_update { projectId, phase: "completed" }`
+- `"reopen project"` → `plansync_project_update { projectId, phase: "active" }`
 
 ---
 
