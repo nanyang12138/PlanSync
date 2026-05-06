@@ -45,23 +45,6 @@ function PromptUI({ promptStr: initialPrompt, commands, history, events }: Promp
   const [promptStr, setPromptStr] = useState(initialPrompt);
   const [disabled, setDisabled] = useState(false);
   const [lastSubmitted, setLastSubmitted] = useState('');
-  const [cols, setCols] = useState(process.stdout.columns || 80);
-
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const onResize = () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        setCols(process.stdout.columns || 80);
-        timer = null;
-      }, 150);
-    };
-    process.stdout.on('resize', onResize);
-    return () => {
-      process.stdout.off('resize', onResize);
-      if (timer) clearTimeout(timer);
-    };
-  }, []);
 
   // Urgent-only flash: drift / stale / plan_activated — auto-clears after 5s
   useEffect(() => {
@@ -279,7 +262,7 @@ function PromptUI({ promptStr: initialPrompt, commands, history, events }: Promp
     suggestionRows.push({ type: 'item', cmd: s, idx: itemIdx++ });
   }
 
-  const sepDashes = cols;
+  const sepDashes = process.stdout.columns || 80;
 
   return (
     <Box flexDirection="column">
