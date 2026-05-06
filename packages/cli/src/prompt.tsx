@@ -45,6 +45,15 @@ function PromptUI({ promptStr: initialPrompt, commands, history, events }: Promp
   const [promptStr, setPromptStr] = useState(initialPrompt);
   const [disabled, setDisabled] = useState(false);
   const [lastSubmitted, setLastSubmitted] = useState('');
+  const [cols, setCols] = useState(process.stdout.columns || 80);
+
+  useEffect(() => {
+    const onResize = () => setCols(process.stdout.columns || 80);
+    process.stdout.on('resize', onResize);
+    return () => {
+      process.stdout.off('resize', onResize);
+    };
+  }, []);
 
   // Urgent-only flash: drift / stale / plan_activated — auto-clears after 5s
   useEffect(() => {
@@ -132,7 +141,10 @@ function PromptUI({ promptStr: initialPrompt, commands, history, events }: Promp
       setCursor(0);
       setSuggestions([]);
       setSelIdx(-1);
-      events.emit('submit', final);
+      // Defer 'submit' until after React renders the disabled state. Without this,
+      // nextLine() resolves synchronously (before Ink re-renders) and the AI loop
+      // starts writing to stdout. Ink's subsequent \x1b[J clear then wipes the output.
+      setTimeout(() => events.emit('submit', final), 0);
       return;
     }
 
@@ -259,7 +271,7 @@ function PromptUI({ promptStr: initialPrompt, commands, history, events }: Promp
     suggestionRows.push({ type: 'item', cmd: s, idx: itemIdx++ });
   }
 
-  const sepDashes = process.stdout.columns || 80;
+  const sepDashes = cols;
 
   return (
     <Box flexDirection="column">

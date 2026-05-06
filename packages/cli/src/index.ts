@@ -329,6 +329,11 @@ async function main() {
       currentStatus = await fetchStatus();
       currentSystem = buildSystemPrompt(currentStatus);
     }
+
+    // Ink's next re-render moves up prevHeight (3) lines then \x1b[J-clears to bottom.
+    // Without padding, the last 3 lines of AI output get overwritten by the new prompt.
+    // Four newlines push the cursor below that danger zone; Ink's clear erases the blanks.
+    process.stdout.write('\n\n\n\n');
   }
 
   // ─── Main input loop ──────────────────────────────────────────────────────

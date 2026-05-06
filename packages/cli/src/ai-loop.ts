@@ -23,6 +23,7 @@ export function buildSystemPrompt(status: ProjectStatus): string {
     '',
     'You have the full PlanSync tool set. Use tools proactively:',
     '- Query tasks/drifts/plan status → call the relevant tool for fresh data',
+    '- List or describe members → ALWAYS call plansync_member_list for live data, never generate from memory',
     '- Create or update tasks → call plansync_task_create or plansync_task_update',
     '- Create a plan → call plansync_plan_propose (then activate separately)',
     '- Resolve drift → call plansync_drift_resolve',
