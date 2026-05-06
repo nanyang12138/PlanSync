@@ -284,7 +284,11 @@ export function banner(status: ProjectStatus, toolCount: number, user: string) {
             .map((r) => `${c.dim}${r.reviewer}${c.reset} ${REVIEW_ICON[r.status] ?? '○'}`)
             .join('  ')
         : `  ${c.dim}awaiting approval${c.reset}`;
-    planStr = `${c.yellow}Pending Review${c.reset}  v${p.version} "${p.title}"${reviewStr}`;
+    const allApproved = p.reviews.length > 0 && p.reviews.every((r) => r.status === 'approved');
+    const reviewLabel = allApproved
+      ? `${c.green}Ready to Activate${c.reset}`
+      : `${c.yellow}Pending Review${c.reset}`;
+    planStr = `${reviewLabel}  v${p.version} "${p.title}"${reviewStr}`;
   } else {
     planStr = `${c.dim}(no active plan)${c.reset}`;
   }
@@ -393,6 +397,10 @@ export function printHelp(toolCount: number) {
     `  ${c.cyan}/worker [agentName] [s]${c.reset}  Run agent task loop (e.g. /worker ai, /worker ai 30)`,
   );
   console.log(`  ${c.cyan}/code${c.reset}                Open Genie coding mode`);
+  console.log(`  ${c.cyan}/notifs${c.reset}              View recent notifications (last 10 min)`);
+  console.log(
+    `  ${c.cyan}/verbose${c.reset}             Toggle verbose tool output (default: off)`,
+  );
   console.log(`  ${c.cyan}/tools${c.reset}               List MCP tools`);
   console.log(`  ${c.cyan}/help${c.reset}                Show this help`);
   console.log(`  ${c.cyan}/quit${c.reset}                Exit`);
