@@ -169,6 +169,7 @@ export function progressBar(done: number, total: number, width = 10): string {
 export interface ProjectStatus {
   projectId: string;
   projectName: string;
+  phase: string;
   activePlan: { version: number; title: string; goal: string } | null;
   proposedPlan: {
     version: number;
@@ -196,12 +197,25 @@ export function emptyStatus(projectId = '', projectName = '(no project)'): Proje
   return {
     projectId,
     projectName,
+    phase: 'planning',
     activePlan: null,
     proposedPlan: null,
     tasks: { total: 0, done: 0, inProgress: 0, todo: 0, blocked: 0 },
     taskList: [],
     driftAlerts: [],
   };
+}
+
+// ─── Phase indicator ─────────────────────────────────────────────────────────
+
+function phaseIndicator(phase: string): string {
+  const phases: Array<'planning' | 'active' | 'completed'> = ['planning', 'active', 'completed'];
+  const colors: Record<string, string> = { planning: c.dim, active: c.cyan, completed: c.green };
+  return phases
+    .map((p) =>
+      p === phase ? `${colors[p] ?? c.cyan}${c.bold}[${p}]${c.reset}` : `${c.dim}${p}${c.reset}`,
+    )
+    .join(` ${c.dim}→${c.reset} `);
 }
 
 // ─── Banner ───────────────────────────────────────────────────────────────────
@@ -252,6 +266,7 @@ export function banner(status: ProjectStatus, toolCount: number, user: string) {
   console.log(
     `  ${c.gray}User${c.reset}    ${c.bold}${user}${c.reset}   ${c.gray}Project${c.reset}  ${c.cyan}${status.projectName}${c.reset}`,
   );
+  console.log(`  ${c.gray}Phase${c.reset}   ${phaseIndicator(status.phase)}`);
   console.log(`  ${c.gray}Plan${c.reset}    ${planStr}`);
   if (status.activePlan?.goal) {
     const g = status.activePlan.goal.slice(0, Math.min(cols - 12, 80));

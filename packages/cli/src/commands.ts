@@ -102,6 +102,7 @@ export async function fetchStatus(): Promise<ProjectStatus> {
     return {
       projectId: cfg.project,
       projectName: (project.name as string) || cfg.project,
+      phase: (project.phase as string) || 'planning',
       activePlan: plan
         ? {
             version: plan.version as number,
