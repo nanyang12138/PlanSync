@@ -472,6 +472,19 @@ export class InkSession {
     }
   }
 
+  /**
+   * Unmount Ink before the AI loop runs. Ink freezes its last frame in place
+   * (no clear), so the disabled-state echo stays visible. The AI writes below
+   * the frozen frame. nextLine() will remount Ink below all AI output.
+   * Unlike pause(), this does NOT set paused=true or block nextLine().
+   */
+  handoffToAI(): void {
+    if (this.instance) {
+      this.instance.unmount();
+      this.instance = null;
+    }
+  }
+
   /** Clean shutdown — unmounts any active render. */
   stop(): void {
     this.paused = true;
