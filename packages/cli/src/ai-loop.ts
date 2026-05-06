@@ -6,7 +6,7 @@ import {
   printToolStart,
   printToolDone,
   printToolError,
-  printToolCompact,
+  createSpinner,
   ProjectStatus,
 } from './ui.js';
 import { McpClient } from './mcp-client.js';
@@ -93,6 +93,7 @@ export async function streamOneTurn(
   system: string,
   tools: unknown[],
   signal?: AbortSignal,
+  onFirstChunk?: () => void,
 ): Promise<StreamResult> {
   if (!cfg.anthropicKey && !cfg.llmKey) {
     console.log(
@@ -180,6 +181,7 @@ export async function streamOneTurn(
           } else if (evt.type === 'content_block_delta') {
             if (evt.delta?.type === 'text_delta' && evt.delta.text) {
               if (isFirstText) {
+                onFirstChunk?.();
                 process.stdout.write('\r' + ' '.repeat(30) + '\r' + prefix);
                 isFirstText = false;
               }
@@ -297,14 +299,18 @@ export async function runAgentLoop(
 
   for (let turn = 0; turn < cfg.maxTurns; turn++) {
     if (signal?.aborted) break;
-    process.stdout.write(`\n${c.dim}Thinking...${c.reset}`);
+    process.stdout.write('\n');
+    const thinkSp = createSpinner('Thinking');
+    thinkSp.start();
 
     const { text, toolCalls, stopReason, truncatedTool, invalidTool } = await streamOneTurn(
       messages,
       system,
       tools,
       signal,
+      () => thinkSp.stop(),
     );
+    thinkSp.stop(); // no-op if already cleared by onFirstChunk; clears if model returned tool calls only
     if (signal?.aborted) break;
     if (text) finalText = text;
 
@@ -371,24 +377,39 @@ export async function runAgentLoop(
 
     const toolResults: unknown[] = [];
     for (const tc of toolCalls) {
-      if (cfg.verbose) printToolStart(tc.name, tc.input);
+      let toolSp: ReturnType<typeof createSpinner> | null = null;
+      if (cfg.verbose) {
+        printToolStart(tc.name, tc.input);
+      } else {
+        toolSp = createSpinner(`${c.violet}${tc.name}${c.reset}`);
+        toolSp.start();
+      }
       const t0 = Date.now();
       let result: string;
       try {
         result = await mcp.callTool(tc.name, tc.input);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (!cfg.verbose)
+        const ms = Date.now() - t0;
+        if (toolSp) {
+          toolSp.fail(
+            `${c.violet}${tc.name}${c.reset}  ${c.dim}${msg.slice(0, 80)}  ${ms}ms${c.reset}`,
+          );
+          toolSp = null;
+        } else {
           process.stdout.write(`\n  ${c.dim}╭─${c.reset} ${c.violet}${tc.name}${c.reset}\n`);
-        printToolError(msg, Date.now() - t0);
+          printToolError(msg, ms);
+        }
         result = `Tool error: ${msg}`;
         toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: result });
         continue;
       }
+      const ms = Date.now() - t0;
       if (cfg.verbose) {
-        printToolDone(result, Date.now() - t0);
+        printToolDone(result, ms);
       } else {
-        printToolCompact(tc.name, Date.now() - t0);
+        toolSp!.done(`${c.violet}${tc.name}${c.reset}  ${c.dim}${ms}ms${c.reset}`);
+        toolSp = null;
       }
 
       // Auto-launch Genie when execution_start is called
