@@ -25,6 +25,22 @@ export function registerMemberTools(server: McpServer, api: ApiClient) {
     async (args) => {
       const { projectId, ...body } = args;
       const result = await api.post(`/api/projects/${projectId}/members`, body);
+      const verify = await api.get<{ data?: Array<{ name?: string }> }>(
+        `/api/projects/${projectId}/members`,
+      );
+      const found = verify.data?.find((m) => m.name === args.name);
+      if (!found) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `Member add call succeeded but "${args.name}" does not appear in the member list. ` +
+                `Tell the user the addition may have failed.`,
+            },
+          ],
+        };
+      }
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   );

@@ -115,6 +115,23 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
         assigneeType: args.assigneeType || 'agent',
         ...(args.startImmediately !== undefined ? { startImmediately: args.startImmediately } : {}),
       });
+      const verify = await api.get<{ data?: { status?: string } }>(
+        `/api/projects/${args.projectId}/tasks/${args.taskId}`,
+      );
+      const verifiedStatus = verify.data?.status ?? 'unknown';
+      const expectedStatus = args.startImmediately === false ? 'todo' : 'in_progress';
+      if (verifiedStatus !== expectedStatus) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `Claim call succeeded but task status is still "${verifiedStatus}", not "${expectedStatus}". ` +
+                `Tell the user the claim may have failed.`,
+            },
+          ],
+        };
+      }
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   );
@@ -131,6 +148,22 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
         `/api/projects/${args.projectId}/tasks/${args.taskId}/decline`,
         {},
       );
+      const verify = await api.get<{ data?: { assignee?: string | null } }>(
+        `/api/projects/${args.projectId}/tasks/${args.taskId}`,
+      );
+      const verifiedAssignee = verify.data?.assignee;
+      if (verifiedAssignee !== null && verifiedAssignee !== undefined && verifiedAssignee !== '') {
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `Decline call succeeded but task still has assignee "${verifiedAssignee}". ` +
+                `Tell the user the decline may have failed.`,
+            },
+          ],
+        };
+      }
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   );
