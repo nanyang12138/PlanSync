@@ -322,41 +322,48 @@ export function banner(
       ? `  ${c.yellow}⚠ ${status.driftAlerts.length} drift${c.reset}`
       : `  ${c.green}✓ no drift${c.reset}`;
 
+  // Labels aligned to 7 chars — same visual width as Claude Code's info rows
+  const lbl = (s: string) => `${c.gray}${s.padEnd(7)}${c.reset}`;
+
   const leftRows: string[] = [
-    `  ${c.bold}${c.cyan}PlanSync Terminal${c.reset}  ${c.dim}${user}${c.reset}`,
+    `  ${c.bold}${c.cyan}PlanSync Terminal${c.reset}`,
+    `  ${c.dim}${user}${c.reset}`,
     ``,
-    `  ${c.bold}${status.projectName}${c.reset}`,
-    `  ${planLine}`,
-    ``,
-    `  ${phaseIndicator(status.phase)}`,
-    `  ${bar}  ${c.dim}${tk.done}/${tk.total}${c.reset}${inProgStr}${driftStr}`,
+    `  ${lbl('Project')}${c.bold}${status.projectName}${c.reset}`,
+    `  ${lbl('Plan')}${planLine}`,
+    `  ${lbl('Phase')}${phaseIndicator(status.phase)}`,
+    `  ${lbl('Tasks')}${bar}  ${c.dim}${tk.done}/${tk.total}${c.reset}${inProgStr}${driftStr}`,
     ``,
     `  ${c.yellow}▸${c.reset}  ${nextStep(status)}`,
   ];
 
   // ── Right column rows ──────────────────────────────────────────────────────
-  const acts = recentActivity.slice(-5).reverse();
+  const acts = recentActivity.slice(-4).reverse();
   const actRows: string[] = acts.length
     ? acts.map((a) => {
         const icon = a.urgent ? `${c.red}⚠${c.reset}` : `${c.yellow}◆${c.reset}`;
         const mins = Math.floor((Date.now() - a.ts) / 60_000);
         const age = mins === 0 ? 'now' : `${mins}m`;
-        const ageFormatted = `${c.dim}${age}${c.reset}`;
-        // visible chars: icon(1) + "  " + text + spaces + age
         const prefixVis = 4; // "  x  "
         const maxText = rightInner - prefixVis - age.length - 1;
         const txt = a.text.length > maxText ? a.text.slice(0, maxText - 1) + '…' : a.text;
         const spaces = Math.max(1, rightInner - prefixVis - txt.length - age.length);
-        return `  ${icon}  ${txt}${' '.repeat(spaces)}${ageFormatted}`;
+        return `  ${icon}  ${txt}${' '.repeat(spaces)}${c.dim}${age}${c.reset}`;
       })
-    : [`  ${c.dim}(no recent activity)${c.reset}`];
+    : [`  ${c.dim}No recent activity${c.reset}`];
+
+  const divider = `  ${c.dim}${'─'.repeat(rightInner - 2)}${c.reset}`;
 
   const rightRows: string[] = [
+    `  ${c.bold}Quick Tips${c.reset}`,
+    ``,
+    `  ${c.dim}Chat with AI naturally${c.reset}`,
+    `  ${c.dim}! for shell commands${c.reset}`,
+    `  ${c.dim}Tab to autocomplete /cmds${c.reset}`,
+    divider,
     `  ${c.bold}Recent Activity${c.reset}`,
     ``,
     ...actRows,
-    ``,
-    `  ${c.dim}/notifs for full history${c.reset}`,
   ];
 
   // ── Render two-column box ──────────────────────────────────────────────────
