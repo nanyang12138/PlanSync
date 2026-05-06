@@ -188,7 +188,7 @@ async function deleteProject(ask: AskFn, list: Array<Record<string, unknown>>): 
   list.forEach((p, i) =>
     console.log(`  ${c.cyan}${i + 1}${c.reset}. ${c.bold}${p.name}${c.reset}`),
   );
-  const choice = await ask(`\n  Enter number [1-${list.length}] or Enter to cancel: `);
+  const choice = await ask(`\n  Enter number [1-${list.length}] or Enter to cancel:\n  `);
   if (!choice.trim()) {
     console.log(`  ${c.yellow}Cancelled.${c.reset}`);
     return;
@@ -521,9 +521,9 @@ export async function handleSlashCommand(
       ),
     );
     console.log('');
-    console.log(`  ${c.dim}[Enter/a] all  [1,2,3] specific numbers  [n] cancel${c.reset}`);
-
-    const answer = await ctx.ask(`  Execute [Enter = all]: `);
+    const answer = await ctx.ask(
+      `  ${c.dim}[Enter/a] all  [1,2,3] specific numbers  [n] cancel${c.reset}\n\n  Execute [Enter = all]: `,
+    );
     const trimmed = answer.trim().toLowerCase();
 
     let selectedIds: string[] = [];
