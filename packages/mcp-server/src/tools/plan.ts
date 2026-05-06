@@ -62,6 +62,25 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
     async (args) => {
       const { projectId, asAgent, ...body } = args;
       const effectiveApi = asAgent ? api.withUser(asAgent) : api;
+
+      const existing = await effectiveApi.get<{
+        data: Array<{ id: string; version: number; title: string; status: string }>;
+      }>(`/api/projects/${projectId}/plans?pageSize=10`);
+      const blocking = existing.data?.find((p) => p.status === 'proposed' || p.status === 'draft');
+      if (blocking) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `Cannot create a new plan: v${blocking.version} "${blocking.title}" ` +
+                `already exists with status "${blocking.status}". ` +
+                `Tell the user and ask whether to use, update, or replace it.`,
+            },
+          ],
+        };
+      }
+
       const result = await effectiveApi.post(`/api/projects/${projectId}/plans`, body);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },

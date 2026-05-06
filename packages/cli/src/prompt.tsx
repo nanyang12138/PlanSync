@@ -48,10 +48,18 @@ function PromptUI({ promptStr: initialPrompt, commands, history, events }: Promp
   const [cols, setCols] = useState(process.stdout.columns || 80);
 
   useEffect(() => {
-    const onResize = () => setCols(process.stdout.columns || 80);
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onResize = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        setCols(process.stdout.columns || 80);
+        timer = null;
+      }, 150);
+    };
     process.stdout.on('resize', onResize);
     return () => {
       process.stdout.off('resize', onResize);
+      if (timer) clearTimeout(timer);
     };
   }, []);
 
