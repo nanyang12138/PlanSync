@@ -250,6 +250,8 @@ async function main() {
     setStatus: (s: typeof currentStatus) => {
       currentStatus = s;
       currentSystem = buildSystemPrompt(s);
+      rawInput.setPrompt(buildPrompt(s));
+      rawInput.setStatus(buildStatusLine(s));
     },
     getSystem: () => currentSystem,
     history,
@@ -384,6 +386,7 @@ async function main() {
   // ─── Main input loop ──────────────────────────────────────────────────────
   while (true) {
     rawInput.setPrompt(buildPrompt(currentStatus));
+    rawInput.setStatus(buildStatusLine(currentStatus));
     const input = await rawInput.nextLine();
     if (input === null) break; // EOF / Ctrl+D
     await handleInput(input);

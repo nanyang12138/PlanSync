@@ -290,6 +290,7 @@ export async function handleSlashCommand(
   }
 
   if (cmd === '/help') {
+    ctx.rawInput.unmountForMenu();
     printHelp(ctx.mcp.getAnthropicTools().length);
     return 'handled';
   }
@@ -377,6 +378,7 @@ export async function handleSlashCommand(
   }
 
   if (cmd === '/notifs') {
+    ctx.rawInput.unmountForMenu();
     const log = ctx.getNotifLog();
     if (log.length === 0) {
       console.log(`\n${c.dim}No notifications in the last 10 minutes.${c.reset}\n`);
@@ -393,6 +395,7 @@ export async function handleSlashCommand(
   }
 
   if (cmd === '/tools') {
+    ctx.rawInput.unmountForMenu();
     const tools = ctx.mcp.getAnthropicTools();
     if (tools.length === 0) {
       console.log(`\n  ${c.dim}MCP not connected — no tools available.${c.reset}\n`);
@@ -413,6 +416,7 @@ export async function handleSlashCommand(
     const s = await fetchStatus();
     ctx.setStatus(s);
     process.stdout.write(' '.repeat(40) + '\r');
+    ctx.rawInput.unmountForMenu();
     banner(s, ctx.mcp.getAnthropicTools().length, cfg.user);
     return 'handled';
   }
@@ -424,8 +428,10 @@ export async function handleSlashCommand(
       const fresh = await fetchStatus();
       ctx.setStatus(fresh);
       process.stdout.write(' '.repeat(40) + '\r');
+      ctx.rawInput.unmountForMenu();
       printTasks(fresh);
     } else {
+      ctx.rawInput.unmountForMenu();
       printTasks(s);
     }
     return 'handled';
