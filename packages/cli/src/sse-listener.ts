@@ -133,51 +133,52 @@ export class CliSseListener {
 }
 
 /**
- * Render a one-line human-readable description of an event for display in the
- * CLI status bar / printAbove. Returns null for events the user doesn't care
- * about in the terminal (e.g. low-signal task_started).
+ * Render a one-line human-readable description of an event for the CLI
+ * notification bar. Returns null for low-signal events (e.g. task_started).
+ *
+ * No ⚠/◆ icons — the display layer adds them based on the urgent flag.
+ * Project prefix is shown only for events from a different project (multi-project users).
  */
 export function describeEvent(eventType: string, data: Record<string, unknown>): string | null {
-  const projectPrefix = data.projectName ? `[${data.projectName as string}] ` : '';
-  const wrap = (msg: string) => projectPrefix + msg;
+  // Only prefix with project name when the event comes from a different project
+  const isDifferentProject = data.projectId && data.projectId !== cfg.project;
+  const prefix = isDifferentProject ? `[${data.projectName as string}] ` : '';
+  const w = (msg: string) => prefix + msg;
 
   switch (eventType) {
     case 'plan_activated':
-      return wrap(
-        `⚠ Plan v${data.version} activated by ${data.activatedBy} — check tasks for drift`,
-      );
+      return w(`Plan v${data.version} activated by ${data.activatedBy}`);
     case 'plan_proposed':
-      return wrap(`Plan "${data.title}" submitted for review by ${data.proposedBy}`);
+      return w(`Plan "${data.title}" proposed by ${data.proposedBy}`);
     case 'plan_draft_updated':
-      return wrap(`Plan v${data.version} draft updated`);
+      return w(`Plan v${data.version} draft updated`);
     case 'drift_detected': {
       const alerts = data.alerts as Array<{ severity: string }> | undefined;
       const total = alerts?.length ?? 0;
       const high = alerts?.filter((a) => a.severity === 'high').length ?? 0;
-      const med = alerts?.filter((a) => a.severity === 'medium').length ?? 0;
       if (total === 0) return null;
-      return wrap(`⚠ ${total} drift alert(s) (${high} high, ${med} medium)`);
+      return w(`${total} drift alert(s)${high > 0 ? ` — ${high} high` : ''}`);
     }
     case 'drift_resolved':
-      return wrap(`Drift resolved (${data.resolvedAction ?? data.action ?? 'resolved'})`);
+      return w(`Drift resolved`);
     case 'task_assigned':
-      return wrap(`Task "${data.title}" assigned to ${data.assignee}`);
+      return w(`"${data.title}" assigned to ${data.assignee}`);
     case 'task_completed':
-      return wrap(`Task "${data.title ?? data.taskId}" marked done`);
+      return w(`"${data.title ?? data.taskId}" done`);
     case 'task_unassigned':
-      return wrap(`Task unassigned (was: ${data.previousAssignee ?? '?'})`);
+      return w(`Task unassigned (was: ${data.previousAssignee ?? '?'})`);
     case 'execution_stale':
-      return wrap(`⚠ Execution by "${data.executorName}" went stale`);
+      return w(`Execution by "${data.executorName}" went stale`);
     case 'suggestion_created':
-      return wrap(`New plan suggestion by ${data.suggestedBy}`);
+      return w(`Plan suggestion by ${data.suggestedBy}`);
     case 'suggestion_resolved':
-      return wrap(`Plan suggestion ${data.status ?? 'resolved'}`);
+      return w(`Plan suggestion ${data.status ?? 'resolved'}`);
     case 'comment_added':
-      return wrap(`${data.authorName ?? 'Someone'} commented on plan`);
+      return w(`${data.authorName ?? 'Someone'} commented on plan`);
     case 'member_added':
-      return wrap(`Member "${data.name}" added`);
+      return w(`"${data.name}" added to project`);
     case 'member_removed':
-      return wrap(`Member "${data.memberName}" removed`);
+      return w(`"${data.memberName}" removed from project`);
     default:
       return null;
   }

@@ -93,11 +93,8 @@ async function main() {
   if (!cfg.project) {
     try {
       process.stdout.write(' '.repeat(40) + '\r');
-      const preAsk = async (prompt: string) => {
-        rawInput.setPrompt(prompt);
-        return (await rawInput.nextLine()) ?? '';
-      };
-      await selectProject(preAsk);
+      // Ink not yet mounted at startup — rawReadLine uses readline directly
+      await selectProject((p) => rawInput.rawReadLine(p));
     } catch {
       /* ignore */
     }

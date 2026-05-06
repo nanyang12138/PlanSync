@@ -11,6 +11,10 @@ interface InputAPI {
   clearDisplay(): void;
   setStatus(line: string): void;
   onSigint: (() => void) | null;
+  /** Unmount Ink before printing a multi-line menu (no-op if not mounted). */
+  unmountForMenu(): void;
+  /** Read one line via readline (cooked mode). Call unmountForMenu() first. */
+  rawReadLine(prompt: string): Promise<string>;
 }
 import { launchCode, launchExec, launchAutoExec } from './exec.js';
 
@@ -327,6 +331,8 @@ export async function handleSlashCommand(
     // If no ID given, show list and let user pick
     if (!chosenId) {
       const status = ctx.getStatus();
+      // Unmount Ink before printing the session list so all items are visible
+      ctx.rawInput.unmountForMenu();
       console.log(`\n  ${c.bold}Recent sessions — ${status.projectName}${c.reset}\n`);
       sessions.slice(0, 10).forEach((s, i) => {
         const dt = new Date(s.startedAt);
@@ -338,7 +344,9 @@ export async function handleSlashCommand(
       });
       console.log('');
 
-      const choice = await ctx.ask(`  Enter number or session ID (Enter to cancel): `);
+      const choice = await ctx.rawInput.rawReadLine(
+        `  Enter number or session ID (Enter to cancel): `,
+      );
 
       if (!choice.trim()) {
         console.log(`  ${c.dim}Cancelled.${c.reset}\n`);
@@ -428,8 +436,10 @@ export async function handleSlashCommand(
     if (targetId) {
       cfg.project = targetId;
     } else {
-      // selectProject uses ctx.ask() which uses rawInput in active mode — do NOT pause here
-      await selectProject(ctx.ask.bind(ctx));
+      // Unmount Ink before printing the project list so menu items aren't
+      // hidden behind the Ink chrome. Ink remounts on the next nextLine().
+      ctx.rawInput.unmountForMenu();
+      await selectProject((p) => ctx.rawInput.rawReadLine(p));
     }
     if (cfg.project) {
       process.stdout.write(`${c.dim}Restarting MCP (new project)...${c.reset}\r`);
@@ -509,6 +519,8 @@ export async function handleSlashCommand(
       return 'handled';
     }
 
+    // Unmount Ink before printing task list so all items are visible
+    ctx.rawInput.unmountForMenu();
     const operatorSuffix = agentName ? `  ${c.dim}[operator: ${cfg.user}]${c.reset}` : '';
     console.log(
       `\n  ${c.bold}PlanSync Worker Mode${c.reset} — Agent tasks assigned to ${workerTarget}:${operatorSuffix}\n`,
@@ -520,7 +532,7 @@ export async function handleSlashCommand(
     );
     console.log('');
     console.log(`  ${c.dim}[Enter/a] all  [1,2,3] specific numbers  [n] cancel${c.reset}`);
-    const answer = await ctx.ask(`\n  Execute [Enter = all]: `);
+    const answer = await ctx.rawInput.rawReadLine(`\n  Execute [Enter = all]: `);
     const trimmed = answer.trim().toLowerCase();
 
     let selectedIds: string[] = [];

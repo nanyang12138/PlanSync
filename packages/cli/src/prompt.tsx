@@ -9,6 +9,7 @@
 import React, { useState, useEffect } from 'react';
 import { Box, Text, useInput, render, type Instance, type Key } from 'ink';
 import { EventEmitter } from 'events';
+import { createInterface } from 'readline';
 import { appendInputHistory } from './session.js';
 import { type SlashCmd } from './input.js';
 
@@ -519,6 +520,32 @@ export class InkSession {
       this.instance.unmount();
       this.instance = null;
     }
+  }
+
+  /**
+   * Unmount Ink without setting paused=true. Use this before printing a
+   * multi-line menu so the menu items are not hidden behind the Ink chrome.
+   * Ink remounts automatically on the next nextLine() call.
+   */
+  unmountForMenu(): void {
+    if (this.instance) {
+      this.instance.unmount();
+      this.instance = null;
+    }
+  }
+
+  /**
+   * Read one line of input via Node's readline (normal cooked mode).
+   * Does not mount or unmount Ink — call unmountForMenu() first if needed.
+   */
+  rawReadLine(prompt: string): Promise<string> {
+    return new Promise<string>((resolve) => {
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      rl.question(prompt, (answer) => {
+        rl.close();
+        resolve(answer);
+      });
+    });
   }
 
   clearDisplay(): void {}
