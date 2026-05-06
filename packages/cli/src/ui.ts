@@ -149,6 +149,12 @@ export function printToolDone(result: string, ms: number): void {
   process.stdout.write(`  ${c.dim}╰─${c.reset} ${c.green}✔${c.reset} ${c.dim}${ms}ms${c.reset}\n`);
 }
 
+export function printToolCompact(name: string, ms: number): void {
+  process.stdout.write(
+    `  ${c.dim}✔ ${c.reset}${c.violet}${name}${c.reset}${c.dim}  ${ms}ms${c.reset}\n`,
+  );
+}
+
 export function printToolError(message: string, ms: number): void {
   const short = message.length > 120 ? message.slice(0, 117) + '…' : message;
   process.stdout.write(

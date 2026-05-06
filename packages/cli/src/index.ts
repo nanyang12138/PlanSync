@@ -68,6 +68,7 @@ const SLASH_CMDS: SlashCmd[] = [
   { cmd: '/resume', desc: 'Restore a previous session', group: 'Session' },
   { cmd: '/clear', desc: 'Clear conversation history', group: 'Session' },
   { cmd: '/notifs', desc: 'View recent notifications (last 10 min)', group: 'Session' },
+  { cmd: '/verbose', desc: 'Toggle verbose tool output (default: off)', group: 'Session' },
   { cmd: '/tools', desc: 'List MCP tools', group: 'Session' },
   { cmd: '/help', desc: 'Show help', group: 'Session' },
   { cmd: '/quit', desc: 'Exit', group: 'Session' },

@@ -1,7 +1,14 @@
 import * as https from 'https';
 import * as http from 'http';
 import { cfg } from './config.js';
-import { c, printToolStart, printToolDone, printToolError, ProjectStatus } from './ui.js';
+import {
+  c,
+  printToolStart,
+  printToolDone,
+  printToolError,
+  printToolCompact,
+  ProjectStatus,
+} from './ui.js';
 import { McpClient } from './mcp-client.js';
 
 export type Message = { role: 'user' | 'assistant'; content: unknown };
@@ -364,19 +371,25 @@ export async function runAgentLoop(
 
     const toolResults: unknown[] = [];
     for (const tc of toolCalls) {
-      printToolStart(tc.name, tc.input);
+      if (cfg.verbose) printToolStart(tc.name, tc.input);
       const t0 = Date.now();
       let result: string;
       try {
         result = await mcp.callTool(tc.name, tc.input);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
+        if (!cfg.verbose)
+          process.stdout.write(`\n  ${c.dim}╭─${c.reset} ${c.violet}${tc.name}${c.reset}\n`);
         printToolError(msg, Date.now() - t0);
         result = `Tool error: ${msg}`;
         toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: result });
         continue;
       }
-      printToolDone(result, Date.now() - t0);
+      if (cfg.verbose) {
+        printToolDone(result, Date.now() - t0);
+      } else {
+        printToolCompact(tc.name, Date.now() - t0);
+      }
 
       // Auto-launch Genie when execution_start is called
       if (

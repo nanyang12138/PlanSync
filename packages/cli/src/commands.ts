@@ -296,6 +296,15 @@ export async function handleSlashCommand(
     return 'handled';
   }
 
+  if (cmd === '/verbose') {
+    cfg.verbose = !cfg.verbose;
+    const state = cfg.verbose
+      ? `${c.cyan}Verbose on${c.reset}  ${c.dim}(tool inputs/outputs shown)${c.reset}`
+      : `${c.dim}Verbose off  (tool inputs/outputs hidden)${c.reset}`;
+    console.log(`\n  ${state}\n`);
+    return 'handled';
+  }
+
   if (cmd === '/resume') {
     const { listSessions, loadSessionById } = await import('./session.js');
     const targetId = parts[1]?.trim();
