@@ -184,11 +184,14 @@ async function createProject(ask: AskFn): Promise<void> {
 }
 
 async function deleteProject(ask: AskFn, list: Array<Record<string, unknown>>): Promise<void> {
-  console.log(`\n  ${c.bold}Which project to delete?${c.reset}\n`);
-  list.forEach((p, i) =>
-    console.log(`  ${c.cyan}${i + 1}${c.reset}. ${c.bold}${p.name}${c.reset}`),
+  const deleteItems = list
+    .map((p, i) => `  ${c.cyan}${i + 1}${c.reset}. ${c.bold}${p.name}${c.reset}`)
+    .join('\n');
+  const choice = await ask(
+    `  ${c.bold}Which project to delete?${c.reset}\n\n` +
+      deleteItems +
+      `\n\n  Enter number [1-${list.length}] or Enter to cancel: `,
   );
-  const choice = await ask(`\n  Enter number [1-${list.length}] or Enter to cancel:\n  `);
   if (!choice.trim()) {
     console.log(`  ${c.yellow}Cancelled.${c.reset}`);
     return;
@@ -227,12 +230,13 @@ export async function selectProject(ask: AskFn): Promise<void> {
       if (!yn.trim() || yn.trim().toLowerCase() === 'y') await createProject(ask);
       return;
     }
-    console.log(`\n  ${c.bold}Select a project:${c.reset}\n`);
-    list.forEach((p, i) =>
-      console.log(`  ${c.cyan}${i + 1}${c.reset}. ${c.bold}${p.name}${c.reset}`),
-    );
+    const menuItems = list
+      .map((p, i) => `  ${c.cyan}${i + 1}${c.reset}. ${c.bold}${p.name}${c.reset}`)
+      .join('\n');
     const choice = await ask(
-      `  ${c.cyan}n${c.reset}. ${c.dim}Create new project${c.reset}\n` +
+      `  ${c.bold}Select a project:${c.reset}\n\n` +
+        menuItems +
+        `\n  ${c.cyan}n${c.reset}. ${c.dim}Create new project${c.reset}\n` +
         `  ${c.cyan}d${c.reset}. ${c.dim}Delete a project${c.reset}\n\n` +
         `  Enter number [1-${list.length}], n, or d: `,
     );
