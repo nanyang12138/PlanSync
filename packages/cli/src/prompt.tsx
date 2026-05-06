@@ -300,7 +300,7 @@ function PromptUI({
         </Box>
       )}
 
-      {/* Separator + status — only rendered when status has content */}
+      {/* Status block: two separators sandwiching the status line */}
       {statusLine ? (
         <>
           <Text dimColor>{'─'.repeat(sepWidth)}</Text>
@@ -308,6 +308,7 @@ function PromptUI({
             {'  '}
             {statusLine}
           </Text>
+          <Text dimColor>{'─'.repeat(sepWidth)}</Text>
         </>
       ) : null}
 
