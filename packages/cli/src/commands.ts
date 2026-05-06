@@ -231,9 +231,11 @@ export async function selectProject(ask: AskFn): Promise<void> {
     list.forEach((p, i) =>
       console.log(`  ${c.cyan}${i + 1}${c.reset}. ${c.bold}${p.name}${c.reset}`),
     );
-    console.log(`  ${c.cyan}n${c.reset}. ${c.dim}Create new project${c.reset}`);
-    console.log(`  ${c.cyan}d${c.reset}. ${c.dim}Delete a project${c.reset}`);
-    const choice = await ask(`\n  Enter number [1-${list.length}], n, or d: `);
+    const choice = await ask(
+      `  ${c.cyan}n${c.reset}. ${c.dim}Create new project${c.reset}\n` +
+        `  ${c.cyan}d${c.reset}. ${c.dim}Delete a project${c.reset}\n\n` +
+        `  Enter number [1-${list.length}], n, or d: `,
+    );
     if (choice.trim().toLowerCase() === 'n') {
       await createProject(ask);
       return;
