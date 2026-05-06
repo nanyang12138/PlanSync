@@ -39,7 +39,7 @@ export async function GET(req: NextRequest, { params }: Params) {
 export async function POST(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
-    const authCtx = await requireProjectRole(auth, params.projectId);
+    await requireProjectRole(auth, params.projectId);
     const body = await validateBody(req, createCommentSchema);
 
     const member = await prisma.projectMember.findUnique({

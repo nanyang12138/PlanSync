@@ -9,11 +9,9 @@ describe('A: Project Management', () => {
   const owner = 'proj-owner';
   const dev = 'proj-dev';
   let projectId: string;
-  let project2Id: string;
 
   afterAll(async () => {
     await cleanupProject(projectId);
-    await cleanupProject(project2Id);
   });
 
   it('A1: POST /projects → 201, createdBy=userName, auto-owner member', async () => {

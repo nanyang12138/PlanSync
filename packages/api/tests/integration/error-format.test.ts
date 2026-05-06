@@ -65,7 +65,6 @@ describe('T: Error Format Consistency', () => {
         userName: owner,
         body: { name: proj!.name, phase: 'planning' },
       }),
-      {},
     );
     expect(res.status).toBe(409);
     const body = await res.json();

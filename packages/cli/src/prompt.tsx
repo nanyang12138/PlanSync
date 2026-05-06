@@ -7,7 +7,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Box, Text, useInput, render, type Instance } from 'ink';
+import { Box, Text, useInput, render, type Instance, type Key } from 'ink';
 import { EventEmitter } from 'events';
 import { appendInputHistory } from './session.js';
 import { type SlashCmd } from './input.js';
@@ -127,7 +127,7 @@ function PromptUI({
     setSelIdx(-1);
   };
 
-  useInput((input, key) => {
+  useInput((input: string, key: Key) => {
     // Ctrl+C — always handled (even disabled), routes to external sigint handler
     if (key.ctrl && input === 'c') {
       events.emit('sigint');

@@ -118,7 +118,7 @@ describe('L: AI Integration (Plan Diff)', () => {
     expect(res.status).toBe(200);
     // Verify DB cache exists
     const cached = await testPrisma.planDiff.findFirst({
-      where: { planId, compareWithPlanId: plan2Id },
+      where: { fromPlanId: planId, toPlanId: plan2Id },
     });
     expect(cached).not.toBeNull();
   });

@@ -38,7 +38,7 @@ describe('N: bin/plansync CLI wrapper', () => {
     const stderr = result.stderr?.toString() || '';
     // The test is that it doesn't succeed silently — either error or the script doesn't exist
     expect(
-      result.error?.code === 'ENOENT' ||
+      (result.error as NodeJS.ErrnoException)?.code === 'ENOENT' ||
         result.status !== 0 ||
         stdout.length > 0 ||
         stderr.length > 0,

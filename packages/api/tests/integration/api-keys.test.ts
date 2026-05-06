@@ -26,7 +26,6 @@ describe('K: API Key Management', () => {
         userName: owner,
         body: { projectId, name: 'Test Key', permissions: ['read', 'write'] },
       }),
-      {},
     );
     expect(res.status).toBe(201);
     const body = await res.json();
@@ -52,7 +51,6 @@ describe('K: API Key Management', () => {
         userName: owner,
         authToken: rawKey,
       }),
-      {},
     );
     expect(res.status).toBe(200);
   });
@@ -63,7 +61,6 @@ describe('K: API Key Management', () => {
         userName: owner,
         authToken: 'ps_key_invalid_key_123456',
       }),
-      {},
     );
     expect(res.status).toBe(401);
   });
@@ -77,7 +74,6 @@ describe('K: API Key Management', () => {
         userName: owner,
         authToken: rawKey,
       }),
-      {},
     );
 
     const after = await testPrisma.apiKey.findUnique({ where: { id: keyId } });
@@ -92,7 +88,6 @@ describe('K: API Key Management', () => {
         userName: owner,
         body: { projectId, name: 'To Delete' },
       }),
-      {},
     );
     const toDeleteId = (await createRes.json()).data.id;
 

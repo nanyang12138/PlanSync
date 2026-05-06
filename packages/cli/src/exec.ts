@@ -477,31 +477,6 @@ export async function launchExec(
   });
 }
 
-// ─── /exec direct (takes taskPack, no apiGet) ────────────────────────────────
-
-function buildExecPrompt(taskPack: unknown): string {
-  return [
-    'You are about to execute a PlanSync task. Read the task pack below carefully.',
-    '',
-    'This session is launched in PlanSync exec mode. The execution run has ALREADY',
-    'been registered (runId in env PLANSYNC_EXEC_RUN_ID). Call plansync_exec_context',
-    'FIRST to retrieve runId and task context.',
-    '',
-    'Do NOT call plansync_execution_start — only one running execution is allowed',
-    'per task and yours is already active.',
-    '',
-    'IMPORTANT: Do NOT write any code yet.',
-    'First, present your implementation approach for user approval.',
-    'After approval: implement using your tools, then call plansync_execution_complete.',
-    '',
-    'FORBIDDEN: Do NOT call plansync_plan_create, plansync_plan_propose, plansync_plan_activate, or plansync_plan_reactivate.',
-    'A plan already exists. You are here to EXECUTE a task within the existing plan, not to create a new one.',
-    '',
-    'Task Pack:',
-    JSON.stringify(taskPack, null, 2),
-  ].join('\n');
-}
-
 async function launchExecDirect(
   taskId: string,
   runId: string,
