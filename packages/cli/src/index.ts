@@ -307,6 +307,18 @@ async function main() {
     // This avoids the cursor-up(prevHeight)+\x1b[J wipe regardless of Ink height.
     rawInput.handoffToAI();
 
+    // When Ink unmounts it calls stdin.setRawMode(false). In cooked mode Ctrl+C
+    // sends SIGINT directly to the process (bypasses Ink's key handler). Register
+    // a process-level handler so abort still works while Ink is unmounted.
+    const processSigintHandler = () => {
+      if (currentAbort) {
+        currentAbort.abort();
+        currentAbort = null;
+        process.stdout.write(`\n${c.yellow}⚠ Cancelled.${c.reset}\n`);
+      }
+    };
+    process.once('SIGINT', processSigintHandler);
+
     const reply = await runAgentLoop(
       input,
       history,
@@ -322,6 +334,7 @@ async function main() {
       },
     );
 
+    process.off('SIGINT', processSigintHandler);
     currentAbort = null;
     rawInput.onSigint = origSigint;
 
