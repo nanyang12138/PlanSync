@@ -182,6 +182,7 @@ export interface ProjectStatus {
     title: string;
     reviews: { reviewer: string; status: string }[];
   } | null;
+  draftPlan: { version: number; title: string } | null;
   tasks: { total: number; done: number; inProgress: number; todo: number; blocked: number };
   taskList: {
     id: string;
@@ -206,6 +207,7 @@ export function emptyStatus(projectId = '', projectName = '(no project)'): Proje
     phase: 'planning',
     activePlan: null,
     proposedPlan: null,
+    draftPlan: null,
     tasks: { total: 0, done: 0, inProgress: 0, todo: 0, blocked: 0 },
     taskList: [],
     driftAlerts: [],
@@ -231,8 +233,11 @@ function nextStep(status: ProjectStatus): string {
   if (status.driftAlerts.length > 0) {
     return `${c.yellow}⚠ Resolve drift before continuing${c.reset}  ${c.dim}→ type "resolve drift"${c.reset}`;
   }
-  if (!status.activePlan && !status.proposedPlan) {
+  if (!status.activePlan && !status.proposedPlan && !status.draftPlan) {
     return `${c.cyan}Type: "create a plan: <one-line goal>"${c.reset}`;
+  }
+  if (status.draftPlan && !status.proposedPlan && !status.activePlan) {
+    return `${c.cyan}Draft v${status.draftPlan.version} — type "propose plan" to submit for review${c.reset}`;
   }
   if (status.proposedPlan && !status.activePlan) {
     return `${c.cyan}Type: "review plan v${status.proposedPlan.version}"${c.reset}`;
@@ -329,6 +334,11 @@ export function banner(
             .join('  ')
         : '';
     planLine = `${label}  v${p.version}${reviewStr}`;
+  } else if (status.draftPlan) {
+    const maxTitle = leftInner - 8;
+    const t = status.draftPlan.title;
+    const title = t.length > maxTitle ? t.slice(0, maxTitle - 1) + '…' : t;
+    planLine = `${c.dim}v${status.draftPlan.version}  "${title}"  draft${c.reset}`;
   } else {
     planLine = `${c.dim}(no plan yet)${c.reset}`;
   }

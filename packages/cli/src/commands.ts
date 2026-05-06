@@ -83,6 +83,7 @@ export async function fetchStatus(): Promise<ProjectStatus> {
     const plans = (plansRes.data || []) as Array<Record<string, unknown>>;
     const plan = plans.find((p) => p.status === 'active') || null;
     const proposed = !plan ? plans.find((p) => p.status === 'proposed') || null : null;
+    const draft = !plan && !proposed ? plans.find((p) => p.status === 'draft') || null : null;
 
     let proposedReviews: { reviewer: string; status: string }[] = [];
     if (proposed) {
@@ -125,6 +126,7 @@ export async function fetchStatus(): Promise<ProjectStatus> {
             reviews: proposedReviews,
           }
         : null,
+      draftPlan: draft ? { version: draft.version as number, title: draft.title as string } : null,
       tasks: {
         total: taskList.length,
         done: taskList.filter((t) => t.status === 'done').length,
@@ -699,7 +701,9 @@ export function buildPrompt(status: ProjectStatus): string {
     ? ` ${c.dim}·${c.reset} ${c.cyan}v${status.activePlan.version}${c.reset}`
     : status.proposedPlan
       ? ` ${c.dim}·${c.reset} ${c.yellow}v${status.proposedPlan.version}?${c.reset}`
-      : '';
+      : status.draftPlan
+        ? ` ${c.dim}·${c.reset} ${c.dim}v${status.draftPlan.version} draft${c.reset}`
+        : '';
   const t = status.tasks;
   const taskSeg =
     t && (t.inProgress || t.todo)
