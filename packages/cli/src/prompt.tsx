@@ -301,7 +301,7 @@ function PromptUI({ promptStr: initialPrompt, commands, history, events }: Promp
         </Box>
       )}
 
-      {/* Top separator */}
+      {/* Separator — separates scrollback output from input */}
       <Text dimColor>{'─'.repeat(sepWidth)}</Text>
 
       {/* Input line */}
@@ -320,9 +320,6 @@ function PromptUI({ promptStr: initialPrompt, commands, history, events }: Promp
           <Text>{after}</Text>
         </Box>
       )}
-
-      {/* Bottom separator */}
-      <Text dimColor>{'─'.repeat(sepWidth)}</Text>
     </Box>
   );
 }
