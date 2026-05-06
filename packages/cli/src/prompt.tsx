@@ -259,7 +259,12 @@ function PromptUI({ promptStr: initialPrompt, commands, history, events }: Promp
     suggestionRows.push({ type: 'item', cmd: s, idx: itemIdx++ });
   }
 
-  const sepWidth = Math.min(process.stdout.columns || 70, 78);
+  // Match the banner's visual width (same formula as banner() in ui.ts)
+  const cols = process.stdout.columns || 80;
+  const rightInner = 27;
+  const leftInner = Math.min(45, Math.max(20, cols - rightInner - 12));
+  const bannerWidth = leftInner + rightInner + 12; // total incl. indent + borders
+  const sepDashes = Math.max(10, bannerWidth - 4); // -2 indent -2 right margin
 
   return (
     <Box flexDirection="column">
@@ -301,8 +306,8 @@ function PromptUI({ promptStr: initialPrompt, commands, history, events }: Promp
         </Box>
       )}
 
-      {/* Separator — separates scrollback output from input */}
-      <Text dimColor>{'─'.repeat(sepWidth)}</Text>
+      {/* Separator — indented 2 spaces, matches banner visual width */}
+      <Text dimColor>{'  ' + '─'.repeat(sepDashes)}</Text>
 
       {/* Input line */}
       {disabled ? (
