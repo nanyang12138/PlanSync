@@ -127,6 +127,18 @@ export async function persistDriftAlerts(
     }
   }
 
+  // Block tasks with running executions so no new execution_start can race in.
+  // The running execution itself stays alive — the agent is notified via heartbeat
+  // driftAlerts and must stop voluntarily. The complete endpoint's drift gate
+  // prevents delivery until the alert is resolved.
+  const highSeverityTaskIds = alerts.filter((a) => a.severity === 'high').map((a) => a.taskId);
+  if (highSeverityTaskIds.length > 0) {
+    await tx.task.updateMany({
+      where: { id: { in: highSeverityTaskIds } },
+      data: { status: 'blocked' },
+    });
+  }
+
   return created;
 }
 
@@ -220,6 +232,11 @@ export async function enrichDriftAlertsWithAi(
         });
 
         if (highCompatibility) {
+          // Unblock the task if it was blocked at drift-detection time.
+          await prisma.task.updateMany({
+            where: { id: alert.taskId, status: 'blocked' },
+            data: { status: 'in_progress' },
+          });
           eventBus.publish(projectId, 'drift_resolved', {
             alertId: alert.id,
             taskId: alert.taskId,

@@ -53,13 +53,20 @@ export async function POST(req: NextRequest, { params }: Params) {
         },
       });
 
-      if (body.action === 'rebind' && !activePlan) {
-        throw new AppError(ErrorCode.STATE_CONFLICT, 'No active plan to rebind to');
-      }
-      if (body.action === 'rebind' && activePlan) {
+      if (body.action === 'no_impact' && drift.task.status === 'blocked') {
         await tx.task.update({
           where: { id: drift.taskId },
-          data: { boundPlanVersion: activePlan.version },
+          data: { status: 'in_progress' },
+        });
+      } else if (body.action === 'rebind' && !activePlan) {
+        throw new AppError(ErrorCode.STATE_CONFLICT, 'No active plan to rebind to');
+      } else if (body.action === 'rebind' && activePlan) {
+        await tx.task.update({
+          where: { id: drift.taskId },
+          data: {
+            boundPlanVersion: activePlan.version,
+            ...(drift.task.status === 'blocked' ? { status: 'in_progress' } : {}),
+          },
         });
       } else if (body.action === 'cancel') {
         await tx.task.update({
