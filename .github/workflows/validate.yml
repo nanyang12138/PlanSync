@@ -1,0 +1,131 @@
+name: validate
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install deps
+        run: npm ci --no-audit --no-fund
+
+      - name: Lint
+        run: npx eslint packages/*/src
+
+  format-check:
+    name: format-check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install deps
+        run: npm ci --no-audit --no-fund
+
+      - name: Prettier check
+        run: npx prettier --check 'packages/*/src/**/*.{ts,tsx,json}'
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install deps
+        run: npm ci --no-audit --no-fund
+
+      - name: Build @plansync/shared (must precede api/mcp-server/cli)
+        run: npm run build --workspace=@plansync/shared
+
+      - name: Build @plansync/mcp-server
+        run: npm run build --workspace=@plansync/mcp-server
+
+      - name: Build @plansync/cli
+        run: npm run build --workspace=@plansync/cli
+
+      - name: Build @plansync/api
+        run: npm run build --workspace=@plansync/api
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: plansync
+          POSTGRES_PASSWORD: plansync
+          POSTGRES_DB: plansync_test
+        ports:
+          - 15432:5432
+        options: >-
+          --health-cmd "pg_isready -U plansync"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://plansync:plansync@localhost:15432/plansync_test
+      PLANSYNC_SECRET: test-secret-please-change-in-prod-32chars-min
+      AUTH_DISABLED: 'true'
+      LOG_LEVEL: error
+      NODE_ENV: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install deps
+        run: npm ci --no-audit --no-fund
+
+      - name: Build @plansync/shared (test deps)
+        run: npm run build --workspace=@plansync/shared
+
+      - name: Generate Prisma client
+        run: npx prisma generate --schema=packages/api/prisma/schema.prisma
+
+      - name: Apply migrations
+        run: npx prisma migrate deploy --schema=packages/api/prisma/schema.prisma
+
+      - name: Run tests
+        run: npm run test --workspaces --if-present
