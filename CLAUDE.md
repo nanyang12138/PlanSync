@@ -1,3 +1,110 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+---
+
+## Development
+
+### Prerequisites
+
+First-time setup (installs local Node + Postgres runtimes, runs DB migrations):
+
+```bash
+./bin/ps-admin start      # owner: bootstrap runtime + DB + start API
+./bin/plansync            # member/developer: launch terminal (prompts for credentials on first run)
+```
+
+All scripts use a repo-local Node runtime in `.local-runtime/node` (NFS-safe). Never use the system `npm`/`node` for these scripts.
+
+### Build
+
+Build order matters — `shared` must precede `mcp-server` and `cli`, which must precede `api`:
+
+```bash
+bash scripts/build.sh         # builds all four packages in dependency order
+```
+
+To build a single package:
+
+```bash
+# from repo root, with local-node-runtime active:
+bash -c '. scripts/local-node-runtime.sh && use_local_node_runtime && run_local_npm run build --workspace=@plansync/shared'
+```
+
+### Dev server
+
+```bash
+bash scripts/dev.sh           # auto-starts Postgres, runs migrations, starts Next.js on PORT (default 3001)
+```
+
+### Test, Lint, Format
+
+```bash
+bash scripts/test.sh          # vitest across all workspaces
+bash scripts/lint.sh          # ESLint on packages/*/src
+bash scripts/format.sh        # Prettier on packages/*/src
+
+# Run api tests only (vitest):
+bash -c '. scripts/local-node-runtime.sh && use_local_node_runtime && run_local_npm run test --workspace=@plansync/api'
+```
+
+### Database
+
+```bash
+bash scripts/db-reset.sh      # wipe and recreate (drops all data)
+bash scripts/db-psql.sh       # open psql shell
+```
+
+Postgres data lives in `/tmp/plansync-pgdata-$USER` (avoids NFS locking). On shared hosts, set a unique `PG_PORT` in `.env`:
+
+```bash
+PG_PORT=$(expr 15000 + $(id -u) % 1000)
+```
+
+---
+
+## Architecture
+
+**Monorepo with four packages** — all share Zod schemas from `@plansync/shared`:
+
+```
+packages/
+  shared/       Zod schemas + shared types (no runtime deps) — built first
+  api/          Next.js 14 App Router: REST + SSE backend + React Web UI + Prisma ORM
+  mcp-server/   52 MCP tools, esbuild-bundled to a single CJS file, stdio transport
+  cli/          Raw-mode REPL (Ink/React for terminal UI), calls API via MCP client
+  integrations/
+    github-action/  PR drift-gate check
+```
+
+**Request path:**
+
+```
+Humans / Agents
+  → Web UI (React + Next.js)  ─┐
+  → CLI (raw-mode + slash cmds) ├─ HTTPS ─► Next.js REST + SSE API ─► Prisma ─► PostgreSQL
+  → MCP Server (stdio tools)  ─┘                │
+                                           ┌─────┴──────────────────────┐
+                                           │  drift-engine.ts           │  runs on plan activation;
+                                           │  heartbeat-scanner.ts      │  scans every 60s, stale=5min
+                                           │  ai/ (client, impact,      │  AMD LLM or Anthropic SDK
+                                           │       plan-diff, conflicts) │
+                                           └────────────────────────────┘
+```
+
+**SSE** is served per-project and per-user via an in-process `EventBus` (`src/lib/event-bus.ts`). The CLI's `sse-listener.ts` subscribes to surface drift alerts and task events in the terminal.
+
+**Auth** (`src/lib/auth.ts`): `crypto.scrypt` password hashing with a 5-minute verification cache; Bearer token API keys stored as scrypt hashes; execution-scoped keys expire when the run ends.
+
+**Drift engine** (`src/lib/drift-engine.ts`): triggered on every `plan_activate`; scans all non-cancelled tasks not on the new version; severity = `high` if a run is currently executing, `medium` if `in_progress/blocked/todo`, `low` otherwise; spawns async AI impact analysis per alert.
+
+**AI features** (`src/lib/ai/`): `client.ts` supports two providers with the same Anthropic messages API format — AMD internal LLM (via `LLM_API_KEY` + `LLM_API_BASE`) and Anthropic SDK (`ANTHROPIC_API_KEY`). Without either key, semantic diff, completion verification, and conflict prediction all no-op silently.
+
+**`plansync_exec_context`** — the MCP tool that detects `/exec` sub-sessions. When `execMode: true`, it returns a pre-loaded `taskPack` and `runId` so the sub-agent skips `execution_start` (it's already registered).
+
+---
+
 # PlanSync — Terminal Mode
 
 You are running as **PlanSync Terminal Mode**. You are the terminal interface of PlanSync — users interact with PlanSync through you. PlanSync is the product; you are its terminal engine.

@@ -214,7 +214,11 @@ ensure_local_dependencies() {
     if py38="$(detect_python38)"; then
       export PYTHON="$py38"
     fi
-    run_local_npm install --prefix "$PROJECT_DIR" --cache "$LOCAL_NPM_CACHE"
+    if ! run_local_npm install --prefix "$PROJECT_DIR" --cache "$LOCAL_NPM_CACHE"; then
+      log_step "npm install failed; clearing cache and retrying"
+      rm -rf "$LOCAL_NPM_CACHE"
+      run_local_npm install --prefix "$PROJECT_DIR" --cache "$LOCAL_NPM_CACHE"
+    fi
     touch "$LOCAL_DEPS_STAMP"
   fi
 }
