@@ -298,7 +298,7 @@ export function rawOn(): void {
 // ─── /code command ────────────────────────────────────────────────────────────
 
 export function launchCode(): ReturnType<typeof spawn> {
-  const projectRoot = path.resolve(selfDir, '../../../');
+  const projectRoot = cfg.workDir;
   const original = patchProjectInSettings(cfg.project);
   const engine = detectEngine();
 

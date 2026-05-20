@@ -418,9 +418,13 @@ case "$HOST" in
       exit 1
     fi
 
+    inject_instructions "$WORK_DIR_ABS"
+
+    cd "$WORK_DIR_ABS"
     PLANSYNC_MCP_SERVER="$MCP_SERVER" \
     PLANSYNC_NODE_BIN="$LOCAL_NODE_BIN" \
     PLANSYNC_CODE_BIN="$CODE_BIN" \
+    PLANSYNC_WORK_DIR="$WORK_DIR_ABS" \
     GENIE_BIN="$GENIE_BIN" \
     exec "$LOCAL_NODE_BIN" "$CLI_DIST"
     ;;

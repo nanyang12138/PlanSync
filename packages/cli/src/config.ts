@@ -20,6 +20,7 @@ export const cfg = {
   apiKey: process.env.PLANSYNC_API_KEY || '',
   user: process.env.PLANSYNC_USER || process.env.USER || 'unknown',
   project: process.env.PLANSYNC_PROJECT || '',
+  workDir: path.resolve(process.env.PLANSYNC_WORK_DIR || process.cwd()),
   projectName: '',
   verbose: false,
   llmKey: process.env.LLM_API_KEY || '',
