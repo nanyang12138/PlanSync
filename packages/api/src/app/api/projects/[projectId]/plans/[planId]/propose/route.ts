@@ -93,7 +93,7 @@ export async function POST(req: NextRequest, { params }: Params) {
       proposedBy: auth.userName,
     });
 
-    // Send email to human reviewers
+    // Notify human reviewers by email + SSE
     if (reviewerNames.length > 0) {
       const members = await prisma.projectMember.findMany({
         where: { projectId: params.projectId, name: { in: reviewerNames }, type: 'human' },
@@ -101,7 +101,7 @@ export async function POST(req: NextRequest, { params }: Params) {
       });
       const humanReviewers = members.map((m) => m.name);
       if (humanReviewers.length > 0) {
-        const body = [
+        const mailBody = [
           `${auth.userName} submitted plan "${plan.title}" (v${plan.version}) for your review.`,
           '',
           `Please log in to PlanSync to approve or reject this plan.`,
@@ -109,9 +109,16 @@ export async function POST(req: NextRequest, { params }: Params) {
         const ok = sendMail(
           humanReviewers.map(userEmail),
           `[PlanSync] Review requested: "${plan.title}"`,
-          body,
+          mailBody,
         );
         if (!ok) logger.warn({ planId: plan.id }, 'Failed to send review notification email');
+
+        // Push review_requested to each reviewer's personal channel so they get
+        // the urgent flash even if their SSE connection pre-dates this membership.
+        const reviewPayload = { planId: plan.id, version: plan.version, title: plan.title };
+        for (const reviewer of humanReviewers) {
+          eventBus.publishToUser(reviewer, 'review_requested', params.projectId, reviewPayload);
+        }
       }
     }
 
