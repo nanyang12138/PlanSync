@@ -1,0 +1,207 @@
+name: nightly
+
+# Runs slow / flaky / external-dep checks once per day. Findings open a
+# GitHub issue rather than blocking PRs — keeps PR flow fast while still
+# catching regressions that only show up at full-stack integration time.
+
+on:
+  schedule:
+    - cron: '0 3 * * *' # 03:00 UTC every day
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  NODE_OPTIONS: --max-old-space-size=4096
+  NEXT_TELEMETRY_DISABLED: '1'
+
+jobs:
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: plansync
+          POSTGRES_PASSWORD: plansync
+          POSTGRES_DB: plansync_test
+        ports:
+          - 15432:5432
+        options: >-
+          --health-cmd "pg_isready -U plansync"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://plansync:plansync@localhost:15432/plansync_test
+      PLANSYNC_SECRET: nightly-secret-please-change-in-prod-32chars-min
+      AUTH_DISABLED: 'true'
+      LOG_LEVEL: error
+      NODE_ENV: test
+      PORT: '3001'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Build shared + api (e2e needs runnable api)
+        run: |
+          npm run build --workspace=@plansync/shared
+          npx prisma generate --schema=packages/api/prisma/schema.prisma
+          npx prisma migrate deploy --schema=packages/api/prisma/schema.prisma
+          npm run build --workspace=@plansync/api
+
+      - name: Start Next.js (background)
+        working-directory: packages/api
+        run: |
+          npx next start -p 3001 > /tmp/next.log 2>&1 &
+          echo $! > /tmp/next.pid
+          # Wait for /api/health
+          for i in {1..60}; do
+            if curl -fsS http://localhost:3001/api/health | grep -q '"status":"ok"'; then
+              echo "API healthy"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::API did not become healthy in 60s"
+          tail -50 /tmp/next.log
+          exit 1
+
+      - name: Run e2e suite
+        working-directory: packages/api
+        run: npx vitest run --config vitest.e2e.config.ts
+
+      - name: Stop Next.js
+        if: always()
+        run: kill "$(cat /tmp/next.pid)" 2>/dev/null || true
+
+      - name: Upload server log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-e2e-next-log
+          path: /tmp/next.log
+
+      - name: Open issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `nightly e2e failed (run #${context.runNumber})`;
+            const body = [
+              `Nightly e2e suite failed on commit ${context.sha}.`,
+              ``,
+              `[Run details](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+              ``,
+              `Next.js log uploaded as artifact \`nightly-e2e-next-log\`.`,
+            ].join('\n');
+            // Avoid duplicate issues — find an open issue with same title prefix
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'nightly-e2e-fail'
+            });
+            if (existing.data.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['nightly-e2e-fail', 'bug']
+              });
+            }
+
+  full-audit:
+    name: full-audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install
+        run: npm ci --no-fund
+
+      - name: Full npm audit (all severities, json output)
+        id: audit
+        run: |
+          set +e
+          npm audit --json > /tmp/audit.json
+          echo "exit=$?" >> "$GITHUB_OUTPUT"
+          set -e
+
+      - name: Summarise vulnerabilities
+        id: sum
+        run: |
+          node -e "
+            const d = require('/tmp/audit.json');
+            const m = d.metadata && d.metadata.vulnerabilities || {};
+            const total = Object.values(m).reduce((a,b)=>a+b,0);
+            console.log('total='+total);
+            console.log('crit='+(m.critical||0));
+            console.log('high='+(m.high||0));
+            console.log('mod='+(m.moderate||0));
+            console.log('low='+(m.low||0));
+            require('fs').writeFileSync(process.env.GITHUB_OUTPUT,
+              \`total=\${total}\\ncrit=\${m.critical||0}\\nhigh=\${m.high||0}\\nmod=\${m.moderate||0}\\nlow=\${m.low||0}\\n\`,
+              { flag: 'a' });
+          "
+
+      - name: Upload audit JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-npm-audit
+          path: /tmp/audit.json
+
+      - name: Open issue if HIGH+ vulnerabilities found
+        if: ${{ steps.sum.outputs.crit > 0 || steps.sum.outputs.high > 0 }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const c = ${{ steps.sum.outputs.crit }};
+            const h = ${{ steps.sum.outputs.high }};
+            const m = ${{ steps.sum.outputs.mod }};
+            const l = ${{ steps.sum.outputs.low }};
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'nightly-audit-fail'
+            });
+            if (existing.data.length > 0) return;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `nightly audit: ${c} critical / ${h} high vulnerabilities`,
+              body: [
+                `npm audit (run on commit ${context.sha}) found:`,
+                ``,
+                `- critical: ${c}`,
+                `- high: ${h}`,
+                `- moderate: ${m}`,
+                `- low: ${l}`,
+                ``,
+                `[Run details](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+                `Full report uploaded as artifact \`nightly-npm-audit\`.`,
+              ].join('\n'),
+              labels: ['nightly-audit-fail', 'security']
+            });

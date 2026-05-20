@@ -1,0 +1,217 @@
+name: pr-guards
+
+# Soft guards that DO NOT fail the build but apply the `do-not-merge`
+# label when a PR triggers a risk heuristic. Because auto-merge-cursor-pr.yml
+# opts out on this label, agents cannot silently land risky changes; a human
+# must remove the label after review.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  pr-size:
+    name: pr-size
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute code diff size (excluding docs / lockfiles / assets)
+        id: size
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # All changed files
+          FILES=$(git diff --name-only "$BASE_SHA"..."$HEAD_SHA" | wc -l)
+          # Code-only diff (exclude docs, lockfiles, generated assets)
+          IGNORE='^(docs/|\.github/|.*\.md$|package-lock\.json$|.*\.(svg|png|jpg|jpeg|gif|wasm)$)'
+          mapfile -t CODE_FILES < <(git diff --name-only "$BASE_SHA"..."$HEAD_SHA" | grep -vE "$IGNORE" || true)
+          CODE_LINES=0
+          if [ ${#CODE_FILES[@]} -gt 0 ]; then
+            CODE_LINES=$(git diff --shortstat "$BASE_SHA"..."$HEAD_SHA" -- "${CODE_FILES[@]}" \
+              | grep -oE '[0-9]+ insertion|[0-9]+ deletion' \
+              | grep -oE '[0-9]+' | paste -sd+ - | bc || echo 0)
+          fi
+          echo "files=$FILES" >> "$GITHUB_OUTPUT"
+          echo "code_lines=$CODE_LINES" >> "$GITHUB_OUTPUT"
+          echo "Total files changed: $FILES"
+          echo "Code lines (insertions+deletions, excluding docs/assets): $CODE_LINES"
+
+      - name: Apply do-not-merge label if PR exceeds size thresholds
+        if: ${{ steps.size.outputs.code_lines > 1000 || steps.size.outputs.files > 50 }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const lines = ${{ steps.size.outputs.code_lines }};
+            const files = ${{ steps.size.outputs.files }};
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              labels: ['do-not-merge', 'oversized-pr']
+            });
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: [
+                '⚠ **PR 触及自动合并大小阈值**',
+                '',
+                `- 代码改动：${lines} 行（阈值 1000）`,
+                `- 涉及文件：${files} 个（阈值 50）`,
+                '',
+                '已添加 `do-not-merge` 标签。请确认改动范围合理后由人工移除标签。',
+                '',
+                '> 如果是 cron 任务派发的修复，建议拆成多个 R-XXX 条目分别提交。'
+              ].join('\n')
+            });
+
+  destructive-migration:
+    name: destructive-migration
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan new migrations for destructive SQL
+        id: scan
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          NEW=$(git diff --name-only --diff-filter=A "$BASE_SHA"..."$HEAD_SHA" \
+            -- 'packages/api/prisma/migrations/*/migration.sql' || true)
+          if [ -z "$NEW" ]; then
+            echo "destructive=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          PATTERN='DROP TABLE|DROP COLUMN|DROP CONSTRAINT|DROP INDEX|TRUNCATE|ALTER TYPE|ALTER COLUMN [a-z_]+ TYPE|RENAME COLUMN|RENAME TABLE'
+          MATCHED=()
+          for f in $NEW; do
+            if grep -iE "$PATTERN" "$f" >/dev/null 2>&1; then
+              MATCHED+=("$f")
+            fi
+          done
+          if [ ${#MATCHED[@]} -gt 0 ]; then
+            echo "destructive=true" >> "$GITHUB_OUTPUT"
+            {
+              echo 'matched<<EOF'
+              printf '%s\n' "${MATCHED[@]}"
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "destructive=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Apply do-not-merge label
+        if: steps.scan.outputs.destructive == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const matched = `${{ steps.scan.outputs.matched }}`.trim().split('\n');
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              labels: ['do-not-merge', 'destructive-migration']
+            });
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: [
+                '⚠ **检测到破坏性数据库迁移**',
+                '',
+                '匹配文件：',
+                ...matched.map((f) => '- `' + f + '`'),
+                '',
+                '触发关键字：`DROP TABLE/COLUMN/CONSTRAINT/INDEX`、`TRUNCATE`、`ALTER TYPE`、`ALTER COLUMN ... TYPE`、`RENAME`。',
+                '',
+                '已添加 `do-not-merge` 标签。请人工审查迁移：',
+                '- 是否有数据迁移步骤？',
+                '- 是否能回滚？',
+                '- 是否在维护窗口部署？'
+              ].join('\n')
+            });
+
+  workflow-modification:
+    name: workflow-modification
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changes under .github/workflows
+        id: detect
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          CHANGED=$(git diff --name-only "$BASE_SHA"..."$HEAD_SHA" -- '.github/workflows/*.yml' '.github/workflows/*.yaml' || true)
+          if [ -n "$CHANGED" ]; then
+            echo "modified=true" >> "$GITHUB_OUTPUT"
+            {
+              echo 'files<<EOF'
+              echo "$CHANGED"
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "modified=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Apply do-not-merge label for self-modifying PR
+        if: steps.detect.outputs.modified == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const files = `${{ steps.detect.outputs.files }}`.trim().split('\n');
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              labels: ['do-not-merge', 'workflow-change']
+            });
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: [
+                '⚠ **本 PR 修改了 GitHub Actions workflow**',
+                '',
+                '改动文件：',
+                ...files.map((f) => '- `' + f + '`'),
+                '',
+                '为防止 CI 自我修改链 (self-modifying CI)，已添加 `do-not-merge` 标签。',
+                '请人工审查后移除标签。'
+              ].join('\n')
+            });
+
+  dependency-review:
+    # GitHub's official supply-chain check: flags new dependencies with known
+    # vulnerabilities or non-permissive licenses.
+    name: dependency-review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
