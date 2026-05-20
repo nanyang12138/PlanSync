@@ -185,6 +185,12 @@ export function describeEvent(eventType: string, data: Record<string, unknown>):
       return w(`Plan review approved by ${data.reviewer}`);
     case 'review_rejected':
       return w(`Plan review rejected by ${data.reviewer}`);
+    case 'member_updated':
+      return w(`"${data.name}" role updated to ${data.role}`);
+    case 'comment_updated':
+      return w(`${data.authorName ?? 'Someone'} edited a comment on plan`);
+    case 'comment_deleted':
+      return w(`${data.authorName ?? 'Someone'} deleted a comment on plan`);
     default:
       return null;
   }

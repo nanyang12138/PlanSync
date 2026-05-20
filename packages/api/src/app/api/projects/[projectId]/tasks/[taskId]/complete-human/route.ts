@@ -7,6 +7,7 @@ import { handleApiError } from '@/lib/errors';
 import { AppError, ErrorCode } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
 import { buildTaskPack } from '@/lib/task-pack';
+import { eventBus } from '@/lib/event-bus';
 
 const schema = z.object({
   completionNote: z.string().min(1).max(5000),
@@ -113,6 +114,12 @@ export async function POST(req: NextRequest, { params }: Params) {
       actorType: 'human',
       summary: `"${task.title}" marked done by ${auth.userName}`,
       metadata: { taskId: params.taskId, note: body.completionNote },
+    });
+
+    eventBus.publish(params.projectId, 'task_completed', {
+      taskId: params.taskId,
+      title: task.title,
+      completedBy: auth.userName,
     });
 
     return NextResponse.json({ data: { success: true } });

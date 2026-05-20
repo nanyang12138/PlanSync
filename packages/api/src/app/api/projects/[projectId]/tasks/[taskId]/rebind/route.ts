@@ -4,6 +4,7 @@ import { authenticate, requireProjectRole } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { AppError, ErrorCode } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
+import { eventBus } from '@/lib/event-bus';
 
 type Params = { params: { projectId: string; taskId: string } };
 
@@ -54,6 +55,14 @@ export async function POST(req: NextRequest, { params }: Params) {
       actorType: 'human',
       summary: `Task "${task.title}" rebound from plan v${oldVersion} to v${activePlan.version}`,
       metadata: { taskId: task.id, oldVersion, newVersion: activePlan.version },
+    });
+
+    eventBus.publish(params.projectId, 'drift_resolved', {
+      taskId: params.taskId,
+      title: task.title,
+      resolvedBy: auth.userName,
+      oldVersion,
+      newVersion: activePlan.version,
     });
 
     return NextResponse.json({ data: updated });

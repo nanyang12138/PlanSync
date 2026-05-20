@@ -20,7 +20,10 @@ export type PlanSyncEventType =
   | 'member_removed'
   | 'review_requested'
   | 'review_approved'
-  | 'review_rejected';
+  | 'review_rejected'
+  | 'member_updated'
+  | 'comment_updated'
+  | 'comment_deleted';
 
 export interface PlanSyncEvent {
   type: PlanSyncEventType;

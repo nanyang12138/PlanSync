@@ -4,6 +4,7 @@ import { authenticate, requireProjectRole } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { validateBody } from '@/lib/validate';
 import { updateCommentSchema, AppError, ErrorCode } from '@plansync/shared';
+import { eventBus } from '@/lib/event-bus';
 
 type Params = { params: { projectId: string; planId: string; commentId: string } };
 
@@ -31,6 +32,12 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     const updated = await prisma.planComment.update({
       where: { id: params.commentId },
       data: body,
+    });
+
+    eventBus.publish(params.projectId, 'comment_updated', {
+      planId: params.planId,
+      commentId: params.commentId,
+      authorName: comment.authorName,
     });
 
     return NextResponse.json({ data: updated });
@@ -62,6 +69,12 @@ export async function DELETE(req: NextRequest, { params }: Params) {
     const updated = await prisma.planComment.update({
       where: { id: params.commentId },
       data: { isDeleted: true, content: '' },
+    });
+
+    eventBus.publish(params.projectId, 'comment_deleted', {
+      planId: params.planId,
+      commentId: params.commentId,
+      authorName: comment.authorName,
     });
 
     return NextResponse.json({ data: updated });

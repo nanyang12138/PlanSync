@@ -6,6 +6,8 @@ import { validateBody } from '@/lib/validate';
 import { updateMemberSchema, AppError, ErrorCode } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
 import { eventBus } from '@/lib/event-bus';
+import { sendMail, userEmail } from '@/lib/email';
+import { logger } from '@/lib/logger';
 
 type Params = { params: { projectId: string; memberId: string } };
 
@@ -33,6 +35,48 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       where: { id: params.memberId },
       data: body,
     });
+
+    await createActivity({
+      projectId: params.projectId,
+      type: 'member_added',
+      actorName: auth.userName,
+      actorType: 'human',
+      summary: `Member "${member.name}" role updated to ${member.role}`,
+      metadata: { memberId: member.id, role: member.role },
+    });
+
+    const project = await prisma.project.findUnique({
+      where: { id: params.projectId },
+      select: { name: true },
+    });
+    const projectName = project?.name ?? params.projectId;
+    const updatePayload = {
+      name: member.name,
+      role: member.role,
+      type: member.type,
+      projectName,
+      updatedBy: auth.userName,
+    };
+    eventBus.publish(params.projectId, 'member_updated', updatePayload);
+    eventBus.publishToUser(member.name, 'member_updated', params.projectId, updatePayload);
+
+    if (member.type === 'human') {
+      const mailBody = [
+        `Your role in project "${projectName}" has been updated to ${member.role} by ${auth.userName}.`,
+        '',
+        'Log in to PlanSync to view your updated permissions.',
+      ].join('\n');
+      const ok = sendMail(
+        [userEmail(member.name)],
+        `[PlanSync] Your role in "${projectName}" has been updated`,
+        mailBody,
+      );
+      if (!ok)
+        logger.warn(
+          { projectId: params.projectId, member: member.name },
+          'Failed to send role update email',
+        );
+    }
 
     return NextResponse.json({ data: member });
   } catch (error) {
