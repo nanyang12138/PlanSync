@@ -79,31 +79,31 @@
 
 ## 严重度与优先级框架
 
-| 严重度 | 含义 | 处理时限建议 |
-|---|---|---|
-| **CRITICAL** | 数据损坏/越权/生产可见性失效 | 立即（独立 PR） |
-| **HIGH** | 功能行为严重不符预期、影响日常使用 | 一周内 |
-| **MEDIUM** | 边界情况、性能、UX 退化 | 一月内 |
-| **LOW** | 文档、命名、轻微体验 | 顺手修 |
+| 严重度       | 含义                               | 处理时限建议    |
+| ------------ | ---------------------------------- | --------------- |
+| **CRITICAL** | 数据损坏/越权/生产可见性失效       | 立即（独立 PR） |
+| **HIGH**     | 功能行为严重不符预期、影响日常使用 | 一周内          |
+| **MEDIUM**   | 边界情况、性能、UX 退化            | 一月内          |
+| **LOW**      | 文档、命名、轻微体验               | 顺手修          |
 
 ---
 
 ## 批次划分总览
 
-| 批次 | 主题 | 条目数 | 关键交付 |
-|---|---|---|---|
-| **B1** | Drift 进程中止与 AI 自处理消除 | 8 | 用户最痛的"rebind 后旧进程仍完成"彻底修好 |
-| **B2** | 执行所有权与凭证收紧 | 12 | 关闭跨用户劫持 run、master secret 滥用 |
-| **B3** | MCP 客户端重连与重试 | 6 | 解决"Not connected" 间歇失败 |
-| **B4** | 契约统一 | 14 | shared/API/MCP schema drift 阻断 |
-| **B5** | 嵌套资源一致性 | 7 | 跨项目越权读写关闭 |
-| **B6** | 并发与唯一性 | 11 | 多 active plan、重复 drift、TOCTOU |
-| **B7** | CLI 体验对齐文档 | 16 | banner、phase、exec 入口、Ink 体验 |
-| **B8** | DB 索引/enum/FK | 13 | 性能与数据完整性 |
-| **B9** | 事件总线生产可用 | 4 | 多实例 SSE 不再丢消息 |
-| **B10** | 文档与脚本对齐 | 12 | 删过期文档、补 env、平台兼容 |
-| **B11** | Activity log 与可观测性 | 10 | 状态变更全部审计 |
-| **B12** | 测试补齐 | 18+ | 关键路径回归保障 |
+| 批次    | 主题                           | 条目数 | 关键交付                                  |
+| ------- | ------------------------------ | ------ | ----------------------------------------- |
+| **B1**  | Drift 进程中止与 AI 自处理消除 | 8      | 用户最痛的"rebind 后旧进程仍完成"彻底修好 |
+| **B2**  | 执行所有权与凭证收紧           | 12     | 关闭跨用户劫持 run、master secret 滥用    |
+| **B3**  | MCP 客户端重连与重试           | 6      | 解决"Not connected" 间歇失败              |
+| **B4**  | 契约统一                       | 14     | shared/API/MCP schema drift 阻断          |
+| **B5**  | 嵌套资源一致性                 | 7      | 跨项目越权读写关闭                        |
+| **B6**  | 并发与唯一性                   | 11     | 多 active plan、重复 drift、TOCTOU        |
+| **B7**  | CLI 体验对齐文档               | 16     | banner、phase、exec 入口、Ink 体验        |
+| **B8**  | DB 索引/enum/FK                | 13     | 性能与数据完整性                          |
+| **B9**  | 事件总线生产可用               | 4      | 多实例 SSE 不再丢消息                     |
+| **B10** | 文档与脚本对齐                 | 12     | 删过期文档、补 env、平台兼容              |
+| **B11** | Activity log 与可观测性        | 10     | 状态变更全部审计                          |
+| **B12** | 测试补齐                       | 18+    | 关键路径回归保障                          |
 
 ---
 
@@ -146,7 +146,7 @@
 - **effort**: medium
 - **files**: `packages/api/src/lib/drift-engine.ts` (行 143-153), `packages/api/prisma/schema.prisma`
 - **symptom**: rebind 之后 agent 内进程不受影响，继续按旧 plan 工作，最后还能 complete
-- **root_cause**: `persistDriftAlerts` 注释里写明 *"running execution stays alive — agent must stop voluntarily"*，没有任何机制中止 run
+- **root_cause**: `persistDriftAlerts` 注释里写明 _"running execution stays alive — agent must stop voluntarily"_，没有任何机制中止 run
 - **fix_steps**:
   1. 在事务内追加：`await tx.executionRun.updateMany({ where: { taskId: { in: highSeverityTaskIds }, status: 'running' }, data: { status: 'superseded', endedAt: new Date() } })`
   2. 事务提交后 publish SSE `execution_superseded` 事件（每个 superseded run 一个）
@@ -171,14 +171,18 @@
   1. 在 PATCH 头部统一加：
      ```ts
      if (run.status !== 'running') {
-       throw new AppError(ErrorCode.STATE_CONFLICT,
+       throw new AppError(
+         ErrorCode.STATE_CONFLICT,
          `Execution is ${run.status}. Restart with latest task pack.`,
-         { runStatus: run.status });
+         { runStatus: run.status },
+       );
      }
      if (run.boundPlanVersion !== run.task.boundPlanVersion) {
-       throw new AppError(ErrorCode.STATE_CONFLICT,
+       throw new AppError(
+         ErrorCode.STATE_CONFLICT,
          `Run bound to plan v${run.boundPlanVersion}, task now v${run.task.boundPlanVersion}. Run is stale.`,
-         { code: 'RUN_STALE_VERSION' });
+         { code: 'RUN_STALE_VERSION' },
+       );
      }
      ```
   2. heartbeat / complete 两个分支都受此保护
@@ -296,7 +300,10 @@
   const isExecutor = auth.userName === run.executorName;
   const isScoped = auth.execRunId === params.runId;
   if (!isOwner && !isExecutor && !isScoped) {
-    throw new AppError(ErrorCode.FORBIDDEN, 'Only the executor or project owner can update this run');
+    throw new AppError(
+      ErrorCode.FORBIDDEN,
+      'Only the executor or project owner can update this run',
+    );
   }
   ```
 - **verification**: vitest：用 user B 的 key 给 user A 的 run 调 PATCH → 403
@@ -424,9 +431,7 @@
 - **root_cause**: claim/decline/update 都用裸 `api`，不调用 `api.withUser(getDelegationAgent())`
 - **fix_steps**:
   ```ts
-  const effectiveApi = getDelegationAgent()
-    ? api.withUser(getDelegationAgent()!)
-    : api;
+  const effectiveApi = getDelegationAgent() ? api.withUser(getDelegationAgent()!) : api;
   ```
 - **verification**: vitest：设置 delegation = "genie" → claim 后 task.assignee === "genie"
 - **rollback**: 单文件
@@ -741,7 +746,7 @@
 - **depends_on**: —
 - **effort**: small
 - **files**: `packages/api/src/lib/env.ts`, `.env.example`
-- **symptom**: AI keys、EMAIL_、PLANSYNC_SECRET 都被代码用但 env 没验
+- **symptom**: AI keys、EMAIL\_、PLANSYNC_SECRET 都被代码用但 env 没验
 - **root_cause**: 只验了 5 个
 - **fix_steps**:
   1. 添加：`LLM_API_KEY`, `LLM_API_BASE`, `ANTHROPIC_API_KEY`, `EMAIL_FROM`, `EMAIL_SENDMAIL`（全部 optional）
@@ -772,7 +777,7 @@
 - **batch**: B4
 - **depends_on**: —
 - **effort**: medium
-- **files**: `packages/mcp-server/src/index.ts` (行 141-160), 各 tools/*.ts
+- **files**: `packages/mcp-server/src/index.ts` (行 141-160), 各 tools/\*.ts
 - **symptom**: ApiError 未捕获 / 委托阻塞返回普通成功 / member_add 软失败返回纯文本
 - **root_cause**: 没有统一 wrapper
 - **fix_steps**:
@@ -1312,6 +1317,7 @@
 ---
 
 #### R-070 [MEDIUM] AI loop 添加 token 预算估算
+
 - **status**: pending
 - **batch**: B7
 - **depends_on**: R-063
@@ -1723,7 +1729,7 @@
 
 ---
 
-#### R-099 [MEDIUM] `.env.example` 补 PLANSYNC_SECRET / AUTH_DISABLED / AI keys / EMAIL_*
+#### R-099 [MEDIUM] `.env.example` 补 PLANSYNC*SECRET / AUTH_DISABLED / AI keys / EMAIL*\*
 
 - **status**: pending
 - **batch**: B10
@@ -1946,7 +1952,7 @@
 
 ---
 
-#### R-119 [HIGH] MCP execution_* 工具单测
+#### R-119 [HIGH] MCP execution\_\* 工具单测
 
 - **status**: pending
 - **batch**: B12
@@ -1964,7 +1970,7 @@
 
 ---
 
-#### R-121 [HIGH] MCP plan_activate/reactivate/append/review_* 单测
+#### R-121 [HIGH] MCP plan*activate/reactivate/append/review*\* 单测
 
 - **status**: pending
 - **batch**: B12
@@ -2061,15 +2067,79 @@
 
 ---
 
+#### R-131 [HIGH] 升级 Next.js 14 → 16（修复残留 high CVE）
+
+- **status**: pending
+- **batch**: B10
+- **depends_on**: —
+- **effort**: large
+- **files**: `packages/api/package.json`, `packages/api/next.config.js`, 全部 `packages/api/src/app/**` 路由
+- **symptom**: `npm audit --omit=dev --audit-level=high` 报 2 个 high CVE
+  ([GHSA-wfc6-r584-vfw7](https://github.com/advisories/GHSA-wfc6-r584-vfw7) cache poisoning,
+  [GHSA-36qx-fr4f-26g5](https://github.com/advisories/GHSA-36qx-fr4f-26g5) middleware bypass）
+- **root_cause**: Next.js 14.2.x 仅维护到 14.2.35，2 个 CVE 仅在 16.x 修复
+- **fix_steps**:
+  1. 阅读 [Next 14 → 15 → 16 migration guide](https://nextjs.org/docs/app/building-your-application/upgrading)
+  2. 升级 `next` 到 `~16.2.x`、`react` / `react-dom` 到对应版本
+  3. 处理 App Router、middleware、Pages Router compatibility
+  4. 重跑所有集成 + e2e 测试
+  5. 升级后 validate.yml 的 audit-level 改回 `high`
+- **verification**: `npm audit --omit=dev --audit-level=high` 通过 + 所有 e2e 通过
+- **rollback**: 大 PR，建议单独 feature branch + 灰度 + revert plan
+- **temporary_mitigation**: validate.yml 用 `--audit-level=critical`；nightly.yml 仍跑 high+ 严扫，发现就开 issue
+
+---
+
+#### R-132 [HIGH] 升级 MCP SDK 并恢复 mcp-server typecheck
+
+- **status**: pending
+- **batch**: B4
+- **depends_on**: —
+- **effort**: medium
+- **files**: `packages/mcp-server/package.json`, `packages/mcp-server/src/**`, `.github/workflows/validate.yml`
+- **symptom**: `tsc --noEmit --project packages/mcp-server` 在 8 GB heap 下 OOM
+- **root_cause**: `@modelcontextprotocol/sdk@1.3.0` 的 `server.tool<Args extends ZodRawShape>(...)`
+  泛型 + Zod 3.x 推断在 TS 5.7 触发 TS2589 / 类型递归爆炸
+- **fix_steps**:
+  1. `npm install @modelcontextprotocol/sdk@^1.29.0 --workspace=@plansync/mcp-server`
+  2. 处理 SDK 1.3 → 1.29 之间的 breaking API（重点：`server.tool` 签名、transport 接口）
+  3. 重跑 mcp-server tests 验证 runtime 不变
+  4. 本地 `npx tsc --noEmit --project packages/mcp-server/tsconfig.json` 必须在 60s 内完成且 exit 0
+  5. 在 `validate.yml` 的 `typecheck` job 恢复 mcp-server 那一行（删除 NOTE 注释）
+- **verification**: 本地和 CI typecheck 通过
+- **rollback**: 单文件 revert package.json + workflow + 任何 API 适配
+- **temporary_mitigation**: validate.yml 已注释跳过 mcp-server 的 typecheck，仅依赖 esbuild bundle 时的 syntax 检查
+
+---
+
+#### R-133 [MEDIUM] 逐步消除 `any`，重新启用 `no-explicit-any` 警告
+
+- **status**: pending
+- **batch**: B4
+- **depends_on**: —
+- **effort**: medium（可拆 sub-tasks）
+- **files**: `eslint.config.mjs`, `packages/api/src/lib/ai/**`, `packages/api/src/lib/errors.ts`, `packages/mcp-server/src/api-client.ts`, `packages/mcp-server/src/index.ts`, `packages/mcp-server/src/tools/execution.ts`
+- **symptom**: 现存 ~27 处 `any` 使用，ESLint 规则被关闭
+- **root_cause**: 历史代码（AI 入参、错误对象、SDK 边界）使用 `any` 简化类型
+- **fix_steps**:
+  1. 把 `errors.ts` 里的 `any` 改为 `unknown` + 类型 narrow
+  2. AI prompt 模块的入参用 `Record<string, unknown>` + 内部 narrow
+  3. mcp-server 的 `any` 等 R-132 SDK 升级后大多自然消失
+  4. 最后在 `eslint.config.mjs` 里把 `'@typescript-eslint/no-explicit-any': 'off'` 改回 `'warn'`
+- **verification**: `npx eslint packages/*/src --max-warnings 0` 通过
+- **rollback**: 单文件改动，逐文件 revert
+
+---
+
 ## Cron Job 调度建议
 
 ### 推荐节奏
 
-| 频率 | 任务 |
-|---|---|
-| **每天 02:00** | 拉一次 master，扫描 `pending` 任务，按严重度+依赖筛出 3-5 个，开 Cloud Agent |
-| **每天 18:00** | 检查 PR 状态，自动 merge 通过 CI 的 draft → ready |
-| **每周一 09:00** | 输出本周 burn-down 报告（已 done / 仍 pending） |
+| 频率             | 任务                                                                         |
+| ---------------- | ---------------------------------------------------------------------------- |
+| **每天 02:00**   | 拉一次 master，扫描 `pending` 任务，按严重度+依赖筛出 3-5 个，开 Cloud Agent |
+| **每天 18:00**   | 检查 PR 状态，自动 merge 通过 CI 的 draft → ready                            |
+| **每周一 09:00** | 输出本周 burn-down 报告（已 done / 仍 pending）                              |
 
 ### 简单实现思路（伪代码）
 
@@ -2121,143 +2191,147 @@ done
 
 ## 附录 A — 完整问题索引
 
-| ID | 严重度 | 批次 | 标题 |
-|---|---|---|---|
-| R-001 | CRITICAL | B1 | 禁用 AI 后台自动解决 drift |
-| R-002 | CRITICAL | B1 | drift 触发时取消正在跑的 ExecutionRun |
-| R-003 | CRITICAL | B1 | heartbeat / complete 加 run-task 版本对齐校验 |
-| R-004 | HIGH | B1 | rebind 行为升级为"显式重启" |
-| R-005 | HIGH | B1 | MCP heartbeat 把 superseded 转 agent abort |
-| R-006 | HIGH | B1 | drift complete-gate 同时检查 run 版本 |
-| R-007 | MEDIUM | B1 | drift-engine 事件/邮件移到事务提交后 |
-| R-008 | HIGH | B1 | 新增 `superseded` execution run 状态 |
-| R-009 | CRITICAL | B2 | heartbeat/complete 接口加 executor 身份校验 |
-| R-010 | CRITICAL | B2 | 生产环境拒绝 PLANSYNC_SECRET 默认值 |
-| R-011 | HIGH | B2 | exec-scoped API key 绑定到 projectId |
-| R-012 | HIGH | B2 | execution_start 不再自动注册 agent 成员 |
-| R-013 | HIGH | B2 | 首次登录开放注册改为受控 |
-| R-014 | MEDIUM | B2 | 密码 Bearer 模式仅开发环境保留 |
-| R-015 | HIGH | B2 | 给所有 owner-only 写路由加 requireNotExecScoped |
-| R-016 | HIGH | B2 | 委托模式 task tools 使用 withUser |
-| R-017 | HIGH | B2 | withUser 在普通 API key 下抛错 |
-| R-018 | HIGH | B2 | my_work 跨项目模式尊重 agentName |
-| R-019 | MEDIUM | B2 | exec_context 区分 fatal/transient 错误 |
-| R-020 | MEDIUM | B2 | exec_context 有 drift 时不启心跳 |
-| R-021 | CRITICAL | B3 | MCP 子进程崩溃可检测可自动恢复 |
-| R-022 | HIGH | B3 | MCP callTool 加单次重试 |
-| R-023 | HIGH | B3 | SSE listener 对 401/403 立刻提示用户 |
-| R-024 | MEDIUM | B3 | MCP stop() 清理 pending requests |
-| R-025 | HIGH | B3 | psRequest 检查 HTTP 状态码 |
-| R-026 | MEDIUM | B3 | CLI auth 用 URL 协议选择 http vs https |
-| R-027 | HIGH | B4 | MCP task_update schema 复用 shared |
-| R-028 | HIGH | B4 | MCP task_create 复用 shared |
-| R-029 | MEDIUM | B4 | MCP project_create/update 补 repoUrl/defaultBranch |
-| R-030 | HIGH | B4 | shared planReviewSchema 补 focusNotes |
-| R-031 | HIGH | B4 | shared driftAlertSchema 补 affectedAreas/planDiffId |
-| R-032 | MEDIUM | B4 | propose plan 建立 shared zod schema |
-| R-033 | MEDIUM | B4 | createActivity 强制 zod 校验 type |
-| R-034 | HIGH | B4 | 增加 schema-drift CI 守门测试 |
-| R-035 | HIGH | B4 | env.ts 验证所有运行时使用的 env 变量 |
-| R-036 | MEDIUM | B4 | 删除 MCP plan_create 客户端 draft guard 或在 API 实施 |
-| R-037 | MEDIUM | B4 | MCP tool 统一错误格式 |
-| R-038 | MEDIUM | B4 | review_reject schema 强制 comment 非空 |
-| R-039 | LOW | B4 | execution tools 错误统一为 JSON envelope |
-| R-040 | LOW | B4 | api-client 启动时校验 token 配置 |
-| R-041 | HIGH | B5 | 所有 /plans/:planId/... 路由验证 plan ∈ project |
-| R-042 | HIGH | B5 | task/drift 状态 query 参数 zod 校验 |
-| R-043 | HIGH | B5 | webhook URL 校验防 SSRF |
-| R-044 | MEDIUM | B5 | notify 路由限流 + owner-only |
-| R-045 | HIGH | B5 | human task PATCH done 需要 execution 或 owner |
-| R-046 | MEDIUM | B5 | complete-human 加 open drift gate |
-| R-047 | MEDIUM | B5 | DELETE task 拒绝有 running run 的请求 |
-| R-048 | CRITICAL | B6 | plans 表加 partial unique 每项目一个 active |
-| R-049 | HIGH | B6 | task_claim 用 conditional updateMany 原子化 |
-| R-050 | MEDIUM | B6 | plan 版本号生成放进事务 |
-| R-051 | HIGH | B6 | drift_alert 触发用 upsert 避免重复 |
-| R-052 | HIGH | B6 | reactivate 把 drift 扫描放回事务 |
-| R-053 | MEDIUM | B6 | suggestion accept 单事务 apply+update |
-| R-054 | HIGH | B6 | execution_start 拒绝 cancelled/blocked/done 任务 |
-| R-055 | HIGH | B6 | activate 路由要求非 0 reviewer 或 owner |
-| R-056 | MEDIUM | B6 | heartbeat scanner 改为 DB advisory lock |
-| R-057 | MEDIUM | B6 | stale 状态同步释放 task 与 exec-scoped key |
-| R-058 | LOW | B6 | drift_engine 使用 tx 读取 |
-| R-059 | HIGH | B7 | CLI banner phase 改用 API 返回的 project.phase |
-| R-060 | HIGH | B7 | /exec 允许 human assignee |
-| R-061 | HIGH | B7 | worktree 失败时调用 failRun |
-| R-062 | HIGH | B7 | 统一 bin/plansync --exec 与 CLI /exec |
-| R-063 | HIGH | B7 | AI loop 保留 tool_use/tool_result 历史 |
-| R-064 | HIGH | B7 | !shell 命令在 Ink 之前 pause/unmount |
-| R-065 | MEDIUM | B7 | /clear /verbose 无 unmount 命令统一加入 unmount |
-| R-066 | MEDIUM | B7 | Ink 监听 SIGWINCH 重渲染 |
-| R-067 | MEDIUM | B7 | Ink 支持 bracketed paste 多行提交 |
-| R-068 | MEDIUM | B7 | Ink 非 TTY fallback |
-| R-069 | MEDIUM | B7 | AI loop maxTurns 用户可见警告 |
-| R-070 | MEDIUM | B7 | AI loop 添加 token 预算估算 |
-| R-071 | LOW | B7 | /worker Ctrl+C 中断子进程 |
-| R-072 | LOW | B7 | suggestion ↓ 从未选状态进入 |
-| R-073 | LOW | B7 | /code 退出不清屏 |
-| R-074 | MEDIUM | B7 | /project <id> 验证项目存在 |
-| R-075 | HIGH | B8 | tasks 表加复合索引 |
-| R-076 | HIGH | B8 | drift_alerts 加复合索引 |
-| R-077 | HIGH | B8 | api_keys.keyPrefix 加索引 |
-| R-078 | MEDIUM | B8 | webhook_deliveries 加分页索引 |
-| R-079 | HIGH | B8 | 把 String 状态字段改为 Prisma enum |
-| R-080 | MEDIUM | B8 | ApiKey.execRunId FK |
-| R-081 | MEDIUM | B8 | DriftAlert.planDiffId FK |
-| R-082 | MEDIUM | B8 | PlanDiff.fromPlanId/toPlanId FK |
-| R-083 | MEDIUM | B8 | Task.boundPlanVersion 加复合 FK |
-| R-084 | MEDIUM | B8 | schema.prisma 标注 partial unique index |
-| R-085 | LOW | B8 | 统一 camelCase 列名 |
-| R-086 | LOW | B8 | PlanComment.parent onDelete 显式 |
-| R-087 | LOW | B8 | DriftAlert.severity 加 default |
-| R-088 | CRITICAL | B9 | EventBus 替换为 Postgres LISTEN/NOTIFY |
-| R-089 | MEDIUM | B9 | SSE 改用 cookie 鉴权 |
-| R-090 | MEDIUM | B9 | SSE 加 backpressure / slow client 处理 |
-| R-091 | LOW | B9 | MAX_SSE_CLIENTS 按 project 计 |
-| R-092 | HIGH | B10 | 构建 GitHub Action dist/index.js |
-| R-093 | HIGH | B10 | action 输入 api-key 加 core.setSecret |
-| R-094 | HIGH | B10 | action drift gate 按 PR 任务过滤 |
-| R-095 | HIGH | B10 | PG_BIN / port_in_use 平台化 |
-| R-096 | HIGH | B10 | 删除 README 不存在的 demo 脚本引用 |
-| R-097 | HIGH | B10 | CLAUDE.md 删除 task_update 虚假承诺 |
-| R-098 | MEDIUM | B10 | CLAUDE.md Three contexts 文案修正 |
-| R-099 | MEDIUM | B10 | .env.example 补缺失变量 |
-| R-100 | MEDIUM | B10 | bin/plansync 错误消息 --format 修正 |
-| R-101 | MEDIUM | B10 | start-mcp 自动构建放到 CLI 启动路径 |
-| R-102 | MEDIUM | B10 | 默认 Genie 路径平台化 |
-| R-103 | LOW | B10 | dev.sh 不再每次清 .next |
-| R-104 | HIGH | B11 | plan PATCH 写 activity |
-| R-105 | HIGH | B11 | task PATCH 写 activity |
-| R-106 | HIGH | B11 | task DELETE 写 activity |
-| R-107 | HIGH | B11 | drift cancel action 写 activity |
-| R-108 | HIGH | B11 | heartbeat-scanner stale/failed 写 activity |
-| R-109 | HIGH | B11 | comment edit/delete 写 activity |
-| R-110 | HIGH | B11 | project PATCH 写 activity |
-| R-111 | MEDIUM | B11 | logger 中间件加 correlation id |
-| R-112 | LOW | B11 | logger 用 env.LOG_LEVEL |
-| R-113 | LOW | B11 | sendMail 异步队列化 |
-| R-114 | HIGH | B12 | complete-human 集成测试 |
-| R-115 | HIGH | B12 | tasks/conflicts 集成测试 |
-| R-116 | HIGH | B12 | chat/notify/ai-draft/ai-field 集成测试 |
-| R-117 | HIGH | B12 | auth login/password/verify/logout 集成测试 |
-| R-118 | HIGH | B12 | exec-sessions issue/revoke token 直测 |
-| R-119 | HIGH | B12 | MCP execution_* 工具单测 |
-| R-120 | HIGH | B12 | MCP drift_resolve / check_task_conflicts 单测 |
-| R-121 | HIGH | B12 | MCP plan_activate/reactivate/append/review_* 单测 |
-| R-122 | MEDIUM | B12 | webhook delivery 单测 |
-| R-123 | MEDIUM | B12 | auth.ts 密码缓存边界单测 |
-| R-124 | MEDIUM | B12 | AI mock 让默认 CI 跑 ai.test |
-| R-125 | MEDIUM | B12 | activity.ts 单测 |
-| R-126 | MEDIUM | B12 | B1 端到端集成测试 |
-| R-127 | MEDIUM | B12 | 并发 claim 压力测试 |
-| R-128 | MEDIUM | B12 | 并发 plan activate 压力测试 |
-| R-129 | MEDIUM | B12 | SSE 多实例端到端 |
-| R-130 | LOW | B12 | 文档示例代码可执行测试 |
+| ID    | 严重度   | 批次 | 标题                                                                           |
+| ----- | -------- | ---- | ------------------------------------------------------------------------------ |
+| R-001 | CRITICAL | B1   | 禁用 AI 后台自动解决 drift                                                     |
+| R-002 | CRITICAL | B1   | drift 触发时取消正在跑的 ExecutionRun                                          |
+| R-003 | CRITICAL | B1   | heartbeat / complete 加 run-task 版本对齐校验                                  |
+| R-004 | HIGH     | B1   | rebind 行为升级为"显式重启"                                                    |
+| R-005 | HIGH     | B1   | MCP heartbeat 把 superseded 转 agent abort                                     |
+| R-006 | HIGH     | B1   | drift complete-gate 同时检查 run 版本                                          |
+| R-007 | MEDIUM   | B1   | drift-engine 事件/邮件移到事务提交后                                           |
+| R-008 | HIGH     | B1   | 新增 `superseded` execution run 状态                                           |
+| R-009 | CRITICAL | B2   | heartbeat/complete 接口加 executor 身份校验                                    |
+| R-010 | CRITICAL | B2   | 生产环境拒绝 PLANSYNC_SECRET 默认值                                            |
+| R-011 | HIGH     | B2   | exec-scoped API key 绑定到 projectId                                           |
+| R-012 | HIGH     | B2   | execution_start 不再自动注册 agent 成员                                        |
+| R-013 | HIGH     | B2   | 首次登录开放注册改为受控                                                       |
+| R-014 | MEDIUM   | B2   | 密码 Bearer 模式仅开发环境保留                                                 |
+| R-015 | HIGH     | B2   | 给所有 owner-only 写路由加 requireNotExecScoped                                |
+| R-016 | HIGH     | B2   | 委托模式 task tools 使用 withUser                                              |
+| R-017 | HIGH     | B2   | withUser 在普通 API key 下抛错                                                 |
+| R-018 | HIGH     | B2   | my_work 跨项目模式尊重 agentName                                               |
+| R-019 | MEDIUM   | B2   | exec_context 区分 fatal/transient 错误                                         |
+| R-020 | MEDIUM   | B2   | exec_context 有 drift 时不启心跳                                               |
+| R-021 | CRITICAL | B3   | MCP 子进程崩溃可检测可自动恢复                                                 |
+| R-022 | HIGH     | B3   | MCP callTool 加单次重试                                                        |
+| R-023 | HIGH     | B3   | SSE listener 对 401/403 立刻提示用户                                           |
+| R-024 | MEDIUM   | B3   | MCP stop() 清理 pending requests                                               |
+| R-025 | HIGH     | B3   | psRequest 检查 HTTP 状态码                                                     |
+| R-026 | MEDIUM   | B3   | CLI auth 用 URL 协议选择 http vs https                                         |
+| R-027 | HIGH     | B4   | MCP task_update schema 复用 shared                                             |
+| R-028 | HIGH     | B4   | MCP task_create 复用 shared                                                    |
+| R-029 | MEDIUM   | B4   | MCP project_create/update 补 repoUrl/defaultBranch                             |
+| R-030 | HIGH     | B4   | shared planReviewSchema 补 focusNotes                                          |
+| R-031 | HIGH     | B4   | shared driftAlertSchema 补 affectedAreas/planDiffId                            |
+| R-032 | MEDIUM   | B4   | propose plan 建立 shared zod schema                                            |
+| R-033 | MEDIUM   | B4   | createActivity 强制 zod 校验 type                                              |
+| R-034 | HIGH     | B4   | 增加 schema-drift CI 守门测试                                                  |
+| R-035 | HIGH     | B4   | env.ts 验证所有运行时使用的 env 变量                                           |
+| R-036 | MEDIUM   | B4   | 删除 MCP plan_create 客户端 draft guard 或在 API 实施                          |
+| R-037 | MEDIUM   | B4   | MCP tool 统一错误格式                                                          |
+| R-038 | MEDIUM   | B4   | review_reject schema 强制 comment 非空                                         |
+| R-039 | LOW      | B4   | execution tools 错误统一为 JSON envelope                                       |
+| R-040 | LOW      | B4   | api-client 启动时校验 token 配置                                               |
+| R-041 | HIGH     | B5   | 所有 /plans/:planId/... 路由验证 plan ∈ project                                |
+| R-042 | HIGH     | B5   | task/drift 状态 query 参数 zod 校验                                            |
+| R-043 | HIGH     | B5   | webhook URL 校验防 SSRF                                                        |
+| R-044 | MEDIUM   | B5   | notify 路由限流 + owner-only                                                   |
+| R-045 | HIGH     | B5   | human task PATCH done 需要 execution 或 owner                                  |
+| R-046 | MEDIUM   | B5   | complete-human 加 open drift gate                                              |
+| R-047 | MEDIUM   | B5   | DELETE task 拒绝有 running run 的请求                                          |
+| R-048 | CRITICAL | B6   | plans 表加 partial unique 每项目一个 active                                    |
+| R-049 | HIGH     | B6   | task_claim 用 conditional updateMany 原子化                                    |
+| R-050 | MEDIUM   | B6   | plan 版本号生成放进事务                                                        |
+| R-051 | HIGH     | B6   | drift_alert 触发用 upsert 避免重复                                             |
+| R-052 | HIGH     | B6   | reactivate 把 drift 扫描放回事务                                               |
+| R-053 | MEDIUM   | B6   | suggestion accept 单事务 apply+update                                          |
+| R-054 | HIGH     | B6   | execution_start 拒绝 cancelled/blocked/done 任务                               |
+| R-055 | HIGH     | B6   | activate 路由要求非 0 reviewer 或 owner                                        |
+| R-056 | MEDIUM   | B6   | heartbeat scanner 改为 DB advisory lock                                        |
+| R-057 | MEDIUM   | B6   | stale 状态同步释放 task 与 exec-scoped key                                     |
+| R-058 | LOW      | B6   | drift_engine 使用 tx 读取                                                      |
+| R-059 | HIGH     | B7   | CLI banner phase 改用 API 返回的 project.phase                                 |
+| R-060 | HIGH     | B7   | /exec 允许 human assignee                                                      |
+| R-061 | HIGH     | B7   | worktree 失败时调用 failRun                                                    |
+| R-062 | HIGH     | B7   | 统一 bin/plansync --exec 与 CLI /exec                                          |
+| R-063 | HIGH     | B7   | AI loop 保留 tool_use/tool_result 历史                                         |
+| R-064 | HIGH     | B7   | !shell 命令在 Ink 之前 pause/unmount                                           |
+| R-065 | MEDIUM   | B7   | /clear /verbose 无 unmount 命令统一加入 unmount                                |
+| R-066 | MEDIUM   | B7   | Ink 监听 SIGWINCH 重渲染                                                       |
+| R-067 | MEDIUM   | B7   | Ink 支持 bracketed paste 多行提交                                              |
+| R-068 | MEDIUM   | B7   | Ink 非 TTY fallback                                                            |
+| R-069 | MEDIUM   | B7   | AI loop maxTurns 用户可见警告                                                  |
+| R-070 | MEDIUM   | B7   | AI loop 添加 token 预算估算                                                    |
+| R-071 | LOW      | B7   | /worker Ctrl+C 中断子进程                                                      |
+| R-072 | LOW      | B7   | suggestion ↓ 从未选状态进入                                                    |
+| R-073 | LOW      | B7   | /code 退出不清屏                                                               |
+| R-074 | MEDIUM   | B7   | /project <id> 验证项目存在                                                     |
+| R-075 | HIGH     | B8   | tasks 表加复合索引                                                             |
+| R-076 | HIGH     | B8   | drift_alerts 加复合索引                                                        |
+| R-077 | HIGH     | B8   | api_keys.keyPrefix 加索引                                                      |
+| R-078 | MEDIUM   | B8   | webhook_deliveries 加分页索引                                                  |
+| R-079 | HIGH     | B8   | 把 String 状态字段改为 Prisma enum                                             |
+| R-080 | MEDIUM   | B8   | ApiKey.execRunId FK                                                            |
+| R-081 | MEDIUM   | B8   | DriftAlert.planDiffId FK                                                       |
+| R-082 | MEDIUM   | B8   | PlanDiff.fromPlanId/toPlanId FK                                                |
+| R-083 | MEDIUM   | B8   | Task.boundPlanVersion 加复合 FK                                                |
+| R-084 | MEDIUM   | B8   | schema.prisma 标注 partial unique index                                        |
+| R-085 | LOW      | B8   | 统一 camelCase 列名                                                            |
+| R-086 | LOW      | B8   | PlanComment.parent onDelete 显式                                               |
+| R-087 | LOW      | B8   | DriftAlert.severity 加 default                                                 |
+| R-088 | CRITICAL | B9   | EventBus 替换为 Postgres LISTEN/NOTIFY                                         |
+| R-089 | MEDIUM   | B9   | SSE 改用 cookie 鉴权                                                           |
+| R-090 | MEDIUM   | B9   | SSE 加 backpressure / slow client 处理                                         |
+| R-091 | LOW      | B9   | MAX_SSE_CLIENTS 按 project 计                                                  |
+| R-092 | HIGH     | B10  | 构建 GitHub Action dist/index.js                                               |
+| R-093 | HIGH     | B10  | action 输入 api-key 加 core.setSecret                                          |
+| R-094 | HIGH     | B10  | action drift gate 按 PR 任务过滤                                               |
+| R-095 | HIGH     | B10  | PG_BIN / port_in_use 平台化                                                    |
+| R-096 | HIGH     | B10  | 删除 README 不存在的 demo 脚本引用                                             |
+| R-097 | HIGH     | B10  | CLAUDE.md 删除 task_update 虚假承诺                                            |
+| R-098 | MEDIUM   | B10  | CLAUDE.md Three contexts 文案修正                                              |
+| R-099 | MEDIUM   | B10  | .env.example 补缺失变量                                                        |
+| R-100 | MEDIUM   | B10  | bin/plansync 错误消息 --format 修正                                            |
+| R-101 | MEDIUM   | B10  | start-mcp 自动构建放到 CLI 启动路径                                            |
+| R-102 | MEDIUM   | B10  | 默认 Genie 路径平台化                                                          |
+| R-103 | LOW      | B10  | dev.sh 不再每次清 .next                                                        |
+| R-104 | HIGH     | B11  | plan PATCH 写 activity                                                         |
+| R-105 | HIGH     | B11  | task PATCH 写 activity                                                         |
+| R-106 | HIGH     | B11  | task DELETE 写 activity                                                        |
+| R-107 | HIGH     | B11  | drift cancel action 写 activity                                                |
+| R-108 | HIGH     | B11  | heartbeat-scanner stale/failed 写 activity                                     |
+| R-109 | HIGH     | B11  | comment edit/delete 写 activity                                                |
+| R-110 | HIGH     | B11  | project PATCH 写 activity                                                      |
+| R-111 | MEDIUM   | B11  | logger 中间件加 correlation id                                                 |
+| R-112 | LOW      | B11  | logger 用 env.LOG_LEVEL                                                        |
+| R-113 | LOW      | B11  | sendMail 异步队列化                                                            |
+| R-114 | HIGH     | B12  | complete-human 集成测试                                                        |
+| R-115 | HIGH     | B12  | tasks/conflicts 集成测试                                                       |
+| R-116 | HIGH     | B12  | chat/notify/ai-draft/ai-field 集成测试                                         |
+| R-117 | HIGH     | B12  | auth login/password/verify/logout 集成测试                                     |
+| R-118 | HIGH     | B12  | exec-sessions issue/revoke token 直测                                          |
+| R-119 | HIGH     | B12  | MCP execution\_\* 工具单测                                                     |
+| R-120 | HIGH     | B12  | MCP drift_resolve / check_task_conflicts 单测                                  |
+| R-121 | HIGH     | B12  | MCP plan*activate/reactivate/append/review*\* 单测                             |
+| R-122 | MEDIUM   | B12  | webhook delivery 单测                                                          |
+| R-123 | MEDIUM   | B12  | auth.ts 密码缓存边界单测                                                       |
+| R-124 | MEDIUM   | B12  | AI mock 让默认 CI 跑 ai.test                                                   |
+| R-125 | MEDIUM   | B12  | activity.ts 单测                                                               |
+| R-126 | MEDIUM   | B12  | B1 端到端集成测试                                                              |
+| R-127 | MEDIUM   | B12  | 并发 claim 压力测试                                                            |
+| R-128 | MEDIUM   | B12  | 并发 plan activate 压力测试                                                    |
+| R-129 | MEDIUM   | B12  | SSE 多实例端到端                                                               |
+| R-130 | LOW      | B12  | 文档示例代码可执行测试                                                         |
+| R-131 | HIGH     | B10  | 升级 Next.js 14 → 16（修复 2 个残留 high CVE）                                 |
+| R-132 | HIGH     | B4   | 升级 @modelcontextprotocol/sdk 1.3 → 1.29+ 并恢复 mcp-server typecheck         |
+| R-133 | MEDIUM   | B4   | 逐步把 `any` 替换为 `unknown`/具体类型，重新启用 ESLint `no-explicit-any` 警告 |
 
 **统计**：
+
 - CRITICAL: 7
-- HIGH: 60
-- MEDIUM: 49
+- HIGH: 62
+- MEDIUM: 50
 - LOW: 14
 - **合计 130 条**
 

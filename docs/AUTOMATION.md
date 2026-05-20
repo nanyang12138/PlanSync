@@ -47,24 +47,24 @@
 
 ## 三层 workflow 各自的职责
 
-> 三层都是 **「PlanSync 这个工具特有的脆弱点 → 对应的检查」** 一一对应。下面每条都说清楚 *"如果不加这个检查，agent 会怎样把坏代码合进 master"*。
+> 三层都是 **「PlanSync 这个工具特有的脆弱点 → 对应的检查」** 一一对应。下面每条都说清楚 _"如果不加这个检查，agent 会怎样把坏代码合进 master"_。
 
 ### 1. `.github/workflows/validate.yml` — 必过门槛（10 个 job）
 
 **触发**：每个 PR、push 到 master、可手动跑。**任何一个 job 失败 → auto-merge 不触发**。
 
-| Job | 检查内容 | 没这个的话 agent 会怎么搞砸 |
-|---|---|---|
-| `lint` | `eslint packages/*/src --max-warnings 0` | 不限 warning 时 agent 可以引入大量 warning 直到代码不可读 |
-| `format-check` | prettier 校验源码 + 文档 + 配置文件 | 代码风格漂移 |
-| `typecheck` | `tsc --noEmit` × 4 workspace（mcp-server / cli / api / shared） | **esbuild 不做类型检查**，TS bug 照样产出可运行 dist；只有 tsc 才能拦 |
-| `commitlint` | 校验 PR 全部 commit message | agent 不装 husky，commit message 可以乱写过 |
-| `shellcheck` | `scripts/` + `bin/` 所有 bash 脚本 | 用户日常入口都是 bash 脚本，agent 一行错语法直接卡 setup |
-| `prisma-validate` | `prisma validate` + `prisma format` 幂等检查 + 拦截既有 migration 被改 | husky pre-commit 拦的事，CI 上不拦就漏 |
-| `build` | `shared → mcp-server → cli → api` 顺序构建，**并断言所有 dist 产物存在** | `cli` build 最后 `cp yoga.wasm` 这一步失败 esbuild 仍 exit 0（commit 874296b 就栽这） |
-| `test` | PG 16 service + `prisma migrate deploy` + `npm run test --workspaces` | 单元 + 集成测试基础保障 |
-| `secret-scan` | gitleaks 扫描提交历史 | agent 误把 token 写进代码/日志 |
-| `audit` | `npm audit --omit=dev --audit-level=high` | 生产依赖出 CVE，不被发现 |
+| Job               | 检查内容                                                                 | 没这个的话 agent 会怎么搞砸                                                           |
+| ----------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| `lint`            | `eslint packages/*/src --max-warnings 0`                                 | 不限 warning 时 agent 可以引入大量 warning 直到代码不可读                             |
+| `format-check`    | prettier 校验源码 + 文档 + 配置文件                                      | 代码风格漂移                                                                          |
+| `typecheck`       | `tsc --noEmit` × 4 workspace（mcp-server / cli / api / shared）          | **esbuild 不做类型检查**，TS bug 照样产出可运行 dist；只有 tsc 才能拦                 |
+| `commitlint`      | 校验 PR 全部 commit message                                              | agent 不装 husky，commit message 可以乱写过                                           |
+| `shellcheck`      | `scripts/` + `bin/` 所有 bash 脚本                                       | 用户日常入口都是 bash 脚本，agent 一行错语法直接卡 setup                              |
+| `prisma-validate` | `prisma validate` + `prisma format` 幂等检查 + 拦截既有 migration 被改   | husky pre-commit 拦的事，CI 上不拦就漏                                                |
+| `build`           | `shared → mcp-server → cli → api` 顺序构建，**并断言所有 dist 产物存在** | `cli` build 最后 `cp yoga.wasm` 这一步失败 esbuild 仍 exit 0（commit 874296b 就栽这） |
+| `test`            | PG 16 service + `prisma migrate deploy` + `npm run test --workspaces`    | 单元 + 集成测试基础保障                                                               |
+| `secret-scan`     | gitleaks 扫描提交历史                                                    | agent 误把 token 写进代码/日志                                                        |
+| `audit`           | `npm audit --omit=dev --audit-level=high`                                | 生产依赖出 CVE，不被发现                                                              |
 
 **关键设计点**：
 
@@ -108,14 +108,15 @@
 
 **不 fail CI**，但发现风险时给 PR 打上 `do-not-merge` label，**让 auto-merge workflow 已实现的 opt-out 机制接管**：
 
-| Job | 触发条件 | 后果 |
-|---|---|---|
-| `pr-size` | 代码改动 > 1000 行 **或** 涉及文件 > 50 个（**排除 docs / lockfile / 二进制资源**） | label `do-not-merge` + `oversized-pr` + 评论解释 |
-| `destructive-migration` | 新增 migration 含 `DROP TABLE/COLUMN/CONSTRAINT/INDEX` / `TRUNCATE` / `ALTER TYPE` / `ALTER COLUMN ... TYPE` / `RENAME` | label `do-not-merge` + `destructive-migration` + 评论列出匹配文件 |
-| `workflow-modification` | 改了 `.github/workflows/*.yml` | label `do-not-merge` + `workflow-change`（防止 CI 自我修改链） |
-| `dependency-review` | PR 引入含高危 CVE 的新依赖 / 非许可证许可的依赖 | fail（这条是 fail，因为 GitHub Dependency Review action 就是设计为阻断） |
+| Job                     | 触发条件                                                                                                                | 后果                                                                     |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `pr-size`               | 代码改动 > 1000 行 **或** 涉及文件 > 50 个（**排除 docs / lockfile / 二进制资源**）                                     | label `do-not-merge` + `oversized-pr` + 评论解释                         |
+| `destructive-migration` | 新增 migration 含 `DROP TABLE/COLUMN/CONSTRAINT/INDEX` / `TRUNCATE` / `ALTER TYPE` / `ALTER COLUMN ... TYPE` / `RENAME` | label `do-not-merge` + `destructive-migration` + 评论列出匹配文件        |
+| `workflow-modification` | 改了 `.github/workflows/*.yml`                                                                                          | label `do-not-merge` + `workflow-change`（防止 CI 自我修改链）           |
+| `dependency-review`     | PR 引入含高危 CVE 的新依赖 / 非许可证许可的依赖                                                                         | fail（这条是 fail，因为 GitHub Dependency Review action 就是设计为阻断） |
 
 **为什么用 label 而不是 fail CI**：
+
 - 风险型 PR 仍然需要 validate 跑完看其他 job 是否通过
 - 人工 review 后只要移除 label，auto-merge workflow 会在下次 validate 完成时自然接管
 - 不会把 PR 直接打回，agent 能拿到完整 CI 反馈
@@ -124,12 +125,13 @@
 
 **触发**：每天 UTC 03:00 cron + 手动 dispatch。
 
-| Job | 内容 | 失败后果 |
-|---|---|---|
-| `e2e` | 启 Next.js 真服务 → `vitest --config vitest.e2e.config.ts`（660s timeout） | 自动开 `nightly-e2e-fail` label 的 issue（去重，已开就不重复） |
-| `full-audit` | `npm audit --json` 全严重度报告 | 有 high/critical 就开 `nightly-audit-fail` issue + 上传完整 JSON artifact |
+| Job          | 内容                                                                       | 失败后果                                                                  |
+| ------------ | -------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `e2e`        | 启 Next.js 真服务 → `vitest --config vitest.e2e.config.ts`（660s timeout） | 自动开 `nightly-e2e-fail` label 的 issue（去重，已开就不重复）            |
+| `full-audit` | `npm audit --json` 全严重度报告                                            | 有 high/critical 就开 `nightly-audit-fail` issue + 上传完整 JSON artifact |
 
 **为什么把 e2e 放 nightly**：
+
 - e2e 测试需要起完整 Next.js server、跑 60+s，放 PR 每个都跑会让 CI 慢得人神共怒
 - e2e 本身有一定 flakiness（globalSetup 660s timeout 已说明），fail 后误以为 PR 有问题反而误导
 - nightly 每天一次，足够及时发现新 master 上的回归
@@ -210,26 +212,26 @@
 
 ## 失败处理 / 安全栏（针对每种风险有明确响应）
 
-| 风险场景 | 哪一层拦住 | 后续 |
-|---|---|---|
-| TS 类型错误 | `validate / typecheck` | PR 红，agent 看到错误自己改 |
-| esbuild build 漏文件（如 yoga.wasm） | `validate / build` 的产物断言 | PR 红 |
-| Bash 脚本语法错 | `validate / shellcheck` | PR 红 |
-| Commit message 不符合 conventional commits | `validate / commitlint` | PR 红 |
-| schema.prisma 未 format | `validate / prisma-validate` | PR 红 |
-| **修改了既有 migration** | `validate / prisma-validate` | PR 红 |
-| 测试失败 / flaky | `validate / test` | PR 红（人工 rerun） |
-| 引入 token / 密钥到代码 | `validate / secret-scan` | PR 红 |
-| 引入高危 CVE 依赖 | `validate / audit` + `pr-guards / dependency-review` | PR 红 |
-| **PR 超大（>1000 LOC 或 >50 files）** | `pr-guards / pr-size` | label `do-not-merge` → auto-merge 跳过 |
-| **破坏性 migration（DROP/TRUNCATE 等）** | `pr-guards / destructive-migration` | label `do-not-merge` → 人工 review |
-| **改了 workflow 自身** | `pr-guards / workflow-modification` | label `do-not-merge` → 人工 review |
-| Agent 写错 commit type | commitlint 拦 | PR 红 |
-| Agent 改了别的条目 status | 没有 CI 拦截（合理范围内） | cursor-review 会标注；建议 prompt 强约束 |
-| CRITICAL 任务被自动合并 | prompt 要求 agent 主动加 `do-not-merge` | 不应发生；发生立刻 revert |
-| Cron 调度过密 / 并发改同一文件 | merge conflict → PR 卡 | Cursor Automatic 改 schedule 间隔 |
-| Agent 跑 e2e 跑不通的代码 | 不会被 PR 拦（e2e 在 nightly） | nightly 失败开 issue |
-| Agent 实现踩坑（如 fail-soft 太宽） | validate 全过但人工感知到 | revert + 在 REMEDIATION_PLAN 记录到原条目 |
+| 风险场景                                   | 哪一层拦住                                           | 后续                                      |
+| ------------------------------------------ | ---------------------------------------------------- | ----------------------------------------- |
+| TS 类型错误                                | `validate / typecheck`                               | PR 红，agent 看到错误自己改               |
+| esbuild build 漏文件（如 yoga.wasm）       | `validate / build` 的产物断言                        | PR 红                                     |
+| Bash 脚本语法错                            | `validate / shellcheck`                              | PR 红                                     |
+| Commit message 不符合 conventional commits | `validate / commitlint`                              | PR 红                                     |
+| schema.prisma 未 format                    | `validate / prisma-validate`                         | PR 红                                     |
+| **修改了既有 migration**                   | `validate / prisma-validate`                         | PR 红                                     |
+| 测试失败 / flaky                           | `validate / test`                                    | PR 红（人工 rerun）                       |
+| 引入 token / 密钥到代码                    | `validate / secret-scan`                             | PR 红                                     |
+| 引入高危 CVE 依赖                          | `validate / audit` + `pr-guards / dependency-review` | PR 红                                     |
+| **PR 超大（>1000 LOC 或 >50 files）**      | `pr-guards / pr-size`                                | label `do-not-merge` → auto-merge 跳过    |
+| **破坏性 migration（DROP/TRUNCATE 等）**   | `pr-guards / destructive-migration`                  | label `do-not-merge` → 人工 review        |
+| **改了 workflow 自身**                     | `pr-guards / workflow-modification`                  | label `do-not-merge` → 人工 review        |
+| Agent 写错 commit type                     | commitlint 拦                                        | PR 红                                     |
+| Agent 改了别的条目 status                  | 没有 CI 拦截（合理范围内）                           | cursor-review 会标注；建议 prompt 强约束  |
+| CRITICAL 任务被自动合并                    | prompt 要求 agent 主动加 `do-not-merge`              | 不应发生；发生立刻 revert                 |
+| Cron 调度过密 / 并发改同一文件             | merge conflict → PR 卡                               | Cursor Automatic 改 schedule 间隔         |
+| Agent 跑 e2e 跑不通的代码                  | 不会被 PR 拦（e2e 在 nightly）                       | nightly 失败开 issue                      |
+| Agent 实现踩坑（如 fail-soft 太宽）        | validate 全过但人工感知到                            | revert + 在 REMEDIATION_PLAN 记录到原条目 |
 
 ### 紧急停机
 
@@ -276,12 +278,12 @@
 
 ### Secrets and variables → Actions
 
-| Secret name | 是否必须 | 用途 |
-|---|---|---|
-| `CURSOR_API_KEY` | 可选 | cursor-review.yml 需要 |
-| `PLANSYNC_API_URL` | 已用 | plansync-check.yml（旧 workflow） |
-| `PLANSYNC_API_KEY` | 已用 | plansync-check.yml（旧 workflow） |
-| `PLANSYNC_PROJECT_ID` | 已用 | plansync-check.yml（旧 workflow） |
+| Secret name           | 是否必须 | 用途                              |
+| --------------------- | -------- | --------------------------------- |
+| `CURSOR_API_KEY`      | 可选     | cursor-review.yml 需要            |
+| `PLANSYNC_API_URL`    | 已用     | plansync-check.yml（旧 workflow） |
+| `PLANSYNC_API_KEY`    | 已用     | plansync-check.yml（旧 workflow） |
+| `PLANSYNC_PROJECT_ID` | 已用     | plansync-check.yml（旧 workflow） |
 
 ### General → Pull Requests
 
@@ -289,7 +291,7 @@
 - ☐ Allow merge commits（关掉）
 - ☐ Allow rebase merging（关掉，保持 history 干净）
 - ☑ Always suggest updating pull request branches
-- ☑ Automatically delete head branches（合并后自动删 cursor/* 分支）
+- ☑ Automatically delete head branches（合并后自动删 cursor/\* 分支）
 
 ---
 
@@ -303,6 +305,27 @@
 6. **正式上线**：根据观察调整 prompt 或 schedule
 
 ---
+
+## 已知受控放宽（重要 — 否则你会以为这些是 bug）
+
+下面两处不是"漏拦"，是**有意识地降级**等独立 PR 升级后再收紧。每一处都被 REMEDIATION_PLAN 跟踪：
+
+1. **validate / audit 用 `--audit-level=critical`，不是 `high`**
+
+   - 原因：Next.js 14.2.x 残留 2 个 high CVE（cache poisoning + middleware bypass），只能升 Next 16 才能修。如果当前要求 high，所有 PR 永久红，cron 死锁。
+   - 兜底：`nightly.yml` 仍用 high+ 全扫，发现就开 issue。
+   - 跟踪：`docs/REMEDIATION_PLAN.md` R-131（升 Next 16 后改回 high）。
+
+2. **validate / typecheck 不跑 mcp-server**
+
+   - 原因：`@modelcontextprotocol/sdk@1.3.0` + Zod 3.x + TS 5.7 触发 TS2589（深度类型实例化爆炸），即使给 8 GB heap 仍 OOM。
+   - 兜底：mcp-server 的 build 通过 esbuild 至少保证 syntax / module 解析正确；tests 跑得通。
+   - 跟踪：`docs/REMEDIATION_PLAN.md` R-132（升 SDK 1.29+ 后恢复 typecheck）。
+
+3. **ESLint `no-explicit-any` 规则关闭**
+   - 原因：~27 处历史 `any` 用法（错误对象、AI prompt 入参、SDK 边界），全部改 `unknown` 是独立工程。
+   - 兜底：`@typescript-eslint/no-unused-vars` 仍是 warn，新增 unused 变量会被拦。
+   - 跟踪：`docs/REMEDIATION_PLAN.md` R-133（逐步消除 `any`，恢复规则）。
 
 ## 现有 `plansync-check.yml` 怎么办
 

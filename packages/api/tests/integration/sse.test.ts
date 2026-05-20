@@ -111,8 +111,18 @@ describe('I: SSE (Server-Sent Events)', () => {
       { params: { projectId, planId } },
     );
 
-    const eventText = await readNextEvent(reader);
-    expect(eventText).toContain('event: plan_activated');
+    // After commit b52e1d1 ("fix(drift): block task on drift detection;
+    // unblock on resolution"), activating a new plan can publish a
+    // `drift_detected` event before `plan_activated` (when there are
+    // pre-existing tasks bound to the previous version). Read events
+    // until we see `plan_activated`, with a bounded retry count to avoid
+    // hanging if the event is never emitted.
+    let plan_activated_seen = false;
+    for (let i = 0; i < 5 && !plan_activated_seen; i++) {
+      const eventText = await readNextEvent(reader);
+      if (eventText.includes('event: plan_activated')) plan_activated_seen = true;
+    }
+    expect(plan_activated_seen).toBe(true);
     await reader.cancel();
   });
 

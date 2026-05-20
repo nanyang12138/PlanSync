@@ -6,8 +6,7 @@ import { z } from 'zod';
 
 type Params = { params: { projectId: string } };
 
-const ARRAY_FIELDS = ['constraints', 'standards', 'deliverables', 'openQuestions'] as const;
-type ArrayField = (typeof ARRAY_FIELDS)[number];
+type ArrayField = 'constraints' | 'standards' | 'deliverables' | 'openQuestions';
 type TextField = 'goal' | 'scope';
 type PlanField = TextField | ArrayField;
 
