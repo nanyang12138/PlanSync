@@ -30,11 +30,7 @@ import {
   suggestionActionSchema,
   suggestionStatusSchema,
 } from '../schemas/suggestion';
-import {
-  commentSchema,
-  createCommentSchema,
-  updateCommentSchema,
-} from '../schemas/comment';
+import { commentSchema, createCommentSchema, updateCommentSchema } from '../schemas/comment';
 import {
   taskSchema,
   createTaskSchema,

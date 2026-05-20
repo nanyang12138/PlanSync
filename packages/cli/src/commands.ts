@@ -1,7 +1,7 @@
 import * as https from 'https';
 import * as http from 'http';
 import { cfg } from './config.js';
-import { c, banner, printTasks, printHelp, progressBar, ProjectStatus, emptyStatus } from './ui.js';
+import { c, banner, printTasks, printHelp, ProjectStatus, emptyStatus } from './ui.js';
 import { McpClient } from './mcp-client.js';
 // Minimal interface satisfied by both RawInput and InkSession
 interface InputAPI {

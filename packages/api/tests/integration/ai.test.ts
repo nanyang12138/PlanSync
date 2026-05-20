@@ -62,14 +62,18 @@ describe('L: AI Integration (Plan Diff)', () => {
     expect(body.data).toBeNull();
   });
 
-  it('L6边: GET /diff without compareWith → 400', async () => {
+  it('L6边: GET /diff without compareWith → defaults to predecessor (200)', async () => {
+    // Previous behaviour: compareWith was required → 400. Current behaviour
+    // (per the original syntax-inconsistencies finding #12 fix): server
+    // auto-resolves the predecessor plan version when compareWith is omitted,
+    // returning 200 with diff data (or null for v1 with no predecessor).
     const res = await diffGet(
       makeReq(`/api/projects/${projectId}/plans/${planId}/diff`, {
         userName: owner,
       }),
       { params: { projectId, planId } },
     );
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
   });
 
   it('L6边: GET /diff with non-existent planId → 404', async () => {

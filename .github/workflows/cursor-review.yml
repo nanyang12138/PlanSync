@@ -17,7 +17,7 @@ permissions:
   issues: write
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
   cursor-review:
@@ -34,7 +34,6 @@ jobs:
        ) &&
        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
     runs-on: ubuntu-latest
-
     steps:
       - name: Check for API key
         id: key
