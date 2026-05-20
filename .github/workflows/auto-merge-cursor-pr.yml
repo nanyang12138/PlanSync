@@ -1,0 +1,120 @@
+name: auto-merge-cursor-pr
+
+# Triggered after the `validate` workflow finishes. If the upstream PR
+# is from a Cursor-managed branch (cursor/*) authored by an approved
+# identity, mark it ready (if draft) and enable squash auto-merge.
+#
+# This is the gate that lets Cursor Automatic / Cloud Agents push PRs
+# unattended: validate.yml must go green first.
+
+on:
+  workflow_run:
+    workflows: ["validate"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve pull request from workflow_run
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          PR_NUMBER=$(jq -r '.workflow_run.pull_requests[0].number // empty' "$GITHUB_EVENT_PATH")
+
+          if [ -z "$PR_NUMBER" ]; then
+            HEAD_BRANCH=$(jq -r '.workflow_run.head_branch' "$GITHUB_EVENT_PATH")
+            HEAD_OWNER=$(jq -r '.workflow_run.head_repository.owner.login // .repository.owner.login' "$GITHUB_EVENT_PATH")
+            echo "workflow_run payload had no PR number; falling back to head lookup: ${HEAD_OWNER}:${HEAD_BRANCH}"
+
+            PR_NUMBER=$(gh api "repos/${REPO}/pulls" \
+              -f state=open \
+              -f head="${HEAD_OWNER}:${HEAD_BRANCH}" \
+              --jq '.[0].number // empty')
+          fi
+
+          if [ -z "$PR_NUMBER" ]; then
+            echo "Could not resolve PR for workflow_run; nothing to do."
+            echo "workflow_run event:"
+            jq '.workflow_run | {id, event, conclusion, head_branch, head_sha, pull_requests}' "$GITHUB_EVENT_PATH"
+            exit 0
+          fi
+
+          PR_JSON=$(gh pr view "$PR_NUMBER" \
+            --repo "$REPO" \
+            --json number,isDraft,author,url,headRefName,baseRefName,labels,mergeStateStatus)
+
+          echo "$PR_JSON"
+
+          AUTHOR=$(echo "$PR_JSON" | jq -r '.author.login')
+          HEAD_REF=$(echo "$PR_JSON" | jq -r '.headRefName')
+          BASE_REF=$(echo "$PR_JSON" | jq -r '.baseRefName')
+
+          # Author allow-list: Cursor bots + repo owner. Adjust as needed.
+          case "$AUTHOR" in
+            cursor[bot]|app/cursor|nanyang12138) ;;
+            *)
+              echo "Refusing to auto-merge PR authored by ${AUTHOR}"
+              exit 0
+              ;;
+          esac
+
+          # Branch allow-list: only Cursor-managed branches.
+          case "$HEAD_REF" in
+            cursor/*) ;;
+            *)
+              echo "Refusing to auto-merge non-Cursor branch: ${HEAD_REF}"
+              exit 0
+              ;;
+          esac
+
+          # Opt-out label: anyone can apply `do-not-merge` to block.
+          if echo "$PR_JSON" | jq -e '.labels[]? | select(.name == "do-not-merge")' >/dev/null; then
+            echo "PR is labelled do-not-merge; skipping."
+            exit 0
+          fi
+
+          # Safety: only auto-merge into master (or main if migrated later).
+          case "$BASE_REF" in
+            master|main) ;;
+            *)
+              echo "Refusing to auto-merge into non-default base: ${BASE_REF}"
+              exit 0
+              ;;
+          esac
+
+          echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "is_draft=$(echo "$PR_JSON" | jq -r '.isDraft')" >> "$GITHUB_OUTPUT"
+          echo "url=$(echo "$PR_JSON" | jq -r '.url')" >> "$GITHUB_OUTPUT"
+
+      - name: Mark draft PR ready
+        if: steps.pr.outputs.is_draft == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          gh pr ready "$PR_NUMBER" --repo "$REPO"
+
+      - name: Enable squash auto-merge
+        if: steps.pr.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          gh pr merge "$PR_NUMBER" \
+            --repo "$REPO" \
+            --auto \
+            --squash
