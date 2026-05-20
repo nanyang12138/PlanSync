@@ -45,29 +45,37 @@
 
 ---
 
-## 三个 workflow 各自的职责
+## 三层 workflow 各自的职责
 
-### 1. `.github/workflows/validate.yml` — 质量门槛
+> 三层都是 **「PlanSync 这个工具特有的脆弱点 → 对应的检查」** 一一对应。下面每条都说清楚 *"如果不加这个检查，agent 会怎样把坏代码合进 master"*。
 
-**触发**：每个 PR、每次 push 到 master、可手动跑（workflow_dispatch）。
+### 1. `.github/workflows/validate.yml` — 必过门槛（10 个 job）
 
-**4 个并行 job**：
+**触发**：每个 PR、push 到 master、可手动跑。**任何一个 job 失败 → auto-merge 不触发**。
 
-| Job | 内容 | 失败影响 |
+| Job | 检查内容 | 没这个的话 agent 会怎么搞砸 |
 |---|---|---|
-| `lint` | `npx eslint packages/*/src` | 拦截 |
-| `format-check` | `npx prettier --check packages/*/src/**` | 拦截 |
-| `build` | `shared → mcp-server → cli → api` 顺序构建 | 拦截 |
-| `test` | PG 16 容器 + `prisma migrate deploy` + `npm run test --workspaces` | 拦截 |
+| `lint` | `eslint packages/*/src --max-warnings 0` | 不限 warning 时 agent 可以引入大量 warning 直到代码不可读 |
+| `format-check` | prettier 校验源码 + 文档 + 配置文件 | 代码风格漂移 |
+| `typecheck` | `tsc --noEmit` × 4 workspace（mcp-server / cli / api / shared） | **esbuild 不做类型检查**，TS bug 照样产出可运行 dist；只有 tsc 才能拦 |
+| `commitlint` | 校验 PR 全部 commit message | agent 不装 husky，commit message 可以乱写过 |
+| `shellcheck` | `scripts/` + `bin/` 所有 bash 脚本 | 用户日常入口都是 bash 脚本，agent 一行错语法直接卡 setup |
+| `prisma-validate` | `prisma validate` + `prisma format` 幂等检查 + 拦截既有 migration 被改 | husky pre-commit 拦的事，CI 上不拦就漏 |
+| `build` | `shared → mcp-server → cli → api` 顺序构建，**并断言所有 dist 产物存在** | `cli` build 最后 `cp yoga.wasm` 这一步失败 esbuild 仍 exit 0（commit 874296b 就栽这） |
+| `test` | PG 16 service + `prisma migrate deploy` + `npm run test --workspaces` | 单元 + 集成测试基础保障 |
+| `secret-scan` | gitleaks 扫描提交历史 | agent 误把 token 写进代码/日志 |
+| `audit` | `npm audit --omit=dev --audit-level=high` | 生产依赖出 CVE，不被发现 |
 
-任何一个 job 失败 → auto-merge 不会触发，PR 保持 draft 等人工处理。
+**关键设计点**：
 
-**为什么这样设计**：
-
-- **`concurrency`**：同一个 PR 多次 push 时取消旧 run，省 minutes
-- **PG service container**：避免依赖 `.local-runtime` 那一套（NFS / 集群路径）；用 GitHub 官方 postgres:16 image
-- **port 15432**：和测试 setup.ts 里的默认端口一致，无需改测试代码
-- **AUTH_DISABLED=true**：复用项目既有测试约定（注意：CI 上这是测试模式专用，不是生产配置）
+- **`typecheck` 与 `build` 分开**：build 通过不代表没 TS 错误（esbuild 是 bundler 不是 compiler）；分开能精准定位失败。
+- **`build` job 内逐个 dist 文件断言**：包括 `yoga.wasm` 头部 `\x00asm` 魔数校验 —— 不光验文件存在，验它是合法 wasm。
+- **`prisma-validate` 跑 `prisma format` 幂等校验**：agent 手写迁移忘 format，本地 husky 不在 → CI 立即拦住。
+- **`commitlint` 用 `--from BASE_SHA --to HEAD_SHA`**：只校验 PR 内提交，不影响历史。
+- **每个 job 都有 `timeout-minutes`**：防止挂死烧 Actions 额度。
+- **每个 job 都 `permissions: contents: read`**：最小权限。
+- **`concurrency`**：同 PR 多次 push 取消旧 run。
+- **PG service container** 用 port 15432：和 `tests/setup.ts` 默认值对齐，无需改测试代码。
 
 ---
 
@@ -94,7 +102,39 @@
 
 ---
 
-### 3. `.github/workflows/cursor-review.yml` — AI 自动 code review
+### 3. `.github/workflows/pr-guards.yml` — 软拦截（自动加 `do-not-merge` label）
+
+**触发**：PR opened / synchronize / reopened / ready_for_review。
+
+**不 fail CI**，但发现风险时给 PR 打上 `do-not-merge` label，**让 auto-merge workflow 已实现的 opt-out 机制接管**：
+
+| Job | 触发条件 | 后果 |
+|---|---|---|
+| `pr-size` | 代码改动 > 1000 行 **或** 涉及文件 > 50 个（**排除 docs / lockfile / 二进制资源**） | label `do-not-merge` + `oversized-pr` + 评论解释 |
+| `destructive-migration` | 新增 migration 含 `DROP TABLE/COLUMN/CONSTRAINT/INDEX` / `TRUNCATE` / `ALTER TYPE` / `ALTER COLUMN ... TYPE` / `RENAME` | label `do-not-merge` + `destructive-migration` + 评论列出匹配文件 |
+| `workflow-modification` | 改了 `.github/workflows/*.yml` | label `do-not-merge` + `workflow-change`（防止 CI 自我修改链） |
+| `dependency-review` | PR 引入含高危 CVE 的新依赖 / 非许可证许可的依赖 | fail（这条是 fail，因为 GitHub Dependency Review action 就是设计为阻断） |
+
+**为什么用 label 而不是 fail CI**：
+- 风险型 PR 仍然需要 validate 跑完看其他 job 是否通过
+- 人工 review 后只要移除 label，auto-merge workflow 会在下次 validate 完成时自然接管
+- 不会把 PR 直接打回，agent 能拿到完整 CI 反馈
+
+### 4. `.github/workflows/nightly.yml` — 定时跑、不阻断 PR
+
+**触发**：每天 UTC 03:00 cron + 手动 dispatch。
+
+| Job | 内容 | 失败后果 |
+|---|---|---|
+| `e2e` | 启 Next.js 真服务 → `vitest --config vitest.e2e.config.ts`（660s timeout） | 自动开 `nightly-e2e-fail` label 的 issue（去重，已开就不重复） |
+| `full-audit` | `npm audit --json` 全严重度报告 | 有 high/critical 就开 `nightly-audit-fail` issue + 上传完整 JSON artifact |
+
+**为什么把 e2e 放 nightly**：
+- e2e 测试需要起完整 Next.js server、跑 60+s，放 PR 每个都跑会让 CI 慢得人神共怒
+- e2e 本身有一定 flakiness（globalSetup 660s timeout 已说明），fail 后误以为 PR 有问题反而误导
+- nightly 每天一次，足够及时发现新 master 上的回归
+
+### 5. `.github/workflows/cursor-review.yml` — AI 自动 code review
 
 **触发**：
 
@@ -168,16 +208,28 @@
 
 ---
 
-## 失败处理 / 安全栏
+## 失败处理 / 安全栏（针对每种风险有明确响应）
 
-| 情况 | 系统响应 | 是否需要人工介入 |
+| 风险场景 | 哪一层拦住 | 后续 |
 |---|---|---|
-| Cloud Agent 实现失败 / 编译不过 | validate.yml 红 → auto-merge 不触发，PR 留 draft | 是 |
-| 测试 flaky 失败 | rerun 一次；仍失败 → 同上 | 是 |
-| 实现破坏既有测试 | validate.yml 红 | 是（需要 revert 或修测试） |
-| 修改了文档里其他条目（违反约束） | cursor-review 会标记；但 validate 不拦截 | 建议人工 |
-| Critical 任务被自动合并 | **不应发生**：要求 prompt 加 do-not-merge | 立即 revert |
-| Cron 调度过密 / Agent 太多并发 | 文档合并冲突 | Cursor Automatic 改 schedule 间隔 |
+| TS 类型错误 | `validate / typecheck` | PR 红，agent 看到错误自己改 |
+| esbuild build 漏文件（如 yoga.wasm） | `validate / build` 的产物断言 | PR 红 |
+| Bash 脚本语法错 | `validate / shellcheck` | PR 红 |
+| Commit message 不符合 conventional commits | `validate / commitlint` | PR 红 |
+| schema.prisma 未 format | `validate / prisma-validate` | PR 红 |
+| **修改了既有 migration** | `validate / prisma-validate` | PR 红 |
+| 测试失败 / flaky | `validate / test` | PR 红（人工 rerun） |
+| 引入 token / 密钥到代码 | `validate / secret-scan` | PR 红 |
+| 引入高危 CVE 依赖 | `validate / audit` + `pr-guards / dependency-review` | PR 红 |
+| **PR 超大（>1000 LOC 或 >50 files）** | `pr-guards / pr-size` | label `do-not-merge` → auto-merge 跳过 |
+| **破坏性 migration（DROP/TRUNCATE 等）** | `pr-guards / destructive-migration` | label `do-not-merge` → 人工 review |
+| **改了 workflow 自身** | `pr-guards / workflow-modification` | label `do-not-merge` → 人工 review |
+| Agent 写错 commit type | commitlint 拦 | PR 红 |
+| Agent 改了别的条目 status | 没有 CI 拦截（合理范围内） | cursor-review 会标注；建议 prompt 强约束 |
+| CRITICAL 任务被自动合并 | prompt 要求 agent 主动加 `do-not-merge` | 不应发生；发生立刻 revert |
+| Cron 调度过密 / 并发改同一文件 | merge conflict → PR 卡 | Cursor Automatic 改 schedule 间隔 |
+| Agent 跑 e2e 跑不通的代码 | 不会被 PR 拦（e2e 在 nightly） | nightly 失败开 issue |
+| Agent 实现踩坑（如 fail-soft 太宽） | validate 全过但人工感知到 | revert + 在 REMEDIATION_PLAN 记录到原条目 |
 
 ### 紧急停机
 
@@ -196,12 +248,31 @@
 ### Branches → Branch protection rules → master
 
 - ☑ Require status checks to pass before merging
-  - 必选：`validate / lint`、`validate / build`、`validate / test`
-  - 可选：`cursor-review`
+  - **必选**（validate.yml 全部 10 个 job）：
+    - `validate / lint`
+    - `validate / format-check`
+    - `validate / typecheck`
+    - `validate / commitlint`
+    - `validate / shellcheck`
+    - `validate / prisma-validate`
+    - `validate / build`
+    - `validate / test`
+    - `validate / secret-scan`
+    - `validate / audit`
+  - **可选**：`cursor-review`、`pr-guards / dependency-review`
+  - **不要列为必选**：`plansync-check`（旧的 drift gate，等 R-092/093/094 修完再启用）
 - ☑ Require branches to be up to date before merging
 - ☑ Require linear history（配合 squash merge）
 - ☐ Require pull request reviews before merging（**关掉**，否则 auto-merge 永远等人审批）
   - 如果想保留：勾选 ☑ Allow specified actors to bypass required pull requests，把 `cursor[bot]` 加进去
+
+### Labels → 预创建（pr-guards 会用到）
+
+- `do-not-merge`（红色）— 任何 collaborator / pr-guards 加上 → auto-merge 立刻退出
+- `oversized-pr` — pr-size guard 加
+- `destructive-migration` — destructive-migration guard 加
+- `workflow-change` — workflow-modification guard 加
+- `nightly-e2e-fail` / `nightly-audit-fail` — nightly 自动开 issue 用
 
 ### Secrets and variables → Actions
 
