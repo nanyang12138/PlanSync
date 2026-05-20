@@ -7,6 +7,8 @@ import { createMemberSchema } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
+import { sendMail, userEmail } from '@/lib/email';
+import { logger } from '@/lib/logger';
 
 type Params = { params: { projectId: string } };
 
@@ -63,6 +65,25 @@ export async function POST(req: NextRequest, { params }: Params) {
     // this they'd only learn about the new project on next page reload.
     eventBus.publishToUser(member.name, 'member_added', params.projectId, eventPayload);
     dispatchWebhooks(params.projectId, 'member_added', eventPayload);
+
+    if (member.type === 'human') {
+      const projectName = project?.name ?? params.projectId;
+      const mailBody = [
+        `${auth.userName} has added you to project "${projectName}" as ${member.role}.`,
+        '',
+        'Log in to PlanSync to view the project.',
+      ].join('\n');
+      const ok = sendMail(
+        [userEmail(member.name)],
+        `[PlanSync] You've been added to "${projectName}"`,
+        mailBody,
+      );
+      if (!ok)
+        logger.warn(
+          { projectId: params.projectId, member: member.name },
+          'Failed to send member notification email',
+        );
+    }
 
     return NextResponse.json({ data: member }, { status: 201 });
   } catch (error) {

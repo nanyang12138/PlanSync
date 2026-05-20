@@ -7,6 +7,8 @@ import { createTaskSchema, paginationSchema, AppError, ErrorCode } from '@plansy
 import { createActivity } from '@/lib/activity';
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
+import { sendMail, userEmail } from '@/lib/email';
+import { logger } from '@/lib/logger';
 
 type Params = { params: { projectId: string } };
 
@@ -111,6 +113,23 @@ export async function POST(req: NextRequest, { params }: Params) {
         title: task.title,
         assignee: task.assignee,
       });
+      const assigneeMember = await prisma.projectMember.findUnique({
+        where: { projectId_name: { projectId: params.projectId, name: task.assignee } },
+        select: { type: true },
+      });
+      if (assigneeMember?.type === 'human') {
+        const mailBody = [
+          `You have been assigned task "${task.title}".`,
+          '',
+          'Log in to PlanSync to view the task details and start working.',
+        ].join('\n');
+        const ok = sendMail(
+          [userEmail(task.assignee)],
+          `[PlanSync] Task assigned: "${task.title}"`,
+          mailBody,
+        );
+        if (!ok) logger.warn({ taskId: task.id }, 'Failed to send task assignment email');
+      }
     }
 
     return NextResponse.json({ data: task }, { status: 201 });

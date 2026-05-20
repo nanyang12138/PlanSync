@@ -6,6 +6,8 @@ import { validateBody } from '@/lib/validate';
 import { updateTaskSchema, AppError, ErrorCode } from '@plansync/shared';
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
+import { sendMail, userEmail } from '@/lib/email';
+import { logger } from '@/lib/logger';
 
 type Params = { params: { projectId: string; taskId: string } };
 
@@ -114,6 +116,23 @@ export async function PATCH(req: NextRequest, { params }: Params) {
           title: updated.title,
           assignee: body.assignee,
         });
+        const assigneeMember = await prisma.projectMember.findUnique({
+          where: { projectId_name: { projectId: params.projectId, name: body.assignee } },
+          select: { type: true },
+        });
+        if (assigneeMember?.type === 'human') {
+          const mailBody = [
+            `You have been assigned task "${updated.title}".`,
+            '',
+            'Log in to PlanSync to view the task details.',
+          ].join('\n');
+          const ok = sendMail(
+            [userEmail(body.assignee)],
+            `[PlanSync] Task assigned: "${updated.title}"`,
+            mailBody,
+          );
+          if (!ok) logger.warn({ taskId: params.taskId }, 'Failed to send task reassignment email');
+        }
       }
     }
 

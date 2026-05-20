@@ -3,6 +3,9 @@ import { prisma } from '@/lib/prisma';
 import { authenticate, requireProjectRole } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { AppError, ErrorCode } from '@plansync/shared';
+import { eventBus } from '@/lib/event-bus';
+import { sendMail, userEmail } from '@/lib/email';
+import { logger } from '@/lib/logger';
 
 type Params = { params: { projectId: string; planId: string } };
 
@@ -53,6 +56,43 @@ export async function POST(req: NextRequest, { params }: Params) {
         data: { requiredReviewers: { push: reviewer } },
       }),
     ]);
+
+    // Notify the newly added reviewer
+    const [reviewerMember, notifyPlan] = await Promise.all([
+      prisma.projectMember.findUnique({
+        where: { projectId_name: { projectId: params.projectId, name: reviewer } },
+        select: { type: true },
+      }),
+      prisma.plan.findUnique({
+        where: { id: params.planId },
+        select: { title: true, version: true },
+      }),
+    ]);
+    if (notifyPlan) {
+      const reviewEventPayload = {
+        planId: params.planId,
+        reviewer,
+        version: notifyPlan.version,
+      };
+      eventBus.publish(params.projectId, 'review_requested', reviewEventPayload);
+      // Push to the reviewer's personal channel — they may not be subscribed to
+      // the project SSE stream yet if they were just added.
+      eventBus.publishToUser(reviewer, 'review_requested', params.projectId, reviewEventPayload);
+      if (reviewerMember?.type === 'human') {
+        const mailBody = [
+          `You have been added as a reviewer for plan "${notifyPlan.title}" (v${notifyPlan.version}).`,
+          '',
+          'Please log in to PlanSync to approve or reject this plan.',
+        ].join('\n');
+        const ok = sendMail(
+          [userEmail(reviewer)],
+          `[PlanSync] Review requested: "${notifyPlan.title}"`,
+          mailBody,
+        );
+        if (!ok)
+          logger.warn({ planId: params.planId }, 'Failed to send reviewer notification email');
+      }
+    }
 
     return NextResponse.json({ data: review }, { status: 201 });
   } catch (error) {

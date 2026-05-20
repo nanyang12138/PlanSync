@@ -179,6 +179,12 @@ export function describeEvent(eventType: string, data: Record<string, unknown>):
       return w(`"${data.name}" added to project`);
     case 'member_removed':
       return w(`"${data.memberName}" removed from project`);
+    case 'review_requested':
+      return w(`You have been added as a reviewer for plan v${data.version}`);
+    case 'review_approved':
+      return w(`Plan review approved by ${data.reviewer}`);
+    case 'review_rejected':
+      return w(`Plan review rejected by ${data.reviewer}`);
     default:
       return null;
   }

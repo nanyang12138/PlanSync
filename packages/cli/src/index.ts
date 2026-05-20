@@ -152,9 +152,17 @@ async function main() {
 
   // ─── Notification engine ──────────────────────────────────────────────────
   // All events go to notifLog (visible in banner + /notifs).
-  // Urgent events (drift, stale, plan_activated) also trigger a 5s flash
-  // in the Ink prompt area above the input line.
-  const URGENT_EVENTS = new Set(['drift_detected', 'execution_stale', 'plan_activated']);
+  // Urgent events trigger a 30s flash in the Ink prompt area above the input line.
+  const URGENT_EVENTS = new Set([
+    'drift_detected',
+    'execution_stale',
+    'plan_activated',
+    'review_requested',
+    'review_approved',
+    'review_rejected',
+    'task_assigned',
+    'suggestion_created',
+  ]);
 
   const notify = (msg: string, urgent: boolean) => {
     rawInput.setNotifyLine(msg, urgent);

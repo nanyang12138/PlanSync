@@ -91,13 +91,20 @@ export async function persistDriftAlerts(
     select: { id: true, title: true, assignee: true },
   });
 
-  // Group alerts by assignee
-  const byAssignee = new Map<string, Array<{ title: string; reason: string }>>();
+  // Publish SSE to the project channel — reaches all connected members
+  eventBus.publish(projectId, 'drift_detected', {
+    alerts: alerts.map((a) => ({ severity: a.severity, taskId: a.taskId, reason: a.reason })),
+  });
+
+  // Group alerts by assignee (include severity for per-user SSE payload)
+  const byAssignee = new Map<string, Array<{ title: string; reason: string; severity: string }>>();
   for (const alert of alerts) {
     const task = tasks.find((t) => t.id === alert.taskId);
     if (!task?.assignee) continue;
     if (!byAssignee.has(task.assignee)) byAssignee.set(task.assignee, []);
-    byAssignee.get(task.assignee)!.push({ title: task.title, reason: alert.reason });
+    byAssignee
+      .get(task.assignee)!
+      .push({ title: task.title, reason: alert.reason, severity: alert.severity });
   }
 
   if (byAssignee.size > 0) {
@@ -124,6 +131,12 @@ export async function persistDriftAlerts(
         body,
       );
       if (!ok) logger.warn({ assignee, projectId }, 'Failed to send drift notification email');
+
+      // Push to the assignee's personal channel so they see the flash even if
+      // they are not currently subscribed to this project's SSE stream.
+      eventBus.publishToUser(assignee, 'drift_detected', projectId, {
+        alerts: affected,
+      });
     }
   }
 

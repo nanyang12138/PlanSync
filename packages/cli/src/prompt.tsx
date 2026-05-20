@@ -46,13 +46,13 @@ function PromptUI({ promptStr: initialPrompt, commands, history, events }: Promp
   const [disabled, setDisabled] = useState(false);
   const [lastSubmitted, setLastSubmitted] = useState('');
 
-  // Urgent-only flash: drift / stale / plan_activated — auto-clears after 5s
+  // Urgent-only flash: drift / stale / plan_activated / review events — auto-clears after 30s
   useEffect(() => {
     let clearTimer: ReturnType<typeof setTimeout> | null = null;
     const handler = (msg: string) => {
       if (clearTimer) clearTimeout(clearTimer);
       setUrgentFlash(msg);
-      clearTimer = setTimeout(() => setUrgentFlash(null), 5000);
+      clearTimer = setTimeout(() => setUrgentFlash(null), 30000);
     };
     events.on('urgentFlash', handler);
     return () => {
@@ -266,7 +266,7 @@ function PromptUI({ promptStr: initialPrompt, commands, history, events }: Promp
 
   return (
     <Box flexDirection="column">
-      {/* Urgent flash — only drift/stale/plan_activated, auto-clears after 5s */}
+      {/* Urgent flash — drift/stale/plan_activated/review events, auto-clears after 30s */}
       {urgentFlash && (
         <Box>
           <Text color="red">{'  ⚠  '}</Text>
