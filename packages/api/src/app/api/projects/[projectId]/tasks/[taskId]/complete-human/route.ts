@@ -72,6 +72,29 @@ export async function POST(req: NextRequest, { params }: Params) {
       }
     }
 
+    // R-046: Reuse the same open-drift gate as runs/[runId] complete. Without
+    // this, a human-assigned task with an unresolved drift alert could be
+    // marked done by simply calling complete-human, bypassing the alignment
+    // check that agent executions are subject to. Mirror the runs/[runId]
+    // implementation: return a structured 409 with the open drift list so the
+    // CLI / Web UI can show actionable guidance.
+    const openDrifts = await prisma.driftAlert.findMany({
+      where: { taskId: params.taskId, status: 'open' },
+      select: { id: true, severity: true, reason: true },
+    });
+    if (openDrifts.length > 0) {
+      return NextResponse.json(
+        {
+          error: {
+            code: 'DRIFT_UNRESOLVED',
+            message: `Cannot complete task: ${openDrifts.length} open drift alert(s). Resolve all drift alerts before completing.`,
+            details: { drifts: openDrifts },
+          },
+        },
+        { status: 409 },
+      );
+    }
+
     const taskPack = await buildTaskPack(params.taskId, params.projectId);
 
     await prisma.$transaction(async (tx) => {
