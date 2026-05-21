@@ -1,0 +1,52 @@
+name: cursor-review-dispatch
+
+# When an issue gets the `cursor:dispatch` label, spawn a Cursor Cloud Agent
+# to fix the corresponding review-finding. The agent opens its own PR on a
+# `cursor/fix-rf-<n>-d31d` branch (already in auto-merge-cursor-pr.yml's
+# branch allow-list); the PR body's `Fixes #<n>` closes the issue on merge.
+#
+# Idempotent: if the issue already has a `<!-- review-dispatch:agent -->`
+# comment, dispatch is skipped. Re-dispatch by deleting that comment and
+# re-applying the label.
+#
+# Requires the `CURSOR_API_KEY` repository secret (already used by
+# cursor-review.yml). Without it, the workflow posts a guidance comment
+# on the issue and exits non-zero.
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  dispatch:
+    if: |
+      github.event.label.name == 'cursor:dispatch' &&
+      contains(github.event.issue.labels.*.name, 'review-finding')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Checkout (script only)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            scripts/review-dispatch.mjs
+          sparse-checkout-cone-mode: false
+
+      - name: Run dispatcher
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          REVIEW_DISPATCH_BASE_REF: ${{ github.event.repository.default_branch }}
+          REVIEW_DISPATCH_MODEL: ${{ secrets.CURSOR_REVIEW_DISPATCH_MODEL }}
+        run: node scripts/review-dispatch.mjs
