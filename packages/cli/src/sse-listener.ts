@@ -5,13 +5,38 @@
  * Bypasses the MCP server so notifications work even when the MCP layer is
  * paused, restarting, or unavailable. Reconnects on failure with exponential
  * backoff (1s → 30s).
+ *
+ * Authentication failures (401/403) are surfaced separately:
+ *   - the listener stops permanently (no retry storm against an invalid key)
+ *   - an `authFailure` event is emitted so callers can prompt the user to
+ *     re-login
+ *   - a red banner is written to stderr so the failure is visible even if no
+ *     listener is wired up.
+ *
+ * R-023 — see docs/REMEDIATION_PLAN.md.
  */
 
+import { EventEmitter } from 'events';
 import { cfg } from './config.js';
 
 type EventHandler = (eventType: string, data: Record<string, unknown>) => void;
 
-export class CliSseListener {
+export interface AuthFailurePayload {
+  status: number;
+  statusText: string;
+  url: string;
+}
+
+/**
+ * Event names emitted by CliSseListener.
+ *
+ * - `authFailure` (payload: {@link AuthFailurePayload}) — server returned 401
+ *   or 403 on the SSE handshake. The listener has stopped permanently;
+ *   the consumer should prompt the user to re-authenticate.
+ */
+export type CliSseListenerEvent = 'authFailure';
+
+export class CliSseListener extends EventEmitter {
   private abortController: AbortController | null = null;
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
@@ -21,7 +46,16 @@ export class CliSseListener {
   private restartTimeout: ReturnType<typeof setTimeout> | null = null;
   private restarting = false;
 
-  constructor(private handler: EventHandler) {}
+  private authFailed = false;
+
+  constructor(private handler: EventHandler) {
+    super();
+  }
+
+  /** Whether the listener stopped because of a 401/403 from the server. */
+  hasAuthFailed(): boolean {
+    return this.authFailed;
+  }
 
   start(): void {
     if (this.running) return;
@@ -69,6 +103,11 @@ export class CliSseListener {
         },
         signal: this.abortController.signal,
       });
+
+      if (res.status === 401 || res.status === 403) {
+        this.handleAuthFailure(res.status, res.statusText, url);
+        return;
+      }
 
       if (!res.ok || !res.body) {
         throw new Error(`SSE ${res.status} ${res.statusText}`);
@@ -129,6 +168,41 @@ export class CliSseListener {
         if (this.running) this.connect();
       }, delay);
     }
+  }
+
+  /**
+   * Permanently stop the listener and notify the caller that the server
+   * rejected our credentials. Also writes a red banner to stderr so the
+   * failure is never silent — consistent with how MCP heartbeat surfaces
+   * STATE_CONFLICTs.
+   */
+  private handleAuthFailure(status: number, statusText: string, url: string): void {
+    this.authFailed = true;
+    this.running = false;
+
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+    if (this.restartTimeout) {
+      clearTimeout(this.restartTimeout);
+      this.restartTimeout = null;
+    }
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
+    }
+
+    const reset = '\x1b[0m';
+    const red = '\x1b[31m';
+    const dim = '\x1b[2m';
+    process.stderr.write(
+      `\n${red}⚠ PlanSync: SSE connection rejected (${status} ${statusText}).${reset}\n` +
+        `${dim}  Your API credentials may have expired.${reset}\n` +
+        `${dim}  Run \`./bin/plansync\` to re-authenticate, then restart the CLI.${reset}\n\n`,
+    );
+
+    this.emit('authFailure', { status, statusText, url });
   }
 }
 

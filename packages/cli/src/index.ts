@@ -188,6 +188,12 @@ async function main() {
     }
     scheduleStatusRefresh();
   });
+  // R-023: surface SSE auth failures to the user via notify(). The listener
+  // already prints a red banner to stderr; the notify call ensures the message
+  // also lands in the in-CLI notification area so it isn't lost behind output.
+  sseListener.on('authFailure', (payload) => {
+    notify(`SSE auth failed (${payload.status}). Run ./bin/plansync to re-authenticate.`, true);
+  });
   sseListener.start();
 
   // ─── AbortController for in-flight AI requests ───────────────────────────
