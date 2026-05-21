@@ -596,7 +596,7 @@
 
 #### R-026 [MEDIUM] CLI auth 用 URL 协议选择 http vs https
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B3
 - **depends_on**: —
 - **effort**: small
