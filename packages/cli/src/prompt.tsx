@@ -6,7 +6,7 @@
  * nextLine() call, a 'reset' event re-enables it.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Box, Text, useInput, render, type Instance, type Key } from 'ink';
 import { EventEmitter } from 'events';
 import { createInterface } from 'readline';
@@ -14,6 +14,110 @@ import { appendInputHistory } from './session.js';
 import { type SlashCmd } from './input.js';
 
 export type { SlashCmd };
+
+// ─── Bracketed paste handling (R-067) ─────────────────────────────────────────
+
+/**
+ * Escape sequences emitted by terminals when bracketed paste mode is enabled.
+ * The terminal wraps any pasted text with these two markers so the
+ * application can distinguish a paste from typed input.
+ */
+export const PASTE_START = '\x1b[200~';
+export const PASTE_END = '\x1b[201~';
+
+/** Enable bracketed paste mode on the host terminal. */
+export const ENABLE_BRACKETED_PASTE = '\x1b[?2004h';
+/** Disable bracketed paste mode on the host terminal. */
+export const DISABLE_BRACKETED_PASTE = '\x1b[?2004l';
+
+export interface PasteParseResult {
+  /** Plain input that came before any paste-start marker. */
+  before: string;
+  /**
+   * Complete pasted payload, present only when both the start and the end
+   * marker arrived in this single chunk.
+   */
+  paste: string | null;
+  /**
+   * True when a paste-start marker was found but no matching end marker
+   * appeared in the same chunk. The caller should switch to streaming mode
+   * and feed subsequent chunks into {@link continueBracketedPaste}.
+   */
+  pasteStarted: boolean;
+  /** Partial paste content (after the start marker) when `pasteStarted`. */
+  pasteFragment: string;
+  /** Plain input that came after the paste-end marker. */
+  after: string;
+}
+
+/**
+ * Parse an input chunk that may contain bracketed-paste markers.
+ *
+ * Three outcomes:
+ *   - no start marker → all input is regular keystrokes (`before`)
+ *   - start marker without end → paste opened mid-chunk; caller should
+ *     buffer `pasteFragment` and continue parsing future chunks
+ *   - start and end markers → a complete paste payload is in `paste`
+ *
+ * Pure helper so the state machine can be unit-tested without mounting Ink.
+ */
+export function parseBracketedPaste(input: string): PasteParseResult {
+  const startIdx = input.indexOf(PASTE_START);
+  if (startIdx === -1) {
+    return {
+      before: input,
+      paste: null,
+      pasteStarted: false,
+      pasteFragment: '',
+      after: '',
+    };
+  }
+  const before = input.slice(0, startIdx);
+  const rest = input.slice(startIdx + PASTE_START.length);
+  const endIdx = rest.indexOf(PASTE_END);
+  if (endIdx === -1) {
+    return {
+      before,
+      paste: null,
+      pasteStarted: true,
+      pasteFragment: rest,
+      after: '',
+    };
+  }
+  return {
+    before,
+    paste: rest.slice(0, endIdx),
+    pasteStarted: true,
+    pasteFragment: '',
+    after: rest.slice(endIdx + PASTE_END.length),
+  };
+}
+
+export interface PasteContinueResult {
+  /** Complete paste payload (buffer + chunk up to end marker) once closed. */
+  paste: string | null;
+  /** Remaining input after the paste-end marker (treat as regular keystrokes). */
+  remainder: string;
+  /** Updated paste buffer when the end marker has not yet arrived. */
+  updatedBuffer: string;
+}
+
+/**
+ * Continue parsing a paste-in-progress. Call this from subsequent useInput
+ * chunks while a previous {@link parseBracketedPaste} call returned
+ * `pasteStarted: true` without a `paste` payload.
+ */
+export function continueBracketedPaste(buffer: string, input: string): PasteContinueResult {
+  const endIdx = input.indexOf(PASTE_END);
+  if (endIdx === -1) {
+    return { paste: null, remainder: '', updatedBuffer: buffer + input };
+  }
+  return {
+    paste: buffer + input.slice(0, endIdx),
+    remainder: input.slice(endIdx + PASTE_END.length),
+    updatedBuffer: '',
+  };
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -85,6 +189,26 @@ function PromptUI({ promptStr: initialPrompt, commands, history, events }: Promp
     return subscribeToResize(update);
   }, []);
 
+  // R-067: enable bracketed paste mode so the host terminal wraps pasted text
+  // with \x1b[200~ … \x1b[201~. Without this, multi-line pastes are
+  // interpreted as a series of individual keystrokes — newlines fire `Enter`
+  // and submit each line separately.
+  useEffect(() => {
+    if (process.stdout.isTTY) {
+      process.stdout.write(ENABLE_BRACKETED_PASTE);
+    }
+    return () => {
+      if (process.stdout.isTTY) {
+        process.stdout.write(DISABLE_BRACKETED_PASTE);
+      }
+    };
+  }, []);
+
+  // R-067: paste buffer used when a paste spans multiple useInput chunks.
+  // Ref (not state) so consecutive chunks within the same tick see the latest
+  // buffer without waiting for a re-render.
+  const pasteBufferRef = useRef<string | null>(null);
+
   // Urgent-only flash: drift / stale / plan_activated / review events — auto-clears after 30s
   useEffect(() => {
     let clearTimer: ReturnType<typeof setTimeout> | null = null;
@@ -140,7 +264,56 @@ function PromptUI({ promptStr: initialPrompt, commands, history, events }: Promp
     setSelIdx(-1);
   };
 
+  // R-067: insert pasted text into the buffer and immediately submit it as a
+  // single unit. We submit on paste-end rather than waiting for Enter because
+  // the alternative — treating the paste as ordinary keystrokes — re-introduces
+  // the multi-line-fragmentation bug this ticket exists to fix.
+  const submitPaste = (pastedText: string) => {
+    const newVal = value.slice(0, cursor) + pastedText + value.slice(cursor);
+    setLastSubmitted(newVal);
+    setDisabled(true);
+    setValue('');
+    setCursor(0);
+    setSuggestions([]);
+    setSelIdx(-1);
+    setTimeout(() => events.emit('submit', newVal), 0);
+  };
+
   useInput((input: string, key: Key) => {
+    // R-067 — handle bracketed paste before any other key processing. The
+    // terminal sends \x1b[200~…\x1b[201~ around pasted text; we accumulate
+    // across chunks if necessary and submit the entire payload as one
+    // multi-line message.
+    if (pasteBufferRef.current !== null) {
+      const cont = continueBracketedPaste(pasteBufferRef.current, input);
+      if (cont.paste === null) {
+        pasteBufferRef.current = cont.updatedBuffer;
+        return;
+      }
+      pasteBufferRef.current = null;
+      submitPaste(cont.paste);
+      // Any keystrokes after the paste-end marker are dropped: once we have
+      // submitted, the prompt is disabled and the AI loop owns input.
+      return;
+    }
+
+    if (input && input.includes(PASTE_START)) {
+      const parsed = parseBracketedPaste(input);
+      if (parsed.paste !== null) {
+        // Complete paste arrived in one chunk.
+        submitPaste(parsed.paste);
+        return;
+      }
+      if (parsed.pasteStarted) {
+        // Open paste — buffer the fragment and wait for the end marker.
+        pasteBufferRef.current = parsed.pasteFragment;
+        // We intentionally discard `parsed.before` here: typical terminals
+        // do not interleave keystrokes with the paste-start marker, and
+        // mixing them in would surprise the submit-on-paste-end semantics.
+        return;
+      }
+    }
+
     // Ctrl+C — always handled (even disabled), routes to external sigint handler
     if (key.ctrl && input === 'c') {
       events.emit('sigint');
