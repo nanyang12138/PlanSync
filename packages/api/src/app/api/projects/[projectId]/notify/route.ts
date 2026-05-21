@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { authenticate, requireProjectRole } from '@/lib/auth';
+import { authenticate, requireProjectRole, requireNotExecScoped } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { sendMail, userEmail } from '@/lib/email';
 import { AppError, ErrorCode } from '@plansync/shared';
@@ -11,6 +11,7 @@ type Params = { params: { projectId: string } };
 export async function POST(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
+    requireNotExecScoped(auth);
     await requireProjectRole(auth, params.projectId);
 
     const body = (await req.json()) as { type?: string; planId?: string };
