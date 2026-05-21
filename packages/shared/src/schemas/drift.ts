@@ -23,6 +23,8 @@ export const driftAlertSchema = z.object({
   compatibilityScore: z.number().nullable(),
   impactAnalysis: z.string().nullable(),
   suggestedAction: z.string().nullable(),
+  affectedAreas: z.array(z.string()).default([]),
+  planDiffId: z.string().nullable().default(null),
   createdAt: z.coerce.date(),
   resolvedAt: z.coerce.date().nullable(),
   resolvedBy: z.string().nullable(),
