@@ -15,6 +15,7 @@ import {
   createTestProject,
   addMember,
   cleanupProject,
+  resetDraftPlans,
   testPrisma,
 } from '../helpers/request';
 
@@ -233,10 +234,7 @@ describe('C: Plan Lifecycle', () => {
   it('C4/C5: propose → approve → activate', async () => {
     // R-036: API now rejects creating a new plan while another is draft/proposed.
     // Clear any blocking plans left over from prior tests in the same project.
-    await testPrisma.plan.updateMany({
-      where: { projectId, status: { in: ['draft', 'proposed'] } },
-      data: { status: 'superseded' },
-    });
+    await resetDraftPlans(projectId);
 
     // Create fresh plan
     const createRes = await plansPost(
@@ -312,10 +310,7 @@ describe('C: Plan Lifecycle', () => {
   });
 
   it('C6: reject review → rejected', async () => {
-    await testPrisma.plan.updateMany({
-      where: { projectId, status: { in: ['draft', 'proposed'] } },
-      data: { status: 'superseded' },
-    });
+    await resetDraftPlans(projectId);
 
     const createRes = await plansPost(
       makeReq(`/api/projects/${projectId}/plans`, {
@@ -367,10 +362,7 @@ describe('C: Plan Lifecycle', () => {
     });
     expect(before).toBeNull();
 
-    await testPrisma.plan.updateMany({
-      where: { projectId, status: { in: ['draft', 'proposed'] } },
-      data: { status: 'superseded' },
-    });
+    await resetDraftPlans(projectId);
 
     const createRes = await plansPost(
       makeReq(`/api/projects/${projectId}/plans`, {
@@ -417,10 +409,7 @@ describe('C: Plan Lifecycle', () => {
     });
     expect(before).toBeNull();
 
-    await testPrisma.plan.updateMany({
-      where: { projectId, status: { in: ['draft', 'proposed'] } },
-      data: { status: 'superseded' },
-    });
+    await resetDraftPlans(projectId);
 
     const createRes = await plansPost(
       makeReq(`/api/projects/${projectId}/plans`, {
@@ -460,10 +449,7 @@ describe('C: Plan Lifecycle', () => {
   });
 
   it('R-032: propose with invalid reviewer type → 400 VALIDATION_ERROR', async () => {
-    await testPrisma.plan.updateMany({
-      where: { projectId, status: { in: ['draft', 'proposed'] } },
-      data: { status: 'superseded' },
-    });
+    await resetDraftPlans(projectId);
 
     const createRes = await plansPost(
       makeReq(`/api/projects/${projectId}/plans`, {
@@ -498,10 +484,7 @@ describe('C: Plan Lifecycle', () => {
   });
 
   it('R-032: propose with too many reviewers (>20) → 400', async () => {
-    await testPrisma.plan.updateMany({
-      where: { projectId, status: { in: ['draft', 'proposed'] } },
-      data: { status: 'superseded' },
-    });
+    await resetDraftPlans(projectId);
 
     const createRes = await plansPost(
       makeReq(`/api/projects/${projectId}/plans`, {
@@ -537,10 +520,7 @@ describe('C: Plan Lifecycle', () => {
   });
 
   it('R-032: propose with empty body still works (uses plan.requiredReviewers)', async () => {
-    await testPrisma.plan.updateMany({
-      where: { projectId, status: { in: ['draft', 'proposed'] } },
-      data: { status: 'superseded' },
-    });
+    await resetDraftPlans(projectId);
 
     const createRes = await plansPost(
       makeReq(`/api/projects/${projectId}/plans`, {
@@ -582,10 +562,7 @@ describe('C: Plan Lifecycle', () => {
     // increase monotonically across creates.
     const versions: number[] = [];
     for (let i = 0; i < 3; i++) {
-      await testPrisma.plan.updateMany({
-        where: { projectId, status: { in: ['draft', 'proposed'] } },
-        data: { status: 'superseded' },
-      });
+      await resetDraftPlans(projectId);
       const res = await plansPost(
         makeReq(`/api/projects/${projectId}/plans`, {
           method: 'POST',
