@@ -577,7 +577,7 @@
 
 #### R-025 [HIGH] psRequest 检查 HTTP 状态码
 
-- **status**: in_progress
+- **status**: done
 - **batch**: B3
 - **depends_on**: —
 - **effort**: small

@@ -24,6 +24,7 @@ import {
 import { startSession, appendToSession, loadInputHistory } from './session.js';
 import { InkSession, SlashCmd } from './prompt.js';
 import { CliSseListener, describeEvent } from './sse-listener.js';
+import { apiEvents, type AuthFailurePayload } from './api-errors.js';
 
 // ─── Genie settings writer ────────────────────────────────────────────────────
 
@@ -175,6 +176,17 @@ async function main() {
   // CLI guarantees the user sees plan/drift updates in real time. We tell the
   // MCP server to skip its listener via PLANSYNC_MCP_DISABLE_SSE so events
   // aren't double-printed.
+  // R-025: surface auth failures from psRequest/psPost as a notification so
+  // the user sees "please re-login" instead of an apparently empty status
+  // banner. Coalesced once per minute to avoid spamming on retry storms.
+  let lastAuthFailureNotice = 0;
+  apiEvents.on('authFailure', (payload: AuthFailurePayload) => {
+    const now = Date.now();
+    if (now - lastAuthFailureNotice < 60_000) return;
+    lastAuthFailureNotice = now;
+    notify(`${c.red}⚠ ${payload.message}${c.reset}`, true);
+  });
+
   const sseListener = new CliSseListener((eventType, data) => {
     const msg = describeEvent(eventType, data);
     if (msg) notify(msg, URGENT_EVENTS.has(eventType));
