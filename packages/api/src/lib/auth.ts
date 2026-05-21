@@ -84,9 +84,12 @@ export async function authenticate(req: NextRequest): Promise<AuthContext> {
   const token = tokenFromHeader ?? qpToken ?? cookieKey;
 
   // Master delegation: PLANSYNC_SECRET lets the server owner act as any registered user.
-  // Used for multi-user simulation in dev/testing. Requires a non-default secret value.
+  // Used for multi-user simulation in dev/testing. Requires a non-default, non-empty
+  // secret value (validated at boot in production via env.ts).
   const masterSecret = process.env.PLANSYNC_SECRET;
-  if (masterSecret && masterSecret !== 'dev-secret' && token === masterSecret) {
+  const masterSecretUsable =
+    !!masterSecret && masterSecret !== 'dev-secret' && masterSecret.length >= 8;
+  if (masterSecretUsable && token === masterSecret) {
     const userName = req.headers.get('x-user-name') || qpUser;
     if (!userName) {
       throw new AppError(
