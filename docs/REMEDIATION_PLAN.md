@@ -545,7 +545,7 @@
 
 #### R-023 [HIGH] SSE listener 对 401/403 立刻提示用户
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B3
 - **depends_on**: —
 - **effort**: small
