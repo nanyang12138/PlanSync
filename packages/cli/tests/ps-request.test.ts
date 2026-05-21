@@ -19,10 +19,7 @@ import {
 } from '../src/api-errors.js';
 
 const fakeFetcher = (
-  responses: Array<
-    | { statusCode: number; body: string }
-    | { throw: Error }
-  >,
+  responses: Array<{ statusCode: number; body: string } | { throw: Error }>,
 ): RawRequester => {
   const queue = [...responses];
   return vi.fn(async (_method: string, _path: string, _body?: unknown) => {
@@ -59,9 +56,9 @@ describe('performRequest (R-025)', () => {
     const captured: AuthFailurePayload[] = [];
     apiEvents.on('authFailure', (p: AuthFailurePayload) => captured.push(p));
 
-    await expect(
-      performRequest('GET', '/api/projects', undefined, fetcher),
-    ).rejects.toBeInstanceOf(AuthError);
+    await expect(performRequest('GET', '/api/projects', undefined, fetcher)).rejects.toBeInstanceOf(
+      AuthError,
+    );
 
     expect(captured).toHaveLength(1);
     expect(captured[0].statusCode).toBe(401);
@@ -90,12 +87,7 @@ describe('performRequest (R-025)', () => {
       { statusCode: 503, body: 'service unavailable' },
       { statusCode: 200, body: JSON.stringify({ ok: true }) },
     ]);
-    const result = await performRequest<{ ok: boolean }>(
-      'GET',
-      '/api/health',
-      undefined,
-      fetcher,
-    );
+    const result = await performRequest<{ ok: boolean }>('GET', '/api/health', undefined, fetcher);
     expect(result).toEqual({ ok: true });
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
@@ -105,9 +97,7 @@ describe('performRequest (R-025)', () => {
       { statusCode: 500, body: 'boom' },
       { statusCode: 502, body: 'still down' },
     ]);
-    const err = await performRequest('GET', '/api/health', undefined, fetcher).catch(
-      (e) => e,
-    );
+    const err = await performRequest('GET', '/api/health', undefined, fetcher).catch((e) => e);
     expect(err).toBeInstanceOf(ServerError);
     expect((err as ServerError).statusCode).toBe(502);
     expect(fetcher).toHaveBeenCalledTimes(2);
@@ -132,9 +122,7 @@ describe('performRequest (R-025)', () => {
     const fetcher = fakeFetcher([
       { statusCode: 400, body: JSON.stringify({ error: 'bad input' }) },
     ]);
-    const err = await performRequest('POST', '/api/plans', { foo: 1 }, fetcher).catch(
-      (e) => e,
-    );
+    const err = await performRequest('POST', '/api/plans', { foo: 1 }, fetcher).catch((e) => e);
     expect(err).toBeInstanceOf(RequestError);
     expect((err as RequestError).statusCode).toBe(400);
     expect(fetcher).toHaveBeenCalledTimes(1);
@@ -142,9 +130,9 @@ describe('performRequest (R-025)', () => {
 
   it('does NOT retry on 401 (no point retrying with the same bad key)', async () => {
     const fetcher = fakeFetcher([{ statusCode: 401, body: '' }]);
-    await expect(
-      performRequest('GET', '/api/projects', undefined, fetcher),
-    ).rejects.toBeInstanceOf(AuthError);
+    await expect(performRequest('GET', '/api/projects', undefined, fetcher)).rejects.toBeInstanceOf(
+      AuthError,
+    );
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
@@ -155,11 +143,9 @@ describe('performRequest (R-025)', () => {
   });
 
   it('does not silently swallow malformed 2xx JSON', async () => {
-    const fetcher = fakeFetcher([
-      { statusCode: 200, body: 'not-json{{{' },
-    ]);
-    await expect(
-      performRequest('GET', '/api/projects', undefined, fetcher),
-    ).rejects.toThrow(/parse/i);
+    const fetcher = fakeFetcher([{ statusCode: 200, body: 'not-json{{{' }]);
+    await expect(performRequest('GET', '/api/projects', undefined, fetcher)).rejects.toThrow(
+      /parse/i,
+    );
   });
 });

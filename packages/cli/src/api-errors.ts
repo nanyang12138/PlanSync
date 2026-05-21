@@ -54,11 +54,7 @@ export interface RawResponse {
   body: string;
 }
 
-export type RawRequester = (
-  method: string,
-  path: string,
-  body?: unknown,
-) => Promise<RawResponse>;
+export type RawRequester = (method: string, path: string, body?: unknown) => Promise<RawResponse>;
 
 /**
  * Module-level event bus. The CLI's main loop subscribes to `authFailure`
