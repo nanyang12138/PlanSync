@@ -647,7 +647,7 @@
 
 #### R-029 [MEDIUM] MCP `project_create/update` 补 repoUrl/defaultBranch
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
