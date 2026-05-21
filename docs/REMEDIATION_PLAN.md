@@ -314,7 +314,7 @@
 
 #### R-010 [CRITICAL] 生产环境拒绝 PLANSYNC_SECRET 默认值
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B2
 - **depends_on**: —
 - **effort**: small
