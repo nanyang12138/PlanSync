@@ -119,7 +119,7 @@
 
 #### R-001 [CRITICAL] 禁用 AI 后台自动解决 drift
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B1
 - **depends_on**: —
 - **effort**: small
