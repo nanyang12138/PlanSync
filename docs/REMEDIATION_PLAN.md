@@ -1039,7 +1039,7 @@
 
 #### R-052 [HIGH] reactivate 把 drift 扫描放回事务
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small
