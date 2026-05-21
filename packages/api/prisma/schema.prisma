@@ -164,7 +164,7 @@ model ExecutionRun {
   executorType     String    @map("executor_type") // human | agent
   executorName     String    @map("executor_name")
   boundPlanVersion Int       @map("bound_plan_version")
-  status           String    @default("running") // running | completed | failed | cancelled | stale
+  status           String    @default("running") // running | completed | failed | cancelled | stale | superseded
   taskPackSnapshot Json      @map("task_pack_snapshot")
   lastHeartbeatAt  DateTime? @map("last_heartbeat_at")
   outputSummary    String?   @map("output_summary")

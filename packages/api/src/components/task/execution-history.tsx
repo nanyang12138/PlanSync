@@ -44,11 +44,24 @@ function statusBadgeClass(status: string) {
       return 'badge-danger';
     case 'cancelled':
       return 'badge-neutral';
+    case 'superseded':
+      return 'badge-neutral';
     case 'stale':
       return 'badge-warning';
     case 'running':
     default:
       return 'badge-brand';
+  }
+}
+
+function statusLabel(status: string) {
+  switch (status) {
+    case 'superseded':
+      return 'superseded (newer plan)';
+    case 'cancelled':
+      return 'cancelled';
+    default:
+      return status;
   }
 }
 
@@ -107,7 +120,7 @@ export function ExecutionHistory({ runs, latestCompletedRunId }: ExecutionHistor
                 </td>
                 <td className="px-5 py-3 align-middle">
                   <span className={cn('badge uppercase', statusBadgeClass(run.status))}>
-                    {run.status}
+                    {statusLabel(run.status)}
                   </span>
                 </td>
                 <td className="px-5 py-3 align-middle text-xs">
