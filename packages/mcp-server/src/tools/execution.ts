@@ -111,6 +111,33 @@ class HeartbeatManager {
 
 export const heartbeatManager = new HeartbeatManager();
 
+/**
+ * Classify an error from `task_pack` as transient (worth retrying) or fatal.
+ *
+ * Transient: network-level failures (ECONNRESET, ECONNREFUSED, ETIMEDOUT,
+ * ENETUNREACH, EAI_AGAIN) and 5xx `ApiError`s — the agent should stay in
+ * exec mode and retry. Fatal: 4xx `ApiError`s (auth/missing/bad-request) and
+ * anything else — the agent should report up to the owner.
+ */
+export function isTransientExecContextError(err: unknown): boolean {
+  if (err instanceof ApiError) {
+    return err.status >= 500;
+  }
+  const e = err as { code?: unknown; cause?: { code?: unknown } } | undefined;
+  const code =
+    (typeof e?.code === 'string' && e.code) ||
+    (typeof e?.cause?.code === 'string' && e.cause.code) ||
+    '';
+  return (
+    code === 'ECONNRESET' ||
+    code === 'ECONNREFUSED' ||
+    code === 'ETIMEDOUT' ||
+    code === 'ENETUNREACH' ||
+    code === 'EAI_AGAIN' ||
+    code === 'UND_ERR_SOCKET'
+  );
+}
+
 export function registerExecutionTools(server: McpServer, api: ApiClient) {
   function makeDriftCallback(srv: McpServer) {
     return (drifts: DriftAlert[]) => {
@@ -163,12 +190,26 @@ export function registerExecutionTools(server: McpServer, api: ApiClient) {
             },
           ],
         };
-      } catch (err: any) {
+      } catch (err: unknown) {
+        // R-019: env was set, so this session was launched for execution. A
+        // failure to load the task pack must NOT silently demote the session
+        // to non-exec — that confuses the agent into running the normal
+        // session-start banner. Stay in exec mode and tag the error so the
+        // agent (and the CLI shell) can decide whether to retry or report up.
+        const message = err instanceof Error ? err.message : String(err);
+        const transient = isTransientExecContextError(err);
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({ execMode: false, error: err.message }),
+              text: JSON.stringify({
+                execMode: true,
+                runId,
+                taskId,
+                projectId,
+                error: message,
+                transient,
+              }),
             },
           ],
         };

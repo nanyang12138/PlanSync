@@ -473,7 +473,7 @@
 
 #### R-019 [MEDIUM] exec_context 区分 fatal/transient 错误
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B2
 - **depends_on**: —
 - **effort**: small
