@@ -250,7 +250,8 @@
 
 #### R-007 [MEDIUM] drift-engine 事件/邮件移到事务提交后
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#11 (implementation) + PR#12 (complementary tests)
 - **batch**: B1
 - **depends_on**: —
 - **effort**: small
