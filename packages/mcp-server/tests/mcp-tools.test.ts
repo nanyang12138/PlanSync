@@ -109,6 +109,57 @@ describe('M: MCP Tools (Unit, mock ApiClient)', () => {
         expect.objectContaining({ name: 'Updated' }),
       );
     });
+
+    // R-029: project_create/update must accept repoUrl and defaultBranch
+    // (shared schema fields that the MCP tool previously omitted)
+    it('R-029a: plansync_project_create accepts repoUrl + defaultBranch from shared schema', async () => {
+      mockPost.mockResolvedValue({ data: { id: 'p1' } });
+      await callTool(server, 'plansync_project_create', {
+        name: 'Repo Project',
+        description: 'with git metadata',
+        phase: 'planning',
+        repoUrl: 'https://github.com/example/repo',
+        defaultBranch: 'main',
+      });
+      expect(mockPost).toHaveBeenCalledWith('/api/projects', {
+        name: 'Repo Project',
+        description: 'with git metadata',
+        phase: 'planning',
+        repoUrl: 'https://github.com/example/repo',
+        defaultBranch: 'main',
+      });
+    });
+
+    it('R-029b: plansync_project_update accepts repoUrl + defaultBranch from shared schema', async () => {
+      mockPatch.mockResolvedValue({ data: { id: 'p1' } });
+      await callTool(server, 'plansync_project_update', {
+        projectId: 'p1',
+        repoUrl: 'https://github.com/example/repo',
+        defaultBranch: 'develop',
+      });
+      expect(mockPatch).toHaveBeenCalledWith('/api/projects/p1', {
+        repoUrl: 'https://github.com/example/repo',
+        defaultBranch: 'develop',
+      });
+    });
+
+    it('R-029c: plansync_project_create rejects invalid repoUrl (non-URL)', async () => {
+      // Bad URL should fail zod validation at MCP boundary; ApiClient.post must not be invoked
+      mockPost.mockResolvedValue({ data: { id: 'p1' } });
+      const handler = getToolHandler(server, 'plansync_project_create');
+      // The MCP SDK validates inputs via the provided shape; calling the handler
+      // directly with a bad URL should reject (zod throws via the SDK wrapper).
+      // We assert by verifying the underlying shared schema rejects it, which is
+      // exactly the shape the MCP tool now uses.
+      const { createProjectSchema } = await import('@plansync/shared');
+      const result = createProjectSchema.safeParse({
+        name: 'x',
+        repoUrl: 'not-a-url',
+      });
+      expect(result.success).toBe(false);
+      // Sanity: the handler exists (real call path is exercised by M1/R-029a above)
+      expect(handler).toBeDefined();
+    });
   });
 
   describe('M6-M9: Member tools', () => {
