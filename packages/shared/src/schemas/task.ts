@@ -112,6 +112,7 @@ export const executionRunStatusSchema = z.enum([
   'failed',
   'cancelled',
   'stale',
+  'superseded',
 ]);
 
 export const createExecutionRunSchema = z.object({
