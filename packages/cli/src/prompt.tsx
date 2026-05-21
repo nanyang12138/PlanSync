@@ -25,6 +25,35 @@ export interface Notif {
 
 const NOTIF_TTL = 10 * 60 * 1000; // 10 minutes in ms
 
+// ─── Terminal width tracking ──────────────────────────────────────────────────
+
+/**
+ * Returns the current terminal width in columns, defaulting to 80 when the
+ * stream does not report a size (e.g. non-TTY).
+ */
+export function getTerminalColumns(stream: NodeJS.WriteStream = process.stdout): number {
+  return stream.columns || 80;
+}
+
+/**
+ * Subscribe `handler` to the host stream's `resize` event. Returns a teardown
+ * function that removes the listener.
+ *
+ * Extracted as a standalone helper so the SIGWINCH plumbing for PromptUI can
+ * be unit-tested without mounting Ink. PromptUI uses this inside a
+ * `useEffect` to re-render its separators whenever the user resizes the
+ * terminal window.
+ */
+export function subscribeToResize(
+  handler: () => void,
+  stream: NodeJS.WriteStream = process.stdout,
+): () => void {
+  stream.on('resize', handler);
+  return () => {
+    stream.off('resize', handler);
+  };
+}
+
 // ─── PromptUI component ───────────────────────────────────────────────────────
 
 interface PromptProps {
@@ -45,6 +74,16 @@ function PromptUI({ promptStr: initialPrompt, commands, history, events }: Promp
   const [promptStr, setPromptStr] = useState(initialPrompt);
   const [disabled, setDisabled] = useState(false);
   const [lastSubmitted, setLastSubmitted] = useState('');
+  const [columns, setColumns] = useState<number>(() => getTerminalColumns());
+
+  // R-066: re-render separators when the user resizes the terminal window.
+  // Without this, `process.stdout.columns` is captured only on initial render,
+  // leaving the top/bottom separator lines stuck at the original width.
+  useEffect(() => {
+    const update = () => setColumns(getTerminalColumns());
+    update();
+    return subscribeToResize(update);
+  }, []);
 
   // Urgent-only flash: drift / stale / plan_activated / review events — auto-clears after 30s
   useEffect(() => {
@@ -262,7 +301,7 @@ function PromptUI({ promptStr: initialPrompt, commands, history, events }: Promp
     suggestionRows.push({ type: 'item', cmd: s, idx: itemIdx++ });
   }
 
-  const sepDashes = process.stdout.columns || 80;
+  const sepDashes = columns;
 
   return (
     <Box flexDirection="column">

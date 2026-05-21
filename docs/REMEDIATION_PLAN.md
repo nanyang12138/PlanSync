@@ -1260,7 +1260,7 @@
 
 #### R-066 [MEDIUM] Ink 监听 SIGWINCH 重渲染
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
