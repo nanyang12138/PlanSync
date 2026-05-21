@@ -1350,7 +1350,7 @@
 
 #### R-072 [LOW] suggestion ↓ 从未选状态进入
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
