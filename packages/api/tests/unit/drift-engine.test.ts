@@ -75,6 +75,8 @@ function taskRow(
     boundPlanVersion: number;
     status?: string;
     planDeliverableRefs?: string[];
+    planConstraintRefs?: string[];
+    planStandardRefs?: string[];
     running?: boolean;
   },
 ) {
@@ -85,6 +87,8 @@ function taskRow(
     status: partial.status ?? 'todo',
     boundPlanVersion: partial.boundPlanVersion,
     planDeliverableRefs: partial.planDeliverableRefs ?? [],
+    planConstraintRefs: partial.planConstraintRefs ?? [],
+    planStandardRefs: partial.planStandardRefs ?? [],
     executionRuns: partial.running ? [{ status: 'running' }] : [],
   };
 }
@@ -166,6 +170,71 @@ describe('runDriftScan — structural severity is mapped onto the persisted enum
     expect(alerts[0].severity).toBe('high');
     expect(alerts[0].structuralSeverity).toBe('breaking');
     expect(alerts[0].reason).toMatch(/cannot compute structural diff/i);
+  });
+
+  describe('planConstraintRefs / planStandardRefs narrow severity (per-task)', () => {
+    it('constraint change → "high" for tasks whose planConstraintRefs include it; "low" for others', async () => {
+      tx.task.findMany.mockResolvedValueOnce([
+        taskRow('t-touched', {
+          boundPlanVersion: 1,
+          planConstraintRefs: ['use postgres'],
+        }),
+        taskRow('t-unrelated', {
+          boundPlanVersion: 1,
+          planConstraintRefs: ['use kafka'],
+        }),
+      ]);
+      tx.plan.findFirst.mockResolvedValueOnce(
+        planRow(2, { constraints: ['use mysql', 'use kafka'] }), // 'use postgres' → 'use mysql'
+      );
+      tx.plan.findMany.mockResolvedValueOnce([
+        planRow(1, { constraints: ['use postgres', 'use kafka'] }),
+      ]);
+
+      const { alerts } = await runDriftScan(tx as unknown as never, 'p1', 2);
+      const byId = new Map(alerts.map((a) => [a.taskId, a]));
+      expect(byId.get('t-touched')?.severity).toBe('high');
+      expect(byId.get('t-touched')?.structuralSeverity).toBe('breaking');
+      expect(byId.get('t-unrelated')?.severity).toBe('low');
+      expect(byId.get('t-unrelated')?.structuralSeverity).toBe('low');
+    });
+
+    it('standard change → "medium" for tasks whose planStandardRefs include it; "low" for others', async () => {
+      tx.task.findMany.mockResolvedValueOnce([
+        taskRow('t-touched', {
+          boundPlanVersion: 1,
+          planStandardRefs: ['eslint'],
+        }),
+        taskRow('t-unrelated', {
+          boundPlanVersion: 1,
+          planStandardRefs: ['prettier'],
+        }),
+      ]);
+      tx.plan.findFirst.mockResolvedValueOnce(
+        planRow(2, { standards: ['biome', 'prettier'] }), // 'eslint' → 'biome'
+      );
+      tx.plan.findMany.mockResolvedValueOnce([planRow(1, { standards: ['eslint', 'prettier'] })]);
+
+      const { alerts } = await runDriftScan(tx as unknown as never, 'p1', 2);
+      const byId = new Map(alerts.map((a) => [a.taskId, a]));
+      expect(byId.get('t-touched')?.severity).toBe('medium');
+      expect(byId.get('t-unrelated')?.severity).toBe('low');
+    });
+
+    it('empty constraint refs ([]) preserve the legacy "depends on all" behavior — any constraint change is breaking', async () => {
+      // Existing tasks in the DB have empty constraint refs (no migration
+      // backfill); they MUST keep behaving conservatively until the owner
+      // explicitly narrows them. Otherwise the migration would silently
+      // downgrade existing alerts.
+      tx.task.findMany.mockResolvedValueOnce([
+        taskRow('t-legacy', { boundPlanVersion: 1 /* no refs */ }),
+      ]);
+      tx.plan.findFirst.mockResolvedValueOnce(planRow(2, { constraints: ['use mysql'] }));
+      tx.plan.findMany.mockResolvedValueOnce([planRow(1, { constraints: ['use postgres'] })]);
+
+      const { alerts } = await runDriftScan(tx as unknown as never, 'p1', 2);
+      expect(alerts[0].severity).toBe('high'); // breaking
+    });
   });
 
   it('cancelled tasks are excluded from the scan (unchanged contract)', async () => {
