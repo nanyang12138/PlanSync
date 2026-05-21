@@ -1181,7 +1181,7 @@
 
 #### R-061 [HIGH] worktree 失败时调用 failRun
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
