@@ -774,7 +774,7 @@
 
 #### R-037 [MEDIUM] MCP tool 统一错误格式（isError + 结构化）
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: —
 - **effort**: medium
