@@ -507,7 +507,7 @@
 
 #### R-021 [CRITICAL] MCP 子进程崩溃可检测可自动恢复
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B3
 - **depends_on**: —
 - **effort**: medium
