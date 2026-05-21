@@ -172,6 +172,10 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+    env:
+      # prisma CLI evaluates env() references during `validate` / `format`
+      # even though no DB connection is opened. A dummy URL is enough.
+      DATABASE_URL: postgresql://dummy:dummy@localhost:5432/dummy
     steps:
       - uses: actions/checkout@v4
         with:
