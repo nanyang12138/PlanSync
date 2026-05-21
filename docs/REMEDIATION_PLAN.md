@@ -349,7 +349,7 @@
 
 #### R-012 [HIGH] execution_start 不再自动注册 agent 成员
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B2
 - **depends_on**: —
 - **effort**: small
