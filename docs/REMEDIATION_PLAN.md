@@ -1084,7 +1084,7 @@
 
 #### R-055 [HIGH] activate 路由要求非 0 reviewer 或 owner 强制
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small
