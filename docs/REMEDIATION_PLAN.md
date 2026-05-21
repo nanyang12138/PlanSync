@@ -1054,7 +1054,7 @@
 
 #### R-053 [MEDIUM] suggestion accept 单事务 apply+update
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small
