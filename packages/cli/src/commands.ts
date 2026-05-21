@@ -3,6 +3,7 @@ import * as http from 'http';
 import { cfg } from './config.js';
 import { c, banner, printTasks, printHelp, ProjectStatus, emptyStatus } from './ui.js';
 import { McpClient } from './mcp-client.js';
+import { performRequest, type RawResponse } from './api-errors.js';
 // Minimal interface satisfied by both RawInput and InkSession
 interface InputAPI {
   pause(): void;
@@ -19,7 +20,12 @@ import { launchCode, launchExec, launchAutoExec } from './exec.js';
 
 // ─── API helpers ──────────────────────────────────────────────────────────────
 
-export function psRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
+/**
+ * Low-level HTTP transport. Returns the raw status + body so the wrapper can
+ * decide what to do based on the response code (auth failure, server retry,
+ * JSON parse). Network errors reject the promise.
+ */
+function httpFetch(method: string, path: string, body?: unknown): Promise<RawResponse> {
   return new Promise((resolve, reject) => {
     const url = new URL(cfg.apiUrl + path);
     const mod = url.protocol === 'https:' ? https : http;
@@ -41,11 +47,7 @@ export function psRequest<T>(method: string, path: string, body?: unknown): Prom
         let data = '';
         res.on('data', (d) => (data += d));
         res.on('end', () => {
-          try {
-            resolve(JSON.parse(data));
-          } catch {
-            reject(new Error(`Parse error: ${data.slice(0, 100)}`));
-          }
+          resolve({ statusCode: res.statusCode ?? 0, body: data });
         });
       },
     );
@@ -57,6 +59,10 @@ export function psRequest<T>(method: string, path: string, body?: unknown): Prom
     if (bodyStr) req.write(bodyStr);
     req.end();
   });
+}
+
+export function psRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
+  return performRequest<T>(method, path, body, httpFetch);
 }
 
 export const apiGet = <T>(path: string) => psRequest<T>('GET', path);
