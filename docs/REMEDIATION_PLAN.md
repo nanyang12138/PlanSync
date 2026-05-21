@@ -1275,7 +1275,7 @@
 
 #### R-067 [MEDIUM] Ink 支持 bracketed paste 多行提交
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: medium
