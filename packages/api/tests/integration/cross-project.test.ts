@@ -248,6 +248,13 @@ describe('X: Cross-Project Features', () => {
   it('X9: plan propose → sendMail called with human reviewer email', async () => {
     vi.clearAllMocks();
 
+    // R-036: API rejects creating a new plan while another is draft/proposed.
+    // Clear any leftover blocking plans from prior tests in the same project.
+    await testPrisma.plan.updateMany({
+      where: { projectId: projectAId, status: { in: ['draft', 'proposed'] } },
+      data: { status: 'superseded' },
+    });
+
     // Create a fresh draft plan in project A
     const createRes = await plansPost(
       makeReq(`/api/projects/${projectAId}/plans`, {
@@ -292,6 +299,11 @@ describe('X: Cross-Project Features', () => {
     vi.clearAllMocks();
 
     const agentReviewerName = 'xp-agent-reviewer';
+
+    await testPrisma.plan.updateMany({
+      where: { projectId: projectAId, status: { in: ['draft', 'proposed'] } },
+      data: { status: 'superseded' },
+    });
 
     const createRes = await plansPost(
       makeReq(`/api/projects/${projectAId}/plans`, {
@@ -338,6 +350,11 @@ describe('X: Cross-Project Features', () => {
     vi.clearAllMocks();
 
     const mixedAgent = 'xp-mixed-agent';
+
+    await testPrisma.plan.updateMany({
+      where: { projectId: projectAId, status: { in: ['draft', 'proposed'] } },
+      data: { status: 'superseded' },
+    });
 
     const createRes = await plansPost(
       makeReq(`/api/projects/${projectAId}/plans`, {
