@@ -73,18 +73,58 @@ async function listFindings() {
   const since = new Date(Date.now() - WINDOW_DAYS * 86400 * 1000).toISOString().slice(0, 10);
   const all = [];
   let page = 1;
+  let totalCount = null;
   while (true) {
     const q = encodeURIComponent(
       `repo:${GH_REPO} is:issue label:review-finding created:>=${since}`,
     );
     const data = await ghApi('GET', `/search/issues?q=${q}&per_page=100&page=${page}`);
+    if (totalCount === null) totalCount = data?.total_count ?? null;
     const items = data?.items || [];
     all.push(...items);
     if (items.length < 100) break;
     page += 1;
-    if (page > 20) break;
+    if (page > 20) {
+      const truncated = (totalCount ?? Number.POSITIVE_INFINITY) - all.length;
+      console.warn(
+        `listFindings truncated at ${all.length} items (total_count=${totalCount}, missed≈${truncated}). Cluster output represents only the first 2000 findings in window.`,
+      );
+      const summaryFile = process.env.GITHUB_STEP_SUMMARY;
+      if (summaryFile) {
+        const fs = await import('node:fs');
+        await fs.promises.appendFile(
+          summaryFile,
+          `\n> ⚠ cluster sweep truncated at 2000 findings in window (total_count=${totalCount}, missed≈${truncated}).\n`,
+        );
+      }
+      break;
+    }
   }
   return all.filter((i) => !i.pull_request);
+}
+
+async function findExistingClusterIssueForMonth(yyyymm) {
+  // Idempotency for workflow_dispatch re-runs: if an open `review-cluster`
+  // issue already exists this month carrying our marker, append a comment
+  // there instead of opening a duplicate.
+  try {
+    const q = encodeURIComponent(
+      `repo:${GH_REPO} is:issue is:open label:review-cluster created:>=${yyyymm}-01 in:body "${CLUSTER_MARKER}"`,
+    );
+    const data = await ghApi('GET', `/search/issues?q=${q}&per_page=5`);
+    return data?.items?.[0] || null;
+  } catch (err) {
+    console.warn(`Existing cluster issue lookup failed (will create new): ${err.message}`);
+    return null;
+  }
+}
+
+async function addIssueComment(issueNumber, body) {
+  if (DRY_RUN) {
+    console.log(`[dry-run] addIssueComment #${issueNumber}: ${body.slice(0, 200)}`);
+    return null;
+  }
+  return ghApi('POST', `/repos/${GH_REPO}/issues/${issueNumber}/comments`, { body });
 }
 
 async function createIssue(title, body, labels) {
@@ -307,6 +347,24 @@ async function main() {
 
   if (clusters.length === 0) {
     console.log('No clusters above threshold; not opening tracking issue');
+    return;
+  }
+
+  // Re-run protection: if a cluster tracking issue for this month already
+  // exists (workflow_dispatch ran twice in the same month, or schedule
+  // happens to overlap), append a fresh report as a comment rather than
+  // opening a duplicate issue.
+  const existing = await findExistingClusterIssueForMonth(yyyymm);
+  if (existing) {
+    if (DRY_RUN) {
+      console.log(`[dry-run] would append re-run report to existing #${existing.number}`);
+    } else {
+      await addIssueComment(
+        existing.number,
+        `<!-- review-cluster:rerun -->\n\n月度聚类重跑（${new Date().toISOString().slice(0, 16)}Z）。最新报告：\n\n${body}`,
+      );
+    }
+    console.log(`Appended re-run to existing cluster issue #${existing.number}`);
     return;
   }
 

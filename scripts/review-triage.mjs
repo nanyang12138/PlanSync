@@ -43,6 +43,10 @@ const DRY_RUN = REVIEW_TRIAGE_DRY_RUN === '1' || REVIEW_TRIAGE_DRY_RUN === 'true
 const TRIAGE_SUMMARY_MARKER = '<!-- review-triage:summary -->';
 const FP_MARKER = 'review-triage-fp';
 
+// Prefer fetch above ghApi for the reaction call because we need to inspect
+// the raw status code (201 vs 200) for atomic acquisition. Keeping the
+// helper for read-only / write paths that don't need that distinction.
+
 async function ghApi(method, path, body) {
   const res = await fetch(`https://api.github.com${path}`, {
     method,
@@ -65,6 +69,36 @@ async function ghApi(method, path, body) {
 
 async function getComment() {
   return ghApi('GET', `/repos/${GH_REPO}/issues/comments/${COMMENT_ID}`);
+}
+
+// Atomic per-comment idempotency: GitHub returns 200 if a reaction with this
+// content already exists on the comment, 201 if newly created. We treat 200 as
+// "already processed by a previous run" and exit. This protects against
+// workflow re-runs (manual or automatic) duplicating issue creation when
+// search-issues indexing latency hides the prior fingerprint markers.
+const TRIAGE_REACTION = 'rocket';
+
+async function acquireCommentLock() {
+  const url = `/repos/${GH_REPO}/issues/comments/${COMMENT_ID}/reactions`;
+  if (DRY_RUN) {
+    console.log(`[dry-run] would POST reaction ${TRIAGE_REACTION} on comment ${COMMENT_ID}`);
+    return { acquired: true };
+  }
+  const res = await fetch(`https://api.github.com${url}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${GITHUB_TOKEN}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'Content-Type': 'application/json',
+      'User-Agent': 'plansync-review-triage',
+    },
+    body: JSON.stringify({ content: TRIAGE_REACTION }),
+  });
+  if (res.status === 201) return { acquired: true };
+  if (res.status === 200) return { acquired: false, reason: 'reaction_exists' };
+  const text = await res.text();
+  throw new Error(`Reaction POST -> ${res.status}: ${text.slice(0, 500)}`);
 }
 
 async function searchExistingIssue(fp) {
@@ -290,6 +324,15 @@ async function main() {
   const cleaned = stripDiagnostics(stripMeta(comment.body));
   if (cleaned.length < 50) {
     console.log('Comment body too short after stripping, skipping');
+    return;
+  }
+
+  // Acquire per-comment idempotency lock via GitHub reactions. Atomic — if
+  // another run already reacted, the API returns 200 (vs 201 for new) and
+  // we exit before any LLM cost or issue mutation.
+  const lock = await acquireCommentLock();
+  if (!lock.acquired) {
+    console.log(`Comment ${COMMENT_ID} already triaged (${lock.reason}); exiting.`);
     return;
   }
 

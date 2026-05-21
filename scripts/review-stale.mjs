@@ -62,14 +62,33 @@ async function ghApi(method, path, body) {
 async function listOpenFindings() {
   const all = [];
   let page = 1;
+  let totalCount = null;
   while (true) {
     const q = encodeURIComponent(`repo:${GH_REPO} is:issue is:open label:review-finding`);
     const data = await ghApi('GET', `/search/issues?q=${q}&per_page=100&page=${page}`);
+    if (totalCount === null) totalCount = data?.total_count ?? null;
     const items = data?.items || [];
     all.push(...items);
     if (items.length < 100) break;
     page += 1;
-    if (page > 20) break;
+    if (page > 20) {
+      // Hard cap. Search API itself caps at 1000 results per query for
+      // unauthenticated callers; for authenticated callers we still risk
+      // long sweeps. Surface the truncation rather than silently miss work.
+      const truncated = (totalCount ?? Number.POSITIVE_INFINITY) - all.length;
+      console.warn(
+        `listOpenFindings truncated at ${all.length} items (total_count=${totalCount}, missed≈${truncated}). Increase the page cap or refine the query.`,
+      );
+      const summaryFile = process.env.GITHUB_STEP_SUMMARY;
+      if (summaryFile) {
+        const fs = await import('node:fs');
+        await fs.promises.appendFile(
+          summaryFile,
+          `\n> ⚠ stale sweep truncated at 2000 issues (total_count=${totalCount}, missed≈${truncated}).\n`,
+        );
+      }
+      break;
+    }
   }
   return all.filter((i) => !i.pull_request);
 }
