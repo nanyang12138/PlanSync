@@ -25,7 +25,11 @@ jobs:
   dispatch:
     if: |
       github.event.label.name == 'cursor:dispatch' &&
-      contains(github.event.issue.labels.*.name, 'review-finding')
+      (
+        contains(github.event.issue.labels.*.name, 'review-finding') ||
+        contains(github.event.issue.labels.*.name, 'review-cluster')
+      ) &&
+      !contains(github.event.issue.labels.*.name, 'umbrella')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
