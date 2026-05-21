@@ -246,6 +246,10 @@ describe('G: Execution Management', () => {
 
   it('G10: POST /runs → taskPackSnapshot 自动填充', async () => {
     await testPrisma.task.update({ where: { id: taskId }, data: { status: 'in_progress' } });
+    // Pre-register the agent member (R-012: execution_start no longer auto-registers).
+    await testPrisma.projectMember.create({
+      data: { projectId, name: 'claude', role: 'developer', type: 'agent' },
+    });
     const res = await runsPost(
       makeReq(`/api/projects/${projectId}/tasks/${taskId}/runs`, {
         method: 'POST',
@@ -275,6 +279,11 @@ describe('G: Execution Management', () => {
       },
     });
 
+    // Pre-register the agent member (R-012: execution_start no longer auto-registers).
+    await testPrisma.projectMember.create({
+      data: { projectId, name: 'ai', role: 'developer', type: 'agent' },
+    });
+
     // Claim a todo task — must succeed and transition task to in_progress
     const claimRes = await runsPost(
       makeReq(`/api/projects/${projectId}/tasks/${todoTask.id}/runs`, {
@@ -299,6 +308,104 @@ describe('G: Execution Management', () => {
     // where two requests both read 'todo' before either commits — verified by DB atomicity guarantee.
 
     await testPrisma.task.delete({ where: { id: todoTask.id } });
+  });
+
+  it('G13 (R-012): unregistered agent → 404; owner + auto_register=true creates the member', async () => {
+    // Setup: dedicated project + plan + task to keep this isolated from other tests
+    const { projectId: pid } = await createTestProject('r012-owner');
+    const { version: pv } = await createActivePlan(pid, 'r012-owner');
+    const t = await testPrisma.task.create({
+      data: {
+        projectId: pid,
+        title: 'R-012 task',
+        type: 'code',
+        priority: 'p1',
+        status: 'in_progress',
+        assignee: 'r012-owner',
+        assigneeType: 'human',
+        boundPlanVersion: pv,
+        agentConstraints: [],
+      },
+    });
+    // A non-owner developer member who will try to start a run with an unknown agent
+    await testPrisma.projectMember.create({
+      data: { projectId: pid, name: 'r012-dev', role: 'developer', type: 'human' },
+    });
+
+    // Case 1: unknown agent + non-owner caller → 404
+    const denied = await runsPost(
+      makeReq(`/api/projects/${pid}/tasks/${t.id}/runs`, {
+        method: 'POST',
+        userName: 'r012-dev',
+        body: { executorType: 'agent', executorName: 'ghost-agent' },
+      }),
+      { params: { projectId: pid, taskId: t.id } },
+    );
+    expect(denied.status).toBe(404);
+    const deniedBody = await denied.json();
+    expect(deniedBody.error.code).toBe('NOT_FOUND');
+    expect(deniedBody.error.message).toMatch(/not a registered member/i);
+    const ghostExists = await testPrisma.projectMember.findUnique({
+      where: { projectId_name: { projectId: pid, name: 'ghost-agent' } },
+    });
+    expect(ghostExists).toBeNull();
+
+    // Case 2: unknown agent + owner caller WITHOUT auto_register → still 404
+    const ownerNoFlag = await runsPost(
+      makeReq(`/api/projects/${pid}/tasks/${t.id}/runs`, {
+        method: 'POST',
+        userName: 'r012-owner',
+        body: { executorType: 'agent', executorName: 'newbot' },
+      }),
+      { params: { projectId: pid, taskId: t.id } },
+    );
+    expect(ownerNoFlag.status).toBe(404);
+    const stillMissing = await testPrisma.projectMember.findUnique({
+      where: { projectId_name: { projectId: pid, name: 'newbot' } },
+    });
+    expect(stillMissing).toBeNull();
+
+    // Case 3: unknown agent + owner + ?auto_register=true → 201 and agent member is created
+    const ownerWithFlag = await runsPost(
+      makeReq(`/api/projects/${pid}/tasks/${t.id}/runs`, {
+        method: 'POST',
+        userName: 'r012-owner',
+        body: { executorType: 'agent', executorName: 'newbot' },
+        searchParams: { auto_register: 'true' },
+      }),
+      { params: { projectId: pid, taskId: t.id } },
+    );
+    expect(ownerWithFlag.status).toBe(201);
+    const created = await testPrisma.projectMember.findUnique({
+      where: { projectId_name: { projectId: pid, name: 'newbot' } },
+    });
+    expect(created).not.toBeNull();
+    expect(created?.type).toBe('agent');
+    expect(created?.role).toBe('developer');
+
+    // Case 4: non-owner + ?auto_register=true → still 404 (only owners may opt-in)
+    // Reset the running run so the mutex doesn't hide the 404 we want to assert.
+    await testPrisma.executionRun.updateMany({
+      where: { taskId: t.id, status: 'running' },
+      data: { status: 'failed', endedAt: new Date() },
+    });
+    await testPrisma.task.update({ where: { id: t.id }, data: { status: 'in_progress' } });
+    const devTriesAutoReg = await runsPost(
+      makeReq(`/api/projects/${pid}/tasks/${t.id}/runs`, {
+        method: 'POST',
+        userName: 'r012-dev',
+        body: { executorType: 'agent', executorName: 'sneaky-agent' },
+        searchParams: { auto_register: 'true' },
+      }),
+      { params: { projectId: pid, taskId: t.id } },
+    );
+    expect(devTriesAutoReg.status).toBe(404);
+    const sneaky = await testPrisma.projectMember.findUnique({
+      where: { projectId_name: { projectId: pid, name: 'sneaky-agent' } },
+    });
+    expect(sneaky).toBeNull();
+
+    await cleanupProject(pid);
   });
 
   it('G11: drift → 409 DRIFT_UNRESOLVED → resolve → 201 (核心链路)', async () => {
