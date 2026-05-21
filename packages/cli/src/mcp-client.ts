@@ -2,6 +2,13 @@ import { spawn, ChildProcess } from 'child_process';
 import { cfg } from './config.js';
 import { c } from './ui.js';
 
+export interface ExecutionAbortReason {
+  code: string;
+  message: string;
+  runId?: string;
+  taskId?: string;
+}
+
 export class McpClient {
   private proc: ChildProcess | null = null;
   private pending = new Map<
@@ -12,9 +19,23 @@ export class McpClient {
   private tools: unknown[] = [];
   private readBuffer = '';
   private notifyPrinter: ((text: string) => void) | null = null;
+  private abortHandler: ((reason: ExecutionAbortReason) => void) | null = null;
 
   setNotifyPrinter(fn: (text: string) => void): void {
     this.notifyPrinter = fn;
+  }
+
+  /**
+   * Drift v2 (S6): subscribe to `execution_aborted` notifications pushed by
+   * the MCP server when the API has forcibly moved the run out of running
+   * (paused, stale-version, race-lost). The handler is expected to fire a
+   * local AbortController so the ai-loop exits at the next turn boundary.
+   * Defense in depth: even if SSE drops, the next MCP tool call will
+   * short-circuit with `error.code === 'RUN_ABORTED'` from the server's
+   * tool wrapper, so the agent stops either way.
+   */
+  setAbortHandler(fn: (reason: ExecutionAbortReason) => void): void {
+    this.abortHandler = fn;
   }
 
   async start(serverPath: string): Promise<void> {
@@ -80,6 +101,30 @@ export class McpClient {
     }
     if (msg.method === 'notifications/message') {
       const data = msg.params?.data;
+      const obj = (typeof data === 'object' && data !== null ? data : null) as Record<
+        string,
+        unknown
+      > | null;
+
+      // Drift v2 (S6): MCP server pushes { type: 'execution_aborted', ... }
+      // when the API has aborted the run. Fire the registered handler so the
+      // CLI's ai-loop AbortController flips. Still print the message so the
+      // user sees what happened.
+      if (obj?.type === 'execution_aborted' && this.abortHandler) {
+        const reason: ExecutionAbortReason = {
+          code: typeof obj.code === 'string' ? obj.code : 'RUN_ABORTED',
+          message:
+            typeof obj.message === 'string' ? obj.message : 'Execution aborted by PlanSync API',
+          runId: typeof obj.runId === 'string' ? obj.runId : undefined,
+          taskId: typeof obj.taskId === 'string' ? obj.taskId : undefined,
+        };
+        try {
+          this.abortHandler(reason);
+        } catch {
+          /* abort handler errors are non-fatal */
+        }
+      }
+
       const text =
         typeof data === 'string'
           ? data

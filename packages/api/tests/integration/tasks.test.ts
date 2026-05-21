@@ -565,6 +565,59 @@ describe('F: Task Management', () => {
     expect((await res.json()).data.assignee).toBeNull();
   });
 
+  it('F26: PATCH planConstraintRefs / planStandardRefs by developer → 403 (owner-only)', async () => {
+    const createRes = await tasksPost(
+      makeReq(`/api/projects/${projectId}/tasks`, {
+        method: 'POST',
+        userName: owner,
+        body: { title: 'Refs guard task', type: 'code' },
+      }),
+      { params: { projectId } },
+    );
+    const refsTaskId = (await createRes.json()).data.id;
+
+    // Developer attempting to narrow the refs themselves is rejected — the
+    // refs control drift severity classification AND AI completion scope, so
+    // letting an executor narrow its own contract would be a self-serving
+    // accountability dodge.
+    const resConstraint = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${refsTaskId}`, {
+        method: 'PATCH',
+        userName: dev,
+        body: { planConstraintRefs: ['use postgres'] },
+      }),
+      { params: { projectId, taskId: refsTaskId } },
+    );
+    expect(resConstraint.status).toBe(403);
+
+    const resStandard = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${refsTaskId}`, {
+        method: 'PATCH',
+        userName: dev,
+        body: { planStandardRefs: ['eslint'] },
+      }),
+      { params: { projectId, taskId: refsTaskId } },
+    );
+    expect(resStandard.status).toBe(403);
+
+    // Owner CAN, sanity check
+    const resOwner = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${refsTaskId}`, {
+        method: 'PATCH',
+        userName: owner,
+        body: {
+          planConstraintRefs: ['use postgres'],
+          planStandardRefs: ['eslint'],
+        },
+      }),
+      { params: { projectId, taskId: refsTaskId } },
+    );
+    expect(resOwner.status).toBe(200);
+    const persisted = await testPrisma.task.findUnique({ where: { id: refsTaskId } });
+    expect(persisted?.planConstraintRefs).toEqual(['use postgres']);
+    expect(persisted?.planStandardRefs).toEqual(['eslint']);
+  });
+
   it('F29: DELETE /tasks/:id (owner) → 200', async () => {
     const createRes = await tasksPost(
       makeReq(`/api/projects/${projectId}/tasks`, {

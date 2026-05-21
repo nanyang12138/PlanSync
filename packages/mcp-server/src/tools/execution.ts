@@ -2,10 +2,59 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { ApiClient, ApiError } from '../api-client';
 import { logger } from '../logger';
+import { signalRunAborted } from '../abort-signal';
 
 type DriftAlert = { id: string; severity: string; reason: string };
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
+
+/**
+ * Recognise the API error codes that mean "this run cannot make further
+ * progress on the agent's side" and convert them into a process-wide abort
+ * signal so the next tool call short-circuits. Distinct from generic
+ * heartbeat failures (network glitch, transient 5xx) which we just log.
+ */
+function detectAbortFromHeartbeat(err: unknown, runId: string, taskId: string): boolean {
+  if (!(err instanceof ApiError)) return false;
+  const code = (err.details as { code?: string } | undefined)?.code;
+  if (code === 'RUN_PAUSED') {
+    signalRunAborted({
+      code: 'RUN_PAUSED',
+      message:
+        err.message ||
+        'Run paused by drift v2 — a newer plan version superseded this run. Abort and ack-pause.',
+      runId,
+      taskId,
+    });
+    return true;
+  }
+  if (code === 'RUN_STALE_VERSION') {
+    const details = err.details as
+      | { runBoundPlanVersion?: number; taskBoundPlanVersion?: number }
+      | undefined;
+    signalRunAborted({
+      code: 'RUN_STALE_VERSION',
+      message:
+        err.message ||
+        `Run is stale: bound to plan v${details?.runBoundPlanVersion}, task now v${details?.taskBoundPlanVersion}.`,
+      runId,
+      taskId,
+      runBoundPlanVersion: details?.runBoundPlanVersion,
+      taskBoundPlanVersion: details?.taskBoundPlanVersion,
+    });
+    return true;
+  }
+  if (code === 'RUN_RACE_LOST') {
+    signalRunAborted({
+      code: 'RUN_RACE_LOST',
+      message: err.message || 'Run state changed concurrently; abort and refetch task pack.',
+      runId,
+      taskId,
+    });
+    return true;
+  }
+  return false;
+}
 
 class HeartbeatManager {
   private intervals = new Map<string, ReturnType<typeof setInterval>>();
@@ -30,7 +79,14 @@ class HeartbeatManager {
         }
         logger.debug({ runId }, 'Heartbeat sent');
       } catch (err) {
-        logger.warn({ err, runId }, 'Heartbeat failed');
+        if (detectAbortFromHeartbeat(err, runId, taskId)) {
+          // Run is over for the agent. Stop the interval so we don't keep
+          // poking a dead row; the tool wrapper + CLI mcp-client take it
+          // from here.
+          this.stop(runId);
+        } else {
+          logger.warn({ err, runId }, 'Heartbeat failed');
+        }
       }
     }, HEARTBEAT_INTERVAL_MS);
     this.intervals.set(runId, id);

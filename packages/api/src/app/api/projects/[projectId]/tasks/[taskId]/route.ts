@@ -43,8 +43,15 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     await requireProjectRole(auth, params.projectId);
     const body = await validateBody(req, updateTaskSchema);
 
-    // planDeliverableRefs controls AI verification scope — owner only
-    if (body.planDeliverableRefs !== undefined) {
+    // The plan*Refs fields together control (a) AI completion verification
+    // scope and (b) drift severity classification per task. Letting an agent
+    // narrow its own refs would let it silently disclaim accountability for
+    // breaking changes — so all three are owner-only.
+    if (
+      body.planDeliverableRefs !== undefined ||
+      body.planConstraintRefs !== undefined ||
+      body.planStandardRefs !== undefined
+    ) {
       await requireProjectRole(auth, params.projectId, 'owner');
     }
 

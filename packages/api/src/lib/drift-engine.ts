@@ -6,17 +6,126 @@ import { getOrCreatePlanDiff } from './ai/plan-diff';
 import { analyzeTaskImpact } from './ai/impact-analysis';
 import { eventBus } from './event-bus';
 import { sendMail, userEmail } from './email';
+import {
+  diffPlans,
+  severityForTask,
+  type PlanContent,
+  type Severity,
+  type StructuralDiff,
+  type TaskRefs,
+} from '@plansync/shared';
 
 export interface DriftScanResult {
   alerts: Array<{
     taskId: string;
     severity: 'high' | 'medium' | 'low';
+    /**
+     * Set on alerts derived from a known plan→plan structural diff. Carried
+     * through to `persistDriftAlerts` so the pause rule can key off "did the
+     * agent's contract actually change" rather than the older
+     * "did-the-task-have-a-running-run" heuristic.
+     */
+    structuralSeverity?: Severity;
     reason: string;
     currentPlanVersion: number;
     taskBoundVersion: number;
+    /**
+     * Set by `runDriftScan`. Test fixtures that hand-craft alert arrays for
+     * `persistDriftAlerts` or `dispatchDriftNotifications` may omit this;
+     * treated as `false` in the pause rule so a missing flag never silently
+     * pauses something the caller did not intend to interrupt.
+     */
+    hasRunningExecution?: boolean;
   }>;
 }
 
+/**
+ * Map the structural classifier's vocabulary (breaking|medium|low) onto the
+ * persisted `DriftAlert.severity` column's vocabulary (high|medium|low). We
+ * keep the persisted enum unchanged so existing webhooks, UI badge colors and
+ * MCP tool outputs that pattern-match on 'high'/'medium'/'low' don't see a
+ * schema-shift on the same release that swaps the underlying logic.
+ */
+function severityToDb(sev: Severity): 'high' | 'medium' | 'low' {
+  if (sev === 'breaking') return 'high';
+  return sev;
+}
+
+/**
+ * Project the Prisma Plan row to the bare `PlanContent` the diff function
+ * needs. Stripping the row to the diff-relevant fields here makes it cheap to
+ * compare and keeps the contract of the pure functions tight.
+ */
+function planContent(plan: {
+  goal: string;
+  scope: string;
+  constraints: string[];
+  standards: string[];
+  deliverables: string[];
+  openQuestions: string[];
+  requiredReviewers: string[];
+}): PlanContent {
+  return {
+    goal: plan.goal,
+    scope: plan.scope,
+    constraints: plan.constraints,
+    standards: plan.standards,
+    deliverables: plan.deliverables,
+    openQuestions: plan.openQuestions,
+    requiredReviewers: plan.requiredReviewers,
+  };
+}
+
+function refsFromTask(task: {
+  planDeliverableRefs: string[];
+  planConstraintRefs?: string[] | null;
+  planStandardRefs?: string[] | null;
+}): TaskRefs {
+  return {
+    planDeliverableRefs: task.planDeliverableRefs,
+    // The schema columns default to `[]`; the classifier treats both `[]`
+    // and `null` as the conservative "depends on all" sentinel so tasks
+    // that pre-date the migration (or whose owner has not explicitly
+    // narrowed the refs) still pause on any constraint / standard change.
+    // Owners narrowing per task is what unlocks the sharper severity.
+    planConstraintRefs: task.planConstraintRefs ?? null,
+    planStandardRefs: task.planStandardRefs ?? null,
+  };
+}
+
+/**
+ * Scan the project for tasks bound to a now-superseded plan version and emit
+ * one alert per task. Severity is derived from the **structural** difference
+ * between the task's bound plan content and the newly activated plan content
+ * (see `severityForTask`), not from the task's status.
+ *
+ * The previous heuristic (severity=high iff a run is currently running)
+ * conflated "user-facing urgency" with "does the change actually affect this
+ * task". A goal change to an unrelated deliverable used to read as 'high'
+ * just because an agent happened to be mid-execution; that bred alert
+ * fatigue. Now:
+ *
+ *   - 'high'   ↔ structural 'breaking'   — task's goal / referenced
+ *     deliverable / referenced constraint changed. The task's contract is
+ *     broken; a running run must be paused.
+ *   - 'medium' ↔ structural 'medium'     — scope or referenced standard
+ *     changed. The task should re-orient but the deliverables it owns are
+ *     intact.
+ *   - 'low'    ↔ structural 'low'        — nothing the task references
+ *     changed. Informational; running runs are NOT paused (see
+ *     `persistDriftAlerts`).
+ *
+ * The "is there a running run" signal is preserved on the alert as a
+ * separate field `hasRunningExecution` for the pause rule downstream — it no
+ * longer drives severity.
+ *
+ * Fallback: if the activated plan or any bound-plan row is missing (very
+ * unusual — would mean the row was hard-deleted while the activate
+ * transaction was in flight), we cannot compute a structural diff for that
+ * task. We emit an alert with severity='high' and a clearly-labelled
+ * fallback reason so the operator notices and the safer side of the choice
+ * (block the task) takes effect.
+ */
 export async function runDriftScan(
   tx: Prisma.TransactionClient | PrismaClient,
   projectId: string,
@@ -35,32 +144,85 @@ export async function runDriftScan(
     },
   });
 
+  if (tasks.length === 0) {
+    return { alerts: [] };
+  }
+
+  const newPlan = await tx.plan.findFirst({
+    where: { projectId, version: newPlanVersion },
+  });
+
+  // Group tasks by their bound version so we compute one diff per (old, new)
+  // pair, no matter how many tasks reference each old version. With N tasks
+  // distributed across K old versions, this is K AI-free hash comparisons,
+  // not N.
+  const oldVersions = Array.from(new Set(tasks.map((t) => t.boundPlanVersion)));
+  const oldPlans = await tx.plan.findMany({
+    where: { projectId, version: { in: oldVersions } },
+  });
+  const oldPlanByVersion = new Map(oldPlans.map((p) => [p.version, p]));
+
+  const diffByVersion = new Map<number, StructuralDiff | null>();
+  if (newPlan) {
+    const newContent = planContent(newPlan);
+    for (const ov of oldVersions) {
+      const oldPlan = oldPlanByVersion.get(ov);
+      diffByVersion.set(
+        ov,
+        oldPlan
+          ? diffPlans(
+              { ...planContent(oldPlan), version: ov },
+              { ...newContent, version: newPlanVersion },
+            )
+          : null,
+      );
+    }
+  }
+
   const alerts: DriftScanResult['alerts'] = [];
 
   for (const task of tasks) {
     const hasRunningExecution = task.executionRuns.length > 0;
+    const diff = newPlan ? diffByVersion.get(task.boundPlanVersion) : null;
 
-    let severity: 'high' | 'medium' | 'low';
-    if (hasRunningExecution) {
-      severity = 'high';
-    } else if (['in_progress', 'blocked', 'todo'].includes(task.status)) {
-      severity = 'medium';
+    let structuralSeverity: Severity | undefined;
+    let reason: string;
+    if (diff) {
+      structuralSeverity = severityForTask(refsFromTask(task), diff);
+      const changedFields = Array.from(new Set(diff.changes.map((c) => c.field))).join(', ');
+      const runSuffix = hasRunningExecution ? ' (run currently in flight)' : '';
+      reason = `Task "${task.title}" bound to v${task.boundPlanVersion}, now v${newPlanVersion}. Changed: ${changedFields || '(no diff)'} — ${structuralSeverity} for this task${runSuffix}.`;
     } else {
-      severity = 'low';
+      // Fall back to a conservative 'high' if we cannot compute a structural
+      // diff (e.g. the bound plan row was hard-deleted). Operator sees the
+      // alert; pause-runs fires; nothing slips through silently.
+      structuralSeverity = 'breaking';
+      reason = `Task "${task.title}" bound to v${task.boundPlanVersion} (plan row missing); cannot compute structural diff. Treating as breaking change.`;
     }
 
     alerts.push({
       taskId: task.id,
-      severity,
-      reason: hasRunningExecution
-        ? `Task "${task.title}" has running execution on plan v${task.boundPlanVersion}, now v${newPlanVersion}`
-        : `Task "${task.title}" bound to plan v${task.boundPlanVersion}, current is v${newPlanVersion}`,
+      severity: severityToDb(structuralSeverity),
+      structuralSeverity,
+      reason,
       currentPlanVersion: newPlanVersion,
       taskBoundVersion: task.boundPlanVersion,
+      hasRunningExecution,
     });
   }
 
-  logger.info({ projectId, newPlanVersion, alertCount: alerts.length }, 'Drift scan completed');
+  logger.info(
+    {
+      projectId,
+      newPlanVersion,
+      alertCount: alerts.length,
+      bySeverity: alerts.reduce<Record<string, number>>((acc, a) => {
+        acc[a.severity] = (acc[a.severity] ?? 0) + 1;
+        return acc;
+      }, {}),
+    },
+    'Drift scan completed',
+  );
   return { alerts };
 }
 
@@ -84,38 +246,43 @@ export async function persistDriftAlerts(
     })),
   });
 
-  // R-002 drift v2: when a new plan activates with high-severity drifts
-  // (i.e. the task has a *currently running* run on the now-superseded plan
-  // version), do two things atomically with the alert insert:
+  // R-002 drift v2 — two coordinated atomic writes, both inside the caller's
+  // transaction so a roll-back cleanly reverts everything:
   //
-  //   1. Block the task — prevents any new execution_start from racing in
-  //      while the drift sits unresolved. (existing behavior)
+  //   1. Block the task. Any task with severity at least 'medium' (i.e. the
+  //      plan change touched something the task references, or referenced
+  //      scope/standards) is blocked so no new execution_start can race in
+  //      while the drift sits unresolved. Tasks with severity='low' are
+  //      intentionally NOT blocked — by definition the change does not
+  //      affect them, so blocking would be alert fatigue.
   //
-  //   2. Move the running run(s) for those tasks to status='paused'. This is
-  //      the moment the API actively interrupts the agent — we no longer
-  //      rely on the agent reading a `driftAlerts` array in its heartbeat
-  //      response and choosing to stop. The runs/[runId] route rejects any
+  //   2. Pause running runs of those tasks. The set is `severity != 'low'
+  //      AND hasRunningExecution`. The runs/[runId] route rejects any
   //      heartbeat or complete on a paused run with 409 RUN_PAUSED; the MCP
   //      client maps that to an AbortController fire so the agent's ai-loop
   //      breaks out at the next tool call (defense in depth: SSE is
   //      best-effort, but the DB-side gate is authoritative).
   //
-  // Both writes happen inside the caller's transaction, so a rollback of
-  // plan-activate (rare but possible — e.g. constraint violation later in
-  // the route) cleanly reverts pauses too, leaving the run as it was.
-  const highSeverityTaskIds = alerts.filter((a) => a.severity === 'high').map((a) => a.taskId);
-  if (highSeverityTaskIds.length > 0) {
+  // The pause set is a subset of the block set: a run-less task can still
+  // get blocked because something it references changed, but there's nothing
+  // running to pause. The `status='running'` filter on the updateMany leaves
+  // alone any run that the agent voluntarily completed in the millisecond
+  // between drift scan and persist.
+  const blockingAlerts = alerts.filter((a) => a.severity !== 'low');
+  if (blockingAlerts.length > 0) {
+    const blockTaskIds = blockingAlerts.map((a) => a.taskId);
     await tx.task.updateMany({
-      where: { id: { in: highSeverityTaskIds } },
+      where: { id: { in: blockTaskIds } },
       data: { status: 'blocked' },
     });
-    // Filter on status='running' so a run that the agent voluntarily
-    // completed in the millisecond between drift scan and persist is left
-    // alone — we only interrupt work that is actually in flight.
-    await tx.executionRun.updateMany({
-      where: { taskId: { in: highSeverityTaskIds }, status: 'running' },
-      data: { status: 'paused' },
-    });
+
+    const pauseTaskIds = blockingAlerts.filter((a) => a.hasRunningExecution).map((a) => a.taskId);
+    if (pauseTaskIds.length > 0) {
+      await tx.executionRun.updateMany({
+        where: { taskId: { in: pauseTaskIds }, status: 'running' },
+        data: { status: 'paused' },
+      });
+    }
   }
 
   return created;

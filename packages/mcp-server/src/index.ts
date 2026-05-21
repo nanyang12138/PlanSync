@@ -14,6 +14,7 @@ import { registerTaskTools } from './tools/task';
 import { registerExecutionTools, heartbeatManager } from './tools/execution';
 import { registerDriftTools } from './tools/drift';
 import { registerStatusTools, getDelegationAgent } from './tools/status';
+import { isRunAborted, onRunAborted } from './abort-signal';
 
 function pushNotification(
   server: McpServer,
@@ -141,9 +142,34 @@ async function main() {
       // Execution mode: skip registration entirely — tool won't appear in AI's tool list
       if (execMode && !EXEC_ALLOWED.has(name)) return;
 
-      // Wrap handler to check delegation mode at call time
+      // Wrap handler to check (a) drift v2 run-abort flag and (b) delegation
+      // mode at call time. The abort check is first because once the run has
+      // been aborted by the API (drift, version-mismatch, race-lost), no
+      // further tool call should reach the network — the agent must stop.
       const originalHandler = rest[rest.length - 1];
       rest[rest.length - 1] = async (args: any) => {
+        const abort = isRunAborted();
+        if (abort) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  error: {
+                    code: 'RUN_ABORTED',
+                    abortCode: abort.code,
+                    message: abort.message,
+                    runId: abort.runId,
+                    taskId: abort.taskId,
+                    guidance:
+                      'This execution has been aborted by the API (drift v2). Do NOT call any more PlanSync tools. Stop the ai-loop, report the abort to the user, and let them decide next steps (rebind, cancel, or start a fresh execution after drift is resolved).',
+                  },
+                }),
+              },
+            ],
+          };
+        }
         const delegationAgent = getDelegationAgent();
         if (delegationAgent && !DELEGATION_ALLOWED.has(name)) {
           return {
@@ -171,6 +197,32 @@ async function main() {
       'Execution mode: tool filtering active',
     );
   }
+
+  // Drift v2: when the heartbeat detects RUN_PAUSED / RUN_STALE_VERSION /
+  // RUN_RACE_LOST, push a structured notification to the client. The CLI
+  // mcp-client recognises `data.type === 'execution_aborted'` and fires its
+  // local AbortController so the ai-loop exits at the next turn boundary.
+  // Generic MCP clients (Claude Code, Cursor, …) see an 'error'-level log
+  // message they can render in chat. Heartbeat already stops itself; this
+  // is purely the "tell the agent" half.
+  onRunAborted((reason) => {
+    Promise.resolve()
+      .then(() =>
+        server.server.sendLoggingMessage({
+          level: 'error',
+          logger: 'plansync',
+          data: {
+            type: 'execution_aborted',
+            message: `⚠ EXECUTION ABORTED (${reason.code}): ${reason.message}`,
+            ...reason,
+          },
+        }),
+      )
+      .catch((err: unknown) => {
+        logger.warn({ err }, 'Failed to push execution_aborted notification');
+      });
+    heartbeatManager.stopAll();
+  });
 
   registerProjectTools(server, api);
   registerMemberTools(server, api);

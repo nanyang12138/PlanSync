@@ -13,6 +13,10 @@ export type PlanSyncEventType =
   | 'task_started'
   | 'task_completed'
   | 'execution_stale'
+  // Drift v2: emitted when a run transitions to `superseded` outside the
+  // normal complete/fail/cancel paths — today only from the pause-ack
+  // timeout scanner; future ack_pause endpoint will reuse this type.
+  | 'execution_superseded'
   | 'suggestion_created'
   | 'suggestion_resolved'
   | 'comment_added'
