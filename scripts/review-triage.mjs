@@ -572,6 +572,12 @@ async function main() {
       // Apply fingerprint dedup to overflow too: items whose fingerprint
       // matches an open issue get surfaced as a link rather than
       // re-listed in the umbrella, which would silently double-track.
+      // For linked entries we ALSO post the "again in PR #N" comment to
+      // the canonical issue (mirroring the main-loop behavior) so the
+      // canonical issue remains the source of truth for cross-PR
+      // recurrence — otherwise overflow recurrences would only show up
+      // in the umbrella body and the canonical issue's history would
+      // miss them.
       const overflowEntries = [];
       for (const f of overflow) {
         const fp = fingerprint(f.file, f.text);
@@ -585,6 +591,19 @@ async function main() {
       }
       const newEntries = overflowEntries.filter((e) => !e.existing);
       const linkedEntries = overflowEntries.filter((e) => e.existing);
+
+      for (const e of linkedEntries) {
+        try {
+          await addIssueComment(
+            e.existing.number,
+            `又在 PR #${PR_NUMBER} 出现（overflow 路径，详见 umbrella issue）：${e.f.text}\n\n来源评论：${sourceLink}`,
+          );
+        } catch (err) {
+          console.warn(
+            `Could not cross-link overflow finding ${e.fp} to #${e.existing.number}: ${err.message}`,
+          );
+        }
+      }
 
       const umbrellaTitle = `[review-finding/umbrella] PR #${PR_NUMBER}: ${overflow.length} additional findings`;
       const umbrellaBodyParts = [
@@ -641,6 +660,14 @@ async function main() {
     throw issueMutationFatal;
   }
 
+  // Cross-PR comment-back for items that landed on existing issues during
+  // overflow processing. The main-loop dedup already calls addIssueComment;
+  // overflow's linkedEntries previously only appeared in the umbrella body,
+  // which meant the canonical issue lost track of recurring PRs. Mirror
+  // the main-loop behavior here. Wrapped in its own try/catch — failure
+  // here should not block the PR summary or trigger lock release.
+  // (We track them in `created`/`linked` for the summary regardless.)
+
   const summaryLines = [
     TRIAGE_SUMMARY_MARKER,
     `### 🔎 Cursor Review Triage（不阻塞）`,
@@ -674,7 +701,17 @@ async function main() {
   }
   summaryLines.push('> 不阻塞合并。查看积压：`gh issue list --label review-finding`。');
 
-  await postPRComment(PR_NUMBER, summaryLines.join('\n'));
+  // PR summary post is best-effort: by this point all issue mutations have
+  // succeeded (or been recorded as failures above). A flaky GitHub
+  // post-comment 5xx should NOT cause the workflow to exit non-zero and
+  // permanently leave the reaction lock in a "comment never triaged"
+  // state — the `gh issue list --label review-finding` view is still
+  // accurate without the summary.
+  try {
+    await postPRComment(PR_NUMBER, summaryLines.join('\n'));
+  } catch (err) {
+    console.warn(`postPRComment failed (non-fatal): ${err.message}`);
+  }
   console.log('Done.');
 }
 

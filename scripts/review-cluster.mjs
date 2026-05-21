@@ -357,7 +357,45 @@ async function main() {
   }
 
   const condensed = issues.map(condenseFinding);
-  const userPayload = JSON.stringify(condensed, null, 2);
+
+  // Cap the LLM payload. With 2000 condensed records of ~300 chars each,
+  // a naive stringify produces ~600KB which is wasteful (token-cost) and
+  // risks context-length issues. We trim oldest-first to a hard byte
+  // budget; truncation is surfaced both in the report and the step
+  // summary so the user knows clustering ran on a subset.
+  const PAYLOAD_BYTE_BUDGET = 80 * 1024; // ~80 KB ≈ ~20K tokens for input
+  let payloadInput = condensed;
+  let payloadTruncatedFrom = null;
+  let userPayload = JSON.stringify(condensed, null, 2);
+  if (Buffer.byteLength(userPayload, 'utf8') > PAYLOAD_BYTE_BUDGET) {
+    // Bisect down by halving until we fit (cheap, predictable). Keep most
+    // recent items — they're more likely to reflect current code state.
+    let kept = condensed.slice();
+    while (Buffer.byteLength(JSON.stringify(kept, null, 2), 'utf8') > PAYLOAD_BYTE_BUDGET) {
+      kept = kept.slice(Math.floor(kept.length * 0.2)); // drop oldest 20%
+      if (kept.length === 0) break;
+    }
+    payloadInput = kept;
+    payloadTruncatedFrom = condensed.length;
+    userPayload = JSON.stringify(payloadInput, null, 2);
+    console.warn(
+      `LLM payload trimmed from ${payloadTruncatedFrom} to ${kept.length} findings (~${Math.round(
+        Buffer.byteLength(userPayload, 'utf8') / 1024,
+      )} KB).`,
+    );
+    const summaryFile = process.env.GITHUB_STEP_SUMMARY;
+    if (summaryFile) {
+      const fs = await import('node:fs');
+      await fs.promises.appendFile(
+        summaryFile,
+        `\n> ⚠ cluster LLM input trimmed from ${payloadTruncatedFrom} to ${kept.length} findings to fit ~${PAYLOAD_BYTE_BUDGET / 1024} KB budget.\n`,
+      );
+    }
+  }
+  // Reference for downstream validation: even if LLM hallucinates issue
+  // numbers from beyond the trimmed set, our validNumbers filter below
+  // will drop them.
+  void payloadInput;
 
   let raw;
   try {

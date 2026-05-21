@@ -204,8 +204,11 @@ async function main() {
   // Second pass: run remote file-missing checks with bounded concurrency.
   // Each check is up to 2 API calls (PR state + contents). We process in
   // chunks so the wall time scales with `total / CONCURRENCY` instead of
-  // strictly serial.
-  const CONCURRENCY = 6;
+  // strictly serial. With CONCURRENCY=10 and ~400ms per item, a worst
+  // case 2000-issue sweep (all needing checks) finishes in ~80 seconds,
+  // leaving ample margin under the 10-minute workflow timeout. The cap
+  // is conservative re. GitHub secondary rate limits.
+  const CONCURRENCY = 10;
   const targets = preprocessed.filter((p) => p.needsFileCheck);
   for (let i = 0; i < targets.length; i += CONCURRENCY) {
     const chunk = targets.slice(i, i + CONCURRENCY);
