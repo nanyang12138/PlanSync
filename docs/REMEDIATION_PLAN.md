@@ -617,7 +617,7 @@
 
 #### R-027 [HIGH] MCP `task_update` schema 复用 shared
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
