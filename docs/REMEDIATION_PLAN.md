@@ -1335,7 +1335,7 @@
 
 #### R-071 [LOW] `/worker` Ctrl+C 中断子进程
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
