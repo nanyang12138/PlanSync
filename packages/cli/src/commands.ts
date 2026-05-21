@@ -304,6 +304,7 @@ export async function handleSlashCommand(
 
   if (cmd === '/clear') {
     ctx.history.length = 0;
+    ctx.rawInput.unmountForMenu();
     console.log(`\n${c.dim}Conversation history cleared.${c.reset}\n`);
     return 'handled';
   }
@@ -313,6 +314,7 @@ export async function handleSlashCommand(
     const state = cfg.verbose
       ? `${c.cyan}Verbose on${c.reset}  ${c.dim}(tool inputs/outputs shown)${c.reset}`
       : `${c.dim}Verbose off  (tool inputs/outputs hidden)${c.reset}`;
+    ctx.rawInput.unmountForMenu();
     console.log(`\n  ${state}\n`);
     return 'handled';
   }
@@ -322,6 +324,7 @@ export async function handleSlashCommand(
     const targetId = parts[1]?.trim();
 
     if (ctx.history.length > 0) {
+      ctx.rawInput.unmountForMenu();
       console.log(
         `\n${c.yellow}Session already active (${ctx.history.length} messages). Use /clear first.${c.reset}\n`,
       );
@@ -330,6 +333,7 @@ export async function handleSlashCommand(
 
     const sessions = listSessions(cfg.project);
     if (sessions.length === 0) {
+      ctx.rawInput.unmountForMenu();
       console.log(`\n${c.dim}No previous sessions found for this project.${c.reset}\n`);
       return 'handled';
     }
@@ -371,6 +375,7 @@ export async function handleSlashCommand(
 
     const msgs = loadSessionById(cfg.project, chosenId);
     if (msgs.length === 0) {
+      ctx.rawInput.unmountForMenu();
       console.log(`\n${c.yellow}Session "${chosenId}" not found or empty.${c.reset}\n`);
       return 'handled';
     }
@@ -378,6 +383,7 @@ export async function handleSlashCommand(
     ctx.history.push(...msgs);
     const meta = sessions.find((s) => s.id === chosenId);
     const dateStr = meta ? new Date(meta.startedAt).toLocaleString() : '';
+    ctx.rawInput.unmountForMenu();
     console.log(
       `\n${c.green}✔${c.reset} Resumed session ${c.dim}${chosenId}${c.reset}${dateStr ? ` (${dateStr})` : ''} — ${Math.floor(msgs.length / 2)} turns loaded.\n`,
     );
@@ -482,10 +488,12 @@ export async function handleSlashCommand(
   if (cmd === '/exec') {
     const taskId = parts[1]?.trim();
     if (!taskId) {
+      ctx.rawInput.unmountForMenu();
       console.log(`\n${c.yellow}Usage: /exec <taskId>${c.reset}\n`);
       return 'handled';
     }
     if (!cfg.project) {
+      ctx.rawInput.unmountForMenu();
       console.log(
         `\n${c.yellow}No project selected. Use /project to select one first.${c.reset}\n`,
       );
@@ -499,6 +507,7 @@ export async function handleSlashCommand(
 
   if (cmd === '/worker') {
     if (!cfg.project) {
+      ctx.rawInput.unmountForMenu();
       console.log(
         `\n${c.yellow}No project selected. Use /project to select one first.${c.reset}\n`,
       );
@@ -520,11 +529,13 @@ export async function handleSlashCommand(
       );
       pending = (res.data || []) as Array<{ id: string; title: string; priority: string }>;
     } catch {
+      ctx.rawInput.unmountForMenu();
       console.log(`\n${c.red}✗ Failed to fetch tasks.${c.reset}\n`);
       return 'handled';
     }
 
     if (pending.length === 0) {
+      ctx.rawInput.unmountForMenu();
       console.log(
         `\n${c.dim}No pending agent tasks assigned to ${workerTarget}.${c.reset}\n` +
           `  Assign tasks with assigneeType="agent" and assignee="${workerTarget}" to use worker mode.\n`,

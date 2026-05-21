@@ -1245,7 +1245,7 @@
 
 #### R-065 [MEDIUM] `/clear` `/verbose` 等无 unmount 的命令统一加入 unmount
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
