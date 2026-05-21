@@ -1,275 +1,228 @@
+/**
+ * R-007 — complementary coverage for `dispatchDriftNotifications`.
+ *
+ * The companion file `drift-engine-notifications.test.ts` (added in PR #11)
+ * verifies the core invariants:
+ *   - `persistDriftAlerts` has no in-tx SSE/email side effects
+ *   - a thrown tx write suppresses any dispatch
+ *   - the happy path emits mail + per-user SSE for a single human assignee
+ *
+ * This file adds the cases that file did not cover:
+ *   1. Multi-assignee fan-out (alerts spanning two humans → two distinct
+ *      emails, two distinct per-user SSE publishes)
+ *   2. Multiple alerts owned by the same assignee bundled into ONE email
+ *      and ONE per-user publish (the body lists every affected task)
+ *   3. The email body format (bullet lines containing `"<title>": <reason>`)
+ *   4. The project-channel `eventBus.publish` is intentionally NOT touched
+ *      by `dispatchDriftNotifications` — the route owns that event, so the
+ *      helper must not double-publish it.
+ *   5. `dispatchDriftNotifications` is robust when an alert's taskId has no
+ *      matching task row (e.g. a concurrent task delete after the drift was
+ *      persisted but before dispatch ran).
+ */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// R-007: drift-engine 事件/邮件 must be moved out of the database transaction
-// so that a rolled-back $transaction never produces "ghost notifications".
-//
-// These unit tests exercise `persistDriftAlerts` and `dispatchDriftSideEffects`
-// with mocked tx / prisma / event-bus / email. We assert two things:
-//   1. `persistDriftAlerts` (the function called inside the tx) never invokes
-//      eventBus.publish, eventBus.publishToUser, or sendMail itself.
-//   2. When a caller wraps `persistDriftAlerts` in a $transaction and a later
-//      step (e.g. tx.task.updateMany) throws, no SSE/email side effect occurs
-//      — the side-effect dispatch only runs after the tx resolves.
-//
-// A separate happy-path test verifies that `dispatchDriftSideEffects` still
-// fires both channels (email + per-user SSE) when explicitly invoked.
-
-const eventBusPublish = vi.fn();
-const eventBusPublishToUser = vi.fn();
-vi.mock('../../src/lib/event-bus', () => ({
-  eventBus: {
-    publish: (...args: unknown[]) => eventBusPublish(...args),
-    publishToUser: (...args: unknown[]) => eventBusPublishToUser(...args),
-  },
-}));
-
-const sendMailMock = vi.fn();
-vi.mock('../../src/lib/email', () => ({
-  sendMail: (...args: unknown[]) => sendMailMock(...args),
-  userEmail: (n: string) => `${n}@example.test`,
-}));
-
-// prisma is only referenced by enrichDriftAlertsWithAi (unused here) but the
-// module-level import still needs to resolve.
-vi.mock('../../src/lib/prisma', () => ({
+vi.mock('@/lib/prisma', () => ({
   prisma: {
     task: { findMany: vi.fn() },
+    projectMember: { findMany: vi.fn() },
     plan: { findMany: vi.fn() },
     driftAlert: { update: vi.fn() },
     planDiff: { findUnique: vi.fn() },
-    projectMember: { findMany: vi.fn() },
   },
 }));
 
-import {
-  persistDriftAlerts,
-  dispatchDriftSideEffects,
-  type DriftNotificationPlan,
-} from '../../src/lib/drift-engine';
+vi.mock('@/lib/event-bus', () => ({
+  eventBus: {
+    publish: vi.fn(),
+    publishToUser: vi.fn(),
+  },
+}));
 
-const PROJECT_ID = 'p1';
-const TASK_ID = 't1';
+vi.mock('@/lib/email', () => ({
+  sendMail: vi.fn().mockReturnValue(true),
+  userEmail: (name: string) => `${name}@example.test`,
+}));
 
-type MockTx = {
-  driftAlert: { createManyAndReturn: ReturnType<typeof vi.fn> };
-  task: {
-    findMany: ReturnType<typeof vi.fn>;
-    updateMany: ReturnType<typeof vi.fn>;
-  };
-  projectMember: { findMany: ReturnType<typeof vi.fn> };
-};
+vi.mock('@/lib/ai/client', () => ({ aiClient: { isAvailable: false } }));
+vi.mock('@/lib/ai/plan-diff', () => ({ getOrCreatePlanDiff: vi.fn() }));
+vi.mock('@/lib/ai/impact-analysis', () => ({ analyzeTaskImpact: vi.fn() }));
 
-function makeTx(overrides: Partial<MockTx> = {}): MockTx {
+import { dispatchDriftNotifications } from '@/lib/drift-engine';
+import { eventBus } from '@/lib/event-bus';
+import { sendMail } from '@/lib/email';
+import { prisma } from '@/lib/prisma';
+
+const PROJECT = 'p1';
+
+function alert(taskId: string, severity: 'high' | 'medium' | 'low', reason: string) {
   return {
-    driftAlert: {
-      createManyAndReturn: vi.fn().mockResolvedValue([
-        {
-          id: 'alert-1',
-          taskId: TASK_ID,
-          severity: 'high',
-          reason: 'task bound to v1, now v2',
-          projectId: PROJECT_ID,
-          status: 'open',
-        },
-      ]),
-    },
-    task: {
-      findMany: vi
-        .fn()
-        .mockResolvedValue([{ id: TASK_ID, title: 'Hardening: refactor X', assignee: 'alice' }]),
-      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-    },
-    projectMember: {
-      findMany: vi.fn().mockResolvedValue([{ name: 'alice' }]),
-    },
-    ...overrides,
-  } as MockTx;
-}
-
-const SAMPLE_ALERTS = [
-  {
-    taskId: TASK_ID,
-    severity: 'high' as const,
-    reason: 'task bound to v1, now v2',
+    taskId,
+    severity,
+    reason,
     currentPlanVersion: 2,
     taskBoundVersion: 1,
-  },
-];
+  };
+}
 
-describe('R-007: persistDriftAlerts has no side effects', () => {
+describe('R-007 (complementary): multi-assignee fan-out', () => {
   beforeEach(() => {
-    eventBusPublish.mockReset();
-    eventBusPublishToUser.mockReset();
-    sendMailMock.mockReset();
+    vi.clearAllMocks();
+    (sendMail as unknown as { mockReturnValue: (v: boolean) => void }).mockReturnValue(true);
   });
 
-  it('does not publish SSE during persistence', async () => {
-    const tx = makeTx();
-    await persistDriftAlerts(tx as never, PROJECT_ID, SAMPLE_ALERTS);
-    expect(eventBusPublish).not.toHaveBeenCalled();
-    expect(eventBusPublishToUser).not.toHaveBeenCalled();
-  });
-
-  it('does not send email during persistence', async () => {
-    const tx = makeTx();
-    await persistDriftAlerts(tx as never, PROJECT_ID, SAMPLE_ALERTS);
-    expect(sendMailMock).not.toHaveBeenCalled();
-  });
-
-  it('returns alerts + notifications plan for callers to dispatch later', async () => {
-    const tx = makeTx();
-    const result = await persistDriftAlerts(tx as never, PROJECT_ID, SAMPLE_ALERTS);
-    expect(result.alerts).toHaveLength(1);
-    expect(result.alerts[0]?.id).toBe('alert-1');
-    expect(result.notifications).toEqual([
-      {
-        assignee: 'alice',
-        affected: [
-          {
-            title: 'Hardening: refactor X',
-            reason: 'task bound to v1, now v2',
-            severity: 'high',
-          },
-        ],
-      },
+  it('sends one email and one per-user publish per distinct human assignee', async () => {
+    (prisma.task.findMany as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([
+      { id: 't1', title: 'Alice task 1', assignee: 'alice' },
+      { id: 't2', title: 'Bob task 1', assignee: 'bob' },
     ]);
-  });
+    (prisma.projectMember.findMany as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([
+      { name: 'alice' },
+      { name: 'bob' },
+    ]);
 
-  it('returns empty results when no alerts provided (no side effects)', async () => {
-    const tx = makeTx();
-    const result = await persistDriftAlerts(tx as never, PROJECT_ID, []);
-    expect(result).toEqual({ alerts: [], notifications: [] });
-    expect(tx.driftAlert.createManyAndReturn).not.toHaveBeenCalled();
-    expect(eventBusPublish).not.toHaveBeenCalled();
-    expect(sendMailMock).not.toHaveBeenCalled();
-  });
+    await dispatchDriftNotifications(PROJECT, [
+      alert('t1', 'high', 'plan v1 → v2 broke alice task'),
+      alert('t2', 'medium', 'plan v1 → v2 changed bob scope'),
+    ]);
 
-  it('uses tx (not prisma) for member/task reads — observable via tx.findMany call counts', async () => {
-    const tx = makeTx();
-    await persistDriftAlerts(tx as never, PROJECT_ID, SAMPLE_ALERTS);
-    expect(tx.task.findMany).toHaveBeenCalledTimes(1);
-    expect(tx.projectMember.findMany).toHaveBeenCalledTimes(1);
-  });
+    expect(sendMail).toHaveBeenCalledTimes(2);
+    expect(eventBus.publishToUser).toHaveBeenCalledTimes(2);
 
-  it('skips notifications for non-human assignees (agents)', async () => {
-    // ProjectMember.findMany returning [] simulates the assignee being an agent
-    // (not a human) so no email/per-user push should be planned.
-    const tx = makeTx({
-      projectMember: { findMany: vi.fn().mockResolvedValue([]) },
-    });
-    const result = await persistDriftAlerts(tx as never, PROJECT_ID, SAMPLE_ALERTS);
-    expect(result.notifications).toEqual([]);
+    const recipients = (sendMail as unknown as { mock: { calls: unknown[][] } }).mock.calls
+      .map((c) => (c[0] as string[])[0])
+      .sort();
+    expect(recipients).toEqual(['alice@example.test', 'bob@example.test']);
+
+    const publishUsers = (eventBus.publishToUser as unknown as { mock: { calls: unknown[][] } }).mock.calls
+      .map((c) => c[0] as string)
+      .sort();
+    expect(publishUsers).toEqual(['alice', 'bob']);
   });
 });
 
-describe('R-007: rollback safety — no ghost SSE/mail when tx fails', () => {
+describe('R-007 (complementary): multi-alert bundling per assignee', () => {
   beforeEach(() => {
-    eventBusPublish.mockReset();
-    eventBusPublishToUser.mockReset();
-    sendMailMock.mockReset();
+    vi.clearAllMocks();
+    (sendMail as unknown as { mockReturnValue: (v: boolean) => void }).mockReturnValue(true);
   });
 
-  it('does not publish SSE when a later tx step throws (caller never reaches dispatch)', async () => {
-    // Simulate the route shape:
-    //   const { notifications } = await prisma.$transaction(async (tx) => {
-    //     const result = await persistDriftAlerts(tx, ...);
-    //     await tx.task.updateMany(...);  // <-- throws
-    //     return result;
-    //   });
-    //   dispatchDriftSideEffects(projectId, notifications);  // <-- never runs
-    const tx = makeTx({
-      task: {
-        findMany: vi
-          .fn()
-          .mockResolvedValue([{ id: TASK_ID, title: 'will rollback', assignee: 'alice' }]),
-        updateMany: vi.fn().mockRejectedValue(new Error('DB exploded')),
-      },
-    });
+  it('bundles two alerts owned by the same human into a single email/publish carrying both', async () => {
+    (prisma.task.findMany as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([
+      { id: 't1', title: 'Refactor auth', assignee: 'alice' },
+      { id: 't2', title: 'Migrate schema', assignee: 'alice' },
+    ]);
+    (prisma.projectMember.findMany as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([
+      { name: 'alice' },
+    ]);
 
-    const txCall = async () => {
-      const result = await persistDriftAlerts(tx as never, PROJECT_ID, SAMPLE_ALERTS);
-      // Caller's own write — fails, triggering rollback in a real $transaction.
-      await tx.task.updateMany({ where: { id: TASK_ID }, data: { status: 'blocked' } });
-      // This dispatch must be unreachable because the await above throws.
-      dispatchDriftSideEffects(PROJECT_ID, result.notifications);
-    };
+    await dispatchDriftNotifications(PROJECT, [
+      alert('t1', 'high', 'auth contract changed'),
+      alert('t2', 'medium', 'columns renamed'),
+    ]);
 
-    await expect(txCall()).rejects.toThrow('DB exploded');
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    expect(eventBus.publishToUser).toHaveBeenCalledTimes(1);
 
-    // Critical invariant: nothing was sent / published.
-    expect(eventBusPublish).not.toHaveBeenCalled();
-    expect(eventBusPublishToUser).not.toHaveBeenCalled();
-    expect(sendMailMock).not.toHaveBeenCalled();
+    const publishCall = (eventBus.publishToUser as unknown as { mock: { calls: unknown[][] } }).mock.calls[0];
+    expect(publishCall[0]).toBe('alice');
+    expect(publishCall[1]).toBe('drift_detected');
+    expect(publishCall[2]).toBe(PROJECT);
+    const payload = publishCall[3] as { alerts: Array<{ title: string; severity: string }> };
+    expect(payload.alerts).toHaveLength(2);
+    expect(payload.alerts.map((a) => a.title).sort()).toEqual(['Migrate schema', 'Refactor auth']);
+    expect(new Set(payload.alerts.map((a) => a.severity))).toEqual(new Set(['high', 'medium']));
   });
 
-  it('does not publish SSE when persistDriftAlerts itself throws', async () => {
-    const tx = makeTx({
-      driftAlert: {
-        createManyAndReturn: vi.fn().mockRejectedValue(new Error('insert failed')),
-      },
-    });
+  it("the bundled email body lists every affected task as a bullet line of '<title>': <reason>", async () => {
+    (prisma.task.findMany as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([
+      { id: 't1', title: 'Refactor auth', assignee: 'alice' },
+      { id: 't2', title: 'Migrate schema', assignee: 'alice' },
+    ]);
+    (prisma.projectMember.findMany as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([
+      { name: 'alice' },
+    ]);
 
-    await expect(persistDriftAlerts(tx as never, PROJECT_ID, SAMPLE_ALERTS)).rejects.toThrow(
-      'insert failed',
-    );
+    await dispatchDriftNotifications(PROJECT, [
+      alert('t1', 'high', 'auth contract changed'),
+      alert('t2', 'medium', 'columns renamed'),
+    ]);
 
-    expect(eventBusPublish).not.toHaveBeenCalled();
-    expect(eventBusPublishToUser).not.toHaveBeenCalled();
-    expect(sendMailMock).not.toHaveBeenCalled();
+    const mailCall = (sendMail as unknown as { mock: { calls: unknown[][] } }).mock.calls[0];
+    const body = mailCall[2] as string;
+    expect(body).toContain('"Refactor auth": auth contract changed');
+    expect(body).toContain('"Migrate schema": columns renamed');
+    // Sanity check that the framing copy is present.
+    expect(body).toContain('drift alerts that require your attention');
+    expect(body).toContain('log in to PlanSync');
   });
 });
 
-describe('R-007: dispatchDriftSideEffects (happy path)', () => {
+describe('R-007 (complementary): boundary between helper and route', () => {
   beforeEach(() => {
-    eventBusPublish.mockReset();
-    eventBusPublishToUser.mockReset();
-    sendMailMock.mockReset();
-    sendMailMock.mockReturnValue(true);
+    vi.clearAllMocks();
+    (sendMail as unknown as { mockReturnValue: (v: boolean) => void }).mockReturnValue(true);
   });
 
-  it('publishes per-user SSE for each assignee and sends one email', () => {
-    const plan: DriftNotificationPlan = [
-      {
-        assignee: 'alice',
-        affected: [{ title: 'T1', reason: 'r1', severity: 'high' }],
-      },
-      {
-        assignee: 'bob',
-        affected: [
-          { title: 'T2', reason: 'r2', severity: 'medium' },
-          { title: 'T3', reason: 'r3', severity: 'low' },
-        ],
-      },
-    ];
-
-    dispatchDriftSideEffects(PROJECT_ID, plan);
-
-    expect(sendMailMock).toHaveBeenCalledTimes(2);
-    expect(sendMailMock.mock.calls[0]?.[0]).toEqual(['alice@example.test']);
-    expect(sendMailMock.mock.calls[1]?.[0]).toEqual(['bob@example.test']);
-
-    expect(eventBusPublishToUser).toHaveBeenCalledTimes(2);
-    expect(eventBusPublishToUser.mock.calls[0]).toEqual([
-      'alice',
-      'drift_detected',
-      PROJECT_ID,
-      { alerts: plan[0]!.affected },
+  it('does NOT publish to the project channel — that is the calling route\'s job', async () => {
+    (prisma.task.findMany as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([
+      { id: 't1', title: 'T1', assignee: 'alice' },
     ]);
-    expect(eventBusPublishToUser.mock.calls[1]).toEqual([
-      'bob',
-      'drift_detected',
-      PROJECT_ID,
-      { alerts: plan[1]!.affected },
+    (prisma.projectMember.findMany as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([
+      { name: 'alice' },
     ]);
 
-    // The project-level publish belongs to the route, not this helper.
-    expect(eventBusPublish).not.toHaveBeenCalled();
+    await dispatchDriftNotifications(PROJECT, [alert('t1', 'high', 'r')]);
+
+    // Per-user SSE: yes; project-level SSE: must not be called from here.
+    // The activate/reactivate routes own the project-channel emit so we don't
+    // accidentally double-publish drift_detected.
+    expect(eventBus.publishToUser).toHaveBeenCalledTimes(1);
+    expect(eventBus.publish).not.toHaveBeenCalled();
+  });
+});
+
+describe('R-007 (complementary): robustness against stale alert→task references', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (sendMail as unknown as { mockReturnValue: (v: boolean) => void }).mockReturnValue(true);
   });
 
-  it('is a no-op when the notification plan is empty', () => {
-    dispatchDriftSideEffects(PROJECT_ID, []);
-    expect(sendMailMock).not.toHaveBeenCalled();
-    expect(eventBusPublish).not.toHaveBeenCalled();
-    expect(eventBusPublishToUser).not.toHaveBeenCalled();
+  it('skips alerts whose task row no longer exists / has no assignee (no crash, no mail)', async () => {
+    // Alert references t-missing but the task query returns nothing for it
+    // (e.g. task was deleted concurrently between persist and dispatch).
+    (prisma.task.findMany as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([]);
+    (prisma.projectMember.findMany as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([]);
+
+    await expect(
+      dispatchDriftNotifications(PROJECT, [alert('t-missing', 'high', 'r')]),
+    ).resolves.toBeUndefined();
+
+    expect(sendMail).not.toHaveBeenCalled();
+    expect(eventBus.publish).not.toHaveBeenCalled();
+    expect(eventBus.publishToUser).not.toHaveBeenCalled();
+  });
+
+  it('mixed batch — one assignee resolvable, one not — only dispatches the resolvable one', async () => {
+    (prisma.task.findMany as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([
+      { id: 't-known', title: 'Known task', assignee: 'alice' },
+      // t-unknown intentionally absent from the result set
+    ]);
+    (prisma.projectMember.findMany as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([
+      { name: 'alice' },
+    ]);
+
+    await dispatchDriftNotifications(PROJECT, [
+      alert('t-known', 'high', 'known reason'),
+      alert('t-unknown', 'medium', 'task gone'),
+    ]);
+
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    expect(eventBus.publishToUser).toHaveBeenCalledTimes(1);
+    const publishCall = (eventBus.publishToUser as unknown as { mock: { calls: unknown[][] } }).mock.calls[0];
+    const payload = publishCall[3] as { alerts: Array<{ title: string }> };
+    expect(payload.alerts).toEqual([
+      expect.objectContaining({ title: 'Known task', severity: 'high' }),
+    ]);
   });
 });

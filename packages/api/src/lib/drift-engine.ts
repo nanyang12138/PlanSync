@@ -64,34 +64,12 @@ export async function runDriftScan(
   return { alerts };
 }
 
-/**
- * Per-assignee notification plan produced by {@link persistDriftAlerts}.
- *
- * The drift engine collects this data inside the transaction (so it sees a
- * consistent snapshot of tasks/members) but defers the actual side effects
- * (SSE publish, email send) to the caller — see R-007. The caller is expected
- * to wait until `$transaction` resolves before calling
- * {@link dispatchDriftSideEffects}, ensuring no "ghost notifications" if the
- * transaction rolls back.
- */
-export type DriftNotificationPlan = Array<{
-  assignee: string;
-  affected: Array<{ title: string; reason: string; severity: string }>;
-}>;
-
-export interface PersistDriftAlertsResult {
-  /** Created DriftAlert rows (typed loose to avoid pulling the Prisma row type). */
-  alerts: Array<Record<string, unknown> & { id: string; taskId: string; severity: string }>;
-  /** Notification plan to be dispatched after the surrounding transaction commits. */
-  notifications: DriftNotificationPlan;
-}
-
 export async function persistDriftAlerts(
   tx: Prisma.TransactionClient | PrismaClient,
   projectId: string,
   alerts: DriftScanResult['alerts'],
-): Promise<PersistDriftAlertsResult> {
-  if (alerts.length === 0) return { alerts: [], notifications: [] };
+) {
+  if (alerts.length === 0) return [];
 
   const created = await tx.driftAlert.createManyAndReturn({
     data: alerts.map((a) => ({
@@ -106,37 +84,6 @@ export async function persistDriftAlerts(
     })),
   });
 
-  const taskIds = alerts.map((a) => a.taskId);
-  const tasks = await tx.task.findMany({
-    where: { id: { in: taskIds }, assignee: { not: null } },
-    select: { id: true, title: true, assignee: true },
-  });
-
-  // Group alerts by assignee (include severity for per-user SSE payload).
-  const byAssignee = new Map<string, Array<{ title: string; reason: string; severity: string }>>();
-  for (const alert of alerts) {
-    const task = tasks.find((t) => t.id === alert.taskId);
-    if (!task?.assignee) continue;
-    if (!byAssignee.has(task.assignee)) byAssignee.set(task.assignee, []);
-    byAssignee
-      .get(task.assignee)!
-      .push({ title: task.title, reason: alert.reason, severity: alert.severity });
-  }
-
-  let notifications: DriftNotificationPlan = [];
-  if (byAssignee.size > 0) {
-    const assigneeNames = Array.from(byAssignee.keys());
-    const humanMembers = await tx.projectMember.findMany({
-      where: { projectId, name: { in: assigneeNames }, type: 'human' },
-      select: { name: true },
-    });
-    const humanSet = new Set(humanMembers.map((m) => m.name));
-
-    notifications = Array.from(byAssignee.entries())
-      .filter(([assignee]) => humanSet.has(assignee))
-      .map(([assignee, affected]) => ({ assignee, affected }));
-  }
-
   // Block tasks with running executions so no new execution_start can race in.
   // The running execution itself stays alive — the agent is notified via heartbeat
   // driftAlerts and must stop voluntarily. The complete endpoint's drift gate
@@ -149,24 +96,53 @@ export async function persistDriftAlerts(
     });
   }
 
-  return { alerts: created as PersistDriftAlertsResult['alerts'], notifications };
+  return created;
 }
 
 /**
- * Publishes the per-user SSE event and sends notification email for each
- * human assignee in the {@link DriftNotificationPlan}. MUST be called by the
- * route handler *after* the surrounding `$transaction` resolves so that a
- * rollback never produces ghost notifications (R-007).
+ * Dispatch per-assignee SSE events and notification emails for a freshly
+ * persisted batch of drift alerts.
  *
- * The project-level `drift_detected` SSE event is the caller's
- * responsibility (the activate/reactivate routes already publish it
- * post-transaction with the alert IDs).
+ * **Always call this AFTER the enclosing `$transaction` has resolved** so a
+ * rolled-back transaction does not produce "ghost" notifications (R-007).
+ *
+ * Note: the project-channel `drift_detected` SSE event is published by the
+ * calling route (activate / reactivate), so this function only handles the
+ * per-assignee personal-channel SSE and email side-effects.
  */
-export function dispatchDriftSideEffects(
+export async function dispatchDriftNotifications(
   projectId: string,
-  notifications: DriftNotificationPlan,
-): void {
-  for (const { assignee, affected } of notifications) {
+  alerts: DriftScanResult['alerts'],
+): Promise<void> {
+  if (alerts.length === 0) return;
+
+  const taskIds = alerts.map((a) => a.taskId);
+  const tasks = await prisma.task.findMany({
+    where: { id: { in: taskIds }, assignee: { not: null } },
+    select: { id: true, title: true, assignee: true },
+  });
+
+  const byAssignee = new Map<string, Array<{ title: string; reason: string; severity: string }>>();
+  for (const alert of alerts) {
+    const task = tasks.find((t) => t.id === alert.taskId);
+    if (!task?.assignee) continue;
+    if (!byAssignee.has(task.assignee)) byAssignee.set(task.assignee, []);
+    byAssignee
+      .get(task.assignee)!
+      .push({ title: task.title, reason: alert.reason, severity: alert.severity });
+  }
+
+  if (byAssignee.size === 0) return;
+
+  const assigneeNames = Array.from(byAssignee.keys());
+  const humanMembers = await prisma.projectMember.findMany({
+    where: { projectId, name: { in: assigneeNames }, type: 'human' },
+    select: { name: true },
+  });
+  const humanSet = new Set(humanMembers.map((m) => m.name));
+
+  for (const [assignee, affected] of byAssignee.entries()) {
+    if (!humanSet.has(assignee)) continue;
     const lines = affected.map((a) => `  • "${a.title}": ${a.reason}`).join('\n');
     const body = [
       `The following tasks have drift alerts that require your attention:`,

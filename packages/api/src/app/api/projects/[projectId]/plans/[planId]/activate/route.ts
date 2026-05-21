@@ -8,7 +8,7 @@ import {
   runDriftScan,
   persistDriftAlerts,
   enrichDriftAlertsWithAi,
-  dispatchDriftSideEffects,
+  dispatchDriftNotifications,
 } from '@/lib/drift-engine';
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
@@ -42,7 +42,10 @@ export async function POST(req: NextRequest, { params }: Params) {
       }
     }
 
-    const { activated, driftAlerts, driftNotifications } = await prisma.$transaction(async (tx) => {
+    // R-007: scan and persist drift alerts inside the transaction, but defer
+    // all SSE/email side-effects until after the transaction commits so that
+    // a rolled-back transaction never produces "ghost" notifications.
+    const { activated, driftAlerts, scannedAlerts } = await prisma.$transaction(async (tx) => {
       await tx.plan.updateMany({
         where: { projectId: params.projectId, status: 'active' },
         data: { status: 'superseded' },
@@ -58,20 +61,16 @@ export async function POST(req: NextRequest, { params }: Params) {
       });
 
       const scanResult = await runDriftScan(tx, params.projectId, a.version);
-      const { alerts, notifications } = await persistDriftAlerts(
-        tx,
-        params.projectId,
-        scanResult.alerts,
-      );
+      const alerts = await persistDriftAlerts(tx, params.projectId, scanResult.alerts);
 
-      return { activated: a, driftAlerts: alerts, driftNotifications: notifications };
+      return { activated: a, driftAlerts: alerts, scannedAlerts: scanResult.alerts };
     });
 
-    // Side effects (email + per-user SSE) deferred until after the transaction
-    // commits — R-007: prevents ghost notifications on rollback.
-    dispatchDriftSideEffects(params.projectId, driftNotifications);
-
+    // Side-effects are intentionally fired *after* the transaction has
+    // committed (R-007). If the transaction had thrown, the lines below would
+    // never execute and no notifications would be sent.
     if (driftAlerts.length > 0) {
+      await dispatchDriftNotifications(params.projectId, scannedAlerts);
       enrichDriftAlertsWithAi(params.projectId, activated.id, driftAlerts).catch((err) =>
         logger.error({ err }, 'Background AI drift enrichment failed'),
       );
