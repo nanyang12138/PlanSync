@@ -146,6 +146,12 @@ model Task {
   expectedOutput      String?   @map("expected_output")
   agentConstraints    String[]  @map("agent_constraints")
   planDeliverableRefs String[]  @default([]) @map("plan_deliverable_refs")
+  // Drift v2: which plan constraint / standard items this task depends on.
+  // Empty array is interpreted by the severity classifier as "depends on
+  // all" (the conservative default), so existing rows behave exactly as
+  // before until an owner narrows them.
+  planConstraintRefs  String[]  @default([]) @map("plan_constraint_refs")
+  planStandardRefs    String[]  @default([]) @map("plan_standard_refs")
   startDate           DateTime? @map("start_date")
   dueDate             DateTime? @map("due_date")
   createdAt           DateTime  @default(now()) @map("created_at")

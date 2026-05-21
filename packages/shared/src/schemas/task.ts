@@ -40,6 +40,11 @@ export const createTaskSchema = z
     expectedOutput: z.string().optional(),
     agentConstraints: z.array(z.string()).default([]),
     planDeliverableRefs: z.array(z.string()).default([]),
+    // Drift v2: which plan constraint / standard items this task depends on.
+    // Empty = "depends on all" (conservative). Narrow these to reduce false
+    // 'breaking' classifications for unrelated plan edits.
+    planConstraintRefs: z.array(z.string()).default([]),
+    planStandardRefs: z.array(z.string()).default([]),
     startDate: z.coerce.date().optional(),
     dueDate: z.coerce.date().optional(),
   })
@@ -68,6 +73,8 @@ export const updateTaskSchema = z
     expectedOutput: z.string().nullable().optional(),
     agentConstraints: z.array(z.string()).optional(),
     planDeliverableRefs: z.array(z.string()).optional(),
+    planConstraintRefs: z.array(z.string()).optional(),
+    planStandardRefs: z.array(z.string()).optional(),
     startDate: z.coerce.date().nullable().optional(),
     dueDate: z.coerce.date().nullable().optional(),
   })
@@ -100,6 +107,8 @@ export const taskSchema = z.object({
   expectedOutput: z.string().nullable(),
   agentConstraints: z.array(z.string()),
   planDeliverableRefs: z.array(z.string()),
+  planConstraintRefs: z.array(z.string()),
+  planStandardRefs: z.array(z.string()),
   startDate: z.coerce.date().nullable(),
   dueDate: z.coerce.date().nullable(),
   createdAt: z.coerce.date(),
