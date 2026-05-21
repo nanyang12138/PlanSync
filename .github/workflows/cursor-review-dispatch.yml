@@ -31,6 +31,17 @@ permissions:
   contents: read
   issues: write
 
+# Serialize dispatch attempts on a per-issue basis. Without this, two
+# rapid `cursor:dispatch` label events on the same issue could both pass
+# the in-script idempotency check before either has acquired the
+# `dispatched` label, race to call the Cursor API, and double-spawn the
+# agent. `cancel-in-progress: false` ensures the second attempt waits
+# for the first to finish (and observes its label/comment) rather than
+# being killed mid-acquire.
+concurrency:
+  group: cursor-review-dispatch-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
 jobs:
   dispatch:
     if: |

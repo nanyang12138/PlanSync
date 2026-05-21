@@ -26,7 +26,18 @@
  */
 const { GITHUB_TOKEN, GH_REPO, REVIEW_STALE_DRY_RUN, REVIEW_STALE_OWNER } = process.env;
 
-if (import.meta.url === `file://${process.argv[1]}` && (!GITHUB_TOKEN || !GH_REPO)) {
+import { pathToFileURL } from 'node:url';
+
+const __isMainScript = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return import.meta.url === pathToFileURL(process.argv[1]).href;
+  } catch {
+    return false;
+  }
+})();
+
+if (__isMainScript && (!GITHUB_TOKEN || !GH_REPO)) {
   console.error('Missing required env: GITHUB_TOKEN, GH_REPO');
   process.exit(1);
 }
@@ -299,8 +310,7 @@ async function main() {
 
 export { extractFilePath, extractSourcePrNumber, ageInDays };
 
-const isMainScript = import.meta.url === `file://${process.argv[1]}`;
-if (isMainScript) {
+if (__isMainScript) {
   main().catch((err) => {
     console.error(err.stack || err.message);
     process.exit(1);

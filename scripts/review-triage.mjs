@@ -33,12 +33,25 @@ const {
   REVIEW_TRIAGE_DRY_RUN,
 } = process.env;
 
+import { pathToFileURL } from 'node:url';
+
+// Defensive direct-execution detection. `node script.mjs` resolves
+// `process.argv[1]` to an absolute path, so a naive
+// `file://${process.argv[1]}` comparison works on POSIX in practice;
+// `pathToFileURL` is preferred because it also handles paths with
+// spaces / non-ASCII / Windows-drive prefixes correctly.
+const __isMainScript = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return import.meta.url === pathToFileURL(process.argv[1]).href;
+  } catch {
+    return false;
+  }
+})();
+
 // Only enforce env when the module is run directly. Importing for unit
 // testing must not trigger this exit.
-if (
-  import.meta.url === `file://${process.argv[1]}` &&
-  (!GITHUB_TOKEN || !GH_REPO || !PR_NUMBER || !COMMENT_ID)
-) {
+if (__isMainScript && (!GITHUB_TOKEN || !GH_REPO || !PR_NUMBER || !COMMENT_ID)) {
   console.error('Missing required env: GITHUB_TOKEN, GH_REPO, PR_NUMBER, COMMENT_ID');
   process.exit(1);
 }
@@ -510,13 +523,22 @@ async function main() {
         let alreadyLinkedFromThisPr = bodyRefsThisPr;
         if (!alreadyLinkedFromThisPr) {
           try {
-            const cs = await ghApi(
-              'GET',
-              `/repos/${GH_REPO}/issues/${existing.number}/comments?per_page=100`,
-            );
-            alreadyLinkedFromThisPr = (cs || []).some(
-              (c) => c.body && (c.body.includes(prRefBody) || c.body.includes(prRefShort)),
-            );
+            // Paginate; older issues with > 100 comments would silently
+            // skip the marker and we'd repeat-comment.
+            let page = 1;
+            while (!alreadyLinkedFromThisPr) {
+              const cs = await ghApi(
+                'GET',
+                `/repos/${GH_REPO}/issues/${existing.number}/comments?per_page=100&page=${page}`,
+              );
+              if (!Array.isArray(cs) || cs.length === 0) break;
+              alreadyLinkedFromThisPr = cs.some(
+                (c) => c.body && (c.body.includes(prRefBody) || c.body.includes(prRefShort)),
+              );
+              if (cs.length < 100) break;
+              page += 1;
+              if (page > 10) break;
+            }
           } catch (err) {
             console.warn(`Could not check existing comments on #${existing.number}:`, err.message);
           }
@@ -547,22 +569,58 @@ async function main() {
     }
 
     if (overflow.length > 0) {
+      // Apply fingerprint dedup to overflow too: items whose fingerprint
+      // matches an open issue get surfaced as a link rather than
+      // re-listed in the umbrella, which would silently double-track.
+      const overflowEntries = [];
+      for (const f of overflow) {
+        const fp = fingerprint(f.file, f.text);
+        let existingForOverflow = null;
+        try {
+          existingForOverflow = await searchExistingIssue(fp);
+        } catch {
+          /* fall through; treat as new */
+        }
+        overflowEntries.push({ f, fp, existing: existingForOverflow });
+      }
+      const newEntries = overflowEntries.filter((e) => !e.existing);
+      const linkedEntries = overflowEntries.filter((e) => e.existing);
+
       const umbrellaTitle = `[review-finding/umbrella] PR #${PR_NUMBER}: ${overflow.length} additional findings`;
-      const umbrellaBody = [
+      const umbrellaBodyParts = [
         `Cursor Review 在 PR #${PR_NUMBER} 上提了 ${targets.length} 条 must/should-fix，超过单 PR 上限 ${MAX_ISSUES}，剩余 ${overflow.length} 条聚合在此：`,
         ``,
-        ...overflow.map((f) => {
-          const fp = fingerprint(f.file, f.text);
-          return `- [ ] **${f.severity}** \`${f.file || '(unknown)'}\`: ${f.text} <sub>fp: \`${fp}\`</sub>`;
-        }),
-        ``,
-        `来源：${sourceLink}`,
-        ``,
-        `Triage 不阻塞 PR 合并。`,
-      ].join('\n');
-      const issue = await createIssue(umbrellaTitle, umbrellaBody, ['review-finding', 'umbrella']);
+      ];
+      if (newEntries.length > 0) {
+        umbrellaBodyParts.push(`**新条目（无既有 open issue 命中指纹）**：`, ``);
+        umbrellaBodyParts.push(
+          ...newEntries.map(
+            (e) =>
+              `- [ ] **${e.f.severity}** \`${e.f.file || '(unknown)'}\`: ${e.f.text} <sub>fp: \`${e.fp}\`</sub>`,
+          ),
+          ``,
+        );
+      }
+      if (linkedEntries.length > 0) {
+        umbrellaBodyParts.push(`**已有同指纹 open issue（不再重复登记）**：`, ``);
+        umbrellaBodyParts.push(
+          ...linkedEntries.map(
+            (e) =>
+              `- [#${e.existing.number}](${e.existing.html_url}) (${e.f.severity}) \`${e.f.file || '(unknown)'}\` <sub>fp: \`${e.fp}\`</sub>`,
+          ),
+          ``,
+        );
+      }
+      umbrellaBodyParts.push(`来源：${sourceLink}`, ``, `Triage 不阻塞 PR 合并。`);
+
+      const issue = await createIssue(umbrellaTitle, umbrellaBodyParts.join('\n'), [
+        'review-finding',
+        'umbrella',
+      ]);
       umbrellaUrl = issue.html_url;
-      console.log(`Created umbrella issue #${issue.number}`);
+      console.log(
+        `Created umbrella issue #${issue.number} (${newEntries.length} new + ${linkedEntries.length} linked)`,
+      );
     }
   } catch (err) {
     issueMutationFailed = true;
@@ -631,8 +689,7 @@ export {
   normalizeFinding,
 };
 
-const isMainScript = import.meta.url === `file://${process.argv[1]}`;
-if (isMainScript) {
+if (__isMainScript) {
   main().catch((err) => {
     console.error(err.stack || err.message);
     process.exit(1);

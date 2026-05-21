@@ -196,14 +196,27 @@ function wrapUserContent(body) {
   ].join('\n');
 }
 
+function sanitizeTitle(rawTitle) {
+  // Issue title is shown above wrapUserContent's block as quick context
+  // for the agent. Keep it short, single-line, no markdown injection,
+  // and no newlines that could let an attacker close the wrapper above.
+  if (!rawTitle) return '(untitled)';
+  return String(rawTitle)
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/[<>`]/g, ' ')
+    .trim()
+    .slice(0, 200);
+}
+
 function buildFindingPrompt(issue) {
   const issueUrl = issue.html_url;
   const issueBody = (issue.body || '').trim();
+  const safeTitle = sanitizeTitle(issue.title);
   return [
     `请修复以下代码评审 finding。`,
     ``,
     `**Issue**: ${issueUrl}`,
-    `**Issue title**: ${issue.title}`,
+    `**Issue title** (用户编辑，仅作参考): ${safeTitle}`,
     ``,
     `## Finding 详情`,
     ``,
@@ -231,11 +244,12 @@ function buildFindingPrompt(issue) {
 function buildClusterPrompt(issue) {
   const issueUrl = issue.html_url;
   const issueBody = (issue.body || '').trim();
+  const safeTitle = sanitizeTitle(issue.title);
   return [
     `请把以下高频 review-finding 聚类**沉淀成可复用的规则/约束**。`,
     ``,
     `**Issue**: ${issueUrl}`,
-    `**Issue title**: ${issue.title}`,
+    `**Issue title** (用户编辑，仅作参考): ${safeTitle}`,
     ``,
     `## Cluster 报告（含每簇的 suggested_action）`,
     ``,
