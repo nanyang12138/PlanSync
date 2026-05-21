@@ -10,11 +10,14 @@ import { dispatchWebhooks } from '@/lib/webhook';
 
 type Params = { params: { projectId: string; planId: string; suggestionId: string } };
 
+type SuggestionTx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
+
 async function applySuggestion(
+  tx: SuggestionTx,
   planId: string,
   suggestion: { field: string; action: string; value: string },
 ): Promise<boolean> {
-  const plan = await prisma.plan.findUnique({ where: { id: planId } });
+  const plan = await tx.plan.findUnique({ where: { id: planId } });
   if (!plan) return false;
 
   const arrayFields = ['constraints', 'standards', 'deliverables', 'openQuestions'] as const;
@@ -24,12 +27,12 @@ async function applySuggestion(
     suggestion.action === 'set' &&
     stringFields.includes(suggestion.field as (typeof stringFields)[number])
   ) {
-    await prisma.plan.update({
+    await tx.plan.update({
       where: { id: planId },
       data: { [suggestion.field]: suggestion.value },
     });
 
-    await prisma.planSuggestion.updateMany({
+    await tx.planSuggestion.updateMany({
       where: {
         planId,
         field: suggestion.field,
@@ -44,7 +47,7 @@ async function applySuggestion(
     arrayFields.includes(suggestion.field as (typeof arrayFields)[number])
   ) {
     const currentArr = (plan as Record<string, unknown>)[suggestion.field] as string[];
-    await prisma.plan.update({
+    await tx.plan.update({
       where: { id: planId },
       data: { [suggestion.field]: [...currentArr, suggestion.value] },
     });
@@ -54,7 +57,7 @@ async function applySuggestion(
     arrayFields.includes(suggestion.field as (typeof arrayFields)[number])
   ) {
     const currentArr = (plan as Record<string, unknown>)[suggestion.field] as string[];
-    await prisma.plan.update({
+    await tx.plan.update({
       where: { id: planId },
       data: { [suggestion.field]: currentArr.filter((v) => v !== suggestion.value) },
     });
@@ -85,21 +88,23 @@ export async function POST(req: NextRequest, { params }: Params) {
     }
 
     if (action === 'accept') {
-      const applied = await applySuggestion(params.planId, suggestion);
-      if (!applied) {
-        throw new AppError(
-          ErrorCode.BAD_REQUEST,
-          `Invalid field/action combination: ${suggestion.action} on "${suggestion.field}"`,
-        );
-      }
-      const updated = await prisma.planSuggestion.update({
-        where: { id: params.suggestionId },
-        data: {
-          status: 'accepted',
-          resolvedBy: auth.userName,
-          resolvedComment: body.comment,
-          resolvedAt: new Date(),
-        },
+      const updated = await prisma.$transaction(async (tx) => {
+        const applied = await applySuggestion(tx, params.planId, suggestion);
+        if (!applied) {
+          throw new AppError(
+            ErrorCode.BAD_REQUEST,
+            `Invalid field/action combination: ${suggestion.action} on "${suggestion.field}"`,
+          );
+        }
+        return tx.planSuggestion.update({
+          where: { id: params.suggestionId },
+          data: {
+            status: 'accepted',
+            resolvedBy: auth.userName,
+            resolvedComment: body.comment,
+            resolvedAt: new Date(),
+          },
+        });
       });
 
       await createActivity({
