@@ -46,6 +46,12 @@ function getToolHandler(
   return undefined;
 }
 
+function getToolInputSchema(server: McpServer, name: string): { safeParse: (input: unknown) => { success: boolean; error?: { issues: Array<{ path: (string | number)[]; message: string }> } } } | undefined {
+  // @ts-expect-error - internal SDK structure not in type definitions
+  const tools = (server as any)._registeredTools ?? {};
+  return tools[name]?.inputSchema;
+}
+
 async function callTool(server: McpServer, name: string, args: Record<string, unknown>) {
   const handler = getToolHandler(server, name);
   if (!handler) {
@@ -193,6 +199,44 @@ describe('M: MCP Tools (Unit, mock ApiClient)', () => {
         expect.stringContaining('/activate'),
         expect.any(Object),
       );
+    });
+
+    // R-038: review_reject schema must enforce a non-empty comment.
+    // approve must keep comment optional.
+    it('R-038: plansync_review_reject schema rejects missing comment', () => {
+      const schema = getToolInputSchema(server, 'plansync_review_reject');
+      expect(schema).toBeDefined();
+      const result = schema!.safeParse({ projectId: 'p1', planId: 'pl1' });
+      expect(result.success).toBe(false);
+      const paths = (result.error?.issues ?? []).map((i) => i.path.join('.'));
+      expect(paths).toContain('comment');
+    });
+
+    it('R-038: plansync_review_reject schema rejects empty-string comment', () => {
+      const schema = getToolInputSchema(server, 'plansync_review_reject');
+      expect(schema).toBeDefined();
+      const result = schema!.safeParse({ projectId: 'p1', planId: 'pl1', comment: '' });
+      expect(result.success).toBe(false);
+      const paths = (result.error?.issues ?? []).map((i) => i.path.join('.'));
+      expect(paths).toContain('comment');
+    });
+
+    it('R-038: plansync_review_reject schema accepts non-empty comment', () => {
+      const schema = getToolInputSchema(server, 'plansync_review_reject');
+      expect(schema).toBeDefined();
+      const result = schema!.safeParse({
+        projectId: 'p1',
+        planId: 'pl1',
+        comment: 'goal mismatch',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('R-038: plansync_review_approve schema still allows missing comment', () => {
+      const schema = getToolInputSchema(server, 'plansync_review_approve');
+      expect(schema).toBeDefined();
+      const result = schema!.safeParse({ projectId: 'p1', planId: 'pl1' });
+      expect(result.success).toBe(true);
     });
   });
 
