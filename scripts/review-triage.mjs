@@ -268,7 +268,8 @@ function buildIssueBody(f, fp, sourceLink) {
     `---`,
     ``,
     `Triage 由 \`cursor-review-triage\` 自动写入，**不阻塞 PR 合并**。`,
-    `下一步：人工核对后可打 \`cursor:dispatch\` 标签派 Cursor Cloud Agent 修复（dispatch workflow 暂未上线）。`,
+    `下一步：人工核对后打 \`cursor:dispatch\` 标签即可派 Cursor Cloud Agent 修复（合并后自动关闭本 issue）。`,
+    `如确认是误报或不修：打 \`auto-closed:wontfix\` 标签后手动关闭。`,
   ].join('\n');
 }
 
@@ -337,10 +338,34 @@ async function main() {
     const existing = await searchExistingIssue(fp);
 
     if (existing) {
-      await addIssueComment(
-        existing.number,
-        `又在 PR #${PR_NUMBER} 出现：${f.text}\n\n来源评论：${sourceLink}`,
-      );
+      const prRefBody = `/pull/${PR_NUMBER}`;
+      const prRefShort = `PR #${PR_NUMBER}`;
+      const bodyRefsThisPr =
+        existing.body && (existing.body.includes(prRefBody) || existing.body.includes(prRefShort));
+      let alreadyLinkedFromThisPr = bodyRefsThisPr;
+      if (!alreadyLinkedFromThisPr) {
+        try {
+          const cs = await ghApi(
+            'GET',
+            `/repos/${GH_REPO}/issues/${existing.number}/comments?per_page=100`,
+          );
+          alreadyLinkedFromThisPr = (cs || []).some(
+            (c) => c.body && (c.body.includes(prRefBody) || c.body.includes(prRefShort)),
+          );
+        } catch (err) {
+          console.warn(`Could not check existing comments on #${existing.number}:`, err.message);
+        }
+      }
+      if (alreadyLinkedFromThisPr) {
+        console.log(
+          `Finding ${fp} already linked to issue #${existing.number} from this PR; not commenting again`,
+        );
+      } else {
+        await addIssueComment(
+          existing.number,
+          `又在 PR #${PR_NUMBER} 出现：${f.text}\n\n来源评论：${sourceLink}`,
+        );
+      }
       linked.push({ ...f, fingerprint: fp, issue: existing });
       console.log(`Linked finding ${fp} to existing issue #${existing.number}`);
       continue;

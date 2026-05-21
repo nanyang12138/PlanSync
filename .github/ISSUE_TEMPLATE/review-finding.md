@@ -26,4 +26,5 @@ labels: review-finding
 
 ---
 
-Triage 不阻塞 PR 合并。后续可打 `cursor:dispatch` 标签派 Cursor Cloud Agent 修复。
+Triage 不阻塞 PR 合并。打 `cursor:dispatch` 标签即派 Cursor Cloud Agent 修复（合并后本 issue 自动关闭）。
+若是误报或不修：打 `auto-closed:wontfix` 标签后手动关闭。
