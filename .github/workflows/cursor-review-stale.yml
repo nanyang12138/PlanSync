@@ -1,12 +1,14 @@
 name: cursor-review-stale
 
 # Weekly conservative sweep over open `review-finding` issues:
-#   - >= 14d + referenced file gone on default branch  → auto-close
+#   - >= 14d + referenced file 404s on default branch  → label
+#     `stale:file-missing` + one-time comment (never auto-closes; a 404
+#     could mean rename/move, which keeps the finding valid at a new path)
 #   - >= 30/60/90d                                     → label stale:Nd
 #   - 90d also pings the repo owner
 #
-# No LLM is used; auto-close only fires when GitHub itself confirms the file
-# is gone. Manual override: add the `do-not-close` label.
+# No LLM is used; every label decision is a deterministic check against
+# issue metadata or the contents API.
 
 on:
   schedule:

@@ -4,16 +4,18 @@
  *
  * Conservative weekly sweep over open `review-finding` issues:
  *
- *   - >= 14d old + the file referenced in the body no longer exists on the
- *     default branch  → auto-close + label `auto-closed:file-removed`.
- *     This is the only deterministic action.
+ *   - >= 14d old + the file referenced in the body 404s on the default
+ *     branch → label `stale:file-missing` + one-time comment naming the
+ *     missing path. We do NOT auto-close: a 404 conflates rename/move
+ *     (issue still valid at the new path) with actual deletion (issue moot).
+ *     The label gives the owner a deterministic backlog to triage manually.
  *
  *   - >= 30d / 60d / 90d old → label `stale:30d` / `stale:60d` / `stale:90d`
  *     (idempotent: skipped if the label already present). 90d+ also gets
  *     a one-time mention comment to nudge the owner.
  *
- * No LLM is used here — auto-closing relies only on "does the file still
- * exist?" which is cheap and never produces false positives.
+ * No LLM is used here — every label decision is a deterministic check
+ * against issue metadata or the repo's contents API.
  *
  * Required env:
  *   GITHUB_TOKEN, GH_REPO
@@ -98,17 +100,6 @@ async function commentIssue(issueNumber, body) {
   await ghApi('POST', `/repos/${GH_REPO}/issues/${issueNumber}/comments`, { body });
 }
 
-async function closeIssue(issueNumber, reason = 'completed') {
-  if (DRY_RUN) {
-    console.log(`[dry-run] closeIssue #${issueNumber} (${reason})`);
-    return;
-  }
-  await ghApi('PATCH', `/repos/${GH_REPO}/issues/${issueNumber}`, {
-    state: 'closed',
-    state_reason: reason,
-  });
-}
-
 function extractFilePath(body) {
   if (!body) return null;
   const m = body.match(/\*\*File\*\*:\s*`([^`]+)`/);
@@ -138,7 +129,7 @@ async function main() {
 
   const stats = {
     total: issues.length,
-    closedFileRemoved: [],
+    fileMissing: [],
     stale30: [],
     stale60: [],
     stale90: [],
@@ -150,12 +141,11 @@ async function main() {
     const age = ageInDays(issue.created_at);
     const file = extractFilePath(issue.body);
 
-    if (
-      file &&
-      age >= 14 &&
-      !labels.has('auto-closed:file-removed') &&
-      !labels.has('do-not-close')
-    ) {
+    // File-missing detection: a 404 on the default branch could mean the
+    // file was deleted (issue moot) OR renamed/moved (issue still valid at
+    // a new path). We can't tell those apart cheaply, so we surface a
+    // label + one comment and let the owner decide. Never auto-close here.
+    if (file && age >= 14 && !labels.has('stale:file-missing')) {
       let exists = true;
       try {
         exists = await fileExistsOnDefault(file);
@@ -166,12 +156,11 @@ async function main() {
       if (!exists) {
         await commentIssue(
           issue.number,
-          `自动检测：文件 \`${file}\` 在默认分支已不存在，关闭本 issue（\`auto-closed:file-removed\`）。如确认还需跟进请手动 reopen 并打 \`do-not-close\` 标签。`,
+          `自动检测：路径 \`${file}\` 在默认分支已不存在。可能是**文件被删除**（这条 finding 应关闭）或**文件被 rename/move**（finding 仍有效，只是路径变了）——sweep 无法区分这两种情况，因此**不**自动关单，仅打 \`stale:file-missing\` 标签由你判断后处理。`,
         );
-        await addLabels(issue.number, ['auto-closed:file-removed']);
-        await closeIssue(issue.number, 'not_planned');
-        stats.closedFileRemoved.push(issue.number);
-        continue;
+        await addLabels(issue.number, ['stale:file-missing']);
+        stats.fileMissing.push(issue.number);
+        // fall through so age-based stale labels can also apply
       }
     }
 
@@ -202,7 +191,7 @@ async function main() {
   await appendSummary(``);
   await appendSummary(`- Open findings scanned: **${stats.total}**`);
   await appendSummary(
-    `- Auto-closed (file removed): **${stats.closedFileRemoved.length}** ${stats.closedFileRemoved.map((n) => `#${n}`).join(' ')}`,
+    `- Newly labelled stale:file-missing: **${stats.fileMissing.length}** ${stats.fileMissing.map((n) => `#${n}`).join(' ')}`,
   );
   await appendSummary(
     `- Newly labelled stale:30d: **${stats.stale30.length}** ${stats.stale30.map((n) => `#${n}`).join(' ')}`,
