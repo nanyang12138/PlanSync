@@ -542,6 +542,38 @@ function PromptUI({ promptStr: initialPrompt, commands, history, events }: Promp
   );
 }
 
+// ─── Non-TTY fallback reader (R-068) ──────────────────────────────────────────
+
+/**
+ * Read exactly one line from `input`, writing `prompt` to `output` first.
+ *
+ * Resolves to:
+ *   - the typed line (without the trailing newline) when the user presses Enter
+ *   - `null` when the input stream closes before a line arrives (EOF)
+ *
+ * Pure helper around Node's `readline`. Pulled out of {@link InkSession} so
+ * tests can drive it with a {@link PassThrough} pair instead of stubbing
+ * `process.stdin` / `process.stdout`.
+ */
+export function readSingleLine(
+  prompt: string,
+  input: NodeJS.ReadableStream,
+  output: NodeJS.WritableStream,
+): Promise<string | null> {
+  return new Promise<string | null>((resolve) => {
+    let settled = false;
+    const rl = createInterface({ input, output });
+    const finish = (value: string | null) => {
+      if (settled) return;
+      settled = true;
+      rl.close();
+      resolve(value);
+    };
+    rl.question(prompt, (answer) => finish(answer));
+    rl.on('close', () => finish(null));
+  });
+}
+
 // ─── InkSession — same API as RawInput ───────────────────────────────────────
 
 export class InkSession {
@@ -556,6 +588,13 @@ export class InkSession {
   private resumeGate: Promise<void> | null = null;
   private resolveGate: (() => void) | null = null;
 
+  // R-068: non-TTY fallback. Ink requires a real TTY for raw mode; piped or
+  // redirected stdin (CI runs, `echo hi | plansync`, scripted tests) would
+  // otherwise hang forever waiting for keypress events that will never arrive.
+  // When stdin is not a TTY we switch to a plain readline-based reader that
+  // emits one prompt per turn.
+  private fallbackMode = false;
+
   /** Set by callers to intercept Ctrl+C during non-AI phases */
   onSigint: (() => void) | null = null;
 
@@ -569,6 +608,10 @@ export class InkSession {
   /** Load saved history (called once at startup). */
   start(savedHistory: string[]): void {
     this.history = [...savedHistory];
+    // R-068: pin the fallback decision at startup. Re-evaluating inside
+    // nextLine() each turn would defeat tests that swap stdin after
+    // construction; pinning it also matches RawInput.start() semantics.
+    this.fallbackMode = !process.stdin.isTTY;
   }
 
   /** Update the prompt string displayed to the left of the cursor. */
@@ -603,6 +646,11 @@ export class InkSession {
     // Wait for any pending resume (e.g. /code subprocess still running)
     if (this.resumeGate) await this.resumeGate;
     if (this.paused) return null;
+
+    // R-068: non-TTY fallback — pipes, redirects, CI runs.
+    if (this.fallbackMode) {
+      return this.fallbackReadLine();
+    }
 
     if (!this.instance) {
       // First call (or after pause): mount the persistent Ink app
@@ -721,6 +769,25 @@ export class InkSession {
         resolve(answer);
       });
     });
+  }
+
+  /**
+   * R-068: readline fallback used when stdin is not a TTY (piped input,
+   * CI, scripted tests). Mirrors RawInput.fallbackReadLine — resolves to
+   * the typed line, or null when stdin closes before a line is delivered.
+   */
+  private async fallbackReadLine(): Promise<string | null> {
+    const value = await readSingleLine(this.promptStr, process.stdin, process.stdout);
+    if (value !== null && value.trim()) {
+      this.history.push(value);
+      appendInputHistory(value);
+    }
+    return value;
+  }
+
+  /** R-068: exposed for tests — true when stdin was not a TTY at start(). */
+  isFallbackMode(): boolean {
+    return this.fallbackMode;
   }
 
   clearDisplay(): void {}
