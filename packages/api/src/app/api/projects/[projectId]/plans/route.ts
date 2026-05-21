@@ -3,7 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { authenticate, requireProjectRole, requireNotExecScoped } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { validateBody, validateSearchParams } from '@/lib/validate';
-import { createPlanSchema, paginationSchema } from '@plansync/shared';
+import { AppError, ErrorCode, createPlanSchema, paginationSchema } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
 import { eventBus } from '@/lib/event-bus';
 
@@ -41,6 +41,26 @@ export async function POST(req: NextRequest, { params }: Params) {
     requireNotExecScoped(auth);
     await requireProjectRole(auth, params.projectId, 'owner');
     const body = await validateBody(req, createPlanSchema);
+
+    const blocking = await prisma.plan.findFirst({
+      where: {
+        projectId: params.projectId,
+        status: { in: ['draft', 'proposed'] },
+      },
+      orderBy: { version: 'desc' },
+      select: { id: true, version: true, title: true, status: true },
+    });
+    if (blocking) {
+      throw new AppError(
+        ErrorCode.STATE_CONFLICT,
+        `Cannot create a new plan: v${blocking.version} "${blocking.title}" already exists with status "${blocking.status}". Update, propose, or activate the existing plan first.`,
+        {
+          blockingPlanId: blocking.id,
+          blockingVersion: blocking.version,
+          blockingStatus: blocking.status,
+        },
+      );
+    }
 
     const latestPlan = await prisma.plan.findFirst({
       where: { projectId: params.projectId },
