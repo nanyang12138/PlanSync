@@ -9,6 +9,27 @@ const FAILED_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
 const SCAN_INTERVAL_MS = 60 * 1000; // check every 60 seconds
 
 /**
+ * R-056: Postgres advisory-lock key gate that ensures only one API instance
+ * runs the heartbeat scan at a time. Without it, every replica scans the
+ * same `paused`/`stale` rows in lockstep and emits duplicate SSE events,
+ * webhook deliveries, and `execution_superseded` activity entries.
+ *
+ * Key layout: two-int4 form `pg_try_advisory_xact_lock(namespace, slot)`.
+ *   namespace = 0x504C5359 ('PLSY') — a stable PlanSync-only namespace so
+ *     we don't collide with any future advisory locks elsewhere in the
+ *     codebase (or with locks set by ops tooling sharing the same DB).
+ *   slot      = 1 — heartbeat scanner. Reserve subsequent slots
+ *     (2, 3, ...) for other future background sweepers.
+ *
+ * Xact-scoped (not session-scoped) on purpose: Prisma's pooled connections
+ * make session locks racey to release. Tying the lock to the surrounding
+ * `$transaction` lets Postgres auto-release on commit/rollback, so even
+ * an unexpected throw can never leak the slot.
+ */
+const ADVISORY_LOCK_NAMESPACE = 0x504c5359; // 'PLSY'
+const ADVISORY_LOCK_SLOT_HEARTBEAT_SCANNER = 1;
+
+/**
  * How long a run may sit in `paused` before the scanner force-supersedes it.
  * Read from env on each scan so operators can tune without a restart; falls
  * back to 5 minutes. Not put through env.ts because the value is only
@@ -32,129 +53,157 @@ export async function scanStaleExecutions(): Promise<void> {
   const failedThreshold = new Date(now.getTime() - FAILED_THRESHOLD_MS);
 
   try {
-    const failedRuns = await prisma.executionRun.findMany({
-      where: {
-        status: 'stale',
-        lastHeartbeatAt: { lt: failedThreshold },
+    // R-056: wrap the whole scan in a single transaction so we can grab a
+    // Postgres advisory lock that auto-releases on commit. If another API
+    // instance is already mid-scan, pg_try_advisory_xact_lock returns false
+    // and we skip this round cleanly — preventing duplicate SSE events,
+    // webhook deliveries, and activity entries on multi-replica deployments.
+    //
+    // The transaction is intentionally short-lived: each scan touches a
+    // handful of rows and finishes in well under a second on typical
+    // workloads. We bump the default 5s tx timeout to 60s to leave headroom
+    // for an unusually large backlog without breaking the lock.
+    await prisma.$transaction(
+      async (tx) => {
+        const lockRows = await tx.$queryRaw<Array<{ locked: boolean }>>`
+          SELECT pg_try_advisory_xact_lock(
+            ${ADVISORY_LOCK_NAMESPACE}::int4,
+            ${ADVISORY_LOCK_SLOT_HEARTBEAT_SCANNER}::int4
+          ) AS locked
+        `;
+        if (!lockRows[0]?.locked) {
+          logger.debug(
+            'Heartbeat scanner: advisory lock held by another instance, skipping this round',
+          );
+          return;
+        }
+
+        const failedRuns = await tx.executionRun.findMany({
+          where: {
+            status: 'stale',
+            lastHeartbeatAt: { lt: failedThreshold },
+          },
+          include: { task: { select: { projectId: true, title: true } } },
+        });
+
+        for (const run of failedRuns) {
+          await tx.executionRun.update({
+            where: { id: run.id },
+            data: { status: 'failed', endedAt: now },
+          });
+          logger.warn(
+            { runId: run.id, taskId: run.taskId },
+            'Execution marked failed (heartbeat timeout 30min)',
+          );
+        }
+
+        const staleRuns = await tx.executionRun.findMany({
+          where: {
+            status: 'running',
+            lastHeartbeatAt: { lt: staleThreshold },
+          },
+          include: { task: { select: { projectId: true, title: true } } },
+        });
+
+        for (const run of staleRuns) {
+          await tx.executionRun.update({
+            where: { id: run.id },
+            data: { status: 'stale' },
+          });
+
+          eventBus.publish(run.task.projectId, 'execution_stale', {
+            runId: run.id,
+            taskId: run.taskId,
+            executorName: run.executorName,
+            lastHeartbeatAt: run.lastHeartbeatAt?.toISOString(),
+          });
+          dispatchWebhooks(run.task.projectId, 'execution_stale', {
+            runId: run.id,
+            taskId: run.taskId,
+            executorName: run.executorName,
+            lastHeartbeatAt: run.lastHeartbeatAt?.toISOString(),
+          });
+
+          logger.warn(
+            { runId: run.id, taskId: run.taskId },
+            'Execution marked stale (heartbeat timeout 5min)',
+          );
+        }
+
+        // R-002 follow-up: sweep paused runs that nobody ack-paused. Once the
+        // drift engine moves a run to 'paused', the agent has a window to call
+        // ack_pause (future) with a progress note; if that window passes the
+        // run is force-superseded so it doesn't sit half-alive forever. We
+        // measure the window from the latest heartbeat (heartbeat is rejected
+        // with RUN_PAUSED post-pause, so the timestamp freezes within one
+        // heartbeat interval of the pause). Runs that started but never
+        // managed to heartbeat fall back to `startedAt`.
+        const pauseTimeoutMs = pauseAckTimeoutMs();
+        const pauseAckThreshold = new Date(now.getTime() - pauseTimeoutMs);
+        const pausedRuns = await tx.executionRun.findMany({
+          where: {
+            status: 'paused',
+            OR: [
+              { lastHeartbeatAt: { lt: pauseAckThreshold } },
+              { AND: [{ lastHeartbeatAt: null }, { startedAt: { lt: pauseAckThreshold } }] },
+            ],
+          },
+          include: { task: { select: { projectId: true, title: true } } },
+        });
+
+        for (const run of pausedRuns) {
+          // Atomic transition with WHERE status='paused' so a concurrent
+          // ack_pause path (which would itself move the run to superseded
+          // with a progress note) wins the race cleanly and the scanner's
+          // update simply no-ops (count===0). Not an error.
+          const upd = await tx.executionRun.updateMany({
+            where: { id: run.id, status: 'paused' },
+            data: {
+              status: 'superseded',
+              endedAt: now,
+              outputSummary: `auto-superseded: pause-ack-timeout after ${pauseTimeoutMs}ms`,
+            },
+          });
+          if (upd.count === 0) continue;
+
+          eventBus.publish(run.task.projectId, 'execution_superseded', {
+            runId: run.id,
+            taskId: run.taskId,
+            executorName: run.executorName,
+            reason: 'pause_timeout',
+            pauseTimeoutMs,
+          });
+          dispatchWebhooks(run.task.projectId, 'execution_superseded', {
+            runId: run.id,
+            taskId: run.taskId,
+            executorName: run.executorName,
+            reason: 'pause_timeout',
+            pauseTimeoutMs,
+          });
+          await createActivity({
+            projectId: run.task.projectId,
+            type: 'execution_superseded',
+            actorName: 'system',
+            actorType: 'system',
+            summary: `Execution on "${run.task.title}" auto-superseded (pause-ack-timeout, ${pauseTimeoutMs}ms)`,
+            metadata: { runId: run.id, taskId: run.taskId, reason: 'pause_timeout' },
+          });
+
+          logger.warn(
+            { runId: run.id, taskId: run.taskId, pauseTimeoutMs },
+            'Paused execution force-superseded (pause-ack-timeout)',
+          );
+        }
+
+        if (staleRuns.length > 0 || failedRuns.length > 0 || pausedRuns.length > 0) {
+          logger.info(
+            { stale: staleRuns.length, failed: failedRuns.length, pauseSwept: pausedRuns.length },
+            'Heartbeat scan completed',
+          );
+        }
       },
-      include: { task: { select: { projectId: true, title: true } } },
-    });
-
-    for (const run of failedRuns) {
-      await prisma.executionRun.update({
-        where: { id: run.id },
-        data: { status: 'failed', endedAt: now },
-      });
-      logger.warn(
-        { runId: run.id, taskId: run.taskId },
-        'Execution marked failed (heartbeat timeout 30min)',
-      );
-    }
-
-    const staleRuns = await prisma.executionRun.findMany({
-      where: {
-        status: 'running',
-        lastHeartbeatAt: { lt: staleThreshold },
-      },
-      include: { task: { select: { projectId: true, title: true } } },
-    });
-
-    for (const run of staleRuns) {
-      await prisma.executionRun.update({
-        where: { id: run.id },
-        data: { status: 'stale' },
-      });
-
-      eventBus.publish(run.task.projectId, 'execution_stale', {
-        runId: run.id,
-        taskId: run.taskId,
-        executorName: run.executorName,
-        lastHeartbeatAt: run.lastHeartbeatAt?.toISOString(),
-      });
-      dispatchWebhooks(run.task.projectId, 'execution_stale', {
-        runId: run.id,
-        taskId: run.taskId,
-        executorName: run.executorName,
-        lastHeartbeatAt: run.lastHeartbeatAt?.toISOString(),
-      });
-
-      logger.warn(
-        { runId: run.id, taskId: run.taskId },
-        'Execution marked stale (heartbeat timeout 5min)',
-      );
-    }
-
-    // R-002 follow-up: sweep paused runs that nobody ack-paused. Once the
-    // drift engine moves a run to 'paused', the agent has a window to call
-    // ack_pause (future) with a progress note; if that window passes the
-    // run is force-superseded so it doesn't sit half-alive forever. We
-    // measure the window from the latest heartbeat (heartbeat is rejected
-    // with RUN_PAUSED post-pause, so the timestamp freezes within one
-    // heartbeat interval of the pause). Runs that started but never
-    // managed to heartbeat fall back to `startedAt`.
-    const pauseTimeoutMs = pauseAckTimeoutMs();
-    const pauseAckThreshold = new Date(now.getTime() - pauseTimeoutMs);
-    const pausedRuns = await prisma.executionRun.findMany({
-      where: {
-        status: 'paused',
-        OR: [
-          { lastHeartbeatAt: { lt: pauseAckThreshold } },
-          { AND: [{ lastHeartbeatAt: null }, { startedAt: { lt: pauseAckThreshold } }] },
-        ],
-      },
-      include: { task: { select: { projectId: true, title: true } } },
-    });
-
-    for (const run of pausedRuns) {
-      // Atomic transition with WHERE status='paused' so a concurrent
-      // ack_pause path (which would itself move the run to superseded
-      // with a progress note) wins the race cleanly and the scanner's
-      // update simply no-ops (count===0). Not an error.
-      const upd = await prisma.executionRun.updateMany({
-        where: { id: run.id, status: 'paused' },
-        data: {
-          status: 'superseded',
-          endedAt: now,
-          outputSummary: `auto-superseded: pause-ack-timeout after ${pauseTimeoutMs}ms`,
-        },
-      });
-      if (upd.count === 0) continue;
-
-      eventBus.publish(run.task.projectId, 'execution_superseded', {
-        runId: run.id,
-        taskId: run.taskId,
-        executorName: run.executorName,
-        reason: 'pause_timeout',
-        pauseTimeoutMs,
-      });
-      dispatchWebhooks(run.task.projectId, 'execution_superseded', {
-        runId: run.id,
-        taskId: run.taskId,
-        executorName: run.executorName,
-        reason: 'pause_timeout',
-        pauseTimeoutMs,
-      });
-      await createActivity({
-        projectId: run.task.projectId,
-        type: 'execution_superseded',
-        actorName: 'system',
-        actorType: 'system',
-        summary: `Execution on "${run.task.title}" auto-superseded (pause-ack-timeout, ${pauseTimeoutMs}ms)`,
-        metadata: { runId: run.id, taskId: run.taskId, reason: 'pause_timeout' },
-      });
-
-      logger.warn(
-        { runId: run.id, taskId: run.taskId, pauseTimeoutMs },
-        'Paused execution force-superseded (pause-ack-timeout)',
-      );
-    }
-
-    if (staleRuns.length > 0 || failedRuns.length > 0 || pausedRuns.length > 0) {
-      logger.info(
-        { stale: staleRuns.length, failed: failedRuns.length, pauseSwept: pausedRuns.length },
-        'Heartbeat scan completed',
-      );
-    }
+      { timeout: 60_000 },
+    );
   } catch (err) {
     logger.error({ err }, 'Heartbeat scan error');
   }
