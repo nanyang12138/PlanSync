@@ -18,6 +18,24 @@ const baseEnvSchema = z.object({
   PORT: z.coerce.number().default(3001),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+
+  // R-035: validate runtime-used env vars so misconfiguration surfaces at boot
+  // instead of silently no-oping deep inside the AI / email subsystems.
+
+  // AI features (Anthropic / AMD LLM). All optional — without one of the keys
+  // AI features silently no-op (semantic diff, completion verification, etc.).
+  LLM_API_KEY: z.string().min(1).optional(),
+  LLM_API_BASE: z.string().url().optional(),
+  LLM_MODEL_NAME: z.string().min(1).optional(),
+  ANTHROPIC_API_KEY: z.string().min(1).optional(),
+  ANTHROPIC_BASE_URL: z.string().url().optional(),
+  ANTHROPIC_DEFAULT_SONNET_MODEL: z.string().min(1).optional(),
+  ANTHROPIC_CUSTOM_HEADERS: z.string().optional(),
+
+  // Email notifications (sendmail-based).
+  EMAIL_FROM: z.string().min(1).optional(),
+  EMAIL_DOMAIN: z.string().min(1).optional(),
+  EMAIL_SENDMAIL: z.string().min(1).optional(),
 });
 
 export const envSchema = baseEnvSchema.superRefine((data, ctx) => {
