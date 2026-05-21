@@ -8,12 +8,14 @@ export const paginationSchema = z.object({
 export const actorTypeSchema = z.enum(['human', 'agent', 'system']);
 
 export const activityTypeSchema = z.enum([
+  'project_created',
   'plan_created',
   'plan_proposed',
   'plan_activated',
   'plan_superseded',
   'plan_reactivated',
   'plan_updated',
+  'plan_draft_updated',
   'review_approved',
   'review_rejected',
   'suggestion_created',
@@ -21,10 +23,12 @@ export const activityTypeSchema = z.enum([
   'suggestion_rejected',
   'task_created',
   'task_claimed',
+  'task_declined',
   'task_started',
   'task_completed',
   'task_cancelled',
   'task_rebound',
+  'comment_added',
   'drift_detected',
   'drift_resolved',
   'member_added',
@@ -32,6 +36,7 @@ export const activityTypeSchema = z.enum([
   'execution_started',
   'execution_completed',
   'execution_failed',
+  'execution_superseded',
 ]);
 
 export const createActivitySchema = z.object({
