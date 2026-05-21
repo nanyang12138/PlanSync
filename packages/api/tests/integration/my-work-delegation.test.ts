@@ -94,7 +94,7 @@ describe('R-018: GET /api/my-work?user=<name>', () => {
     await cleanupProject(projectId);
   });
 
-  it('owner can query an agent\'s work via ?user=<agent>', async () => {
+  it("owner can query an agent's work via ?user=<agent>", async () => {
     const res = await myWorkGet(
       makeReq('/api/my-work', {
         userName: owner,
@@ -104,14 +104,10 @@ describe('R-018: GET /api/my-work?user=<name>', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.tasks).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id: agentTaskId, projectId }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ id: agentTaskId, projectId })]),
     );
     expect(body.drifts).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ taskId: agentTaskId, severity: 'high' }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ taskId: agentTaskId, severity: 'high' })]),
     );
     // Delegated mode always returns 0 unread (counter is per-caller, not
     // per-target) — this prevents leaking the agent's read state.

@@ -23,9 +23,7 @@ export async function GET(req: NextRequest) {
     // Projects where the target user is a member (humans OR agents — owners
     // commonly want to inspect an agent's pending work).
     const targetMemberships = await prisma.projectMember.findMany({
-      where: isDelegated
-        ? { name: targetUser }
-        : { name: targetUser, type: 'human' },
+      where: isDelegated ? { name: targetUser } : { name: targetUser, type: 'human' },
       include: { project: { select: { id: true, name: true } } },
     });
 
