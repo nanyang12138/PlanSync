@@ -17,6 +17,7 @@ interface InputAPI {
   rawReadLine(prompt: string): Promise<string>;
 }
 import { launchCode, launchExec, launchAutoExec } from './exec.js';
+import { createWorkerInterruptHandler, type WorkerChildHandle } from './worker-interrupt.js';
 
 // ─── API helpers ──────────────────────────────────────────────────────────────
 
@@ -577,14 +578,23 @@ export async function handleSlashCommand(
 
     const selectedSet = new Set(selectedIds);
 
-    // Worker loop — pause rawInput so the terminal doesn't accept commands mid-loop
+    // Worker loop — pause rawInput so the terminal doesn't accept commands mid-loop.
+    // R-071: because rawInput is paused, no keypress events fire while the worker
+    // runs, so a SIGINT handler hung off `rawInput.onSigint` never executed.
+    // Register a process-level handler instead and track the live Genie child so
+    // Ctrl+C can interrupt the in-flight execution immediately instead of waiting
+    // for it to run to completion.
     ctx.rawInput.pause();
     let stopWorker = false;
-    const origSigint = ctx.rawInput.onSigint;
-    ctx.rawInput.onSigint = () => {
-      stopWorker = true;
-      console.log(`\n${c.yellow}⚠ Worker stopping after current task...${c.reset}`);
-    };
+    let currentChild: WorkerChildHandle | null = null;
+    const sigintHandler = createWorkerInterruptHandler({
+      setStop: () => {
+        stopWorker = true;
+      },
+      getChild: () => currentChild,
+      logger: (msg) => console.log(`\n${c.yellow}${msg}${c.reset}`),
+    });
+    process.on('SIGINT', sigintHandler);
 
     const taskCount = selectedSet.size;
     console.log(
@@ -684,7 +694,15 @@ export async function handleSlashCommand(
           }
 
           // Execute autonomously in git worktree sandbox
-          await launchAutoExec(task.id, runId, cfg.project, taskPack, { autonomous: true });
+          await launchAutoExec(task.id, runId, cfg.project, taskPack, {
+            autonomous: true,
+            // R-071: surface the child handle so the worker SIGINT handler can
+            // forward Ctrl+C straight to Genie instead of letting the
+            // autonomous run finish first.
+            onChildSpawned: (child) => {
+              currentChild = child;
+            },
+          });
           selectedSet.delete(task.id);
           if (selectedSet.size === 0) {
             stopWorker = true;
@@ -699,7 +717,8 @@ export async function handleSlashCommand(
         }
       }
     } finally {
-      ctx.rawInput.onSigint = origSigint;
+      process.off('SIGINT', sigintHandler);
+      currentChild = null;
       ctx.rawInput.resume();
       console.log(`\n${c.blue}[Worker] Stopped.${c.reset}\n`);
     }
