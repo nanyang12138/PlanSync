@@ -677,7 +677,7 @@
 
 #### R-031 [HIGH] shared `driftAlertSchema` 补 `affectedAreas` 与 `planDiffId`
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
