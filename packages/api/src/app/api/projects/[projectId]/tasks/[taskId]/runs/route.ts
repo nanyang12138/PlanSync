@@ -44,8 +44,8 @@ export async function GET(req: NextRequest, { params }: Params) {
 
 export async function POST(req: NextRequest, { params }: Params) {
   try {
-    const auth = await authenticate(req);
-    await requireProjectRole(auth, params.projectId);
+    const rawAuth = await authenticate(req);
+    const auth = await requireProjectRole(rawAuth, params.projectId);
     const body = await validateBody(req, createExecutionRunSchema);
 
     const task = await prisma.task.findUnique({ where: { id: params.taskId } });
@@ -68,17 +68,41 @@ export async function POST(req: NextRequest, { params }: Params) {
           `Task is assigned to agent "${task.assignee}" — cannot execute as "${body.executorName}". Use task_claim/task_decline to change assignee.`,
         );
       }
-      // Auto-register agent as a project member on first execution — no manual setup required
-      await prisma.projectMember.upsert({
+
+      // R-012: Don't auto-register unknown agents. Previously, any developer could call
+      // execution_start with an arbitrary executorName and silently add that agent as a
+      // project member. Now: the agent must already be a member, OR the caller must be an
+      // owner explicitly passing ?auto_register=true to opt into auto-provisioning.
+      const existingAgent = await prisma.projectMember.findUnique({
         where: { projectId_name: { projectId: params.projectId, name: body.executorName } },
-        create: {
-          projectId: params.projectId,
-          name: body.executorName,
-          role: 'developer',
-          type: 'agent',
-        },
-        update: {},
       });
+
+      if (!existingAgent) {
+        const autoRegister = req.nextUrl.searchParams.get('auto_register') === 'true';
+        const isOwner = auth.projectRole === 'owner';
+        if (!autoRegister || !isOwner) {
+          throw new AppError(
+            ErrorCode.NOT_FOUND,
+            `Agent "${body.executorName}" is not a registered member of this project. Ask the project owner to add the agent (or, if you are the owner, pass ?auto_register=true to auto-provision).`,
+          );
+        }
+        await prisma.projectMember.create({
+          data: {
+            projectId: params.projectId,
+            name: body.executorName,
+            role: 'developer',
+            type: 'agent',
+          },
+        });
+      } else if (existingAgent.type !== 'agent') {
+        // The name exists but is registered as a human member — refuse to execute as an
+        // agent under a human's identity. The human would need to start the run themselves
+        // via executorType:'human'.
+        throw new AppError(
+          ErrorCode.FORBIDDEN,
+          `Member "${body.executorName}" is registered as a human; cannot start agent execution under this name.`,
+        );
+      }
     }
 
     const taskPack = await buildTaskPack(params.taskId, params.projectId);
