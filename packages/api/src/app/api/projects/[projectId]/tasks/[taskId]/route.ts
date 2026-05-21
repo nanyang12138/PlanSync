@@ -181,6 +181,27 @@ export async function DELETE(req: NextRequest, { params }: Params) {
       throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
     }
 
+    // R-047: A `DELETE task` while an ExecutionRun is `running` would silently
+    // cascade-delete the run record, orphaning a live agent's heartbeats and
+    // its exec-scoped API key. The owner must explicitly cancel the run first
+    // (via /runs/[runId] action=cancel) so audit + key revocation happen
+    // through the normal path.
+    const runningRun = await prisma.executionRun.findFirst({
+      where: { taskId: params.taskId, status: 'running' },
+      select: { id: true, executorName: true, startedAt: true },
+    });
+    if (runningRun) {
+      throw new AppError(
+        ErrorCode.STATE_CONFLICT,
+        'Task has a running execution; cancel the run before deleting.',
+        {
+          runId: runningRun.id,
+          executorName: runningRun.executorName,
+          startedAt: runningRun.startedAt.toISOString(),
+        },
+      );
+    }
+
     await prisma.task.delete({ where: { id: params.taskId } });
     return NextResponse.json({ data: { deleted: true } });
   } catch (error) {

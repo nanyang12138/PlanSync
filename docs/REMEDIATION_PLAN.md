@@ -948,7 +948,7 @@
 
 #### R-047 [MEDIUM] DELETE task 拒绝有 running run 的请求
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B5
 - **depends_on**: —
 - **effort**: small
