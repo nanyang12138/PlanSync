@@ -3,18 +3,27 @@ import { prisma } from '@/lib/prisma';
 import { authenticate, requireProjectRole } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { validateSearchParams } from '@/lib/validate';
-import { paginationSchema } from '@plansync/shared';
+import { paginationSchema, driftStatusSchema } from '@plansync/shared';
 
 type Params = { params: { projectId: string } };
+
+// R-042: validate `?status=` against shared driftStatusSchema so unknown
+// values return 400 VALIDATION_ERROR instead of silently filtering to none.
+const driftListQuerySchema = paginationSchema.extend({
+  status: driftStatusSchema.optional(),
+});
 
 export async function GET(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);
-    const { page = 1, pageSize = 20 } = validateSearchParams(req, paginationSchema);
+    const {
+      page = 1,
+      pageSize = 20,
+      status,
+    } = validateSearchParams(req, driftListQuerySchema);
     const skip = (page - 1) * pageSize;
 
-    const status = req.nextUrl.searchParams.get('status') || undefined;
     const where = {
       projectId: params.projectId,
       ...(status ? { status } : {}),
