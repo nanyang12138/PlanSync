@@ -2135,6 +2135,26 @@
 
 ---
 
+#### R-134 [MEDIUM] plans.test.ts 抽出 `resetDraftPlans` helper
+
+- **status**: done
+- **batch**: B12
+- **depends_on**: —
+- **effort**: small
+- **files**: `packages/api/tests/helpers/request.ts`, `packages/api/tests/integration/plans.test.ts`
+- **symptom**: PR #42 (R-032) CI `test` job 红 — 新加的三个 R-032 测试没在创建 draft 前清理已有 draft，被 R-036 引入的 server-side "one draft per project" guard 挡了，`POST /plans` 返回 400 而非 201，下一行 `(await res.json()).data.id` 抛 TypeError。
+- **root_cause**: R-036 (PR #43) 把"每项目唯一 active draft"做成 server-side hard guard 后，plans.test.ts 里 8 处建 draft 的测试都得手动 `prisma.plan.updateMany(...) → superseded` 清场。这段 inline snippet 重复 8 次，任何新加测试只要忘抄就 CI 红。
+- **fix_steps**:
+  1. 在 `tests/helpers/request.ts` 新增 `resetDraftPlans(projectId)` helper，封装上述 `updateMany` 调用
+  2. 替换 plans.test.ts 里全部 8 处 inline 调用为 `await resetDraftPlans(projectId)`
+- **verification**:
+  - `npx vitest run tests/integration/plans.test.ts` → 16/16 通过（与原行为一致）
+  - 后续新加测试只需一行 `await resetDraftPlans(projectId)` 即可避开 R-036 guard，不再静默 broken
+- **rollback**: 两个文件 revert
+- **closed_in**: 同 PR
+
+---
+
 ## Cron Job 调度建议
 
 ### 推荐节奏
@@ -2330,14 +2350,15 @@ done
 | R-131 | HIGH     | B10  | 升级 Next.js 14 → 16（修复 2 个残留 high CVE）                                 |
 | R-132 | HIGH     | B4   | 升级 @modelcontextprotocol/sdk 1.3 → 1.29+ 并恢复 mcp-server typecheck         |
 | R-133 | MEDIUM   | B4   | 逐步把 `any` 替换为 `unknown`/具体类型，重新启用 ESLint `no-explicit-any` 警告 |
+| R-134 | MEDIUM   | B12  | plans.test.ts 抽出 `resetDraftPlans` helper（避免 R-036 guard 漏 cleanup）   |
 
 **统计**：
 
 - CRITICAL: 7
 - HIGH: 62
-- MEDIUM: 50
+- MEDIUM: 51
 - LOW: 14
-- **合计 130 条**
+- **合计 134 条**
 
 ---
 
