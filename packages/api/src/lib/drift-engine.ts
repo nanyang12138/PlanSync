@@ -76,15 +76,20 @@ function planContent(plan: {
   };
 }
 
-function refsFromTask(task: { planDeliverableRefs: string[] }): TaskRefs {
+function refsFromTask(task: {
+  planDeliverableRefs: string[];
+  planConstraintRefs?: string[] | null;
+  planStandardRefs?: string[] | null;
+}): TaskRefs {
   return {
     planDeliverableRefs: task.planDeliverableRefs,
-    // Schema does not yet carry these; passing null makes severityForTask
-    // treat the task as "depends on all" of that field, biasing toward
-    // breaking. Once the per-task constraint/standard refs land on the
-    // schema, just propagate them here — no other code changes needed.
-    planConstraintRefs: null,
-    planStandardRefs: null,
+    // The schema columns default to `[]`; the classifier treats both `[]`
+    // and `null` as the conservative "depends on all" sentinel so tasks
+    // that pre-date the migration (or whose owner has not explicitly
+    // narrowed the refs) still pause on any constraint / standard change.
+    // Owners narrowing per task is what unlocks the sharper severity.
+    planConstraintRefs: task.planConstraintRefs ?? null,
+    planStandardRefs: task.planStandardRefs ?? null,
   };
 }
 
