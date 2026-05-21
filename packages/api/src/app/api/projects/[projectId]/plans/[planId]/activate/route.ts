@@ -42,29 +42,54 @@ export async function POST(req: NextRequest, { params }: Params) {
       }
     }
 
-    // R-007: scan and persist drift alerts inside the transaction, but defer
-    // all SSE/email side-effects until after the transaction commits so that
-    // a rolled-back transaction never produces "ghost" notifications.
-    const { activated, driftAlerts, scannedAlerts } = await prisma.$transaction(async (tx) => {
-      await tx.plan.updateMany({
-        where: { projectId: params.projectId, status: 'active' },
-        data: { status: 'superseded' },
+    let activated;
+    let driftAlerts;
+    let scannedAlerts;
+    try {
+      // R-007: scan and persist drift alerts inside the transaction, but defer
+      // all SSE/email side-effects until after the transaction commits so that
+      // a rolled-back transaction never produces "ghost" notifications.
+      const result = await prisma.$transaction(async (tx) => {
+        await tx.plan.updateMany({
+          where: { projectId: params.projectId, status: 'active' },
+          data: { status: 'superseded' },
+        });
+
+        const a = await tx.plan.update({
+          where: { id: params.planId },
+          data: {
+            status: 'active',
+            activatedAt: new Date(),
+            activatedBy: auth.userName,
+          },
+        });
+
+        const scanResult = await runDriftScan(tx, params.projectId, a.version);
+        const alerts = await persistDriftAlerts(tx, params.projectId, scanResult.alerts);
+
+        return { activated: a, driftAlerts: alerts, scannedAlerts: scanResult.alerts };
       });
-
-      const a = await tx.plan.update({
-        where: { id: params.planId },
-        data: {
-          status: 'active',
-          activatedAt: new Date(),
-          activatedBy: auth.userName,
-        },
-      });
-
-      const scanResult = await runDriftScan(tx, params.projectId, a.version);
-      const alerts = await persistDriftAlerts(tx, params.projectId, scanResult.alerts);
-
-      return { activated: a, driftAlerts: alerts, scannedAlerts: scanResult.alerts };
-    });
+      activated = result.activated;
+      driftAlerts = result.driftAlerts;
+      scannedAlerts = result.scannedAlerts;
+    } catch (err) {
+      // R-048: P2002 on the partial unique index
+      // `plans_one_active_per_project` means another concurrent activate
+      // request beat us to flipping a plan to active. Surface as 409 with a
+      // helpful message rather than the generic CONFLICT mapping.
+      if (
+        err &&
+        typeof err === 'object' &&
+        'code' in err &&
+        (err as { code: string }).code === 'P2002'
+      ) {
+        throw new AppError(
+          ErrorCode.STATE_CONFLICT,
+          'Another plan was activated concurrently for this project. Reload and try again.',
+        );
+      }
+      throw err;
+    }
 
     // Side-effects are intentionally fired *after* the transaction has
     // committed (R-007). If the transaction had thrown, the lines below would
