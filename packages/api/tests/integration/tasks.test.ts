@@ -618,6 +618,149 @@ describe('F: Task Management', () => {
     expect(persisted?.planStandardRefs).toEqual(['eslint']);
   });
 
+  // R-045: PATCH human task to done requires owner OR completed execution run
+  // OR (current assignee AND human type). Closes a gap where any developer
+  // could PATCH any human task straight to done.
+  async function makeHumanTaskInProgress(opts: { assignee: string }): Promise<string> {
+    const createRes = await tasksPost(
+      makeReq(`/api/projects/${projectId}/tasks`, {
+        method: 'POST',
+        userName: owner,
+        body: {
+          title: `Human Task ${Math.random().toString(36).slice(2, 8)}`,
+          type: 'code',
+          assignee: opts.assignee,
+          assigneeType: 'human',
+        },
+      }),
+      { params: { projectId } },
+    );
+    const id = (await createRes.json()).data.id;
+    await testPrisma.task.update({
+      where: { id },
+      data: { status: 'in_progress' },
+    });
+    return id;
+  }
+
+  it('F45a: PATCH human task → done by non-assignee developer → 403 (R-045)', async () => {
+    const otherDev = 'task-dev-other';
+    await addMember(projectId, otherDev);
+
+    const id = await makeHumanTaskInProgress({ assignee: dev });
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${id}`, {
+        method: 'PATCH',
+        userName: otherDev,
+        body: { status: 'done' },
+      }),
+      { params: { projectId, taskId: id } },
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('F45b: PATCH human task → done by assignee → 200 (R-045 human self-complete)', async () => {
+    const id = await makeHumanTaskInProgress({ assignee: dev });
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${id}`, {
+        method: 'PATCH',
+        userName: dev,
+        body: { status: 'done' },
+      }),
+      { params: { projectId, taskId: id } },
+    );
+    expect(res.status).toBe(200);
+    const t = await testPrisma.task.findUnique({ where: { id } });
+    expect(t?.status).toBe('done');
+  });
+
+  it('F45c: PATCH human task → done by owner → 200 (R-045 owner override)', async () => {
+    const id = await makeHumanTaskInProgress({ assignee: dev });
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${id}`, {
+        method: 'PATCH',
+        userName: owner,
+        body: { status: 'done' },
+      }),
+      { params: { projectId, taskId: id } },
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it('F45d: PATCH agent task → done by assignee without completed run → 409 (R-045)', async () => {
+    const agentMember = 'agent-genie';
+    await testPrisma.projectMember.create({
+      data: { projectId, name: agentMember, role: 'developer', type: 'agent' },
+    });
+
+    const createRes = await tasksPost(
+      makeReq(`/api/projects/${projectId}/tasks`, {
+        method: 'POST',
+        userName: owner,
+        body: {
+          title: 'Agent Self Done',
+          type: 'code',
+          assignee: agentMember,
+          assigneeType: 'agent',
+        },
+      }),
+      { params: { projectId } },
+    );
+    const id = (await createRes.json()).data.id;
+    await testPrisma.task.update({
+      where: { id },
+      data: { status: 'in_progress' },
+    });
+
+    // Self-complete is only legitimate for human tasks; agent must finish via
+    // execution_complete which produces a completed ExecutionRun.
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${id}`, {
+        method: 'PATCH',
+        userName: agentMember,
+        body: { status: 'done' },
+      }),
+      { params: { projectId, taskId: id } },
+    );
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error.code).toBe('STATE_CONFLICT');
+  });
+
+  it('F45e: PATCH task → done with completed run by non-owner → 200 (R-045)', async () => {
+    const id = await makeHumanTaskInProgress({ assignee: dev });
+    // Simulate a completed execution run exists for this task.
+    await testPrisma.executionRun.create({
+      data: {
+        taskId: id,
+        executorName: dev,
+        executorType: 'human',
+        status: 'completed',
+        boundPlanVersion: activePlanVersion,
+        taskPackSnapshot: {},
+        endedAt: new Date(),
+      },
+    });
+
+    // A second developer (not the assignee, not the owner) can flip to done
+    // because the canonical completion has already happened via the run.
+    const otherDev = 'task-dev-runner';
+    await addMember(projectId, otherDev);
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${id}`, {
+        method: 'PATCH',
+        userName: otherDev,
+        body: { status: 'done' },
+      }),
+      { params: { projectId, taskId: id } },
+    );
+    expect(res.status).toBe(200);
+  });
+
   it('F29: DELETE /tasks/:id (owner) → 200', async () => {
     const createRes = await tasksPost(
       makeReq(`/api/projects/${projectId}/tasks`, {

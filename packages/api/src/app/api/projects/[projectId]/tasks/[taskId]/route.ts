@@ -40,7 +40,7 @@ const VALID_STATUS_TRANSITIONS: Record<string, string[]> = {
 export async function PATCH(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
-    await requireProjectRole(auth, params.projectId);
+    const authed = await requireProjectRole(auth, params.projectId);
     const body = await validateBody(req, updateTaskSchema);
 
     // The plan*Refs fields together control (a) AI completion verification
@@ -70,16 +70,36 @@ export async function PATCH(req: NextRequest, { params }: Params) {
         );
       }
 
-      // Agent tasks require a completed ExecutionRun to be marked done
-      // Human / unassigned tasks can be marked done directly
-      if (body.status === 'done' && task.assigneeType === 'agent') {
+      // Marking a task done is the single most consequential PATCH on this
+      // route — it closes the loop on accountability for the assigned work.
+      // Without a guard, any project member could PATCH any task (their own
+      // or someone else's) straight to done, bypassing both execution
+      // tracking and ownership oversight. The rules below mirror the three
+      // legitimate ways a task can legitimately reach `done`:
+      //   1. Project owner administratively closes it.
+      //   2. A completed ExecutionRun exists (the normal flow via
+      //      execution_complete).
+      //   3. The current assignee finishes a human task themselves — but
+      //      only for human-typed tasks (agent tasks always need a run).
+      if (body.status === 'done') {
+        const isOwner = authed.projectRole === 'owner';
         const completedRun = await prisma.executionRun.findFirst({
           where: { taskId: params.taskId, status: 'completed' },
         });
-        if (!completedRun) {
+        const hasCompletedRun = completedRun !== null;
+        const isHumanSelfComplete =
+          task.assigneeType === 'human' && task.assignee === auth.userName;
+
+        if (!isOwner && !hasCompletedRun && !isHumanSelfComplete) {
+          if (task.assigneeType === 'agent') {
+            throw new AppError(
+              ErrorCode.STATE_CONFLICT,
+              'Agent task cannot be marked done without a completed execution run.',
+            );
+          }
           throw new AppError(
-            ErrorCode.STATE_CONFLICT,
-            'Agent task cannot be marked done without a completed execution run.',
+            ErrorCode.FORBIDDEN,
+            'Only the project owner, the current assignee (for human tasks), or execution_complete can mark a task done.',
           );
         }
       }
