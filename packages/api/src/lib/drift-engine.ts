@@ -233,42 +233,22 @@ export async function enrichDriftAlertsWithAi(
           where: { fromPlanId_toPlanId: { fromPlanId: boundPlan.id, toPlanId: activePlanId } },
         });
 
-        const highCompatibility = impact.compatibilityScore > 70;
-        const suggestedAction = highCompatibility ? 'no_impact' : impact.suggestedAction;
-
+        // R-001: AI is advisory only — never auto-resolve drift or unblock the
+        // task. We persist the score, reasoning, suggested action and affected
+        // areas so the UI/CLI can surface them as suggestions, but the human
+        // (or owner) must explicitly call drift_resolve to change the alert
+        // status. This prevents the agent from silently overriding plan-change
+        // decisions when the heuristic compatibility score happens to be high.
         await prisma.driftAlert.update({
           where: { id: alert.id },
           data: {
             compatibilityScore: impact.compatibilityScore,
             impactAnalysis: impact.reasoning,
-            suggestedAction,
+            suggestedAction: impact.suggestedAction,
             affectedAreas: impact.affectedAreas,
             planDiffId: planDiffRow?.id ?? null,
-            ...(highCompatibility
-              ? {
-                  status: 'resolved',
-                  resolvedAction: 'no_impact',
-                  resolvedAt: new Date(),
-                  resolvedBy: 'system',
-                }
-              : {}),
           },
         });
-
-        if (highCompatibility) {
-          // Unblock the task if it was blocked at drift-detection time.
-          await prisma.task.updateMany({
-            where: { id: alert.taskId, status: 'blocked' },
-            data: { status: 'in_progress' },
-          });
-          eventBus.publish(projectId, 'drift_resolved', {
-            alertId: alert.id,
-            taskId: alert.taskId,
-            resolvedBy: 'system',
-            resolvedAction: 'no_impact',
-            compatibilityScore: impact.compatibilityScore,
-          });
-        }
       } catch (err) {
         logger.error({ err, alertId: alert.id }, 'Failed to enrich drift alert with AI');
       }
