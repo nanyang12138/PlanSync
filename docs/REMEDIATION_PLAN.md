@@ -692,7 +692,7 @@
 
 #### R-032 [MEDIUM] propose plan 接口建立 shared zod schema
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
