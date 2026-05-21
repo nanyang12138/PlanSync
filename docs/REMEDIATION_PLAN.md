@@ -1305,7 +1305,7 @@
 
 #### R-069 [MEDIUM] AI loop maxTurns 用户可见警告
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
