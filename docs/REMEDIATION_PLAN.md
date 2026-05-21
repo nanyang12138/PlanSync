@@ -265,7 +265,7 @@
 
 #### R-008 [HIGH] 新增 `superseded` execution run 状态
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B1
 - **depends_on**: —
 - **effort**: small
