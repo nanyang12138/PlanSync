@@ -1,5 +1,5 @@
 #!/bin/bash
-PG_BIN="${PG_BIN:-/tool/pandora64/bin}"
+PG_BIN="${PG_BIN:-$([ -x /tool/pandora64/bin/pg_ctl ] && echo /tool/pandora64/bin || echo /usr/lib/postgresql/16/bin)}"
 PG_DATA="/tmp/plansync-pgdata-$(whoami)"
 export PATH="$PG_BIN:$PATH"
 if [ -d "$PG_DATA" ]; then

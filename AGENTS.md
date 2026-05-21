@@ -57,3 +57,45 @@ If `plansync_task_pack` shows drift alerts:
 - Always check `plansync_status` at the start of a session
 - Use structured suggestions (`plansync_plan_suggest`) instead of ad-hoc comments for plan changes
 - Record all significant decisions as comments for the team
+
+## Cursor Cloud specific instructions
+
+### Pre-installed by update script
+
+The Cloud Agent startup script handles: PostgreSQL 16 installation, `/var/run/postgresql` socket-directory permissions, repo-local Node.js v22.14.0 runtime, npm workspace dependencies, `.env` creation, and PG data-dir initialisation. You do **not** need to repeat these steps.
+
+### PG_BIN auto-detection
+
+All `scripts/*.sh` files auto-detect `PG_BIN` at runtime: AMD internal path (`/tool/pandora64/bin`) is preferred when present; otherwise falls back to `/usr/lib/postgresql/16/bin`. No manual export is needed when running repo scripts. If you call PG tools directly outside of repo scripts, `PG_BIN` is also exported from `~/.bashrc`.
+
+### Starting PostgreSQL
+
+PostgreSQL data lives in `/tmp/plansync-pgdata-$USER` (ephemeral). If the data dir was wiped, run:
+
+```bash
+export PATH="${PG_BIN:-/usr/lib/postgresql/16/bin}:$PATH"
+initdb -D "/tmp/plansync-pgdata-$(whoami)" 2>/dev/null
+pg_ctl -D "/tmp/plansync-pgdata-$(whoami)" -l "/tmp/plansync-pgdata-$(whoami)/logfile" -o "-p 15432" start
+createdb -p 15432 plansync_dev 2>/dev/null || true
+```
+
+Or use the repo helper: `bash scripts/pg-start.sh`
+
+### Running services
+
+Standard commands are documented in `CLAUDE.md`. Quick reference:
+
+| Task                                         | Command                                                                                                                   |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Dev server (PG + migrations + Next.js :3001) | `bash scripts/dev.sh`                                                                                                     |
+| Build all packages                           | `bash scripts/build.sh`                                                                                                   |
+| Lint                                         | `bash scripts/lint.sh`                                                                                                    |
+| Tests (requires PG running)                  | `bash scripts/test.sh`                                                                                                    |
+| Single workspace test                        | `bash -c '. scripts/local-node-runtime.sh && use_local_node_runtime && run_local_npm run test --workspace=@plansync/api'` |
+
+### Gotchas
+
+- The project uses a **repo-local Node.js v22.14.0** in `.local-runtime/node`. All scripts source `scripts/local-node-runtime.sh`. Do not use system `node`/`npm` for project scripts.
+- `DATABASE_URL` defaults to `postgresql://$USER@localhost:15432/plansync_dev` (from `.env`). When running commands outside repo scripts, source `.env` first or export it manually.
+- `sendmail failed` warnings in test output are expected and harmless — the Cloud VM has no mail transport.
+- AI features silently no-op without `LLM_API_KEY` or `ANTHROPIC_API_KEY`; 3 AI tests are skipped accordingly.
