@@ -742,7 +742,7 @@
 
 #### R-035 [HIGH] env.ts 验证所有运行时使用的 env 变量
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
