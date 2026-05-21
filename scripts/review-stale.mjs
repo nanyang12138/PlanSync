@@ -109,6 +109,29 @@ function extractFilePath(body) {
   return raw.split(':')[0];
 }
 
+function extractSourcePrNumber(body) {
+  if (!body) return null;
+  // Triage writes `**Source**: PR #N · cursor-review · [comment](...#issuecomment-...)`.
+  // Match the first PR number that follows `Source` to avoid catching unrelated
+  // PR references in user-edited body.
+  const m = body.match(/\*\*Source\*\*[^\n]*?PR\s+#(\d+)/);
+  if (!m) return null;
+  const n = Number.parseInt(m[1], 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+async function isPrStillOpen(prNumber) {
+  if (!prNumber) return false;
+  try {
+    const pr = await ghApi('GET', `/repos/${GH_REPO}/pulls/${prNumber}`);
+    return pr?.state === 'open';
+  } catch (err) {
+    if (err.status === 404) return false;
+    console.warn(`PR #${prNumber} lookup failed (non-fatal): ${err.message}`);
+    return false;
+  }
+}
+
 function ageInDays(createdAt) {
   return (Date.now() - new Date(createdAt).getTime()) / (1000 * 86400);
 }
@@ -145,22 +168,33 @@ async function main() {
     // file was deleted (issue moot) OR renamed/moved (issue still valid at
     // a new path). We can't tell those apart cheaply, so we surface a
     // label + one comment and let the owner decide. Never auto-close here.
+    //
+    // Skip the check entirely when the source PR is still open: cursor-review
+    // commented on a not-yet-merged PR, so the path won't exist on default
+    // branch yet. Re-checking after merge (or PR close) is safe.
     if (file && age >= 14 && !labels.has('stale:file-missing')) {
-      let exists = true;
-      try {
-        exists = await fileExistsOnDefault(file);
-      } catch (err) {
-        console.warn(`#${issue.number}: file check failed (${err.message}), skipping`);
-        exists = true;
-      }
-      if (!exists) {
-        await commentIssue(
-          issue.number,
-          `自动检测：路径 \`${file}\` 在默认分支已不存在。可能是**文件被删除**（这条 finding 应关闭）或**文件被 rename/move**（finding 仍有效，只是路径变了）——sweep 无法区分这两种情况，因此**不**自动关单，仅打 \`stale:file-missing\` 标签由你判断后处理。`,
-        );
-        await addLabels(issue.number, ['stale:file-missing']);
-        stats.fileMissing.push(issue.number);
-        // fall through so age-based stale labels can also apply
+      const sourcePr = extractSourcePrNumber(issue.body);
+      const sourcePrOpen = await isPrStillOpen(sourcePr);
+      if (sourcePrOpen) {
+        // Source PR not merged yet; default-branch check would be a false
+        // positive. Skip silently and revisit on the next sweep.
+      } else {
+        let exists = true;
+        try {
+          exists = await fileExistsOnDefault(file);
+        } catch (err) {
+          console.warn(`#${issue.number}: file check failed (${err.message}), skipping`);
+          exists = true;
+        }
+        if (!exists) {
+          await commentIssue(
+            issue.number,
+            `自动检测：路径 \`${file}\` 在默认分支已不存在。可能是**文件被删除**（这条 finding 应关闭）或**文件被 rename/move**（finding 仍有效，只是路径变了）——sweep 无法区分这两种情况，因此**不**自动关单，仅打 \`stale:file-missing\` 标签由你判断后处理。`,
+          );
+          await addLabels(issue.number, ['stale:file-missing']);
+          stats.fileMissing.push(issue.number);
+          // fall through so age-based stale labels can also apply
+        }
       }
     }
 

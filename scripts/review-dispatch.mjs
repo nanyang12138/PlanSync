@@ -93,6 +93,24 @@ async function addLabels(labels) {
   return ghApi('POST', `/repos/${GH_REPO}/issues/${ISSUE_NUMBER}/labels`, { labels });
 }
 
+async function removeLabel(label) {
+  if (DRY_RUN) {
+    console.log(`[dry-run] removeLabel: ${label}`);
+    return null;
+  }
+  // Best-effort: 404 just means the label was already gone, which is fine.
+  try {
+    return await ghApi(
+      'DELETE',
+      `/repos/${GH_REPO}/issues/${ISSUE_NUMBER}/labels/${encodeURIComponent(label)}`,
+    );
+  } catch (err) {
+    if (String(err.message).includes(' -> 404')) return null;
+    console.warn(`removeLabel(${label}) failed (non-fatal): ${err.message}`);
+    return null;
+  }
+}
+
 async function createCursorAgent({ prompt, branchName }) {
   if (!CURSOR_API_KEY) throw new Error('CURSOR_API_KEY not set');
   const auth = Buffer.from(`${CURSOR_API_KEY}:`).toString('base64');
@@ -262,8 +280,15 @@ async function main() {
   try {
     result = await createCursorAgent({ prompt, branchName });
   } catch (err) {
+    // The agent never started, so release the lock so a re-application of
+    // `cursor:dispatch` (without manual label cleanup) auto-retries. This
+    // is safe: if HTTP failed, the agent didn't get created — there is no
+    // duplicate to worry about. If we removed the lock for a request that
+    // actually succeeded server-side, the second attempt would still hit
+    // Cursor's branchName uniqueness conflict and surface clearly.
+    await removeLabel(LOCK_LABEL);
     await commentIssue(
-      `${DISPATCH_MARKER}\n\n❌ 启动 Cursor Cloud Agent 失败：\n\n\`\`\`\n${err.message}\n\`\`\`\n\n要重试：先摘掉 \`${LOCK_LABEL}\` 和 \`cursor:dispatch\` 标签，再重新打上 \`cursor:dispatch\`。`,
+      `${DISPATCH_MARKER}\n\n❌ 启动 Cursor Cloud Agent 失败：\n\n\`\`\`\n${err.message}\n\`\`\`\n\n已自动摘掉 \`${LOCK_LABEL}\` 锁。要重试：摘掉 \`cursor:dispatch\` 后重新打上即可。`,
     );
     throw err;
   }
