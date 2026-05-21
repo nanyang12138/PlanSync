@@ -1,8 +1,17 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { ApiClient } from '../api-client';
+import { getDelegationAgent } from './status';
 
 export function registerTaskTools(server: McpServer, api: ApiClient) {
+  // In delegation mode ("work as <agent>"), any write that records the caller's
+  // identity (claim/decline/update task) must be issued as that agent — not as
+  // the human owner who is driving the session. Without this, claims land on
+  // the owner's name and tasks look like the wrong person picked them up.
+  const effectiveApi = (): ApiClient => {
+    const agent = getDelegationAgent();
+    return agent ? api.withUser(agent) : api;
+  };
   server.tool(
     'plansync_task_list',
     'List tasks for a project with optional filters',
@@ -62,7 +71,7 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
     },
     async (args) => {
       const { projectId, ...body } = args;
-      const result = await api.post(`/api/projects/${projectId}/tasks`, body);
+      const result = await effectiveApi().post(`/api/projects/${projectId}/tasks`, body);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   );
@@ -93,7 +102,7 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
     },
     async (args) => {
       const { projectId, taskId, ...body } = args;
-      const result = await api.patch(`/api/projects/${projectId}/tasks/${taskId}`, body);
+      const result = await effectiveApi().patch(`/api/projects/${projectId}/tasks/${taskId}`, body);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   );
@@ -111,11 +120,17 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
         .describe('If false, accept assignment but keep status as todo. Default: true'),
     },
     async (args) => {
-      const result = await api.post(`/api/projects/${args.projectId}/tasks/${args.taskId}/claim`, {
-        assigneeType: args.assigneeType || 'agent',
-        ...(args.startImmediately !== undefined ? { startImmediately: args.startImmediately } : {}),
-      });
-      const verify = await api.get<{ data?: { status?: string } }>(
+      const client = effectiveApi();
+      const result = await client.post(
+        `/api/projects/${args.projectId}/tasks/${args.taskId}/claim`,
+        {
+          assigneeType: args.assigneeType || 'agent',
+          ...(args.startImmediately !== undefined
+            ? { startImmediately: args.startImmediately }
+            : {}),
+        },
+      );
+      const verify = await client.get<{ data?: { status?: string } }>(
         `/api/projects/${args.projectId}/tasks/${args.taskId}`,
       );
       const verifiedStatus = verify.data?.status ?? 'unknown';
@@ -144,11 +159,12 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
       taskId: z.string(),
     },
     async (args) => {
-      const result = await api.post(
+      const client = effectiveApi();
+      const result = await client.post(
         `/api/projects/${args.projectId}/tasks/${args.taskId}/decline`,
         {},
       );
-      const verify = await api.get<{ data?: { assignee?: string | null } }>(
+      const verify = await client.get<{ data?: { assignee?: string | null } }>(
         `/api/projects/${args.projectId}/tasks/${args.taskId}`,
       );
       const verifiedAssignee = verify.data?.assignee;
