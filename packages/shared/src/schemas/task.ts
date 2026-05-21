@@ -108,6 +108,13 @@ export const taskSchema = z.object({
 
 export const executionRunStatusSchema = z.enum([
   'running',
+  // R-002: a run becomes 'paused' the moment a new plan activates and the
+  // engine identifies it as bound to a version that the new plan supersedes.
+  // 'paused' is non-terminal — endedAt stays null — until either the agent
+  // ack-pauses with a progress note (→ superseded) or the pause-ack timeout
+  // scanner sweeps it (→ superseded with reason='pause_timeout'). The run
+  // route hard-rejects heartbeat and complete in this state.
+  'paused',
   'completed',
   'failed',
   'cancelled',
