@@ -1290,7 +1290,7 @@
 
 #### R-068 [MEDIUM] Ink 非 TTY fallback
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
