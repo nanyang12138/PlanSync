@@ -20,7 +20,7 @@ export async function POST(req: NextRequest, { params }: Params) {
     const url = new URL(req.url);
     const action = url.searchParams.get('action');
     const auth = await authenticate(req);
-    await requireProjectRole(auth, params.projectId);
+    const memberAuth = await requireProjectRole(auth, params.projectId);
 
     const run = await prisma.executionRun.findUnique({
       where: { id: params.runId },
@@ -29,6 +29,21 @@ export async function POST(req: NextRequest, { params }: Params) {
     if (!run) throw new AppError(ErrorCode.NOT_FOUND, 'ExecutionRun not found');
     if (run.taskId !== params.taskId || run.task.projectId !== params.projectId) {
       throw new AppError(ErrorCode.NOT_FOUND, 'ExecutionRun not found');
+    }
+
+    // R-009: Only the executor, owner of the project, or an exec-scoped key
+    // bound to this specific run may heartbeat / complete the run.
+    // Without this check, any project developer could hijack another user's run.
+    // Runs before the drift-v2 version gate so unauthorized callers can't
+    // probe RUN_STALE_VERSION as an oracle for who's running what.
+    const isOwner = memberAuth.projectRole === 'owner';
+    const isExecutor = memberAuth.userName === run.executorName;
+    const isScoped = memberAuth.execRunId === params.runId;
+    if (!isOwner && !isExecutor && !isScoped) {
+      throw new AppError(
+        ErrorCode.FORBIDDEN,
+        'Only the executor or project owner can update this run',
+      );
     }
 
     // Drift v2 gate (R-003 + R-006): a run is "stale" if its bound plan version
