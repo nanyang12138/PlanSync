@@ -423,7 +423,7 @@
 
 #### R-016 [HIGH] 委托模式 task tools 使用 `withUser`
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B2
 - **depends_on**: —
 - **effort**: small
