@@ -288,7 +288,7 @@
 
 #### R-009 [CRITICAL] heartbeat/complete 接口加 executor 身份校验
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B2
 - **depends_on**: —
 - **effort**: small
