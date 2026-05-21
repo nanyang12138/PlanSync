@@ -68,6 +68,18 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
         .describe(
           'Which plan deliverables this task is responsible for. execution_complete AI verification will check only these, not all plan deliverables.',
         ),
+      planConstraintRefs: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Drift v2: which plan constraints this task depends on. Empty/omitted = "depends on all" (conservative — any constraint change is breaking). Narrow per task to reduce false drift alerts. Owner-only.',
+        ),
+      planStandardRefs: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Drift v2: which plan standards this task depends on. Empty/omitted = "depends on all". Owner-only.',
+        ),
     },
     async (args) => {
       const { projectId, ...body } = args;
@@ -98,6 +110,18 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
         .optional()
         .describe(
           'Which plan deliverables this task is responsible for. execution_complete AI verification will check only these, not all plan deliverables.',
+        ),
+      planConstraintRefs: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Drift v2: which plan constraints this task depends on. Empty = "depends on all". Owner-only.',
+        ),
+      planStandardRefs: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Drift v2: which plan standards this task depends on. Empty = "depends on all". Owner-only.',
         ),
     },
     async (args) => {
