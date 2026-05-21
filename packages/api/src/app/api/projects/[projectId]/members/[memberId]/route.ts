@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { authenticate, requireProjectRole } from '@/lib/auth';
+import { authenticate, requireProjectRole, requireNotExecScoped } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { validateBody } from '@/lib/validate';
 import { updateMemberSchema, AppError, ErrorCode } from '@plansync/shared';
@@ -14,6 +14,7 @@ type Params = { params: { projectId: string; memberId: string } };
 export async function PATCH(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
+    requireNotExecScoped(auth);
     await requireProjectRole(auth, params.projectId, 'owner');
     const body = await validateBody(req, updateMemberSchema);
 
@@ -87,6 +88,7 @@ export async function PATCH(req: NextRequest, { params }: Params) {
 export async function DELETE(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
+    requireNotExecScoped(auth);
     await requireProjectRole(auth, params.projectId, 'owner');
 
     const member = await prisma.projectMember.findUnique({ where: { id: params.memberId } });

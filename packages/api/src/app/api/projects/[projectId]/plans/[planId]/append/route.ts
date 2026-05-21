@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
-import { authenticate, requireProjectRole } from '@/lib/auth';
+import { authenticate, requireProjectRole, requireNotExecScoped } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { validateBody } from '@/lib/validate';
 import { AppError, ErrorCode } from '@plansync/shared';
@@ -22,6 +22,7 @@ type Params = { params: { projectId: string; planId: string } };
 export async function POST(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
+    requireNotExecScoped(auth);
     await requireProjectRole(auth, params.projectId, 'owner');
     const body = await validateBody(req, appendSchema);
 
