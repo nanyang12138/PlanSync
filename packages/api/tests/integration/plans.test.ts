@@ -459,6 +459,122 @@ describe('C: Plan Lifecycle', () => {
     expect(after?.type).toBe('agent');
   });
 
+  it('R-032: propose with invalid reviewer type → 400 VALIDATION_ERROR', async () => {
+    await testPrisma.plan.updateMany({
+      where: { projectId, status: { in: ['draft', 'proposed'] } },
+      data: { status: 'superseded' },
+    });
+
+    const createRes = await plansPost(
+      makeReq(`/api/projects/${projectId}/plans`, {
+        method: 'POST',
+        userName: owner,
+        body: {
+          title: 'Bad reviewer plan',
+          goal: 'g',
+          scope: 's',
+          constraints: [],
+          standards: [],
+          deliverables: [],
+          openQuestions: [],
+          requiredReviewers: [],
+        },
+      }),
+      { params: { projectId } },
+    );
+    const planId = (await createRes.json()).data.id;
+
+    const res = await proposePost(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/propose`, {
+        method: 'POST',
+        userName: owner,
+        body: { reviewers: [{ name: 'r1', type: 'robot' }] },
+      }),
+      { params: { projectId, planId } },
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('R-032: propose with too many reviewers (>20) → 400', async () => {
+    await testPrisma.plan.updateMany({
+      where: { projectId, status: { in: ['draft', 'proposed'] } },
+      data: { status: 'superseded' },
+    });
+
+    const createRes = await plansPost(
+      makeReq(`/api/projects/${projectId}/plans`, {
+        method: 'POST',
+        userName: owner,
+        body: {
+          title: 'Too many reviewers plan',
+          goal: 'g',
+          scope: 's',
+          constraints: [],
+          standards: [],
+          deliverables: [],
+          openQuestions: [],
+          requiredReviewers: [],
+        },
+      }),
+      { params: { projectId } },
+    );
+    const planId = (await createRes.json()).data.id;
+
+    const tooMany = Array.from({ length: 21 }, (_, i) => `r${i}`);
+    const res = await proposePost(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/propose`, {
+        method: 'POST',
+        userName: owner,
+        body: { reviewers: tooMany },
+      }),
+      { params: { projectId, planId } },
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('R-032: propose with empty body still works (uses plan.requiredReviewers)', async () => {
+    await testPrisma.plan.updateMany({
+      where: { projectId, status: { in: ['draft', 'proposed'] } },
+      data: { status: 'superseded' },
+    });
+
+    const createRes = await plansPost(
+      makeReq(`/api/projects/${projectId}/plans`, {
+        method: 'POST',
+        userName: owner,
+        body: {
+          title: 'Empty body propose plan',
+          goal: 'g',
+          scope: 's',
+          constraints: [],
+          standards: [],
+          deliverables: [],
+          openQuestions: [],
+          requiredReviewers: [reviewer],
+        },
+      }),
+      { params: { projectId } },
+    );
+    const planId = (await createRes.json()).data.id;
+
+    const res = await proposePost(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/propose`, {
+        method: 'POST',
+        userName: owner,
+        // no body — should fall through to plan.requiredReviewers
+      }),
+      { params: { projectId, planId } },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.status).toBe('proposed');
+    expect(body.data.requiredReviewers).toEqual([reviewer]);
+  });
+
   it('C12: 连续创建 3 个 plan → version 递增', async () => {
     // R-036: API blocks creating a new plan while a draft/proposed one exists.
     // Mark the prior draft/proposed plan as superseded between creates so each
