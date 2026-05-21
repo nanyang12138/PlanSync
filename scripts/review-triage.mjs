@@ -1,0 +1,415 @@
+#!/usr/bin/env node
+/**
+ * cursor-review-triage runner.
+ *
+ * Listens (via the workflow) for cursor-review-action comments on PRs,
+ * extracts structured findings via LLM, and creates GitHub issues for
+ * `must-fix` and `should-fix` items, with fingerprint-based dedupe.
+ * Posts a single summary comment back on the PR. Never blocks the PR.
+ *
+ * Required env:
+ *   GITHUB_TOKEN, GH_REPO (owner/name), PR_NUMBER, COMMENT_ID
+ *   one of: LLM_API_KEY (+ optional LLM_API_BASE / LLM_MODEL_NAME)
+ *           ANTHROPIC_API_KEY (+ optional ANTHROPIC_BASE_URL / ANTHROPIC_DEFAULT_SONNET_MODEL)
+ *
+ * Optional env:
+ *   REVIEW_TRIAGE_MAX_ISSUES (default 5) — per-PR cap; overflow → umbrella issue
+ *   REVIEW_TRIAGE_DRY_RUN=1 — log intended actions without mutating GitHub
+ */
+import crypto from 'node:crypto';
+
+const {
+  GITHUB_TOKEN,
+  GH_REPO,
+  PR_NUMBER,
+  COMMENT_ID,
+  LLM_API_KEY,
+  LLM_API_BASE,
+  LLM_MODEL_NAME,
+  ANTHROPIC_API_KEY,
+  ANTHROPIC_BASE_URL,
+  ANTHROPIC_DEFAULT_SONNET_MODEL,
+  REVIEW_TRIAGE_MAX_ISSUES,
+  REVIEW_TRIAGE_DRY_RUN,
+} = process.env;
+
+if (!GITHUB_TOKEN || !GH_REPO || !PR_NUMBER || !COMMENT_ID) {
+  console.error('Missing required env: GITHUB_TOKEN, GH_REPO, PR_NUMBER, COMMENT_ID');
+  process.exit(1);
+}
+
+const MAX_ISSUES = Number.parseInt(REVIEW_TRIAGE_MAX_ISSUES || '5', 10) || 5;
+const DRY_RUN = REVIEW_TRIAGE_DRY_RUN === '1' || REVIEW_TRIAGE_DRY_RUN === 'true';
+const TRIAGE_SUMMARY_MARKER = '<!-- review-triage:summary -->';
+const FP_MARKER = 'review-triage-fp';
+
+async function ghApi(method, path, body) {
+  const res = await fetch(`https://api.github.com${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${GITHUB_TOKEN}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'Content-Type': 'application/json',
+      'User-Agent': 'plansync-review-triage',
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`GitHub ${method} ${path} -> ${res.status}: ${text.slice(0, 500)}`);
+  }
+  if (res.status === 204) return null;
+  return res.json();
+}
+
+async function getComment() {
+  return ghApi('GET', `/repos/${GH_REPO}/issues/comments/${COMMENT_ID}`);
+}
+
+async function searchExistingIssue(fp) {
+  // Search open issues with the fingerprint marker in body.
+  // Note: GitHub search has indexing latency; for very rapid duplicates we
+  // accept a small chance of creating a second issue (cheap to close).
+  const q = encodeURIComponent(`repo:${GH_REPO} is:issue is:open in:body "${FP_MARKER}: ${fp}"`);
+  try {
+    const data = await ghApi('GET', `/search/issues?q=${q}&per_page=5`);
+    return data?.items?.[0] || null;
+  } catch (err) {
+    console.warn('Issue search failed (will create new):', err.message);
+    return null;
+  }
+}
+
+async function createIssue(title, body, labels) {
+  if (DRY_RUN) {
+    console.log(`[dry-run] createIssue: ${title}`);
+    return { number: 0, html_url: '(dry-run)' };
+  }
+  return ghApi('POST', `/repos/${GH_REPO}/issues`, { title, body, labels });
+}
+
+async function addIssueComment(issueNumber, body) {
+  if (DRY_RUN) {
+    console.log(`[dry-run] addIssueComment #${issueNumber}`);
+    return null;
+  }
+  return ghApi('POST', `/repos/${GH_REPO}/issues/${issueNumber}/comments`, { body });
+}
+
+async function postPRComment(prNumber, body) {
+  if (DRY_RUN) {
+    console.log(`[dry-run] postPRComment #${prNumber}`);
+    return null;
+  }
+  return ghApi('POST', `/repos/${GH_REPO}/issues/${prNumber}/comments`, { body });
+}
+
+function llmConfig() {
+  if (LLM_API_KEY) {
+    const base = (LLM_API_BASE || 'https://llm-api.amd.com/Anthropic').replace(/\/$/, '');
+    return {
+      url: `${base}/v1/messages`,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': 'dummy',
+        'anthropic-version': '2023-06-01',
+        'Ocp-Apim-Subscription-Key': LLM_API_KEY,
+      },
+      model: LLM_MODEL_NAME || 'Claude-Sonnet-4.5',
+    };
+  }
+  if (ANTHROPIC_API_KEY) {
+    const base = (ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '');
+    return {
+      url: `${base}/v1/messages`,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      model: ANTHROPIC_DEFAULT_SONNET_MODEL || 'claude-sonnet-4-20250514',
+    };
+  }
+  return null;
+}
+
+async function llmCall(system, user) {
+  const cfg = llmConfig();
+  if (!cfg) throw new Error('No LLM_API_KEY or ANTHROPIC_API_KEY configured');
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 60000);
+  try {
+    const res = await fetch(cfg.url, {
+      method: 'POST',
+      headers: cfg.headers,
+      body: JSON.stringify({
+        model: cfg.model,
+        max_tokens: 4096,
+        system,
+        messages: [{ role: 'user', content: user }],
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const t = await res.text();
+      throw new Error(`LLM ${res.status}: ${t.slice(0, 500)}`);
+    }
+    const data = await res.json();
+    return data?.content?.[0]?.text || '';
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function extractJsonArray(text) {
+  const fence = text.match(/```(?:json|JSON|\w*)\s*\n([\s\S]*?)\n```/);
+  if (fence) return fence[1].trim();
+  const arr = text.match(/(\[[\s\S]*\])/);
+  if (arr) return arr[1].trim();
+  return text.trim();
+}
+
+function stripDiagnostics(body) {
+  return body.replace(/<details>[\s\S]*?Cursor Review Diagnostics[\s\S]*?<\/details>/g, '').trim();
+}
+
+function stripMeta(body) {
+  return body.replace(/<!--\s*cursor-review-action[^>]*-->\s*/g, '').trim();
+}
+
+function normalizeForFingerprint(file, text) {
+  const f = (file || '').toLowerCase().trim();
+  const t = (text || '')
+    .toLowerCase()
+    .replace(/`[^`]*`/g, '')
+    .replace(/[*_>#]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 200);
+  return `${f}|${t}`;
+}
+
+function fingerprint(file, text) {
+  const norm = normalizeForFingerprint(file, text);
+  return crypto.createHash('sha256').update(norm).digest('hex').slice(0, 12);
+}
+
+function buildSystemPrompt() {
+  return `You triage AI code review comments into structured findings for backlog management.
+
+Output STRICT JSON: an array of objects. No prose, no markdown fences, just the JSON array.
+Each object has these fields:
+- severity: "must" | "should" | "nit" | "noise"
+- category: short tag (e.g. "correctness", "security", "performance", "style", "test", "docs", "api-contract")
+- file: best-guess file path mentioned in the finding (or "" if unknown)
+- line: integer line number if mentioned, else 0
+- text: one-sentence description of the issue (Chinese is fine)
+- rationale: brief reason for the severity assignment
+
+Severity rubric:
+- must: correctness bug, data-loss risk, security flaw, breaking API change, missing critical input validation
+- should: quality / performance / maintainability / missing test / unclear naming with real impact
+- nit: style, comment polish, minor refactor without behavior change
+- noise: vacuous praise, "looks good", false positive, restating the PR description
+
+Skip (do NOT emit a finding):
+- pure summaries / "no issues found" remarks
+- references to scope intentionally excluded by the PR ("residual scope", "future PR")
+- generic guidance not tied to a concrete change in this PR
+
+If the review concludes "no findings" or "approved without changes", output [].`;
+}
+
+function summarizeForLLM(cleaned) {
+  const MAX = 12000;
+  if (cleaned.length <= MAX) return cleaned;
+  const head = cleaned.slice(0, MAX * 0.7);
+  const tail = cleaned.slice(-MAX * 0.3);
+  return `${head}\n\n[...truncated for length...]\n\n${tail}`;
+}
+
+function normalizeFinding(raw) {
+  const sev = String(raw?.severity ?? '')
+    .toLowerCase()
+    .trim();
+  const severity = ['must', 'should', 'nit', 'noise'].includes(sev) ? sev : 'noise';
+  const lineNum =
+    typeof raw?.line === 'number' ? raw.line : Number.parseInt(String(raw?.line ?? '0'), 10) || 0;
+  return {
+    severity,
+    category: String(raw?.category ?? '').slice(0, 40) || 'uncategorized',
+    file: String(raw?.file ?? '').slice(0, 200),
+    line: lineNum,
+    text: String(raw?.text ?? '').slice(0, 1000),
+    rationale: String(raw?.rationale ?? '').slice(0, 1000),
+  };
+}
+
+function buildIssueBody(f, fp, sourceLink) {
+  return [
+    `<!-- ${FP_MARKER}: ${fp} -->`,
+    ``,
+    `**Severity**: ${f.severity}`,
+    `**Source**: PR #${PR_NUMBER} · cursor-review · [comment](${sourceLink})`,
+    `**Fingerprint**: \`${fp}\``,
+    `**File**: \`${f.file || '(unknown)'}\`${f.line ? `:${f.line}` : ''}`,
+    `**Category**: ${f.category}`,
+    ``,
+    `### Finding`,
+    ``,
+    `> ${(f.text || '').replace(/\n/g, '\n> ')}`,
+    ``,
+    `### Triage rationale`,
+    ``,
+    f.rationale || '(none provided)',
+    ``,
+    `---`,
+    ``,
+    `Triage 由 \`cursor-review-triage\` 自动写入，**不阻塞 PR 合并**。`,
+    `下一步：人工核对后可打 \`cursor:dispatch\` 标签派 Cursor Cloud Agent 修复（dispatch workflow 暂未上线）。`,
+  ].join('\n');
+}
+
+function buildIssueTitle(f) {
+  const prefix = f.severity === 'must' ? '[review-finding/must]' : '[review-finding/should]';
+  const fileShort = f.file ? f.file.split('/').pop() : 'general';
+  const text = (f.text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  return `${prefix} ${fileShort}: ${text}`;
+}
+
+async function main() {
+  const comment = await getComment();
+  if (!comment?.body || !comment.body.includes('cursor-review-action:review')) {
+    console.log('Not a cursor-review comment, skipping');
+    return;
+  }
+
+  const cleaned = stripDiagnostics(stripMeta(comment.body));
+  if (cleaned.length < 50) {
+    console.log('Comment body too short after stripping, skipping');
+    return;
+  }
+
+  const sourceLink = `https://github.com/${GH_REPO}/pull/${PR_NUMBER}#issuecomment-${COMMENT_ID}`;
+
+  let raw;
+  try {
+    raw = await llmCall(buildSystemPrompt(), summarizeForLLM(cleaned));
+  } catch (err) {
+    console.error('LLM call failed:', err.message);
+    process.exit(1);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(extractJsonArray(raw));
+  } catch (err) {
+    console.error('Failed to parse LLM output as JSON:', err.message);
+    console.error('Raw output (first 1000 chars):', raw.slice(0, 1000));
+    process.exit(1);
+  }
+  if (!Array.isArray(parsed)) {
+    console.error('LLM output is not a JSON array; aborting');
+    process.exit(1);
+  }
+
+  const findings = parsed.map(normalizeFinding);
+  const buckets = { must: [], should: [], nit: [], noise: [] };
+  for (const f of findings) buckets[f.severity].push(f);
+
+  console.log(
+    `Findings: must=${buckets.must.length} should=${buckets.should.length} nit=${buckets.nit.length} noise=${buckets.noise.length}`,
+  );
+
+  const targets = [...buckets.must, ...buckets.should];
+  const created = [];
+  const linked = [];
+  const overflow = [];
+
+  for (const f of targets) {
+    if (created.length + linked.length >= MAX_ISSUES) {
+      overflow.push(f);
+      continue;
+    }
+    const fp = fingerprint(f.file, f.text);
+    const existing = await searchExistingIssue(fp);
+
+    if (existing) {
+      await addIssueComment(
+        existing.number,
+        `又在 PR #${PR_NUMBER} 出现：${f.text}\n\n来源评论：${sourceLink}`,
+      );
+      linked.push({ ...f, fingerprint: fp, issue: existing });
+      console.log(`Linked finding ${fp} to existing issue #${existing.number}`);
+      continue;
+    }
+
+    const labels = ['review-finding', `severity:${f.severity}`];
+    const issue = await createIssue(buildIssueTitle(f), buildIssueBody(f, fp, sourceLink), labels);
+    created.push({ ...f, fingerprint: fp, issue });
+    console.log(`Created issue #${issue.number} for finding ${fp}`);
+  }
+
+  let umbrellaUrl = null;
+  if (overflow.length > 0) {
+    const umbrellaTitle = `[review-finding/umbrella] PR #${PR_NUMBER}: ${overflow.length} additional findings`;
+    const umbrellaBody = [
+      `Cursor Review 在 PR #${PR_NUMBER} 上提了 ${targets.length} 条 must/should-fix，超过单 PR 上限 ${MAX_ISSUES}，剩余 ${overflow.length} 条聚合在此：`,
+      ``,
+      ...overflow.map((f) => {
+        const fp = fingerprint(f.file, f.text);
+        return `- [ ] **${f.severity}** \`${f.file || '(unknown)'}\`: ${f.text} <sub>fp: \`${fp}\`</sub>`;
+      }),
+      ``,
+      `来源：${sourceLink}`,
+      ``,
+      `Triage 不阻塞 PR 合并。`,
+    ].join('\n');
+    const issue = await createIssue(umbrellaTitle, umbrellaBody, ['review-finding', 'umbrella']);
+    umbrellaUrl = issue.html_url;
+    console.log(`Created umbrella issue #${issue.number}`);
+  }
+
+  const summaryLines = [
+    TRIAGE_SUMMARY_MARKER,
+    `### 🔎 Cursor Review Triage（不阻塞）`,
+    ``,
+    `**must** ${buckets.must.length} · **should** ${buckets.should.length} · **nit** ${buckets.nit.length} · **noise** ${buckets.noise.length}`,
+    ``,
+  ];
+  if (created.length > 0) {
+    summaryLines.push(`**已创建 issues**：`);
+    summaryLines.push(
+      ...created.map(
+        (f) => `- [#${f.issue.number}](${f.issue.html_url}) (${f.severity}) ${f.text}`,
+      ),
+    );
+    summaryLines.push('');
+  }
+  if (linked.length > 0) {
+    summaryLines.push(`**已并入既有 issues**（同指纹复发）：`);
+    summaryLines.push(
+      ...linked.map((f) => `- [#${f.issue.number}](${f.issue.html_url}) (${f.severity}) ${f.text}`),
+    );
+    summaryLines.push('');
+  }
+  if (umbrellaUrl) {
+    summaryLines.push(`**Overflow umbrella**：[link](${umbrellaUrl})（${overflow.length} 条）`);
+    summaryLines.push('');
+  }
+  if (buckets.must.length === 0 && buckets.should.length === 0) {
+    summaryLines.push('未识别到 must / should-fix 级别问题，未创建 issue。');
+    summaryLines.push('');
+  }
+  summaryLines.push('> 不阻塞合并。查看积压：`gh issue list --label review-finding`。');
+
+  await postPRComment(PR_NUMBER, summaryLines.join('\n'));
+  console.log('Done.');
+}
+
+main().catch((err) => {
+  console.error(err.stack || err.message);
+  process.exit(1);
+});
