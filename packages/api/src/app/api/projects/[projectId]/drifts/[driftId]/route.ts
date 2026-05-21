@@ -58,6 +58,12 @@ export async function POST(req: NextRequest, { params }: Params) {
           where: { id: drift.taskId },
           data: { status: 'in_progress' },
         });
+        // Intentionally do NOT auto-revive paused runs on no_impact: the agent's
+        // mid-execution context is already gone (its tool stream was aborted on
+        // the MCP RUN_PAUSED signal), so silently flipping the run back to
+        // running would be inviting another inconsistent state. Owner must
+        // start a fresh execution. The paused run row remains for forensics
+        // until the pause-ack-timeout scanner sweeps it.
       } else if (body.action === 'rebind' && !activePlan) {
         throw new AppError(ErrorCode.STATE_CONFLICT, 'No active plan to rebind to');
       } else if (body.action === 'rebind' && activePlan) {
@@ -68,13 +74,24 @@ export async function POST(req: NextRequest, { params }: Params) {
             ...(drift.task.status === 'blocked' ? { status: 'in_progress' } : {}),
           },
         });
+        // R-002: rebind commits the task to the new plan version, which makes
+        // any paused run for this task irreversibly stale (run.bound=v1,
+        // task.bound=v2). Move them to 'superseded' so they read clearly in
+        // history and the run row's lifecycle is terminal. We also catch the
+        // unlikely case where a run somehow stayed 'running' through the
+        // pause step (e.g. drift was low-severity and engine didn't pause it,
+        // but owner manually rebinds anyway).
+        await tx.executionRun.updateMany({
+          where: { taskId: drift.taskId, status: { in: ['paused', 'running'] } },
+          data: { status: 'superseded', endedAt: new Date() },
+        });
       } else if (body.action === 'cancel') {
         await tx.task.update({
           where: { id: drift.taskId },
           data: { status: 'cancelled' },
         });
         await tx.executionRun.updateMany({
-          where: { taskId: drift.taskId, status: 'running' },
+          where: { taskId: drift.taskId, status: { in: ['running', 'paused'] } },
           data: { status: 'cancelled', endedAt: new Date() },
         });
       }

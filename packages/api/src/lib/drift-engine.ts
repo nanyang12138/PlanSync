@@ -84,15 +84,37 @@ export async function persistDriftAlerts(
     })),
   });
 
-  // Block tasks with running executions so no new execution_start can race in.
-  // The running execution itself stays alive — the agent is notified via heartbeat
-  // driftAlerts and must stop voluntarily. The complete endpoint's drift gate
-  // prevents delivery until the alert is resolved.
+  // R-002 drift v2: when a new plan activates with high-severity drifts
+  // (i.e. the task has a *currently running* run on the now-superseded plan
+  // version), do two things atomically with the alert insert:
+  //
+  //   1. Block the task — prevents any new execution_start from racing in
+  //      while the drift sits unresolved. (existing behavior)
+  //
+  //   2. Move the running run(s) for those tasks to status='paused'. This is
+  //      the moment the API actively interrupts the agent — we no longer
+  //      rely on the agent reading a `driftAlerts` array in its heartbeat
+  //      response and choosing to stop. The runs/[runId] route rejects any
+  //      heartbeat or complete on a paused run with 409 RUN_PAUSED; the MCP
+  //      client maps that to an AbortController fire so the agent's ai-loop
+  //      breaks out at the next tool call (defense in depth: SSE is
+  //      best-effort, but the DB-side gate is authoritative).
+  //
+  // Both writes happen inside the caller's transaction, so a rollback of
+  // plan-activate (rare but possible — e.g. constraint violation later in
+  // the route) cleanly reverts pauses too, leaving the run as it was.
   const highSeverityTaskIds = alerts.filter((a) => a.severity === 'high').map((a) => a.taskId);
   if (highSeverityTaskIds.length > 0) {
     await tx.task.updateMany({
       where: { id: { in: highSeverityTaskIds } },
       data: { status: 'blocked' },
+    });
+    // Filter on status='running' so a run that the agent voluntarily
+    // completed in the millisecond between drift scan and persist is left
+    // alone — we only interrupt work that is actually in flight.
+    await tx.executionRun.updateMany({
+      where: { taskId: { in: highSeverityTaskIds }, status: 'running' },
+      data: { status: 'paused' },
     });
   }
 

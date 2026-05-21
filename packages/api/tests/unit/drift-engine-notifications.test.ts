@@ -46,6 +46,7 @@ import { prisma } from '@/lib/prisma';
 type Tx = {
   driftAlert: { createManyAndReturn: ReturnType<typeof vi.fn> };
   task: { updateMany: ReturnType<typeof vi.fn> };
+  executionRun: { updateMany: ReturnType<typeof vi.fn> };
 };
 
 function buildTx(overrides: Partial<Tx> = {}): Tx {
@@ -57,6 +58,9 @@ function buildTx(overrides: Partial<Tx> = {}): Tx {
     },
     task: {
       updateMany: overrides.task?.updateMany ?? vi.fn().mockResolvedValue({ count: 1 }),
+    },
+    executionRun: {
+      updateMany: overrides.executionRun?.updateMany ?? vi.fn().mockResolvedValue({ count: 1 }),
     },
   };
 }
@@ -85,12 +89,13 @@ describe('R-007 — persistDriftAlerts has no in-tx SSE/email side-effects', () 
     expect(sendMail).not.toHaveBeenCalled();
   });
 
-  it('only invokes tx writes (driftAlert + task.updateMany), no global prisma reads', async () => {
+  it('only invokes tx writes (driftAlert + task/updateMany + executionRun/updateMany), no global prisma reads', async () => {
     const tx = buildTx();
     await persistDriftAlerts(tx as any, 'p1', sampleAlerts);
 
     expect(tx.driftAlert.createManyAndReturn).toHaveBeenCalledTimes(1);
     expect(tx.task.updateMany).toHaveBeenCalledTimes(1);
+    expect(tx.executionRun.updateMany).toHaveBeenCalledTimes(1);
     // The global prisma.task.findMany used to be called inside the function;
     // after R-007 it must not run during persist (moved to
     // dispatchDriftNotifications).
