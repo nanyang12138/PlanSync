@@ -901,7 +901,7 @@
 
 #### R-044 [MEDIUM] notify 路由限流 + owner-only
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B5
 - **depends_on**: —
 - **effort**: small
