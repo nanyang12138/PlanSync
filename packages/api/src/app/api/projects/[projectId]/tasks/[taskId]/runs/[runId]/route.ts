@@ -50,6 +50,18 @@ export async function POST(req: NextRequest, { params }: Params) {
     const versionsAligned = runBound === taskBound;
 
     if (action === 'heartbeat') {
+      if (run.status === 'paused') {
+        // Specific code for the MCP/CLI layer: agent should abort the current
+        // ai-loop turn and (optionally) call ack_pause with a progress note.
+        // Distinct from RUN_STALE_VERSION because the run row itself has been
+        // actively moved into a non-running state by the system (vs the task
+        // bound version having shifted).
+        throw new AppError(
+          ErrorCode.STATE_CONFLICT,
+          'Run paused: a newer plan version superseded this run. Abort and ack-pause.',
+          { code: 'RUN_PAUSED', runStatus: 'paused' },
+        );
+      }
       if (run.status !== 'running') {
         throw new AppError(
           ErrorCode.STATE_CONFLICT,
@@ -96,6 +108,13 @@ export async function POST(req: NextRequest, { params }: Params) {
     }
 
     if (action === 'complete') {
+      if (run.status === 'paused') {
+        throw new AppError(
+          ErrorCode.STATE_CONFLICT,
+          'Cannot complete a paused run. Abort and start a fresh execution after drift is resolved.',
+          { code: 'RUN_PAUSED', runStatus: 'paused' },
+        );
+      }
       if (run.status !== 'running') {
         throw new AppError(
           ErrorCode.STATE_CONFLICT,
