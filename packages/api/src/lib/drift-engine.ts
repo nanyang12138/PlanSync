@@ -84,62 +84,6 @@ export async function persistDriftAlerts(
     })),
   });
 
-  // Notify human task assignees by email
-  const taskIds = alerts.map((a) => a.taskId);
-  const tasks = await prisma.task.findMany({
-    where: { id: { in: taskIds }, assignee: { not: null } },
-    select: { id: true, title: true, assignee: true },
-  });
-
-  // Publish SSE to the project channel — reaches all connected members
-  eventBus.publish(projectId, 'drift_detected', {
-    alerts: alerts.map((a) => ({ severity: a.severity, taskId: a.taskId, reason: a.reason })),
-  });
-
-  // Group alerts by assignee (include severity for per-user SSE payload)
-  const byAssignee = new Map<string, Array<{ title: string; reason: string; severity: string }>>();
-  for (const alert of alerts) {
-    const task = tasks.find((t) => t.id === alert.taskId);
-    if (!task?.assignee) continue;
-    if (!byAssignee.has(task.assignee)) byAssignee.set(task.assignee, []);
-    byAssignee
-      .get(task.assignee)!
-      .push({ title: task.title, reason: alert.reason, severity: alert.severity });
-  }
-
-  if (byAssignee.size > 0) {
-    const assigneeNames = Array.from(byAssignee.keys());
-    const humanMembers = await prisma.projectMember.findMany({
-      where: { projectId, name: { in: assigneeNames }, type: 'human' },
-      select: { name: true },
-    });
-    const humanSet = new Set(humanMembers.map((m) => m.name));
-
-    for (const [assignee, affected] of byAssignee.entries()) {
-      if (!humanSet.has(assignee)) continue;
-      const lines = affected.map((a) => `  • "${a.title}": ${a.reason}`).join('\n');
-      const body = [
-        `The following tasks have drift alerts that require your attention:`,
-        '',
-        lines,
-        '',
-        `Please log in to PlanSync to review and resolve these drift alerts.`,
-      ].join('\n');
-      const ok = sendMail(
-        [userEmail(assignee)],
-        `[PlanSync] Drift alert: your tasks need attention`,
-        body,
-      );
-      if (!ok) logger.warn({ assignee, projectId }, 'Failed to send drift notification email');
-
-      // Push to the assignee's personal channel so they see the flash even if
-      // they are not currently subscribed to this project's SSE stream.
-      eventBus.publishToUser(assignee, 'drift_detected', projectId, {
-        alerts: affected,
-      });
-    }
-  }
-
   // Block tasks with running executions so no new execution_start can race in.
   // The running execution itself stays alive — the agent is notified via heartbeat
   // driftAlerts and must stop voluntarily. The complete endpoint's drift gate
@@ -153,6 +97,73 @@ export async function persistDriftAlerts(
   }
 
   return created;
+}
+
+/**
+ * Dispatch per-assignee SSE events and notification emails for a freshly
+ * persisted batch of drift alerts.
+ *
+ * **Always call this AFTER the enclosing `$transaction` has resolved** so a
+ * rolled-back transaction does not produce "ghost" notifications (R-007).
+ *
+ * Note: the project-channel `drift_detected` SSE event is published by the
+ * calling route (activate / reactivate), so this function only handles the
+ * per-assignee personal-channel SSE and email side-effects.
+ */
+export async function dispatchDriftNotifications(
+  projectId: string,
+  alerts: DriftScanResult['alerts'],
+): Promise<void> {
+  if (alerts.length === 0) return;
+
+  const taskIds = alerts.map((a) => a.taskId);
+  const tasks = await prisma.task.findMany({
+    where: { id: { in: taskIds }, assignee: { not: null } },
+    select: { id: true, title: true, assignee: true },
+  });
+
+  const byAssignee = new Map<string, Array<{ title: string; reason: string; severity: string }>>();
+  for (const alert of alerts) {
+    const task = tasks.find((t) => t.id === alert.taskId);
+    if (!task?.assignee) continue;
+    if (!byAssignee.has(task.assignee)) byAssignee.set(task.assignee, []);
+    byAssignee
+      .get(task.assignee)!
+      .push({ title: task.title, reason: alert.reason, severity: alert.severity });
+  }
+
+  if (byAssignee.size === 0) return;
+
+  const assigneeNames = Array.from(byAssignee.keys());
+  const humanMembers = await prisma.projectMember.findMany({
+    where: { projectId, name: { in: assigneeNames }, type: 'human' },
+    select: { name: true },
+  });
+  const humanSet = new Set(humanMembers.map((m) => m.name));
+
+  for (const [assignee, affected] of byAssignee.entries()) {
+    if (!humanSet.has(assignee)) continue;
+    const lines = affected.map((a) => `  • "${a.title}": ${a.reason}`).join('\n');
+    const body = [
+      `The following tasks have drift alerts that require your attention:`,
+      '',
+      lines,
+      '',
+      `Please log in to PlanSync to review and resolve these drift alerts.`,
+    ].join('\n');
+    const ok = sendMail(
+      [userEmail(assignee)],
+      `[PlanSync] Drift alert: your tasks need attention`,
+      body,
+    );
+    if (!ok) logger.warn({ assignee, projectId }, 'Failed to send drift notification email');
+
+    // Push to the assignee's personal channel so they see the flash even if
+    // they are not currently subscribed to this project's SSE stream.
+    eventBus.publishToUser(assignee, 'drift_detected', projectId, {
+      alerts: affected,
+    });
+  }
 }
 
 /**

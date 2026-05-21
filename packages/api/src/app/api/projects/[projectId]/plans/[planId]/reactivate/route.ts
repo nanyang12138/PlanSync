@@ -7,7 +7,12 @@ import { createActivity } from '@/lib/activity';
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
 import { logger } from '@/lib/logger';
-import { runDriftScan, persistDriftAlerts, enrichDriftAlertsWithAi } from '@/lib/drift-engine';
+import {
+  runDriftScan,
+  persistDriftAlerts,
+  enrichDriftAlertsWithAi,
+  dispatchDriftNotifications,
+} from '@/lib/drift-engine';
 
 type Params = { params: { projectId: string; planId: string } };
 
@@ -68,6 +73,9 @@ export async function POST(req: NextRequest, { params }: Params) {
     let driftAlerts: any[] = [];
     if (scanResult.alerts.length > 0) {
       driftAlerts = await persistDriftAlerts(prisma, params.projectId, scanResult.alerts);
+      // R-007: per-assignee SSE + email run *after* persist resolves so a
+      // failure in persistDriftAlerts does not leave ghost notifications.
+      await dispatchDriftNotifications(params.projectId, scanResult.alerts);
       enrichDriftAlertsWithAi(params.projectId, reactivated.id, driftAlerts).catch((err) =>
         logger.error({ err }, 'Background AI drift enrichment failed'),
       );
