@@ -985,7 +985,7 @@
 
 #### R-049 [HIGH] task_claim 用 conditional `updateMany` 原子化
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small
