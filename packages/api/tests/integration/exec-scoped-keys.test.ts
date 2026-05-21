@@ -3,7 +3,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { POST as issuePost } from '@/app/api/exec-sessions/issue-token/route';
 import { POST as revokePost } from '@/app/api/exec-sessions/revoke-token/route';
-import { POST as tasksPost } from '@/app/api/projects/[projectId]/tasks/route';
+import { GET as tasksGet, POST as tasksPost } from '@/app/api/projects/[projectId]/tasks/route';
 import { POST as plansPost } from '@/app/api/projects/[projectId]/plans/route';
 import { POST as proposePost } from '@/app/api/projects/[projectId]/plans/[planId]/propose/route';
 import { POST as activatePost } from '@/app/api/projects/[projectId]/plans/[planId]/activate/route';
@@ -246,6 +246,51 @@ describe('Exec-scoped API key', () => {
       { params: { projectId } },
     );
     expect(res.status).toBe(401);
+  });
+
+  // R-011: an exec-scoped key issued for project A must not grant access
+  // to project B even when the same user is a member of both projects.
+  it('R-011: exec-scoped key from project A is rejected by project B routes', async () => {
+    // Issue a fresh exec-scoped key bound to project A's run
+    await testPrisma.apiKey.deleteMany({ where: { execRunId: runId } });
+    const issueRes = await issuePost(
+      makeReq('/api/exec-sessions/issue-token', {
+        method: 'POST',
+        userName: owner,
+        body: { runId, taskId, projectId },
+      }),
+    );
+    expect(issueRes.status).toBe(201);
+    const projectAKey = (await issueRes.json()).data.key as string;
+
+    // Create a second project (project B) where the same user is owner.
+    // The key being scoped to project A must not let the caller read
+    // project B's tasks even though they are a member there.
+    const { projectId: projectBId } = await createTestProject(owner);
+    try {
+      const denied = await tasksGet(
+        makeReq(`/api/projects/${projectBId}/tasks`, {
+          userName: owner,
+          authToken: projectAKey,
+        }),
+        { params: { projectId: projectBId } },
+      );
+      expect(denied.status).toBe(403);
+      const body = await denied.json();
+      expect(body.error.message).toMatch(/exec-scoped/i);
+
+      // Sanity: same key still works on its own project (read-only).
+      const allowed = await tasksGet(
+        makeReq(`/api/projects/${projectId}/tasks`, {
+          userName: owner,
+          authToken: projectAKey,
+        }),
+        { params: { projectId } },
+      );
+      expect(allowed.status).toBe(200);
+    } finally {
+      await cleanupProject(projectBId);
+    }
   });
 
   it('revoke endpoint deletes the scoped key row', async () => {
