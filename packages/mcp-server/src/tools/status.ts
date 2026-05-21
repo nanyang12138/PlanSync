@@ -146,11 +146,15 @@ export function registerStatusTools(server: McpServer, api: ApiClient, config: M
 
       // No projectId: use cross-project /api/my-work endpoint
       if (!args.projectId) {
+        // R-018: forward agentName to the API as ?user=<name> so the cross-
+        // project endpoint returns the delegate's work (not the caller's).
+        // The API enforces that only owners can specify a foreign user.
+        const userQs = args.agentName ? `?user=${encodeURIComponent(args.agentName)}` : '';
         const result = await api.get<{
           reviews: Array<Record<string, unknown>>;
           drifts: Array<Record<string, unknown>>;
           tasks: Array<Record<string, unknown>>;
-        }>('/api/my-work');
+        }>(`/api/my-work${userQs}`);
         const { reviews = [], drifts = [], tasks = [] } = result;
         return {
           content: [

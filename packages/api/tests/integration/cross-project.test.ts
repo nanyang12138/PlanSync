@@ -427,4 +427,93 @@ describe('X: Cross-Project Features', () => {
     const [, subject] = driftCall!;
     expect(subject).toContain('Drift');
   });
+
+  // R-018: cross-project my_work honours ?user=<agentName> for owners.
+  describe('R-018: my-work ?user= delegation', () => {
+    const delegationOwner = 'r018-owner';
+    const delegationOutsider = 'r018-outsider';
+    const delegationAgent = 'r018-genie';
+    let delegationProjectId: string;
+    let agentTaskId: string;
+
+    beforeAll(async () => {
+      ({ projectId: delegationProjectId } = await createTestProject(delegationOwner));
+      // outsider is just an unrelated human (no membership in the delegation project)
+      // genie is an agent member of the delegation project
+      await testPrisma.projectMember.create({
+        data: {
+          projectId: delegationProjectId,
+          name: delegationAgent,
+          role: 'developer',
+          type: 'agent',
+        },
+      });
+
+      const task = await testPrisma.task.create({
+        data: {
+          projectId: delegationProjectId,
+          title: 'R-018 agent task',
+          type: 'code',
+          priority: 'p1',
+          status: 'in_progress',
+          assignee: delegationAgent,
+          assigneeType: 'agent',
+          boundPlanVersion: 1,
+          agentConstraints: [],
+        },
+      });
+      agentTaskId = task.id;
+    });
+
+    afterAll(async () => {
+      await cleanupProject(delegationProjectId);
+    });
+
+    it("returns the delegated user's tasks when owner passes ?user=<agent>", async () => {
+      const res = await myWorkGet(
+        makeReq('/api/my-work', {
+          userName: delegationOwner,
+          searchParams: { user: delegationAgent },
+        }),
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      const task = body.tasks.find((t: { id: string }) => t.id === agentTaskId);
+      expect(task).toBeDefined();
+      expect(task.projectId).toBe(delegationProjectId);
+    });
+
+    it("without ?user= an owner sees only their own work (not the agent's task)", async () => {
+      const res = await myWorkGet(makeReq('/api/my-work', { userName: delegationOwner }));
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      const task = body.tasks.find((t: { id: string }) => t.id === agentTaskId);
+      expect(task).toBeUndefined();
+    });
+
+    it('rejects ?user=<other> when caller does not own any project (403)', async () => {
+      const res = await myWorkGet(
+        makeReq('/api/my-work', {
+          userName: delegationOutsider,
+          searchParams: { user: delegationAgent },
+        }),
+      );
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error.code).toBe('FORBIDDEN');
+    });
+
+    it('ignores ?user= when it equals the caller (behaves as the legacy self-query)', async () => {
+      const res = await myWorkGet(
+        makeReq('/api/my-work', {
+          userName: delegationOwner,
+          searchParams: { user: delegationOwner },
+        }),
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // Owner has no tasks assigned and the agent's task should not leak in.
+      expect(body.tasks.find((t: { id: string }) => t.id === agentTaskId)).toBeUndefined();
+    });
+  });
 });
