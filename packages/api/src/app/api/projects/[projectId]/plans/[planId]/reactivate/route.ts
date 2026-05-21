@@ -7,7 +7,12 @@ import { createActivity } from '@/lib/activity';
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
 import { logger } from '@/lib/logger';
-import { runDriftScan, persistDriftAlerts, enrichDriftAlertsWithAi } from '@/lib/drift-engine';
+import {
+  runDriftScan,
+  persistDriftAlerts,
+  enrichDriftAlertsWithAi,
+  dispatchDriftSideEffects,
+} from '@/lib/drift-engine';
 
 type Params = { params: { projectId: string; planId: string } };
 
@@ -65,9 +70,17 @@ export async function POST(req: NextRequest, { params }: Params) {
     });
 
     const scanResult = await runDriftScan(prisma, params.projectId, reactivated.version);
-    let driftAlerts: any[] = [];
+    let driftAlerts: Array<
+      Record<string, unknown> & { id: string; taskId: string; severity: string }
+    > = [];
     if (scanResult.alerts.length > 0) {
-      driftAlerts = await persistDriftAlerts(prisma, params.projectId, scanResult.alerts);
+      const persisted = await persistDriftAlerts(prisma, params.projectId, scanResult.alerts);
+      driftAlerts = persisted.alerts;
+      // R-007: dispatch email + per-user SSE only after persistDriftAlerts
+      // resolved. (Reactivate already calls persist outside a $transaction so
+      // the ordering is naturally safe; the dispatch helper is invoked here
+      // for consistency with the activate route.)
+      dispatchDriftSideEffects(params.projectId, persisted.notifications);
       enrichDriftAlertsWithAi(params.projectId, reactivated.id, driftAlerts).catch((err) =>
         logger.error({ err }, 'Background AI drift enrichment failed'),
       );

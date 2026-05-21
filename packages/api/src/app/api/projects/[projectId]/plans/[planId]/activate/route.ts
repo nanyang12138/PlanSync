@@ -4,7 +4,12 @@ import { authenticate, requireProjectRole, requireNotExecScoped } from '@/lib/au
 import { handleApiError } from '@/lib/errors';
 import { AppError, ErrorCode } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
-import { runDriftScan, persistDriftAlerts, enrichDriftAlertsWithAi } from '@/lib/drift-engine';
+import {
+  runDriftScan,
+  persistDriftAlerts,
+  enrichDriftAlertsWithAi,
+  dispatchDriftSideEffects,
+} from '@/lib/drift-engine';
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
 import { logger } from '@/lib/logger';
@@ -37,7 +42,7 @@ export async function POST(req: NextRequest, { params }: Params) {
       }
     }
 
-    const { activated, driftAlerts } = await prisma.$transaction(async (tx) => {
+    const { activated, driftAlerts, driftNotifications } = await prisma.$transaction(async (tx) => {
       await tx.plan.updateMany({
         where: { projectId: params.projectId, status: 'active' },
         data: { status: 'superseded' },
@@ -53,10 +58,18 @@ export async function POST(req: NextRequest, { params }: Params) {
       });
 
       const scanResult = await runDriftScan(tx, params.projectId, a.version);
-      const alerts = await persistDriftAlerts(tx, params.projectId, scanResult.alerts);
+      const { alerts, notifications } = await persistDriftAlerts(
+        tx,
+        params.projectId,
+        scanResult.alerts,
+      );
 
-      return { activated: a, driftAlerts: alerts };
+      return { activated: a, driftAlerts: alerts, driftNotifications: notifications };
     });
+
+    // Side effects (email + per-user SSE) deferred until after the transaction
+    // commits — R-007: prevents ghost notifications on rollback.
+    dispatchDriftSideEffects(params.projectId, driftNotifications);
 
     if (driftAlerts.length > 0) {
       enrichDriftAlertsWithAi(params.projectId, activated.id, driftAlerts).catch((err) =>
