@@ -933,7 +933,7 @@
 
 #### R-046 [MEDIUM] complete-human 加 open drift gate
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B5
 - **depends_on**: —
 - **effort**: small
