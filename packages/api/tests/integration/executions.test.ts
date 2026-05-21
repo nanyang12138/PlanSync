@@ -456,6 +456,68 @@ describe('G: Execution Management', () => {
     await cleanupProject(pid);
   });
 
+  it('G14 (R-054): execution_start rejects terminal/blocked task statuses', async () => {
+    // Setup an isolated project so terminal-status tasks don't poison sibling tests.
+    const { projectId: pid } = await createTestProject('r054-owner');
+    const { version: pv } = await createActivePlan(pid, 'r054-owner');
+
+    async function makeTask(status: 'done' | 'cancelled' | 'blocked' | 'todo' | 'in_progress') {
+      return testPrisma.task.create({
+        data: {
+          projectId: pid,
+          title: `R-054 ${status}`,
+          type: 'code',
+          priority: 'p1',
+          status,
+          assignee: 'r054-owner',
+          assigneeType: 'human',
+          boundPlanVersion: pv,
+          agentConstraints: [],
+        },
+      });
+    }
+
+    for (const status of ['done', 'cancelled', 'blocked'] as const) {
+      const t = await makeTask(status);
+      const res = await runsPost(
+        makeReq(`/api/projects/${pid}/tasks/${t.id}/runs`, {
+          method: 'POST',
+          userName: 'r054-owner',
+          body: { executorType: 'human', executorName: 'r054-owner' },
+        }),
+        { params: { projectId: pid, taskId: t.id } },
+      );
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error.code).toBe('STATE_CONFLICT');
+      expect(body.error.message).toMatch(new RegExp(`task is "${status}"`));
+      expect(body.error.details?.taskStatus).toBe(status);
+
+      // Crucially: no run row may be created when the gate fires. Before R-054, a
+      // 'done' task would silently get a fresh run row attached to it.
+      const runs = await testPrisma.executionRun.findMany({ where: { taskId: t.id } });
+      expect(runs).toHaveLength(0);
+
+      // Task status must be untouched.
+      const after = await testPrisma.task.findUnique({ where: { id: t.id } });
+      expect(after?.status).toBe(status);
+    }
+
+    // Positive control: a 'todo' task in the same project still succeeds.
+    const okTask = await makeTask('todo');
+    const okRes = await runsPost(
+      makeReq(`/api/projects/${pid}/tasks/${okTask.id}/runs`, {
+        method: 'POST',
+        userName: 'r054-owner',
+        body: { executorType: 'human', executorName: 'r054-owner' },
+      }),
+      { params: { projectId: pid, taskId: okTask.id } },
+    );
+    expect(okRes.status).toBe(201);
+
+    await cleanupProject(pid);
+  });
+
   it('G11: drift → 409 DRIFT_UNRESOLVED → resolve → 201 (核心链路)', async () => {
     // Reset task to a state where it can start execution. Also clear any leftover
     // running runs from prior tests — the one-running-per-task mutex would otherwise

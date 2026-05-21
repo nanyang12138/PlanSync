@@ -1069,7 +1069,7 @@
 
 #### R-054 [HIGH] execution_start 拒绝 cancelled/blocked/done 任务
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small
