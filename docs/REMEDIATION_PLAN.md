@@ -1007,7 +1007,7 @@
 
 #### R-050 [MEDIUM] plan 版本号生成放进事务
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small
