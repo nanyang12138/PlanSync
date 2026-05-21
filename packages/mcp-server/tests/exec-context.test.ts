@@ -146,9 +146,7 @@ describe('R-019: plansync_exec_context fatal vs transient classification', () =>
     process.env.PLANSYNC_EXEC_TASK_ID = 'task1';
     process.env.PLANSYNC_PROJECT = 'proj1';
 
-    mocks.get.mockRejectedValueOnce(
-      new ApiError('Service Unavailable', 'INTERNAL', 503),
-    );
+    mocks.get.mockRejectedValueOnce(new ApiError('Service Unavailable', 'INTERNAL', 503));
 
     const result = await callExecContext(server);
 

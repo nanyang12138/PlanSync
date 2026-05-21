@@ -124,7 +124,10 @@ export function isTransientExecContextError(err: unknown): boolean {
     return err.status >= 500;
   }
   const e = err as { code?: unknown; cause?: { code?: unknown } } | undefined;
-  const code = (typeof e?.code === 'string' && e.code) || (typeof e?.cause?.code === 'string' && e.cause.code) || '';
+  const code =
+    (typeof e?.code === 'string' && e.code) ||
+    (typeof e?.cause?.code === 'string' && e.cause.code) ||
+    '';
   return (
     code === 'ECONNRESET' ||
     code === 'ECONNREFUSED' ||
