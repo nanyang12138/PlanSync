@@ -401,7 +401,7 @@
 
 #### R-015 [HIGH] 给所有 owner-only 写路由加 `requireNotExecScoped`
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B2
 - **depends_on**: —
 - **effort**: medium
