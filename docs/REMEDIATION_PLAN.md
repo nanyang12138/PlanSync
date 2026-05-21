@@ -791,7 +791,7 @@
 
 #### R-038 [MEDIUM] `review_reject` schema 强制 comment 非空
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
