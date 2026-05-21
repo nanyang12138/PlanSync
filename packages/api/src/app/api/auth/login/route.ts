@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { prisma } from '@/lib/prisma';
-import { env } from '@/lib/env';
 
 async function hashPassword(password: string): Promise<string> {
   const salt = crypto.randomBytes(16);
@@ -51,7 +50,13 @@ export async function POST(req: NextRequest) {
       // must pre-create the account via `bin/ps-admin create-user <name>`.
       // Set PLANSYNC_OPEN_REGISTRATION=true to restore the legacy behaviour
       // where the first password chosen for a username claims it.
-      if (!env.PLANSYNC_OPEN_REGISTRATION) {
+      //
+      // Read process.env directly instead of `@/lib/env` to avoid pulling the
+      // import-time `validateEnv()` (which exits the process if DATABASE_URL
+      // is missing) into the Next.js build-time module graph. The schema entry
+      // in env.ts is kept for runtime typing and documentation.
+      const openRegistration = process.env.PLANSYNC_OPEN_REGISTRATION === 'true';
+      if (!openRegistration) {
         return NextResponse.json(
           {
             error:
