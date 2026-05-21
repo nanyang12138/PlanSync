@@ -709,7 +709,7 @@
 
 #### R-033 [MEDIUM] `createActivity` 强制 zod 校验 type
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
