@@ -57,6 +57,7 @@ export const planReviewSchema = z.object({
   reviewerName: z.string(),
   status: reviewStatusSchema,
   comment: z.string().nullable(),
+  focusNotes: z.string().nullable().optional(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 });
