@@ -15,6 +15,8 @@ export enum ErrorCode {
   STATE_CONFLICT = 'STATE_CONFLICT',
   // 422
   UNPROCESSABLE = 'UNPROCESSABLE',
+  // 429
+  RATE_LIMITED = 'RATE_LIMITED',
   // 500
   INTERNAL = 'INTERNAL',
 }
@@ -28,6 +30,7 @@ const STATUS_MAP: Record<ErrorCode, number> = {
   [ErrorCode.CONFLICT]: 409,
   [ErrorCode.STATE_CONFLICT]: 409,
   [ErrorCode.UNPROCESSABLE]: 422,
+  [ErrorCode.RATE_LIMITED]: 429,
   [ErrorCode.INTERNAL]: 500,
 };
 

@@ -5,6 +5,7 @@ import { handleApiError } from '@/lib/errors';
 import { sendMail, userEmail } from '@/lib/email';
 import { AppError, ErrorCode } from '@plansync/shared';
 import { logger } from '@/lib/logger';
+import { checkNotifyRateLimit } from '@/lib/notify-rate-limit';
 
 type Params = { params: { projectId: string } };
 
@@ -12,7 +13,13 @@ export async function POST(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
     requireNotExecScoped(auth);
-    await requireProjectRole(auth, params.projectId);
+    await requireProjectRole(auth, params.projectId, 'owner');
+
+    // Per-user in-memory rate limit: max 3 notify calls per 5 minutes.
+    // Mail-sending is owner-only but still side-effectful (external delivery),
+    // so we cap it to prevent a misbehaving owner / runaway script from
+    // spamming reviewers.
+    checkNotifyRateLimit(auth.userName);
 
     const body = (await req.json()) as { type?: string; planId?: string };
     const { type, planId } = body;
