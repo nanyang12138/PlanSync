@@ -7,6 +7,14 @@ const baseEnvSchema = z.object({
     .string()
     .transform((v) => v === 'true')
     .default('false'),
+  // R-013: First-login open registration is OFF by default. Owners must
+  // pre-create accounts via `bin/ps-admin create-user <name>`. Set this to
+  // 'true' only on isolated dev hosts where you want anyone to claim a
+  // username on first POST /api/auth/login.
+  PLANSYNC_OPEN_REGISTRATION: z
+    .string()
+    .transform((v) => v === 'true')
+    .default('false'),
   PORT: z.coerce.number().default(3001),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),

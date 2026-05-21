@@ -46,7 +46,26 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Invalid username or password' }, { status: 401 });
       }
     } else {
-      // First login: open registration — create account with the chosen password
+      // First login. By default (R-013), open registration is OFF: an admin
+      // must pre-create the account via `bin/ps-admin create-user <name>`.
+      // Set PLANSYNC_OPEN_REGISTRATION=true to restore the legacy behaviour
+      // where the first password chosen for a username claims it.
+      //
+      // Read process.env directly instead of `@/lib/env` to avoid pulling the
+      // import-time `validateEnv()` (which exits the process if DATABASE_URL
+      // is missing) into the Next.js build-time module graph. The schema entry
+      // in env.ts is kept for runtime typing and documentation.
+      const openRegistration = process.env.PLANSYNC_OPEN_REGISTRATION === 'true';
+      if (!openRegistration) {
+        return NextResponse.json(
+          {
+            error:
+              'Account must be created by admin. Ask the PlanSync owner to run: bin/ps-admin create-user ' +
+              name,
+          },
+          { status: 401 },
+        );
+      }
       const passwordHash = await hashPassword(password);
       await prisma.userAccount.create({ data: { userName: name, passwordHash } });
     }
