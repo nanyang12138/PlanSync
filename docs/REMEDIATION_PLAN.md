@@ -918,7 +918,7 @@
 
 #### R-045 [HIGH] human task PATCH `done` 需要 execution 或 owner
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B5
 - **depends_on**: —
 - **effort**: small
