@@ -662,7 +662,7 @@
 
 #### R-030 [HIGH] shared `planReviewSchema` 补 `focusNotes`
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
