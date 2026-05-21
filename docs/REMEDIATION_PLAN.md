@@ -759,7 +759,7 @@
 
 #### R-036 [MEDIUM] 删除 MCP `plan_create` 客户端 draft guard 或在 API 实施
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small

@@ -231,6 +231,13 @@ describe('C: Plan Lifecycle', () => {
   });
 
   it('C4/C5: propose → approve → activate', async () => {
+    // R-036: API now rejects creating a new plan while another is draft/proposed.
+    // Clear any blocking plans left over from prior tests in the same project.
+    await testPrisma.plan.updateMany({
+      where: { projectId, status: { in: ['draft', 'proposed'] } },
+      data: { status: 'superseded' },
+    });
+
     // Create fresh plan
     const createRes = await plansPost(
       makeReq(`/api/projects/${projectId}/plans`, {
@@ -305,6 +312,11 @@ describe('C: Plan Lifecycle', () => {
   });
 
   it('C6: reject review → rejected', async () => {
+    await testPrisma.plan.updateMany({
+      where: { projectId, status: { in: ['draft', 'proposed'] } },
+      data: { status: 'superseded' },
+    });
+
     const createRes = await plansPost(
       makeReq(`/api/projects/${projectId}/plans`, {
         method: 'POST',
@@ -355,6 +367,11 @@ describe('C: Plan Lifecycle', () => {
     });
     expect(before).toBeNull();
 
+    await testPrisma.plan.updateMany({
+      where: { projectId, status: { in: ['draft', 'proposed'] } },
+      data: { status: 'superseded' },
+    });
+
     const createRes = await plansPost(
       makeReq(`/api/projects/${projectId}/plans`, {
         method: 'POST',
@@ -400,6 +417,11 @@ describe('C: Plan Lifecycle', () => {
     });
     expect(before).toBeNull();
 
+    await testPrisma.plan.updateMany({
+      where: { projectId, status: { in: ['draft', 'proposed'] } },
+      data: { status: 'superseded' },
+    });
+
     const createRes = await plansPost(
       makeReq(`/api/projects/${projectId}/plans`, {
         method: 'POST',
@@ -438,8 +460,16 @@ describe('C: Plan Lifecycle', () => {
   });
 
   it('C12: 连续创建 3 个 plan → version 递增', async () => {
+    // R-036: API blocks creating a new plan while a draft/proposed one exists.
+    // Mark the prior draft/proposed plan as superseded between creates so each
+    // new create has a clean slate while still validating that version numbers
+    // increase monotonically across creates.
     const versions: number[] = [];
     for (let i = 0; i < 3; i++) {
+      await testPrisma.plan.updateMany({
+        where: { projectId, status: { in: ['draft', 'proposed'] } },
+        data: { status: 'superseded' },
+      });
       const res = await plansPost(
         makeReq(`/api/projects/${projectId}/plans`, {
           method: 'POST',

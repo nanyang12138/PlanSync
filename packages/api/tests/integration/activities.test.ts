@@ -63,6 +63,12 @@ describe('Q: Activity Log', () => {
   });
 
   it('Q1: activate plan → activity type=plan_activated', async () => {
+    // R-036: API rejects creating a new plan while another is draft/proposed.
+    await testPrisma.plan.updateMany({
+      where: { projectId, status: { in: ['draft', 'proposed'] } },
+      data: { status: 'superseded' },
+    });
+
     const createRes = await plansPost(
       makeReq(`/api/projects/${projectId}/plans`, {
         method: 'POST',
