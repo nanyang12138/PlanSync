@@ -1131,7 +1131,8 @@
 
 #### R-058 [LOW] drift_engine 使用 tx 读取（保持事务一致性）
 
-- **status**: pending
+- **status**: blocked
+- **blocked_reason**: fix_steps 引用的 `drift-engine.ts` 行 89-92 / 112-115 当前只剩注释；R-007 (PR #11) 的重构已经把所有裸 `prisma` 读移到 `dispatchDriftNotifications`（事务后调用），`runDriftScan` 与 `persistDriftAlerts` 当前已经 100% 使用 `tx`。无可改代码，问题已实质修复。
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small
