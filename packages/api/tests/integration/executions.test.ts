@@ -223,6 +223,54 @@ describe('G: Execution Management', () => {
     expect(updated?.status).toBe('stale');
   });
 
+  it('G7b: scanStaleExecutions → paused → superseded (pause-ack-timeout 5min default)', async () => {
+    // Mirrors G6 but for the drift v2 paused-run lifecycle: the run was
+    // moved to 'paused' by the drift engine on a plan activate, the agent
+    // never ack-paused, the scanner sweeps it into 'superseded' so it
+    // doesn't sit half-alive. We freeze the "time since pause" via the
+    // lastHeartbeatAt proxy — heartbeat was rejected post-pause, so the
+    // timestamp is effectively the pause moment.
+    const pausedRun = await testPrisma.executionRun.create({
+      data: {
+        taskId,
+        status: 'paused',
+        executorType: 'agent',
+        executorName: 'test-paused-agent',
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(Date.now() - 10 * 60 * 1000),
+        lastHeartbeatAt: new Date(Date.now() - 6 * 60 * 1000), // 6 minutes ago > 5min default
+      },
+    });
+
+    await scanStaleExecutions();
+
+    const updated = await testPrisma.executionRun.findUnique({ where: { id: pausedRun.id } });
+    expect(updated?.status).toBe('superseded');
+    expect(updated?.endedAt).not.toBeNull();
+    expect(updated?.outputSummary).toMatch(/pause-ack-timeout/);
+  });
+
+  it('G7c: paused run still within the timeout window is left alone', async () => {
+    const recentPause = await testPrisma.executionRun.create({
+      data: {
+        taskId,
+        status: 'paused',
+        executorType: 'agent',
+        executorName: 'test-recent-paused-agent',
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(),
+        lastHeartbeatAt: new Date(), // just now — well within 5min
+      },
+    });
+
+    await scanStaleExecutions();
+
+    const updated = await testPrisma.executionRun.findUnique({ where: { id: recentPause.id } });
+    expect(updated?.status).toBe('paused');
+  });
+
   it('G7: scanStaleExecutions → failed (30min threshold)', async () => {
     // Create a stale run that's been stale for >30min
     const staleRun = await testPrisma.executionRun.create({
