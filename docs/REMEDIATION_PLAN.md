@@ -366,7 +366,7 @@
 
 #### R-013 [HIGH] 首次登录的开放注册改为受控
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B2
 - **depends_on**: —
 - **effort**: medium
