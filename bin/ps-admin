@@ -9,13 +9,16 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 usage() {
   cat <<'EOF'
-Usage: ps-admin [start|setup|reset|help]
+Usage: ps-admin [start|setup|reset|create-user|help]
 
 Commands:
-  start     Prepare server dependencies if needed, then start PlanSync API
-  setup     Run the full explicit owner bootstrap flow
-  reset     Reset the local PostgreSQL data and rerun setup
-  help      Show this help
+  start                       Prepare server dependencies if needed, then start PlanSync API
+  setup                       Run the full explicit owner bootstrap flow
+  reset                       Reset the local PostgreSQL data and rerun setup
+  create-user <name> [opts]   Pre-create a user account (required when
+                              PLANSYNC_OPEN_REGISTRATION=false, the default).
+                              Options: --password <pw>
+  help                        Show this help
 
 Note: PLANSYNC_API_KEY is your login password. Run ./bin/plansync — it will
       prompt for credentials on first use and save them to ~/.config/plansync/env.
@@ -60,6 +63,17 @@ case "$command" in
   reset)
     print_header
     exec bash "$PROJECT_DIR/scripts/db-reset.sh" "$@"
+    ;;
+  create-user)
+    print_header
+    use_local_node_runtime
+    if [ -f "$PROJECT_DIR/.env" ]; then
+      set -a
+      # shellcheck disable=SC1090,SC1091
+      . "$PROJECT_DIR/.env"
+      set +a
+    fi
+    exec node "$PROJECT_DIR/scripts/create-user.mjs" "$@"
     ;;
   gen-key)
     echo "gen-key is no longer needed." >&2
