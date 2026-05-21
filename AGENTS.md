@@ -57,3 +57,31 @@ If `plansync_task_pack` shows drift alerts:
 - Always check `plansync_status` at the start of a session
 - Use structured suggestions (`plansync_plan_suggest`) instead of ad-hoc comments for plan changes
 - Record all significant decisions as comments for the team
+
+## Cursor Cloud specific instructions
+
+### System Dependencies
+
+PostgreSQL 16 must be installed (`sudo apt-get install -y postgresql postgresql-client`). The PG binaries live at `/usr/lib/postgresql/16/bin`, so always set `PG_BIN=/usr/lib/postgresql/16/bin` when running any PlanSync script that touches the database (the default `PG_BIN=/tool/pandora64/bin` does not exist in this environment).
+
+You must also fix the PostgreSQL socket directory permissions before starting PG for the first time:
+
+```bash
+sudo mkdir -p /var/run/postgresql && sudo chown $(whoami) /var/run/postgresql
+```
+
+### Running Services
+
+All standard development commands are documented in `CLAUDE.md` and `README.md`. Key points for Cloud agents:
+
+- **Dev server**: `export PG_BIN=/usr/lib/postgresql/16/bin && bash scripts/dev.sh` — starts PostgreSQL (if not running), runs Prisma migrations, then launches Next.js on port 3001.
+- **Lint**: `bash scripts/lint.sh` (ESLint)
+- **Tests**: `bash scripts/test.sh` (vitest; requires PostgreSQL running and `DATABASE_URL` set)
+- **Build**: `bash scripts/build.sh` (builds shared → mcp-server → cli → api)
+
+### Gotchas
+
+- The project uses a **repo-local Node.js v22.14.0** runtime in `.local-runtime/node`. All scripts source `scripts/local-node-runtime.sh` and use `run_local_npm` / `run_local_node`. Do not use the system Node for project scripts.
+- When running tests or dev server directly (not via `scripts/*.sh`), export `DATABASE_URL="postgresql://$(whoami)@localhost:15432/plansync_dev"` and `PG_BIN=/usr/lib/postgresql/16/bin`.
+- Email notifications will show `sendmail failed` in test output — this is expected and harmless; tests still pass.
+- AI features (semantic diff, conflict prediction, completion verification) silently no-op without `LLM_API_KEY` or `ANTHROPIC_API_KEY` — 3 AI tests are skipped accordingly.
