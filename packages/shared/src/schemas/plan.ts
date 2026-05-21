@@ -64,3 +64,20 @@ export const planReviewSchema = z.object({
 export const reviewActionSchema = z.object({
   comment: z.string().optional(),
 });
+
+// Reviewer spec accepted by POST /api/projects/:projectId/plans/:planId/propose.
+// Accepts either a bare username (string) or a structured object with optional
+// focusNotes / type. Used to bootstrap PlanReview rows + auto-add reviewers
+// as project members when proposing a plan for review.
+export const reviewerSpecSchema = z.union([
+  z.string().min(1).max(120),
+  z.object({
+    name: z.string().min(1).max(120),
+    focusNotes: z.string().max(2000).optional(),
+    type: z.enum(['human', 'agent']).optional(),
+  }),
+]);
+
+export const proposePlanSchema = z.object({
+  reviewers: z.array(reviewerSpecSchema).max(20).optional(),
+});
