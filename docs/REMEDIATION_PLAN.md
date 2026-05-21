@@ -1213,7 +1213,7 @@
 
 #### R-063 [HIGH] AI loop 保留 tool_use/tool_result 历史
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: medium
