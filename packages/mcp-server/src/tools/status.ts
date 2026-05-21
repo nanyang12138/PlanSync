@@ -146,11 +146,17 @@ export function registerStatusTools(server: McpServer, api: ApiClient, config: M
 
       // No projectId: use cross-project /api/my-work endpoint
       if (!args.projectId) {
+        // R-018: when agentName is supplied, ask the API to scope results to
+        // that agent (owners only). Caller identity stays in auth headers;
+        // the ?user= query is the explicit delegation marker.
+        const myWorkPath = args.agentName
+          ? `/api/my-work?user=${encodeURIComponent(args.agentName)}`
+          : '/api/my-work';
         const result = await api.get<{
           reviews: Array<Record<string, unknown>>;
           drifts: Array<Record<string, unknown>>;
           tasks: Array<Record<string, unknown>>;
-        }>('/api/my-work');
+        }>(myWorkPath);
         const { reviews = [], drifts = [], tasks = [] } = result;
         return {
           content: [

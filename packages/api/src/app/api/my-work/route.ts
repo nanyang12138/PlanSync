@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { AppError, ErrorCode } from '@plansync/shared';
 import { prisma } from '@/lib/prisma';
 import { authenticate } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
@@ -9,11 +10,53 @@ export async function GET(req: NextRequest) {
   try {
     const auth = await authenticate(req);
 
-    // Get all projects where this user is a human member
-    const memberships = await prisma.projectMember.findMany({
-      where: { name: auth.userName, type: 'human' },
+    // R-018: optional `?user=<name>` lets owners (or master delegation) query
+    // pending work on behalf of another member (typically an agent like
+    // "genie"). When provided and different from the caller, scope is
+    // restricted to projects where the caller is an owner AND the target is
+    // a member; this prevents leaking work from projects the caller has no
+    // owner relationship with.
+    const targetUserParam = req.nextUrl.searchParams.get('user');
+    const targetUser = targetUserParam?.trim() || auth.userName;
+    const isDelegated = targetUser !== auth.userName;
+
+    // Projects where the target user is a member (humans OR agents — owners
+    // commonly want to inspect an agent's pending work).
+    const targetMemberships = await prisma.projectMember.findMany({
+      where: isDelegated ? { name: targetUser } : { name: targetUser, type: 'human' },
       include: { project: { select: { id: true, name: true } } },
     });
+
+    let memberships = targetMemberships;
+    if (isDelegated) {
+      const targetProjectIds = targetMemberships.map((m) => m.project.id);
+      if (targetProjectIds.length === 0) {
+        // Target isn't a member anywhere: nothing to report, but also nothing
+        // to authorize. Treat as forbidden so callers cannot use this as a
+        // membership oracle for arbitrary user names.
+        throw new AppError(
+          ErrorCode.FORBIDDEN,
+          `Cannot query work for "${targetUser}": no shared project with owner privileges`,
+        );
+      }
+      // Caller must be owner in at least one shared project.
+      const ownerOf = await prisma.projectMember.findMany({
+        where: {
+          name: auth.userName,
+          role: 'owner',
+          projectId: { in: targetProjectIds },
+        },
+        select: { projectId: true },
+      });
+      if (ownerOf.length === 0) {
+        throw new AppError(
+          ErrorCode.FORBIDDEN,
+          `Only project owners may query "/api/my-work?user=<name>"; ${auth.userName} is not an owner in any project that "${targetUser}" belongs to`,
+        );
+      }
+      const ownerProjectIds = new Set(ownerOf.map((o) => o.projectId));
+      memberships = targetMemberships.filter((m) => ownerProjectIds.has(m.project.id));
+    }
 
     const projectIds = memberships.map((m) => m.project.id);
     const projectMap = Object.fromEntries(memberships.map((m) => [m.project.id, m.project.name]));
@@ -23,10 +66,10 @@ export async function GET(req: NextRequest) {
     }
 
     const [pendingReviews, pendingTasks, openDrifts, userState] = await Promise.all([
-      // P1: Plan reviews pending for this user
+      // P1: Plan reviews pending for target user
       prisma.planReview.findMany({
         where: {
-          reviewerName: auth.userName,
+          reviewerName: targetUser,
           status: 'pending',
           plan: { projectId: { in: projectIds } },
         },
@@ -37,11 +80,11 @@ export async function GET(req: NextRequest) {
         },
       }),
 
-      // P2: Tasks assigned to user that are active
+      // P2: Tasks assigned to target user that are active
       prisma.task.findMany({
         where: {
           projectId: { in: projectIds },
-          assignee: auth.userName,
+          assignee: targetUser,
           status: { in: ['todo', 'in_progress', 'blocked'] },
         },
         select: {
@@ -54,31 +97,37 @@ export async function GET(req: NextRequest) {
         },
       }),
 
-      // P0: Open drift alerts on tasks assigned to user, plus unassigned tasks in their projects
-      // (unassigned tasks have no specific owner, so we surface them to all project members)
+      // P0: Open drift alerts on target user's tasks (and unassigned tasks
+      // when querying for self — owners querying a specific agent only see
+      // that agent's drifts to avoid noise).
       prisma.driftAlert.findMany({
         where: {
           projectId: { in: projectIds },
           status: 'open',
-          task: {
-            OR: [{ assignee: auth.userName }, { assignee: null }],
-          },
+          task: isDelegated
+            ? { assignee: targetUser }
+            : { OR: [{ assignee: targetUser }, { assignee: null }] },
         },
         include: {
           task: { select: { id: true, title: true, assignee: true } },
         },
       }),
 
-      prisma.userState.findUnique({ where: { userName: auth.userName } }),
+      // Unread activity counter only makes sense for the authenticated user.
+      isDelegated
+        ? Promise.resolve(null)
+        : prisma.userState.findUnique({ where: { userName: auth.userName } }),
     ]);
 
     const lastSeen = userState?.lastSeenActivityAt ?? null;
-    const unreadActivityCount = await prisma.activity.count({
-      where: {
-        projectId: { in: projectIds },
-        ...(lastSeen ? { createdAt: { gt: lastSeen } } : {}),
-      },
-    });
+    const unreadActivityCount = isDelegated
+      ? 0
+      : await prisma.activity.count({
+          where: {
+            projectId: { in: projectIds },
+            ...(lastSeen ? { createdAt: { gt: lastSeen } } : {}),
+          },
+        });
 
     const reviews = pendingReviews.map((r) => ({
       reviewId: r.id,

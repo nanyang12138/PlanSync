@@ -456,7 +456,7 @@
 
 #### R-018 [HIGH] `my_work` 跨项目模式尊重 `agentName`
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B2
 - **depends_on**: —
 - **effort**: small
