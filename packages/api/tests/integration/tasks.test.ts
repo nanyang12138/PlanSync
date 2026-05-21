@@ -288,6 +288,52 @@ describe('F: Task Management', () => {
     expect(res.status).toBe(409);
   });
 
+  it('F7b (R-049): concurrent claim → exactly one wins atomically', async () => {
+    const createRes = await tasksPost(
+      makeReq(`/api/projects/${projectId}/tasks`, {
+        method: 'POST',
+        userName: owner,
+        body: { title: 'Concurrent Claim Race', type: 'code' },
+      }),
+      { params: { projectId } },
+    );
+    const raceTaskId = (await createRes.json()).data.id;
+
+    const [resA, resB] = await Promise.all([
+      claimPost(
+        makeReq(`/api/projects/${projectId}/tasks/${raceTaskId}/claim`, {
+          method: 'POST',
+          userName: owner,
+          body: { assigneeType: 'human', startImmediately: true },
+        }),
+        { params: { projectId, taskId: raceTaskId } },
+      ),
+      claimPost(
+        makeReq(`/api/projects/${projectId}/tasks/${raceTaskId}/claim`, {
+          method: 'POST',
+          userName: dev,
+          body: { assigneeType: 'human', startImmediately: true },
+        }),
+        { params: { projectId, taskId: raceTaskId } },
+      ),
+    ]);
+
+    const statuses = [resA.status, resB.status].sort();
+    expect(statuses).toEqual([200, 409]);
+
+    const winnerRes = resA.status === 200 ? resA : resB;
+    const loserRes = resA.status === 409 ? resA : resB;
+    const winnerBody = await winnerRes.json();
+    const loserBody = await loserRes.json();
+    expect([owner, dev]).toContain(winnerBody.data.assignee);
+    expect(winnerBody.data.status).toBe('in_progress');
+    expect(loserBody.error?.details?.code).toBe('TASK_ALREADY_CLAIMED');
+
+    const finalTask = await testPrisma.task.findUnique({ where: { id: raceTaskId } });
+    expect(finalTask?.assignee).toBe(winnerBody.data.assignee);
+    expect(finalTask?.status).toBe('in_progress');
+  });
+
   it('F20: claim startImmediately=false → status=todo, assignee set', async () => {
     const createRes = await tasksPost(
       makeReq(`/api/projects/${projectId}/tasks`, {
