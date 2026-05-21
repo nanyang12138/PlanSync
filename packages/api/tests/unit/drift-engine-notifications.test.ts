@@ -72,6 +72,12 @@ const sampleAlerts = [
     reason: 'Task "T1" bound to plan v1, now v2',
     currentPlanVersion: 2,
     taskBoundVersion: 1,
+    // Drift v2 (S3): persistDriftAlerts only pauses runs when both
+    // severity != 'low' AND hasRunningExecution === true. This sample
+    // models a task with an in-flight run so the pause-runs branch in
+    // persist is exercised — keeping the "exactly one executionRun
+    // updateMany call" invariant this test asserts.
+    hasRunningExecution: true,
   },
 ];
 
