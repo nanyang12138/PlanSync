@@ -60,9 +60,19 @@ jobs:
           HEAD_REF=$(echo "$PR_JSON" | jq -r '.headRefName')
           BASE_REF=$(echo "$PR_JSON" | jq -r '.baseRefName')
 
-          # Author allow-list: Cursor bots + repo owner. Adjust as needed.
+          # Author allow-list:
+          #   - cursor[bot] / app/cursor    : Cursor Background Agent / Cloud Agent
+          #   - github-actions[bot]         : PRs opened by our own workflows
+          #     (REST API form; the GraphQL alias `app/github-actions` is also
+          #     accepted for safety)
+          #   - nanyang12138                : repo owner
+          # NOTE: deliberately NOT including dependabot[bot], renovate[bot], or
+          # other third-party bots — supply-chain PRs deserve human review.
+          # NOTE: workflow-modification PRs are caught separately by
+          # pr-guards.yml which applies the `do-not-merge` label, so adding
+          # github-actions[bot] here does not enable a self-modifying CI chain.
           case "$AUTHOR" in
-            cursor[bot]|app/cursor|nanyang12138) ;;
+            cursor[bot]|app/cursor|github-actions[bot]|app/github-actions|nanyang12138) ;;
             *)
               echo "Refusing to auto-merge PR authored by ${AUTHOR}"
               exit 0
