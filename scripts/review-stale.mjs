@@ -178,44 +178,64 @@ async function main() {
     untouched: 0,
   };
 
-  for (const issue of issues) {
+  // First pass (no API calls): pre-process labels/age and decide whether the
+  // issue still needs a remote file/PR check. This lets us short-circuit
+  // most issues without spending API quota and keeps the workflow within
+  // its 10-minute timeout even at the 2000-issue cap.
+  const preprocessed = issues.map((issue) => {
     const labels = new Set((issue.labels || []).map((l) => (typeof l === 'string' ? l : l.name)));
     const age = ageInDays(issue.created_at);
     const file = extractFilePath(issue.body);
+    const needsFileCheck = Boolean(file) && age >= 14 && !labels.has('stale:file-missing');
+    return { issue, labels, age, file, needsFileCheck };
+  });
 
-    // File-missing detection: a 404 on the default branch could mean the
-    // file was deleted (issue moot) OR renamed/moved (issue still valid at
-    // a new path). We can't tell those apart cheaply, so we surface a
-    // label + one comment and let the owner decide. Never auto-close here.
-    //
-    // Skip the check entirely when the source PR is still open: cursor-review
-    // commented on a not-yet-merged PR, so the path won't exist on default
-    // branch yet. Re-checking after merge (or PR close) is safe.
-    if (file && age >= 14 && !labels.has('stale:file-missing')) {
-      const sourcePr = extractSourcePrNumber(issue.body);
-      const sourcePrOpen = await isPrStillOpen(sourcePr);
-      if (sourcePrOpen) {
-        // Source PR not merged yet; default-branch check would be a false
-        // positive. Skip silently and revisit on the next sweep.
-      } else {
+  // Second pass: run remote file-missing checks with bounded concurrency.
+  // Each check is up to 2 API calls (PR state + contents). We process in
+  // chunks so the wall time scales with `total / CONCURRENCY` instead of
+  // strictly serial.
+  const CONCURRENCY = 6;
+  const targets = preprocessed.filter((p) => p.needsFileCheck);
+  for (let i = 0; i < targets.length; i += CONCURRENCY) {
+    const chunk = targets.slice(i, i + CONCURRENCY);
+    await Promise.all(
+      chunk.map(async (p) => {
+        const sourcePr = extractSourcePrNumber(p.issue.body);
+        const sourcePrOpen = await isPrStillOpen(sourcePr);
+        if (sourcePrOpen) {
+          // Source PR not merged yet; default-branch check would be a
+          // false positive. Skip silently and revisit on the next sweep.
+          p.fileMissingApplied = false;
+          return;
+        }
         let exists = true;
         try {
-          exists = await fileExistsOnDefault(file);
+          exists = await fileExistsOnDefault(p.file);
         } catch (err) {
-          console.warn(`#${issue.number}: file check failed (${err.message}), skipping`);
-          exists = true;
+          console.warn(`#${p.issue.number}: file check failed (${err.message}), skipping`);
+          p.fileMissingApplied = false;
+          return;
         }
         if (!exists) {
           await commentIssue(
-            issue.number,
-            `自动检测：路径 \`${file}\` 在默认分支已不存在。可能是**文件被删除**（这条 finding 应关闭）或**文件被 rename/move**（finding 仍有效，只是路径变了）——sweep 无法区分这两种情况，因此**不**自动关单，仅打 \`stale:file-missing\` 标签由你判断后处理。`,
+            p.issue.number,
+            `自动检测：路径 \`${p.file}\` 在默认分支已不存在。可能是**文件被删除**（这条 finding 应关闭）或**文件被 rename/move**（finding 仍有效，只是路径变了）——sweep 无法区分这两种情况，因此**不**自动关单，仅打 \`stale:file-missing\` 标签由你判断后处理。`,
           );
-          await addLabels(issue.number, ['stale:file-missing']);
-          stats.fileMissing.push(issue.number);
-          // fall through so age-based stale labels can also apply
+          await addLabels(p.issue.number, ['stale:file-missing']);
+          stats.fileMissing.push(p.issue.number);
+          p.fileMissingApplied = true;
+        } else {
+          p.fileMissingApplied = false;
         }
-      }
-    }
+      }),
+    );
+  }
+
+  // Third pass: age-based stale labels (no extra API calls beyond
+  // addLabels / commentIssue, and most are skipped because of the label
+  // checks). Sequential is fine for these.
+  for (const p of preprocessed) {
+    const { issue, labels, age } = p;
 
     if (age >= 90 && !labels.has('stale:90d')) {
       await addLabels(issue.number, ['stale:90d']);
@@ -235,7 +255,7 @@ async function main() {
     ) {
       await addLabels(issue.number, ['stale:30d']);
       stats.stale30.push(issue.number);
-    } else {
+    } else if (!p.fileMissingApplied) {
       stats.untouched += 1;
     }
   }

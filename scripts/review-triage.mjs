@@ -71,18 +71,24 @@ async function getComment() {
   return ghApi('GET', `/repos/${GH_REPO}/issues/comments/${COMMENT_ID}`);
 }
 
-// Atomic per-comment idempotency: GitHub returns 200 if a reaction with this
-// content already exists on the comment, 201 if newly created. We treat 200 as
-// "already processed by a previous run" and exit. This protects against
-// workflow re-runs (manual or automatic) duplicating issue creation when
-// search-issues indexing latency hides the prior fingerprint markers.
+// Atomic per-comment idempotency. Per GitHub REST docs, POST reaction on an
+// issue comment returns:
+//   201 - reaction created (we hold the lock; proceed)
+//   200 - reaction already exists (someone — usually a prior run of us —
+//         already triaged; exit early)
+//   422 - validation failed / rate-limited spam (treat conservatively as
+//         locked: we can't safely tell whether a prior run partially
+//         processed this comment, so refuse to re-run)
+// We also track whether WE created the reaction this invocation, so we can
+// best-effort DELETE it if processing fails downstream — otherwise a
+// transient LLM/parse failure would permanently lock out future re-runs.
 const TRIAGE_REACTION = 'rocket';
 
 async function acquireCommentLock() {
   const url = `/repos/${GH_REPO}/issues/comments/${COMMENT_ID}/reactions`;
   if (DRY_RUN) {
     console.log(`[dry-run] would POST reaction ${TRIAGE_REACTION} on comment ${COMMENT_ID}`);
-    return { acquired: true };
+    return { acquired: true, weCreatedIt: true };
   }
   const res = await fetch(`https://api.github.com${url}`, {
     method: 'POST',
@@ -95,10 +101,30 @@ async function acquireCommentLock() {
     },
     body: JSON.stringify({ content: TRIAGE_REACTION }),
   });
-  if (res.status === 201) return { acquired: true };
+  if (res.status === 201) {
+    const data = await res.json().catch(() => ({}));
+    return { acquired: true, weCreatedIt: true, reactionId: data?.id ?? null };
+  }
   if (res.status === 200) return { acquired: false, reason: 'reaction_exists' };
+  if (res.status === 422) return { acquired: false, reason: 'reaction_validation_or_spam' };
   const text = await res.text();
   throw new Error(`Reaction POST -> ${res.status}: ${text.slice(0, 500)}`);
+}
+
+async function releaseCommentLock(reactionId) {
+  if (!reactionId) return;
+  if (DRY_RUN) {
+    console.log(`[dry-run] would DELETE reaction ${reactionId}`);
+    return;
+  }
+  try {
+    await ghApi(
+      'DELETE',
+      `/repos/${GH_REPO}/issues/comments/${COMMENT_ID}/reactions/${reactionId}`,
+    );
+  } catch (err) {
+    console.warn(`releaseCommentLock(${reactionId}) failed (non-fatal): ${err.message}`);
+  }
 }
 
 async function searchExistingIssue(fp) {
@@ -197,12 +223,76 @@ async function llmCall(system, user) {
   }
 }
 
+function findBalancedArrayAt(text, start) {
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (ch === '\\' && inString) {
+      escape = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === '[') depth += 1;
+    else if (ch === ']') {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
 function extractJsonArray(text) {
-  const fence = text.match(/```(?:json|JSON|\w*)\s*\n([\s\S]*?)\n```/);
-  if (fence) return fence[1].trim();
-  const arr = text.match(/(\[[\s\S]*\])/);
-  if (arr) return arr[1].trim();
-  return text.trim();
+  if (!text) return text;
+  const trimmed = text.trim();
+
+  // Fast path: already valid JSON.
+  try {
+    JSON.parse(trimmed);
+    return trimmed;
+  } catch {
+    /* fall through */
+  }
+
+  // Code-fenced block (```json ... ``` or ``` ... ```).
+  const fence = trimmed.match(/```(?:json|JSON|\w*)\s*\n([\s\S]*?)\n```/);
+  if (fence) {
+    const inner = fence[1].trim();
+    try {
+      JSON.parse(inner);
+      return inner;
+    } catch {
+      /* fall through; try bracket-balanced */
+    }
+  }
+
+  // Bracket-balanced extraction. Walk every `[` in the text, extract the
+  // balanced array starting there (respecting strings + escapes), and
+  // return the first one that JSON.parse-s into an Array. The previous
+  // greedy `\[[\s\S]*\]` regex would over-capture; just-first-balanced
+  // would under-capture if the LLM puts a chatty preamble containing `[…]`
+  // before the actual payload. Iterating gets the right one in practice.
+  for (let i = 0; i < trimmed.length; i += 1) {
+    if (trimmed[i] !== '[') continue;
+    const candidate = findBalancedArrayAt(trimmed, i);
+    if (!candidate) continue;
+    try {
+      const parsed = JSON.parse(candidate);
+      if (Array.isArray(parsed)) return candidate;
+    } catch {
+      /* try next */
+    }
+  }
+  return trimmed;
 }
 
 function stripDiagnostics(body) {
@@ -328,8 +418,8 @@ async function main() {
   }
 
   // Acquire per-comment idempotency lock via GitHub reactions. Atomic — if
-  // another run already reacted, the API returns 200 (vs 201 for new) and
-  // we exit before any LLM cost or issue mutation.
+  // another run already reacted, the API returns 200 (or 422 for spam
+  // protection) and we exit before any LLM cost or issue mutation.
   const lock = await acquireCommentLock();
   if (!lock.acquired) {
     console.log(`Comment ${COMMENT_ID} already triaged (${lock.reason}); exiting.`);
@@ -338,11 +428,15 @@ async function main() {
 
   const sourceLink = `https://github.com/${GH_REPO}/pull/${PR_NUMBER}#issuecomment-${COMMENT_ID}`;
 
+  // From here on, any failure prior to creating issues must release the
+  // lock; otherwise a transient LLM/parse failure permanently blocks
+  // future re-runs of this comment.
   let raw;
   try {
     raw = await llmCall(buildSystemPrompt(), summarizeForLLM(cleaned));
   } catch (err) {
     console.error('LLM call failed:', err.message);
+    await releaseCommentLock(lock.reactionId);
     process.exit(1);
   }
 
@@ -352,10 +446,12 @@ async function main() {
   } catch (err) {
     console.error('Failed to parse LLM output as JSON:', err.message);
     console.error('Raw output (first 1000 chars):', raw.slice(0, 1000));
+    await releaseCommentLock(lock.reactionId);
     process.exit(1);
   }
   if (!Array.isArray(parsed)) {
     console.error('LLM output is not a JSON array; aborting');
+    await releaseCommentLock(lock.reactionId);
     process.exit(1);
   }
 

@@ -193,12 +193,71 @@ async function llmCall(system, user) {
   }
 }
 
+function findBalancedArrayAt(text, start) {
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (ch === '\\' && inString) {
+      escape = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === '[') depth += 1;
+    else if (ch === ']') {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
 function extractJsonArray(text) {
-  const fence = text.match(/```(?:json|JSON|\w*)\s*\n([\s\S]*?)\n```/);
-  if (fence) return fence[1].trim();
-  const arr = text.match(/(\[[\s\S]*\])/);
-  if (arr) return arr[1].trim();
-  return text.trim();
+  if (!text) return text;
+  const trimmed = text.trim();
+
+  try {
+    JSON.parse(trimmed);
+    return trimmed;
+  } catch {
+    /* fall through */
+  }
+
+  const fence = trimmed.match(/```(?:json|JSON|\w*)\s*\n([\s\S]*?)\n```/);
+  if (fence) {
+    const inner = fence[1].trim();
+    try {
+      JSON.parse(inner);
+      return inner;
+    } catch {
+      /* fall through */
+    }
+  }
+
+  // Try every `[` start; return the first balanced extract that parses
+  // into an Array. Duplicated from review-triage.mjs to keep each script
+  // self-contained — small enough to not warrant a shared module.
+  for (let i = 0; i < trimmed.length; i += 1) {
+    if (trimmed[i] !== '[') continue;
+    const candidate = findBalancedArrayAt(trimmed, i);
+    if (!candidate) continue;
+    try {
+      const parsed = JSON.parse(candidate);
+      if (Array.isArray(parsed)) return candidate;
+    } catch {
+      /* try next */
+    }
+  }
+  return trimmed;
 }
 
 function condenseFinding(issue) {
@@ -321,13 +380,21 @@ async function main() {
     process.exit(1);
   }
 
-  clusters = clusters.filter(
-    (c) =>
-      c &&
-      typeof c.theme === 'string' &&
-      Array.isArray(c.issue_numbers) &&
-      (c.count || 0) >= MIN_COUNT,
-  );
+  // Validate that LLM-emitted issue_numbers actually came from our input
+  // set. Without this guard the LLM could hallucinate numbers and we'd
+  // link the tracking issue to unrelated items. We also normalize the
+  // cluster's count to the validated subset, so MIN_COUNT comparison is
+  // honest.
+  const validNumbers = new Set(condensed.map((c) => c.n));
+  clusters = clusters
+    .filter((c) => c && typeof c.theme === 'string' && Array.isArray(c.issue_numbers))
+    .map((c) => {
+      const validIssueNumbers = c.issue_numbers
+        .map((n) => (typeof n === 'number' ? n : Number.parseInt(String(n), 10)))
+        .filter((n) => Number.isFinite(n) && validNumbers.has(n));
+      return { ...c, issue_numbers: validIssueNumbers, count: validIssueNumbers.length };
+    })
+    .filter((c) => c.count >= MIN_COUNT);
 
   const totalCovered = clusters.reduce((sum, c) => sum + (c.issue_numbers?.length || 0), 0);
   const yyyymm = new Date().toISOString().slice(0, 7);
