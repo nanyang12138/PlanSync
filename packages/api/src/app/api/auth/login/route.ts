@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { prisma } from '@/lib/prisma';
+import { env } from '@/lib/env';
 
 async function hashPassword(password: string): Promise<string> {
   const salt = crypto.randomBytes(16);
@@ -46,7 +47,20 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Invalid username or password' }, { status: 401 });
       }
     } else {
-      // First login: open registration — create account with the chosen password
+      // First login. By default (R-013), open registration is OFF: an admin
+      // must pre-create the account via `bin/ps-admin create-user <name>`.
+      // Set PLANSYNC_OPEN_REGISTRATION=true to restore the legacy behaviour
+      // where the first password chosen for a username claims it.
+      if (!env.PLANSYNC_OPEN_REGISTRATION) {
+        return NextResponse.json(
+          {
+            error:
+              'Account must be created by admin. Ask the PlanSync owner to run: bin/ps-admin create-user ' +
+              name,
+          },
+          { status: 401 },
+        );
+      }
       const passwordHash = await hashPassword(password);
       await prisma.userAccount.create({ data: { userName: name, passwordHash } });
     }
