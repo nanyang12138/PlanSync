@@ -1,8 +1,8 @@
 import { z } from 'zod';
 
-const envSchema = z.object({
+const baseEnvSchema = z.object({
   DATABASE_URL: z.string().startsWith('postgresql://'),
-  PLANSYNC_SECRET: z.string().min(1).default('dev-secret'),
+  PLANSYNC_SECRET: z.string().min(1).optional(),
   AUTH_DISABLED: z
     .string()
     .transform((v) => v === 'true')
@@ -12,12 +12,51 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 });
 
+export const envSchema = baseEnvSchema.superRefine((data, ctx) => {
+  if (data.NODE_ENV !== 'production') return;
+
+  if (!data.PLANSYNC_SECRET) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['PLANSYNC_SECRET'],
+      message:
+        'PLANSYNC_SECRET is required in production. ' +
+        'Generate a strong value with: openssl rand -hex 32',
+    });
+    return;
+  }
+
+  if (data.PLANSYNC_SECRET === 'dev-secret') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['PLANSYNC_SECRET'],
+      message:
+        'PLANSYNC_SECRET must not be the development default "dev-secret" in production. ' +
+        'Generate a strong value with: openssl rand -hex 32',
+    });
+  }
+
+  if (data.PLANSYNC_SECRET.length < 32) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['PLANSYNC_SECRET'],
+      message:
+        'PLANSYNC_SECRET must be at least 32 characters in production. ' +
+        'Generate a strong value with: openssl rand -hex 32',
+    });
+  }
+});
+
 function validateEnv() {
   const result = envSchema.safeParse(process.env);
   if (!result.success) {
     console.error('Invalid environment variables:');
     for (const issue of result.error.issues) {
       console.error(`  ${issue.path.join('.')}: ${issue.message}`);
+    }
+    if (process.env.NODE_ENV === 'production') {
+      console.error('Aborting startup due to invalid production environment configuration.');
+      process.exit(1);
     }
     throw new Error('Environment validation failed');
   }
