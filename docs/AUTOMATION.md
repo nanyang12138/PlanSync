@@ -276,6 +276,12 @@
 - `workflow-change` — workflow-modification guard 加
 - `nightly-e2e-fail` / `nightly-audit-fail` — nightly 自动开 issue 用
 
+### Security & analysis（必开）
+
+- ☑ **Dependency graph** — `pr-guards / dependency-review` 需要它才能跑（没开则自动 skip + warning）
+- ☑ **Dependabot alerts**（可选）— 加上更安心
+- ☐ Dependabot security updates / version updates — 暂不需要（避免 dependabot PR 进入自动合）
+
 ### Secrets and variables → Actions
 
 | Secret name           | 是否必须 | 用途                              |

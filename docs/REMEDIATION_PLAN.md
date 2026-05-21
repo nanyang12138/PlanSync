@@ -1631,13 +1631,16 @@
 - **effort**: small
 - **files**: `scripts/build.sh`, `packages/integrations/github-action/package.json`, 提交 `dist/`
 - **symptom**: action 直接报 missing module
-- **root_cause**: build.sh 不构建
+- **root_cause**: build.sh 不构建；action 还**未发布到 `plansync/drift-check-action` 仓库**，原 `.github/workflows/plansync-check.yml` 引用的 `plansync/drift-check-action@v1` 解析直接失败 `Unable to resolve action ... repository not found`
 - **fix_steps**:
   1. build.sh 加 `run_local_npm run build:action --workspace=@plansync/integrations`
   2. 把构建产物 commit（或建 release artifact）
   3. CI 加守门：每个 PR 检查 dist/ 与 src/ 同步
+  4. 把 action 发布到独立仓库 `plansync/drift-check-action`（或用 `uses: ./packages/integrations/github-action` 本地引用）
+  5. **恢复 `.github/workflows/plansync-check.yml`**（PR #9 中已删除，删除原因见下）
 - **verification**: 远端 use action → 正常
 - **rollback**: revert
+- **historical_note**: 在 PR #9 (2026-05-21) 删除了 `.github/workflows/plansync-check.yml`，因为 `uses: plansync/drift-check-action@v1` 仓库不存在导致每个 PR 都假红，且 GH Actions 在 step 执行前就 fail（`if` 条件管不到 `uses:` 解析）。完成本条目后用 `git revert` 那个 commit 即可恢复。
 
 ---
 
