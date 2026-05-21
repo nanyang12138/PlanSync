@@ -77,6 +77,43 @@ async function getIssue() {
   return ghApi('GET', `/repos/${GH_REPO}/issues/${ISSUE_NUMBER}`);
 }
 
+async function listIssueComments() {
+  // Paginate through all comments — caller may need to spot a marker that
+  // a peer dispatch run already wrote past the first page.
+  const all = [];
+  let page = 1;
+  while (true) {
+    const data = await ghApi(
+      'GET',
+      `/repos/${GH_REPO}/issues/${ISSUE_NUMBER}/comments?per_page=100&page=${page}`,
+    );
+    if (!Array.isArray(data) || data.length === 0) break;
+    all.push(...data);
+    if (data.length < 100) break;
+    page += 1;
+    if (page > 20) break;
+  }
+  return all;
+}
+
+async function dispatchSucceededAlready() {
+  // Look for a prior SUCCESS marker comment from a peer run. Used in the
+  // catch block to avoid releasing the lock when a concurrent run already
+  // succeeded.
+  try {
+    const cs = await listIssueComments();
+    return cs.some(
+      (c) =>
+        c.body &&
+        c.body.includes(DISPATCH_MARKER) &&
+        c.body.includes('Cursor Cloud Agent dispatched'),
+    );
+  } catch (err) {
+    console.warn(`dispatchSucceededAlready check failed (assuming no): ${err.message}`);
+    return false;
+  }
+}
+
 async function commentIssue(body) {
   if (DRY_RUN) {
     console.log(`[dry-run] commentIssue: ${body.slice(0, 200)}`);
@@ -295,16 +332,23 @@ async function main() {
   try {
     result = await createCursorAgent({ prompt, branchName });
   } catch (err) {
-    // The agent never started, so release the lock so a re-application of
-    // `cursor:dispatch` (without manual label cleanup) auto-retries. This
-    // is safe: if HTTP failed, the agent didn't get created — there is no
-    // duplicate to worry about. If we removed the lock for a request that
-    // actually succeeded server-side, the second attempt would still hit
-    // Cursor's branchName uniqueness conflict and surface clearly.
-    await removeLabel(LOCK_LABEL);
-    await commentIssue(
-      `${DISPATCH_MARKER}\n\n❌ 启动 Cursor Cloud Agent 失败：\n\n\`\`\`\n${err.message}\n\`\`\`\n\n已自动摘掉 \`${LOCK_LABEL}\` 锁。要重试：摘掉 \`cursor:dispatch\` 后重新打上即可。`,
-    );
+    // The agent didn't start (HTTP failure). We'd like to release the lock
+    // so a re-apply of `cursor:dispatch` auto-retries — BUT a concurrent
+    // peer run may have succeeded between our addLabels and this catch.
+    // Releasing then would let the user re-dispatch and spawn a duplicate
+    // agent. Re-check for a SUCCESS marker comment first; only release if
+    // no peer succeeded.
+    const peerSucceeded = await dispatchSucceededAlready();
+    if (!peerSucceeded) {
+      await removeLabel(LOCK_LABEL);
+      await commentIssue(
+        `${DISPATCH_MARKER}\n\n❌ 启动 Cursor Cloud Agent 失败：\n\n\`\`\`\n${err.message}\n\`\`\`\n\n已自动摘掉 \`${LOCK_LABEL}\` 锁。要重试：摘掉 \`cursor:dispatch\` 后重新打上即可。`,
+      );
+    } else {
+      await commentIssue(
+        `${DISPATCH_MARKER}\n\n⚠ 本次 Cursor API 调用失败，但检测到并发的另一次 dispatch 已成功。**未**摘掉 \`${LOCK_LABEL}\` 锁，避免重复 spawn。失败详情：\n\n\`\`\`\n${err.message}\n\`\`\``,
+      );
+    }
     throw err;
   }
 

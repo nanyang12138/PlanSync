@@ -33,7 +33,12 @@ const {
   REVIEW_TRIAGE_DRY_RUN,
 } = process.env;
 
-if (!GITHUB_TOKEN || !GH_REPO || !PR_NUMBER || !COMMENT_ID) {
+// Only enforce env when the module is run directly. Importing for unit
+// testing must not trigger this exit.
+if (
+  import.meta.url === `file://${process.argv[1]}` &&
+  (!GITHUB_TOKEN || !GH_REPO || !PR_NUMBER || !COMMENT_ID)
+) {
   console.error('Missing required env: GITHUB_TOKEN, GH_REPO, PR_NUMBER, COMMENT_ID');
   process.exit(1);
 }
@@ -106,7 +111,16 @@ async function acquireCommentLock() {
     return { acquired: true, weCreatedIt: true, reactionId: data?.id ?? null };
   }
   if (res.status === 200) return { acquired: false, reason: 'reaction_exists' };
-  if (res.status === 422) return { acquired: false, reason: 'reaction_validation_or_spam' };
+  // 422 in the reactions API typically means rate-limited spam protection
+  // rather than "reaction already exists". Don't treat it as a successful
+  // skip — exit non-zero so the workflow shows red and a re-run can retry,
+  // rather than silently swallowing the comment forever.
+  if (res.status === 422) {
+    const text = await res.text();
+    throw new Error(
+      `Reaction POST -> 422 (likely transient/spam-throttled): ${text.slice(0, 500)}`,
+    );
+  }
   const text = await res.text();
   throw new Error(`Reaction POST -> ${res.status}: ${text.slice(0, 500)}`);
 }
@@ -468,72 +482,105 @@ async function main() {
   const linked = [];
   const overflow = [];
 
-  for (const f of targets) {
-    if (created.length + linked.length >= MAX_ISSUES) {
-      overflow.push(f);
-      continue;
-    }
-    const fp = fingerprint(f.file, f.text);
-    const existing = await searchExistingIssue(fp);
+  // Wrap the issue-mutation phase: if the loop crashes catastrophically
+  // (e.g., GitHub-side outage) BEFORE any issue was created or linked,
+  // release the reaction lock so a re-run can retry. If at least one
+  // issue was created/linked, we keep the lock — re-running would risk
+  // duplicate-issue creation under search-indexing latency, and the
+  // partial work is already idempotent on a per-finding basis via the
+  // fingerprint-to-existing-issue path.
+  let issueMutationFailed = false;
+  let issueMutationFatal = null;
+  let umbrellaUrl = null;
+  try {
+    for (const f of targets) {
+      if (created.length + linked.length >= MAX_ISSUES) {
+        overflow.push(f);
+        continue;
+      }
+      const fp = fingerprint(f.file, f.text);
+      const existing = await searchExistingIssue(fp);
 
-    if (existing) {
-      const prRefBody = `/pull/${PR_NUMBER}`;
-      const prRefShort = `PR #${PR_NUMBER}`;
-      const bodyRefsThisPr =
-        existing.body && (existing.body.includes(prRefBody) || existing.body.includes(prRefShort));
-      let alreadyLinkedFromThisPr = bodyRefsThisPr;
-      if (!alreadyLinkedFromThisPr) {
-        try {
-          const cs = await ghApi(
-            'GET',
-            `/repos/${GH_REPO}/issues/${existing.number}/comments?per_page=100`,
-          );
-          alreadyLinkedFromThisPr = (cs || []).some(
-            (c) => c.body && (c.body.includes(prRefBody) || c.body.includes(prRefShort)),
-          );
-        } catch (err) {
-          console.warn(`Could not check existing comments on #${existing.number}:`, err.message);
+      if (existing) {
+        const prRefBody = `/pull/${PR_NUMBER}`;
+        const prRefShort = `PR #${PR_NUMBER}`;
+        const bodyRefsThisPr =
+          existing.body &&
+          (existing.body.includes(prRefBody) || existing.body.includes(prRefShort));
+        let alreadyLinkedFromThisPr = bodyRefsThisPr;
+        if (!alreadyLinkedFromThisPr) {
+          try {
+            const cs = await ghApi(
+              'GET',
+              `/repos/${GH_REPO}/issues/${existing.number}/comments?per_page=100`,
+            );
+            alreadyLinkedFromThisPr = (cs || []).some(
+              (c) => c.body && (c.body.includes(prRefBody) || c.body.includes(prRefShort)),
+            );
+          } catch (err) {
+            console.warn(`Could not check existing comments on #${existing.number}:`, err.message);
+          }
         }
+        if (alreadyLinkedFromThisPr) {
+          console.log(
+            `Finding ${fp} already linked to issue #${existing.number} from this PR; not commenting again`,
+          );
+        } else {
+          await addIssueComment(
+            existing.number,
+            `又在 PR #${PR_NUMBER} 出现：${f.text}\n\n来源评论：${sourceLink}`,
+          );
+        }
+        linked.push({ ...f, fingerprint: fp, issue: existing });
+        console.log(`Linked finding ${fp} to existing issue #${existing.number}`);
+        continue;
       }
-      if (alreadyLinkedFromThisPr) {
-        console.log(
-          `Finding ${fp} already linked to issue #${existing.number} from this PR; not commenting again`,
-        );
-      } else {
-        await addIssueComment(
-          existing.number,
-          `又在 PR #${PR_NUMBER} 出现：${f.text}\n\n来源评论：${sourceLink}`,
-        );
-      }
-      linked.push({ ...f, fingerprint: fp, issue: existing });
-      console.log(`Linked finding ${fp} to existing issue #${existing.number}`);
-      continue;
+
+      const labels = ['review-finding', `severity:${f.severity}`];
+      const issue = await createIssue(
+        buildIssueTitle(f),
+        buildIssueBody(f, fp, sourceLink),
+        labels,
+      );
+      created.push({ ...f, fingerprint: fp, issue });
+      console.log(`Created issue #${issue.number} for finding ${fp}`);
     }
 
-    const labels = ['review-finding', `severity:${f.severity}`];
-    const issue = await createIssue(buildIssueTitle(f), buildIssueBody(f, fp, sourceLink), labels);
-    created.push({ ...f, fingerprint: fp, issue });
-    console.log(`Created issue #${issue.number} for finding ${fp}`);
+    if (overflow.length > 0) {
+      const umbrellaTitle = `[review-finding/umbrella] PR #${PR_NUMBER}: ${overflow.length} additional findings`;
+      const umbrellaBody = [
+        `Cursor Review 在 PR #${PR_NUMBER} 上提了 ${targets.length} 条 must/should-fix，超过单 PR 上限 ${MAX_ISSUES}，剩余 ${overflow.length} 条聚合在此：`,
+        ``,
+        ...overflow.map((f) => {
+          const fp = fingerprint(f.file, f.text);
+          return `- [ ] **${f.severity}** \`${f.file || '(unknown)'}\`: ${f.text} <sub>fp: \`${fp}\`</sub>`;
+        }),
+        ``,
+        `来源：${sourceLink}`,
+        ``,
+        `Triage 不阻塞 PR 合并。`,
+      ].join('\n');
+      const issue = await createIssue(umbrellaTitle, umbrellaBody, ['review-finding', 'umbrella']);
+      umbrellaUrl = issue.html_url;
+      console.log(`Created umbrella issue #${issue.number}`);
+    }
+  } catch (err) {
+    issueMutationFailed = true;
+    issueMutationFatal = err;
+    console.error('Issue-mutation phase failed:', err.message);
   }
 
-  let umbrellaUrl = null;
-  if (overflow.length > 0) {
-    const umbrellaTitle = `[review-finding/umbrella] PR #${PR_NUMBER}: ${overflow.length} additional findings`;
-    const umbrellaBody = [
-      `Cursor Review 在 PR #${PR_NUMBER} 上提了 ${targets.length} 条 must/should-fix，超过单 PR 上限 ${MAX_ISSUES}，剩余 ${overflow.length} 条聚合在此：`,
-      ``,
-      ...overflow.map((f) => {
-        const fp = fingerprint(f.file, f.text);
-        return `- [ ] **${f.severity}** \`${f.file || '(unknown)'}\`: ${f.text} <sub>fp: \`${fp}\`</sub>`;
-      }),
-      ``,
-      `来源：${sourceLink}`,
-      ``,
-      `Triage 不阻塞 PR 合并。`,
-    ].join('\n');
-    const issue = await createIssue(umbrellaTitle, umbrellaBody, ['review-finding', 'umbrella']);
-    umbrellaUrl = issue.html_url;
-    console.log(`Created umbrella issue #${issue.number}`);
+  if (issueMutationFailed) {
+    if (created.length === 0 && linked.length === 0) {
+      // No work persisted — release the lock so a re-run can retry cleanly.
+      await releaseCommentLock(lock.reactionId);
+      console.error('Released reaction lock since no issues were created.');
+    } else {
+      console.error(
+        `Keeping reaction lock: ${created.length} created + ${linked.length} linked already persisted; re-run would risk duplicates.`,
+      );
+    }
+    throw issueMutationFatal;
   }
 
   const summaryLines = [
@@ -573,7 +620,21 @@ async function main() {
   console.log('Done.');
 }
 
-main().catch((err) => {
-  console.error(err.stack || err.message);
-  process.exit(1);
-});
+// Export pure helpers for unit testing; only run main() when invoked
+// directly (so tests can `import { fingerprint } from './review-triage.mjs'`
+// without triggering the workflow logic).
+export {
+  extractJsonArray,
+  findBalancedArrayAt,
+  fingerprint,
+  normalizeForFingerprint,
+  normalizeFinding,
+};
+
+const isMainScript = import.meta.url === `file://${process.argv[1]}`;
+if (isMainScript) {
+  main().catch((err) => {
+    console.error(err.stack || err.message);
+    process.exit(1);
+  });
+}

@@ -26,13 +26,13 @@
  */
 const { GITHUB_TOKEN, GH_REPO, REVIEW_STALE_DRY_RUN, REVIEW_STALE_OWNER } = process.env;
 
-if (!GITHUB_TOKEN || !GH_REPO) {
+if (import.meta.url === `file://${process.argv[1]}` && (!GITHUB_TOKEN || !GH_REPO)) {
   console.error('Missing required env: GITHUB_TOKEN, GH_REPO');
   process.exit(1);
 }
 
 const DRY_RUN = REVIEW_STALE_DRY_RUN === '1' || REVIEW_STALE_DRY_RUN === 'true';
-const OWNER = REVIEW_STALE_OWNER || GH_REPO.split('/')[0];
+const OWNER = REVIEW_STALE_OWNER || (GH_REPO ? GH_REPO.split('/')[0] : '');
 
 async function ghApi(method, path, body) {
   const res = await fetch(`https://api.github.com${path}`, {
@@ -231,34 +231,51 @@ async function main() {
     );
   }
 
-  // Third pass: age-based stale labels (no extra API calls beyond
-  // addLabels / commentIssue, and most are skipped because of the label
-  // checks). Sequential is fine for these.
+  // Third pass: age-based stale labels. Bucket each issue first (no API
+  // calls), then run mutations with bounded concurrency. Most issues fall
+  // into the "no change needed" bucket and are free; the bounded
+  // concurrency only matters when many items cross thresholds in a single
+  // sweep (e.g. first run after backlog accumulation).
+  const ageBuckets = { stale90: [], stale60: [], stale30: [], untouched: [] };
   for (const p of preprocessed) {
-    const { issue, labels, age } = p;
-
-    if (age >= 90 && !labels.has('stale:90d')) {
-      await addLabels(issue.number, ['stale:90d']);
-      await commentIssue(
-        issue.number,
-        `这条 review-finding 已 open 90+ 天未处理，@${OWNER} 请决定：close（\`auto-closed:wontfix\` 标签后关）、派给 cloud agent（\`cursor:dispatch\` 标签）、或 \`do-not-close\` 标签压住等待时机。`,
-      );
-      stats.stale90.push(issue.number);
-    } else if (age >= 60 && !labels.has('stale:60d') && !labels.has('stale:90d')) {
-      await addLabels(issue.number, ['stale:60d']);
-      stats.stale60.push(issue.number);
-    } else if (
+    const { labels, age } = p;
+    if (age >= 90 && !labels.has('stale:90d')) ageBuckets.stale90.push(p);
+    else if (age >= 60 && !labels.has('stale:60d') && !labels.has('stale:90d'))
+      ageBuckets.stale60.push(p);
+    else if (
       age >= 30 &&
       !labels.has('stale:30d') &&
       !labels.has('stale:60d') &&
       !labels.has('stale:90d')
-    ) {
-      await addLabels(issue.number, ['stale:30d']);
-      stats.stale30.push(issue.number);
-    } else if (!p.fileMissingApplied) {
-      stats.untouched += 1;
+    )
+      ageBuckets.stale30.push(p);
+    else if (!p.fileMissingApplied) ageBuckets.untouched.push(p);
+  }
+  stats.untouched = ageBuckets.untouched.length;
+
+  async function applyAgeMutations(items, mutate) {
+    for (let i = 0; i < items.length; i += CONCURRENCY) {
+      const slice = items.slice(i, i + CONCURRENCY);
+      await Promise.all(slice.map(mutate));
     }
   }
+
+  await applyAgeMutations(ageBuckets.stale90, async (p) => {
+    await addLabels(p.issue.number, ['stale:90d']);
+    await commentIssue(
+      p.issue.number,
+      `这条 review-finding 已 open 90+ 天未处理，@${OWNER} 请决定：close（\`auto-closed:wontfix\` 标签后关）、派给 cloud agent（\`cursor:dispatch\` 标签）、或 \`do-not-close\` 标签压住等待时机。`,
+    );
+    stats.stale90.push(p.issue.number);
+  });
+  await applyAgeMutations(ageBuckets.stale60, async (p) => {
+    await addLabels(p.issue.number, ['stale:60d']);
+    stats.stale60.push(p.issue.number);
+  });
+  await applyAgeMutations(ageBuckets.stale30, async (p) => {
+    await addLabels(p.issue.number, ['stale:30d']);
+    stats.stale30.push(p.issue.number);
+  });
 
   await appendSummary(`# Review-finding stale sweep`);
   await appendSummary(``);
@@ -280,7 +297,12 @@ async function main() {
   console.log('Done.');
 }
 
-main().catch((err) => {
-  console.error(err.stack || err.message);
-  process.exit(1);
-});
+export { extractFilePath, extractSourcePrNumber, ageInDays };
+
+const isMainScript = import.meta.url === `file://${process.argv[1]}`;
+if (isMainScript) {
+  main().catch((err) => {
+    console.error(err.stack || err.message);
+    process.exit(1);
+  });
+}
