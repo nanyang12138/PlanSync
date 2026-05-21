@@ -27,61 +27,64 @@ const dateRangeRefinement = {
   path: ['dueDate'] as const,
 };
 
-export const createTaskSchema = z
-  .object({
-    title: z.string().min(1).max(200),
-    description: z.string().max(5000).optional(),
-    type: taskTypeSchema,
-    priority: taskPrioritySchema.default('p1'),
-    assignee: z.string().optional(),
-    assigneeType: assigneeTypeSchema.default('unassigned'),
-    branchName: z.string().optional(),
-    agentContext: z.string().optional(),
-    expectedOutput: z.string().optional(),
-    agentConstraints: z.array(z.string()).default([]),
-    planDeliverableRefs: z.array(z.string()).default([]),
-    // Drift v2: which plan constraint / standard items this task depends on.
-    // Empty = "depends on all" (conservative). Narrow these to reduce false
-    // 'breaking' classifications for unrelated plan edits.
-    planConstraintRefs: z.array(z.string()).default([]),
-    planStandardRefs: z.array(z.string()).default([]),
-    startDate: z.coerce.date().optional(),
-    dueDate: z.coerce.date().optional(),
-  })
-  .refine(dateRangeRefinement.check, {
-    message: dateRangeRefinement.message,
-    path: [...dateRangeRefinement.path],
-  });
+// R-027/R-028: shapes are exported separately so MCP tools (which need a
+// ZodRawShape, not a ZodEffects wrapping ZodObject) can import them directly
+// and stay in sync with the API contract automatically.
+export const createTaskShape = {
+  title: z.string().min(1).max(200),
+  description: z.string().max(5000).optional(),
+  type: taskTypeSchema,
+  priority: taskPrioritySchema.default('p1'),
+  assignee: z.string().optional(),
+  assigneeType: assigneeTypeSchema.default('unassigned'),
+  branchName: z.string().optional(),
+  agentContext: z.string().optional(),
+  expectedOutput: z.string().optional(),
+  agentConstraints: z.array(z.string()).default([]),
+  planDeliverableRefs: z.array(z.string()).default([]),
+  // Drift v2: which plan constraint / standard items this task depends on.
+  // Empty = "depends on all" (conservative). Narrow these to reduce false
+  // 'breaking' classifications for unrelated plan edits.
+  planConstraintRefs: z.array(z.string()).default([]),
+  planStandardRefs: z.array(z.string()).default([]),
+  startDate: z.coerce.date().optional(),
+  dueDate: z.coerce.date().optional(),
+} as const;
 
-export const updateTaskSchema = z
-  .object({
-    title: z.string().min(1).max(200).optional(),
-    description: z.string().max(5000).nullable().optional(),
-    type: taskTypeSchema.optional(),
-    priority: taskPrioritySchema.optional(),
-    status: taskStatusSchema.optional(),
-    assignee: z.string().nullable().optional(),
-    assigneeType: assigneeTypeSchema.optional(),
-    branchName: z.string().nullable().optional(),
-    prUrl: z
-      .string()
-      .url()
-      .refine((u) => /^https?:\/\//i.test(u), 'PR URL must use http(s)')
-      .nullable()
-      .optional(),
-    agentContext: z.string().nullable().optional(),
-    expectedOutput: z.string().nullable().optional(),
-    agentConstraints: z.array(z.string()).optional(),
-    planDeliverableRefs: z.array(z.string()).optional(),
-    planConstraintRefs: z.array(z.string()).optional(),
-    planStandardRefs: z.array(z.string()).optional(),
-    startDate: z.coerce.date().nullable().optional(),
-    dueDate: z.coerce.date().nullable().optional(),
-  })
-  .refine(dateRangeRefinement.check, {
-    message: dateRangeRefinement.message,
-    path: [...dateRangeRefinement.path],
-  });
+export const createTaskSchema = z.object(createTaskShape).refine(dateRangeRefinement.check, {
+  message: dateRangeRefinement.message,
+  path: [...dateRangeRefinement.path],
+});
+
+export const updateTaskShape = {
+  title: z.string().min(1).max(200).optional(),
+  description: z.string().max(5000).nullable().optional(),
+  type: taskTypeSchema.optional(),
+  priority: taskPrioritySchema.optional(),
+  status: taskStatusSchema.optional(),
+  assignee: z.string().nullable().optional(),
+  assigneeType: assigneeTypeSchema.optional(),
+  branchName: z.string().nullable().optional(),
+  prUrl: z
+    .string()
+    .url()
+    .refine((u) => /^https?:\/\//i.test(u), 'PR URL must use http(s)')
+    .nullable()
+    .optional(),
+  agentContext: z.string().nullable().optional(),
+  expectedOutput: z.string().nullable().optional(),
+  agentConstraints: z.array(z.string()).optional(),
+  planDeliverableRefs: z.array(z.string()).optional(),
+  planConstraintRefs: z.array(z.string()).optional(),
+  planStandardRefs: z.array(z.string()).optional(),
+  startDate: z.coerce.date().nullable().optional(),
+  dueDate: z.coerce.date().nullable().optional(),
+} as const;
+
+export const updateTaskSchema = z.object(updateTaskShape).refine(dateRangeRefinement.check, {
+  message: dateRangeRefinement.message,
+  path: [...dateRangeRefinement.path],
+});
 
 export const claimTaskSchema = z.object({
   assigneeType: assigneeTypeSchema.default('agent'),
