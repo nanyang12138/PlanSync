@@ -140,6 +140,31 @@ export function getTerminalColumns(stream: NodeJS.WriteStream = process.stdout):
 }
 
 /**
+ * R-072: compute the next `selIdx` value when the user presses the ↓ key.
+ *
+ * Behaviour the prompt must guarantee:
+ *   - With suggestions visible and nothing currently selected (`selIdx === -1`),
+ *     ↓ enters the suggestion list at the first item (index 0). Previously the
+ *     handler required `selIdx >= 0` and silently fell through to history
+ *     navigation, leaving the suggestion list unreachable via ↓ alone.
+ *   - With a selection already active, ↓ advances by one but stops at the
+ *     last item (no wrap), matching the bounded behaviour of the original code.
+ *   - When there are no suggestions, ↓ should not be intercepted; we signal
+ *     that by returning `null` so the caller falls through to history nav.
+ *
+ * Returns either a non-negative integer index (the new `selIdx`) or `null`,
+ * meaning "the suggestion list does not handle this keystroke".
+ */
+export function nextSuggestionSelectionOnDown(
+  currentSelIdx: number,
+  suggestionsLength: number,
+): number | null {
+  if (suggestionsLength <= 0) return null;
+  if (currentSelIdx === -1) return 0;
+  return Math.min(suggestionsLength - 1, currentSelIdx + 1);
+}
+
+/**
  * Subscribe `handler` to the host stream's `resize` event. Returns a teardown
  * function that removes the listener.
  *
@@ -379,8 +404,9 @@ function PromptUI({ promptStr: initialPrompt, commands, history, events }: Promp
     }
 
     if (key.downArrow) {
-      if (suggestions.length > 0 && selIdx >= 0) {
-        setSelIdx((prev) => Math.min(suggestions.length - 1, prev + 1));
+      const nextSel = nextSuggestionSelectionOnDown(selIdx, suggestions.length);
+      if (nextSel !== null) {
+        setSelIdx(nextSel);
       } else if (histIdx > 0) {
         const newIdx = histIdx - 1;
         const entry = history[history.length - 1 - newIdx] ?? '';
