@@ -632,7 +632,7 @@
 
 #### R-028 [HIGH] MCP `task_create` 复用 shared
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
