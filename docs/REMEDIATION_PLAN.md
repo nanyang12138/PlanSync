@@ -332,7 +332,7 @@
 
 #### R-011 [HIGH] exec-scoped API key 绑定到 projectId
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B2
 - **depends_on**: —
 - **effort**: medium
