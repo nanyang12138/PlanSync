@@ -7,6 +7,13 @@ export interface AuthContext {
   userName: string;
   projectRole?: 'owner' | 'developer';
   execRunId?: string;
+  /**
+   * When the caller authenticated with an API key that was issued for a
+   * specific project (e.g. exec-scoped keys), this carries the issuing
+   * project so cross-project access can be rejected by `requireProjectRole`.
+   * Undefined for password Bearer / master delegation / non-scoped keys.
+   */
+  keyProjectId?: string;
 }
 
 // Password verification (same scrypt scheme as login/route.ts)
@@ -123,6 +130,7 @@ export async function authenticate(req: NextRequest): Promise<AuthContext> {
     return {
       userName: apiAuth.userName,
       ...(apiAuth.execRunId ? { execRunId: apiAuth.execRunId } : {}),
+      ...(apiAuth.projectId ? { keyProjectId: apiAuth.projectId } : {}),
     };
   }
 
@@ -139,6 +147,15 @@ export async function requireProjectRole(
   projectId: string,
   requiredRole?: 'owner',
 ): Promise<AuthContext> {
+  // Reject cross-project use of an exec-scoped API key. The key was minted
+  // for one specific run inside one specific project; it must never grant
+  // access to a different project regardless of the caller's membership
+  // elsewhere. Non-exec keys keep their previous (looser) behaviour to
+  // avoid breaking unscoped owner keys that span a single workspace.
+  if (auth.execRunId && auth.keyProjectId && auth.keyProjectId !== projectId) {
+    throw new AppError(ErrorCode.FORBIDDEN, 'Exec-scoped API key is bound to a different project');
+  }
+
   const member = await prisma.projectMember.findUnique({
     where: { projectId_name: { projectId, name: auth.userName } },
   });
