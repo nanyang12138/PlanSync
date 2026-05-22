@@ -16,14 +16,13 @@ export async function GET(req: NextRequest, { params }: Params) {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);
 
-    const task = await prisma.task.findUnique({
-      where: { id: params.taskId },
+    // R-135: scope by projectId so a member of project A cannot read tasks
+    // that live in project B by guessing/leaking task ids.
+    const task = await prisma.task.findFirst({
+      where: { id: params.taskId, projectId: params.projectId },
       include: { executionRuns: { orderBy: { startedAt: 'desc' }, take: 5 } },
     });
     if (!task) throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
-    if (task.projectId !== params.projectId) {
-      throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
-    }
 
     return NextResponse.json({ data: task });
   } catch (error) {
@@ -55,11 +54,11 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       await requireProjectRole(auth, params.projectId, 'owner');
     }
 
-    const task = await prisma.task.findUnique({ where: { id: params.taskId } });
+    // R-135: scope by projectId so cross-project taskIds 404 instead of leaking metadata.
+    const task = await prisma.task.findFirst({
+      where: { id: params.taskId, projectId: params.projectId },
+    });
     if (!task) throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
-    if (task.projectId !== params.projectId) {
-      throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
-    }
 
     if (body.status && body.status !== task.status) {
       const allowed = VALID_STATUS_TRANSITIONS[task.status];
@@ -175,11 +174,11 @@ export async function DELETE(req: NextRequest, { params }: Params) {
     requireNotExecScoped(auth);
     await requireProjectRole(auth, params.projectId, 'owner');
 
-    const task = await prisma.task.findUnique({ where: { id: params.taskId } });
+    // R-135: scope DELETE lookup by projectId — same defense-in-depth as PATCH/GET.
+    const task = await prisma.task.findFirst({
+      where: { id: params.taskId, projectId: params.projectId },
+    });
     if (!task) throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
-    if (task.projectId !== params.projectId) {
-      throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
-    }
 
     // R-047: A `DELETE task` while an ExecutionRun is `running` would silently
     // cascade-delete the run record, orphaning a live agent's heartbeats and

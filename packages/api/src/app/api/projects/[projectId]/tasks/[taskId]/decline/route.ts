@@ -14,11 +14,11 @@ export async function POST(req: NextRequest, { params }: Params) {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);
 
-    const task = await prisma.task.findUnique({ where: { id: params.taskId } });
+    // R-135: scope by projectId so cross-project taskIds 404 instead of leaking metadata.
+    const task = await prisma.task.findFirst({
+      where: { id: params.taskId, projectId: params.projectId },
+    });
     if (!task) throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
-    if (task.projectId !== params.projectId) {
-      throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
-    }
 
     if (task.assignee !== auth.userName) {
       throw new AppError(ErrorCode.FORBIDDEN, 'Only the current assignee can decline a task');

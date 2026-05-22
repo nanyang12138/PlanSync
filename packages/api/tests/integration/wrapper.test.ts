@@ -1,6 +1,7 @@
 // N module: bin/plansync wrapper
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'child_process';
+import { readFileSync, existsSync } from 'fs';
 import path from 'path';
 
 const ROOT = path.resolve(__dirname, '../../..');
@@ -25,6 +26,29 @@ describe('N: bin/plansync CLI wrapper', () => {
     const combined = stdout + stderr;
     // Either exits 0 with usage info, or the script doesn't exist
     expect(result.status === 0 || combined.includes('ENOENT') || combined.length >= 0).toBe(true);
+  });
+
+  it('N2 [R-100]: bin/plansync rebuild hint uses --format=esm (matches packages/cli/package.json build)', () => {
+    // R-100: the "not built" error message used to suggest --format=cjs, which
+    // does not match the real CLI build (packages/cli/package.json uses
+    // --format=esm). Following that hint produced a broken CJS bundle. The hint
+    // must now point users to the correct ESM build.
+    const wrapperPath = path.resolve(ROOT, '../bin/plansync');
+    if (!existsSync(wrapperPath)) {
+      // Repo-root bin not in this layout — skip rather than fail hard.
+      return;
+    }
+    const wrapperSource = readFileSync(wrapperPath, 'utf8');
+
+    // The hint block exists.
+    expect(wrapperSource).toContain('PlanSync Terminal not built');
+
+    // And it must recommend --format=esm, never --format=cjs, for the CLI bundle.
+    const hintLineRegex =
+      /PROJECT_DIR\/packages\/cli.*esbuild[^\n]*--format=(\w+)/;
+    const match = wrapperSource.match(hintLineRegex);
+    expect(match, 'rebuild hint command not found in bin/plansync').not.toBeNull();
+    expect(match?.[1]).toBe('esm');
   });
 
   it('N3: plansync --host (no value) → non-zero exit or help', () => {

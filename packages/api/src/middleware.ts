@@ -65,7 +65,23 @@ export function middleware(request: NextRequest) {
       'Access-Control-Allow-Headers',
       'Content-Type, Authorization, X-User-Name',
     );
+    // Browsers reject credentialed requests (cookie-based session, EventSource
+    // with withCredentials, fetch with credentials: 'include') unless the
+    // server explicitly opts in. Without this header the user-events SSE
+    // stream and any cross-origin fetch would silently lose the session
+    // cookie set in `plansync-apikey` / `plansync-user`. Note: per spec,
+    // ACAO must be a specific origin (not '*') when ACAC is true — we already
+    // echo the origin above, so this combination is valid.
+    response.headers.set('Access-Control-Allow-Credentials', 'true');
+    // Vary on Origin so caches don't serve a response for one origin to
+    // another origin behind the same URL.
+    response.headers.append('Vary', 'Origin');
     response.headers.set('Access-Control-Max-Age', '86400');
+    // R-089 review #135: SSE clients call `new EventSource(url, { withCredentials: true })`
+    // so the cookie-bearing cross-origin request requires this CORS response
+    // header. Without it the browser drops the cookie and SSE auth silently
+    // fails on cross-origin deployments.
+    response.headers.set('Access-Control-Allow-Credentials', 'true');
   }
 
   if (request.method === 'OPTIONS') {

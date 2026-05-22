@@ -3,7 +3,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-PG_BIN="${PG_BIN:-$([ -x /tool/pandora64/bin/pg_ctl ] && echo /tool/pandora64/bin || echo /usr/lib/postgresql/16/bin)}"
+# shellcheck source=scripts/pg-env.sh
+. "$SCRIPT_DIR/pg-env.sh"
+PG_BIN="$(detect_pg_bin || true)"
+if [ -z "$PG_BIN" ]; then
+  echo "✗ Could not locate a PostgreSQL install (pg_ctl not found)." >&2
+  echo "  Install Postgres or export PG_BIN to its bin directory." >&2
+  exit 1
+fi
 PORT="${PORT:-3001}"
 PG_PORT=${PG_PORT:-15432}
 PG_DATA="/tmp/plansync-pgdata-$(whoami)"
@@ -33,12 +40,26 @@ if [ -f "$PROJECT_DIR/.env" ]; then
   set +a
 fi
 
-# Clear stale Next.js webpack cache (module IDs shift when new files are added)
+# R-103: only clear the Next.js build cache when the build configuration
+# actually changed. The previous behaviour `rm -rf $BUILD_DIR` every run
+# made `bash scripts/dev.sh` cold-start every time even when nothing about
+# the project's config had moved, which forced a 5-15s rebuild loop on
+# every restart. We now hash next.config.js (and the package metadata that
+# Next.js bakes into its compile output) and only clear when the hash
+# differs from the one stored alongside the cache directory.
+# shellcheck source=scripts/next-cache-helper.sh
+. "$SCRIPT_DIR/next-cache-helper.sh"
 BUILD_DIR="$PROJECT_DIR/packages/api/tmp/ps-next-build-$(whoami)"
-if [ -d "$BUILD_DIR" ]; then
-  echo "Clearing stale Next.js build cache..."
+NEXT_CACHE_INPUTS=(
+  "$PROJECT_DIR/packages/api/next.config.js"
+  "$PROJECT_DIR/packages/api/package.json"
+)
+if should_clear_next_cache "$BUILD_DIR" "${NEXT_CACHE_INPUTS[@]}"; then
+  echo "Clearing stale Next.js build cache (config changed)..."
   rm -rf "$BUILD_DIR"
 fi
+mkdir -p "$BUILD_DIR"
+write_next_cache_marker "$BUILD_DIR" "${NEXT_CACHE_INPUTS[@]}"
 
 # Ensure migrations are up to date
 if [ ! -f "$PROJECT_DIR/node_modules/prisma/build/index.js" ]; then
@@ -48,5 +69,11 @@ if [ ! -f "$PROJECT_DIR/node_modules/prisma/build/index.js" ]; then
 fi
 run_local_prisma migrate deploy --schema "$PROJECT_DIR/packages/api/prisma/schema.prisma"
 run_local_prisma generate --schema "$PROJECT_DIR/packages/api/prisma/schema.prisma"
+
+# R-138: keep single-machine dev experience identical by running the heartbeat
+# scanner in-process with the API. Multi-replica / serverless deployments must
+# leave this unset and run `npm run --workspace=@plansync/api worker` in a
+# dedicated process instead.
+export PLANSYNC_RUN_WORKER_IN_API=true
 
 exec "$LOCAL_NPM_BIN" run --workspace=@plansync/api dev -- --port "$PORT"

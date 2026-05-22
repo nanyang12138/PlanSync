@@ -21,7 +21,7 @@ interface ProviderConfig {
   parseResponse: (data: unknown) => string | null;
 }
 
-function pickFirstContentText(data: unknown): string | null {
+export function pickFirstContentText(data: unknown): string | null {
   if (typeof data !== 'object' || data === null) return null;
   const content = (data as { content?: unknown }).content;
   if (!Array.isArray(content) || content.length === 0) return null;
