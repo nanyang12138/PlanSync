@@ -82,6 +82,14 @@ model Plan {
   // existing project FK), so adding the cascade here just makes the behaviour
   // explicit and prevents orphaned tasks if a plan is ever hard-deleted.
   boundTasks  Task[]           @relation("TaskBoundPlan")
+  // R-150: structured per-item tables that will eventually replace the
+  // String[] columns above. The String[] columns intentionally remain in
+  // place so plan_show keeps returning the legacy shape — code that opts
+  // into the new tables can read these relations directly. See
+  // `2026XXXX_plan_items_split` migration for the SQL definitions.
+  planDeliverables PlanDeliverable[]
+  planConstraints  PlanConstraint[]
+  planStandards    PlanStandard[]
 
   @@unique([projectId, version])
   @@index([projectId, status])
@@ -401,4 +409,74 @@ model UserState {
   updatedAt          DateTime  @updatedAt @map("updated_at")
 
   @@map("user_state")
+}
+
+// R-150: Deliverable / Constraint / Standard 分表 schema.
+//
+// Today `plans.constraints`, `plans.standards`, `plans.deliverables` are
+// plain `String[]` columns — they cannot carry per-item status, references,
+// supersession history, or stable identifiers usable by drift v2. These
+// three structurally-identical tables solve that: every item has a stable
+// `slug` scoped to the plan, optional typed reference (file glob, API spec
+// frame, etc.), and its own lifecycle that is independent of the parent
+// plan's status. The old `String[]` columns are intentionally retained as
+// a derived/legacy view so `plan_show` keeps returning its current shape;
+// migration of historical data into these tables is tracked by R-151.
+
+model PlanDeliverable {
+  id              String   @id @default(cuid())
+  planId          String   @map("plan_id")
+  slug            String
+  title           String
+  body            String
+  // refType ∈ ('file_glob' | 'api_spec' | 'figma_frame' | 'notion_page' | 'free')
+  refType         String?  @map("ref_type")
+  refUri          String?  @map("ref_uri")
+  // status ∈ ('draft' | 'active' | 'done' | 'deprecated') — independent of plan.status
+  status          String   @default("draft")
+  supersededById  String?  @map("superseded_by_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  plan         Plan              @relation(fields: [planId], references: [id], onDelete: Cascade)
+  // Self-relation: an item that supersedes this one. Restrict on delete so
+  // the supersession chain is never silently broken — the plan cascade still
+  // wipes the whole subtree because the `plan` relation above is Cascade.
+  supersededBy PlanDeliverable?  @relation("PlanDeliverableSupersession", fields: [supersededById], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  supersedes   PlanDeliverable[] @relation("PlanDeliverableSupersession")
+
+  @@unique([planId, slug])
+  @@index([planId, status])
+  @@map("plan_deliverables")
+}
+
+model PlanConstraint {
+  id        String   @id @default(cuid())
+  planId    String   @map("plan_id")
+  slug      String
+  body      String
+  // free-form classifier (e.g. 'security', 'perf', 'compat'); kept as String
+  // for now so owners can introduce new kinds without a schema migration.
+  kind      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, slug])
+  @@index([planId, kind])
+  @@map("plan_constraints")
+}
+
+model PlanStandard {
+  id        String   @id @default(cuid())
+  planId    String   @map("plan_id")
+  slug      String
+  body      String
+  kind      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, slug])
+  @@index([planId, kind])
+  @@map("plan_standards")
 }
