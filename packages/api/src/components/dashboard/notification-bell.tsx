@@ -90,7 +90,9 @@ export function NotificationBell() {
   // full list. The list is only re-fetched when the dropdown opens, so a busy
   // project can fire many events without hammering /api/user-activities.
   useEffect(() => {
-    const es = new EventSource('/api/user-events');
+    // R-089 review #134: align with use-realtime.ts — pass withCredentials
+    // so the plansync-apikey cookie is sent on cross-origin SSE connections.
+    const es = new EventSource('/api/user-events', { withCredentials: true });
     const bump = () => {
       setFeed((prev) => (prev ? { ...prev, unreadCount: prev.unreadCount + 1 } : prev));
     };

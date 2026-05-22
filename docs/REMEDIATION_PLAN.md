@@ -1602,7 +1602,7 @@
 
 #### R-089 [MEDIUM] SSE 改用 cookie 鉴权，不再支持 `?token=`
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B9
 - **depends_on**: —
 - **effort**: small
