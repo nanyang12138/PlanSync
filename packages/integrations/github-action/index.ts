@@ -26,20 +26,27 @@ function parseTaskIds(input: string): string[] {
     .filter((s) => s.length > 0);
 }
 
+// Scoping safety cap. If a project legitimately holds more than this many
+// tasks the operator should ask plansync to expose a server-side branchName
+// filter; silently truncating could miss in-scope HIGH drifts and let a
+// broken PR through the gate.
+const TASK_PAGE_CAP = 50;
+const TASK_PAGE_SIZE = 100;
+
 async function fetchTaskIdsForBranch(
   apiUrl: string,
   projectId: string,
   headers: Record<string, string>,
   branchName: string,
-): Promise<string[]> {
+): Promise<{ matched: string[]; truncated: boolean }> {
   const matched: string[] = [];
   let page = 1;
-  const pageSize = 100;
   // The task list endpoint does not expose a branchName filter, so paginate
   // and match client-side. Cap iterations to avoid runaway loops on a
-  // misbehaving server.
-  for (let i = 0; i < 50; i += 1) {
-    const url = `${apiUrl}/api/projects/${projectId}/tasks?page=${page}&pageSize=${pageSize}`;
+  // misbehaving server; `truncated` lets the caller fail the gate rather
+  // than silently use an incomplete scope.
+  for (let i = 0; i < TASK_PAGE_CAP; i += 1) {
+    const url = `${apiUrl}/api/projects/${projectId}/tasks?page=${page}&pageSize=${TASK_PAGE_SIZE}`;
     const res = await fetch(url, { headers });
     const json = (await res.json()) as TasksResponse & { error?: { message?: string } };
     if (!res.ok) {
@@ -51,10 +58,40 @@ async function fetchTaskIdsForBranch(
         matched.push(task.id);
       }
     }
-    if (tasks.length < pageSize) break;
+    if (tasks.length < TASK_PAGE_SIZE) {
+      return { matched, truncated: false };
+    }
     page += 1;
   }
-  return matched;
+  return { matched, truncated: true };
+}
+
+async function fetchOpenDrifts(
+  apiUrl: string,
+  projectId: string,
+  headers: Record<string, string>,
+): Promise<{ rows: DriftRow[]; truncated: boolean }> {
+  // Mirror the task pagination strategy: drift gates that silently miss a
+  // HIGH drift on page 2 are exactly the failure mode #146 reports.
+  const DRIFT_PAGE_CAP = 50;
+  const DRIFT_PAGE_SIZE = 100;
+  const rows: DriftRow[] = [];
+  let page = 1;
+  for (let i = 0; i < DRIFT_PAGE_CAP; i += 1) {
+    const url = `${apiUrl}/api/projects/${projectId}/drifts?status=open&page=${page}&pageSize=${DRIFT_PAGE_SIZE}`;
+    const res = await fetch(url, { headers });
+    const json = (await res.json()) as DriftsResponse & { error?: { message?: string } };
+    if (!res.ok) {
+      throw new Error(json?.error?.message || `HTTP ${res.status} ${res.statusText}`);
+    }
+    const data = json.data ?? [];
+    rows.push(...data);
+    if (data.length < DRIFT_PAGE_SIZE) {
+      return { rows, truncated: false };
+    }
+    page += 1;
+  }
+  return { rows, truncated: true };
 }
 
 export async function run() {
@@ -88,31 +125,62 @@ export async function run() {
     //      adopted scoping).
     let scopedTaskIds: Set<string> | null = null;
     const explicitTaskIds = parseTaskIds(taskIdsInput);
+    // Whitespace-only `branch-name` (e.g. `${{ github.head_ref }}` against a
+    // tag push) was previously truthy → entered scoped mode → matched 0 tasks
+    // → silently filtered out every drift, including HIGH ones, and never
+    // called setFailed. Treat empty/whitespace input as "no branch provided".
+    const branchName = branchNameInput.trim();
     if (explicitTaskIds.length > 0) {
       scopedTaskIds = new Set(explicitTaskIds);
       core.info(`Scoping drift check to ${explicitTaskIds.length} explicit task id(s).`);
-    } else if (branchNameInput) {
-      const ids = await fetchTaskIdsForBranch(apiUrl, projectId, headers, branchNameInput);
-      scopedTaskIds = new Set(ids);
-      core.info(`Scoping drift check to ${ids.length} task(s) on branch "${branchNameInput}".`);
+    } else if (branchName) {
+      const { matched, truncated } = await fetchTaskIdsForBranch(
+        apiUrl,
+        projectId,
+        headers,
+        branchName,
+      );
+      if (truncated) {
+        core.setFailed(
+          `PlanSync drift-check refused to run: scanning more than ${TASK_PAGE_CAP * TASK_PAGE_SIZE} tasks for branch "${branchName}" — scope would be incomplete and could miss in-scope HIGH drifts. Pass \`task-ids\` explicitly or ask the API to expose a server-side branchName filter.`,
+        );
+        return;
+      }
+      if (matched.length === 0) {
+        // The caller explicitly asked us to scope to a branch; finding 0 tasks
+        // is almost always a mis-configured workflow (wrong branch ref, stale
+        // task records, etc.) rather than "this PR truly has no PlanSync work".
+        // Fail loudly instead of pretending the gate is green.
+        core.setFailed(
+          `PlanSync drift-check: no tasks found with branchName="${branchName}". Refusing to silently pass — verify the branch-name input or pass \`task-ids\` explicitly.`,
+        );
+        return;
+      }
+      scopedTaskIds = new Set(matched);
+      core.info(
+        `Scoping drift check to ${matched.length} task(s) on branch "${branchName}".`,
+      );
     } else {
       core.warning(
         'PlanSync drift-check is running in project-wide mode: any open drift in the project will gate this PR. Pass `task-ids` or `branch-name` to scope the check to this PR.',
       );
     }
 
-    const res = await fetch(`${apiUrl}/api/projects/${projectId}/drifts?status=open&pageSize=100`, {
-      headers,
-    });
-
-    const json = (await res.json()) as DriftsResponse & { error?: { message?: string } };
-
-    if (!res.ok) {
-      core.setFailed(json?.error?.message || `HTTP ${res.status} ${res.statusText}`);
+    let allDrifts: DriftRow[];
+    try {
+      const result = await fetchOpenDrifts(apiUrl, projectId, headers);
+      if (result.truncated) {
+        core.setFailed(
+          'PlanSync drift-check: open drift list exceeds pagination cap; refusing to gate on a partial view (HIGH drifts could be on later pages). Triage backlog or raise the cap.',
+        );
+        return;
+      }
+      allDrifts = result.rows;
+    } catch (err) {
+      core.setFailed(err instanceof Error ? err.message : String(err));
       return;
     }
 
-    const allDrifts = json.data ?? [];
     const drifts =
       scopedTaskIds === null ? allDrifts : allDrifts.filter((d) => scopedTaskIds!.has(d.taskId));
 
