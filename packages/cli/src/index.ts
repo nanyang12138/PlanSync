@@ -9,8 +9,8 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
-import { execSync } from 'child_process';
 import { cfg, selfDir } from './config.js';
+import { runShellCommand } from './shell-cmd.js';
 import { c, banner, showSplash } from './ui.js';
 import { McpClient } from './mcp-client.js';
 import { buildSystemPrompt, runAgentLoop, pruneHistory, Message } from './ai-loop.js';
@@ -260,19 +260,10 @@ async function main() {
   async function handleInput(input: string): Promise<void> {
     if (!input.trim()) return;
 
-    // Shell commands
+    // Shell commands (R-064: pause Ink around execSync so subprocess output
+    // and the Ink frame don't overwrite each other).
     if (input.startsWith('!')) {
-      const cmd = input.slice(1).trim();
-      if (!cmd) return;
-      console.log(`\n${c.dim}$ ${cmd}${c.reset}`);
-      try {
-        const out = execSync(cmd, { encoding: 'utf8', timeout: 15000 }).trim();
-        if (out) console.log(out);
-      } catch (err: unknown) {
-        const e = err as { stderr?: string; message?: string };
-        console.log(`${c.red}${e.stderr?.trim() || e.message}${c.reset}`);
-      }
-      console.log('');
+      runShellCommand(input.slice(1), { rawInput });
       return;
     }
 
