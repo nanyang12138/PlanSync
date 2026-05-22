@@ -2107,7 +2107,7 @@
 
 #### R-130 [LOW] 文档示例代码可执行测试
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B12
 - **depends_on**: —
 - **effort**: medium
