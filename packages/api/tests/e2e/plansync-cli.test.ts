@@ -8,7 +8,11 @@ import fs from 'fs';
 import { connectMcpClient, mcp, cli, deleteProject } from './mcp-helpers';
 
 const ROOT = path.resolve(__dirname, '../../../..');
-const LOCAL_NODE = path.join(ROOT, '.local-runtime/node/bin/node');
+const LOCAL_NODE_REPO = path.join(ROOT, '.local-runtime/node/bin/node');
+// Fall back to the test runner's own Node when the repo-local runtime is
+// missing (CI bootstraps Node via actions/setup-node, not bin/ps-admin).
+// See packages/api/tests/e2e/mcp-helpers.ts for the same fallback rationale.
+const LOCAL_NODE = fs.existsSync(LOCAL_NODE_REPO) ? LOCAL_NODE_REPO : process.execPath;
 const CLI = path.join(ROOT, 'packages/cli/dist/index.js');
 const SERVER_URL = `http://localhost:${process.env.PORT || 3001}`;
 const API_SECRET = process.env.PLANSYNC_SECRET || 'dev-secret';
@@ -17,8 +21,9 @@ const TEST_USER = 'e2e-cli-user';
 // Fail early with a clear message if prerequisites are missing
 if (!fs.existsSync(LOCAL_NODE)) {
   throw new Error(
-    `Local node runtime not found at ${LOCAL_NODE}.\n` +
-      'Run ./bin/ps-admin start to install it, then re-run the E2E tests.',
+    `Local node runtime not found: ${LOCAL_NODE}.\n` +
+      'On dev: run ./bin/ps-admin start to install the repo-local runtime.\n' +
+      'On CI: ensure node is on PATH (actions/setup-node@v4 takes care of this).',
   );
 }
 if (!fs.existsSync(CLI)) {

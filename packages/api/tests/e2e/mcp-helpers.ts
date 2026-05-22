@@ -22,7 +22,21 @@ import path from 'path';
 
 const ROOT = path.resolve(__dirname, '../../../..');
 const PLANSYNC = path.join(ROOT, 'bin/plansync');
-const LOCAL_NODE = path.join(ROOT, '.local-runtime/node/bin/node');
+const LOCAL_NODE_REPO = path.join(ROOT, '.local-runtime/node/bin/node');
+/**
+ * Resolve the Node binary used to spawn the MCP server / CLI from the e2e
+ * tests. The repo-local runtime ({@link LOCAL_NODE_REPO}) is preferred so
+ * dev workstations stay reproducible, but environments that do not run
+ * `bin/ps-admin start` (most prominently the GitHub Actions nightly job,
+ * which uses `actions/setup-node@v4` and never bootstraps the local
+ * runtime) must fall back to whatever Node is on the PATH — i.e. the same
+ * Node interpreter currently running this test process.
+ *
+ * The fallback used to be unconditional, which surfaced as
+ *   `Local node runtime not found at .../.local-runtime/node/bin/node`
+ * in #143 — every e2e test that shells out via `runGenie`/`cli` exited 127.
+ */
+const LOCAL_NODE = fs.existsSync(LOCAL_NODE_REPO) ? LOCAL_NODE_REPO : process.execPath;
 const CLI_BUNDLE = path.join(ROOT, 'packages/cli/dist/index.js');
 const MCP_SERVER = path.join(ROOT, 'packages/mcp-server/dist/index.js');
 const GENIE = process.env.GENIE_BIN || '/proj/verif_release_ro/genie/current/bin/genie';
