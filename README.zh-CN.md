@@ -292,10 +292,9 @@ PlanSync/
 │   ├── ps-connect       # NFS / 集群：SSH + 端口转发 + 接入
 │   └── start-mcp        # MCP 入口（被 .claude/settings.json 调用）
 ├── scripts/
-│   ├── demo-terminal.sh # 多用户端到端演示
-│   ├── demo-webui.js    # 浏览器驱动的 Web UI 演示
 │   ├── setup.sh · dev.sh · build.sh
-│   └── db-reset.sh · db-psql.sh
+│   ├── test.sh · lint.sh · format.sh
+│   └── db-reset.sh · db-psql.sh · pg-start.sh · pg-stop.sh
 ├── CLAUDE.md            # Terminal Mode 行为规约
 └── AGENTS.md            # Agent 执行规则（漂移处理、执行流程）
 ```

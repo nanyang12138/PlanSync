@@ -13,7 +13,15 @@ Given a list of running/pending tasks, identify potential conflicts. Respond in 
   ]
 }`;
 
-export function buildConflictPredictionUser(tasks: any[]): string {
+export interface ConflictPredictionTaskInput {
+  id: string;
+  title: string;
+  status: string;
+  assignee?: string | null;
+  description?: string | null;
+}
+
+export function buildConflictPredictionUser(tasks: ConflictPredictionTaskInput[]): string {
   const taskSummaries = tasks
     .map(
       (t) =>

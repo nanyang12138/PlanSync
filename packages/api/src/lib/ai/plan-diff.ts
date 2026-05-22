@@ -48,8 +48,12 @@ export async function getOrCreatePlanDiff(
       await prisma.planDiff.create({
         data: { projectId, fromPlanId, toPlanId, changes: result as object },
       });
-    } catch (dbErr: any) {
-      if (dbErr?.code === 'P2002') {
+    } catch (dbErr: unknown) {
+      const code =
+        typeof dbErr === 'object' && dbErr !== null && 'code' in dbErr
+          ? (dbErr as { code?: unknown }).code
+          : undefined;
+      if (code === 'P2002') {
         logger.debug('PlanDiff already cached by concurrent request');
       } else {
         logger.warn({ err: dbErr }, 'Failed to cache plan diff');
