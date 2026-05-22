@@ -83,6 +83,17 @@ model Plan {
   // explicit and prevents orphaned tasks if a plan is ever hard-deleted.
   boundTasks  Task[]           @relation("TaskBoundPlan")
 
+  // R-150: split the legacy `deliverables / constraints / standards: String[]`
+  // columns into proper rows so each item can carry its own slug, status,
+  // ref-type/uri, and supersession history. The String[] columns above are
+  // intentionally kept and are still the source of truth today — the new
+  // tables will be backfilled and dual-written by R-151/R-152. Existing
+  // callers (plan_show, drift-engine, MCP tools) keep returning the legacy
+  // shape until then.
+  deliverableItems PlanDeliverable[]
+  constraintItems  PlanConstraint[]
+  standardItems    PlanStandard[]
+
   @@unique([projectId, version])
   @@index([projectId, status])
   // R-048 / R-084: a partial unique index `plans_one_active_per_project` is
@@ -383,6 +394,94 @@ model PlanDiff {
   @@index([fromPlanId])
   @@index([toPlanId])
   @@map("plan_diffs")
+}
+
+// R-150: First half of the Deliverable / Constraint / Standard split. The
+// three legacy `String[]` columns on `Plan` (`deliverables`, `constraints`,
+// `standards`) cannot express:
+//   * stable IDs (so a task can reference a specific deliverable across
+//     plan versions),
+//   * a per-item status independent of the plan's own draft/active/...
+//     lifecycle,
+//   * external refs (file globs, API specs, design files, doc pages),
+//   * supersession history (which item replaced which).
+//
+// This change introduces three sibling tables. They are *additive* — no
+// existing column is dropped and no read path is rewritten in this PR. The
+// legacy String[] columns continue to be the source of truth until
+// R-151/R-152 backfill and switch the read path. That's why this migration
+// alone does not change any API response shape; the smoke test in
+// `tests/integration/r150-plan-items-split.test.ts` asserts that
+// `plan_show` still returns `deliverables / constraints / standards: string[]`
+// exactly as before.
+model PlanDeliverable {
+  id              String    @id @default(cuid())
+  planId          String    @map("plan_id")
+  // Stable, human-readable identifier scoped to the plan (e.g.
+  // `auth/oidc-callback`). Tasks reference deliverables by slug so the
+  // reference survives across plan versions even when the title changes.
+  slug            String
+  title           String
+  body            String
+  // refType ∈ ('file_glob' | 'api_spec' | 'figma_frame' | 'notion_page' | 'free').
+  // Stored as a free-form string here so the value set can grow without a
+  // migration; values are validated in the application layer (a Zod enum
+  // will be introduced alongside R-152's API surface).
+  refType         String?   @map("ref_type")
+  refUri          String?   @map("ref_uri")
+  // status ∈ ('draft' | 'active' | 'done' | 'deprecated'), independent of
+  // plan.status. A deliverable can be marked `done` while the plan is still
+  // active, and a deliverable can be `deprecated` without supersession.
+  status          String    @default("active")
+  supersededById  String?   @map("superseded_by_id")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  plan           Plan              @relation(fields: [planId], references: [id], onDelete: Cascade)
+  // Self-relation: when a deliverable is replaced by a newer one (e.g. after
+  // a major redesign), the older row stays for history and points at its
+  // successor. SetNull lets us hard-delete the successor without taking the
+  // history with it; the more common path (project / plan cascade) still
+  // wipes everything cleanly.
+  supersededBy   PlanDeliverable?  @relation("DeliverableSupersedes", fields: [supersededById], references: [id], onDelete: SetNull)
+  supersedes     PlanDeliverable[] @relation("DeliverableSupersedes")
+
+  @@unique([planId, slug])
+  @@index([planId, status])
+  @@map("plan_deliverables")
+}
+
+model PlanConstraint {
+  id        String   @id @default(cuid())
+  planId    String   @map("plan_id")
+  slug      String
+  body      String
+  // Free-form classification (e.g. `security`, `performance`, `compliance`).
+  // Like `PlanDeliverable.refType` above, the value set is enforced in the
+  // application layer rather than the DB so categories can be added without
+  // a migration.
+  kind      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, slug])
+  @@index([planId, kind])
+  @@map("plan_constraints")
+}
+
+model PlanStandard {
+  id        String   @id @default(cuid())
+  planId    String   @map("plan_id")
+  slug      String
+  body      String
+  kind      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, slug])
+  @@index([planId, kind])
+  @@map("plan_standards")
 }
 
 model UserAccount {
