@@ -10,14 +10,21 @@ type DriftRow = {
   task?: { title?: string };
 };
 
-type DriftsResponse = { data?: DriftRow[] };
+type Pagination = {
+  page?: number;
+  pageSize?: number;
+  total?: number;
+  totalPages?: number;
+};
+
+type DriftsResponse = { data?: DriftRow[]; pagination?: Pagination };
 
 type TaskRow = {
   id: string;
   branchName?: string | null;
 };
 
-type TasksResponse = { data?: TaskRow[] };
+type TasksResponse = { data?: TaskRow[]; pagination?: Pagination };
 
 function parseTaskIds(input: string): string[] {
   return input
@@ -32,6 +39,31 @@ function parseTaskIds(input: string): string[] {
 // broken PR through the gate.
 const TASK_PAGE_CAP = 50;
 const TASK_PAGE_SIZE = 100;
+
+/**
+ * Returns true when the just-fetched `page` is the last available page,
+ * even when the response was exactly full. The previous heuristic
+ * (`data.length < pageSize`) had a foot-gun: if the project happened to
+ * hold exactly N×pageSize rows, every page came back full and the loop
+ * had to walk through `*_PAGE_CAP` iterations before reporting a false
+ * truncation.
+ *
+ * We prefer the server-reported `pagination.totalPages` when available
+ * (every PlanSync paginated route emits it); the partial-page heuristic
+ * is the legacy-server fallback.
+ */
+function isLastPage(
+  pagination: Pagination | undefined,
+  pageSize: number,
+  page: number,
+  receivedRows: number,
+): boolean {
+  const totalPages = pagination?.totalPages;
+  if (typeof totalPages === 'number' && totalPages >= 0) {
+    return page >= totalPages;
+  }
+  return receivedRows < pageSize;
+}
 
 async function fetchTaskIdsForBranch(
   apiUrl: string,
@@ -58,13 +90,16 @@ async function fetchTaskIdsForBranch(
         matched.push(task.id);
       }
     }
-    if (tasks.length < TASK_PAGE_SIZE) {
+    if (isLastPage(json.pagination, TASK_PAGE_SIZE, page, tasks.length)) {
       return { matched, truncated: false };
     }
     page += 1;
   }
   return { matched, truncated: true };
 }
+
+const DRIFT_PAGE_CAP = 50;
+const DRIFT_PAGE_SIZE = 100;
 
 async function fetchOpenDrifts(
   apiUrl: string,
@@ -73,8 +108,6 @@ async function fetchOpenDrifts(
 ): Promise<{ rows: DriftRow[]; truncated: boolean }> {
   // Mirror the task pagination strategy: drift gates that silently miss a
   // HIGH drift on page 2 are exactly the failure mode #146 reports.
-  const DRIFT_PAGE_CAP = 50;
-  const DRIFT_PAGE_SIZE = 100;
   const rows: DriftRow[] = [];
   let page = 1;
   for (let i = 0; i < DRIFT_PAGE_CAP; i += 1) {
@@ -86,7 +119,7 @@ async function fetchOpenDrifts(
     }
     const data = json.data ?? [];
     rows.push(...data);
-    if (data.length < DRIFT_PAGE_SIZE) {
+    if (isLastPage(json.pagination, DRIFT_PAGE_SIZE, page, data.length)) {
       return { rows, truncated: false };
     }
     page += 1;
@@ -157,9 +190,7 @@ export async function run() {
         return;
       }
       scopedTaskIds = new Set(matched);
-      core.info(
-        `Scoping drift check to ${matched.length} task(s) on branch "${branchName}".`,
-      );
+      core.info(`Scoping drift check to ${matched.length} task(s) on branch "${branchName}".`);
     } else {
       core.warning(
         'PlanSync drift-check is running in project-wide mode: any open drift in the project will gate this PR. Pass `task-ids` or `branch-name` to scope the check to this PR.',
