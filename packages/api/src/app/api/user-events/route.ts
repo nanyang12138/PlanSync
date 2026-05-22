@@ -10,6 +10,17 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function GET(req: NextRequest) {
+  // R-089: SSE endpoints no longer accept `?token=` to avoid leaking
+  // secrets into URLs, browser history, and access logs. Browser clients
+  // authenticate via the `plansync-apikey` cookie; CLI / non-browser
+  // clients use the Authorization header. `?user=` remains supported
+  // because it only carries an identity hint, not a secret.
+  if (req.nextUrl.searchParams.has('token')) {
+    return new Response('Unauthorized: ?token= is no longer accepted for SSE; use cookie auth', {
+      status: 401,
+    });
+  }
+
   let auth;
   try {
     auth = await authenticate(req);

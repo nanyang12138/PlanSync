@@ -1549,7 +1549,7 @@
 
 #### R-085 [LOW] 统一所有 camelCase 列名为 snake_case `@map`
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
 - **depends_on**: —
 - **effort**: medium
@@ -1584,7 +1584,7 @@
 
 #### R-088 [CRITICAL] EventBus 替换为 Postgres LISTEN/NOTIFY 或 Redis
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B9
 - **depends_on**: —
 - **effort**: large
@@ -1602,7 +1602,7 @@
 
 #### R-089 [MEDIUM] SSE 改用 cookie 鉴权，不再支持 `?token=`
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B9
 - **depends_on**: —
 - **effort**: small
@@ -1944,7 +1944,7 @@
 
 #### R-115 [HIGH] tasks/conflicts 集成测试
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B12
 - **depends_on**: —
 - **effort**: small
