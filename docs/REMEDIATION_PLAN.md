@@ -1942,7 +1942,7 @@
 
 #### R-113 [LOW] sendMail 异步队列化
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B11
 - **depends_on**: —
 - **effort**: medium
