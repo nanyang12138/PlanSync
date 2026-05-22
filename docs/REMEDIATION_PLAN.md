@@ -2860,7 +2860,7 @@
 
 #### R-182 [HIGH] ai_calls 表 + provider observability（合并/取代 R-144）
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B16
 - **depends_on**: —
 - **supersedes**: R-144
