@@ -196,7 +196,8 @@ model ExecutionRun {
   startedAt        DateTime  @default(now()) @map("started_at")
   endedAt          DateTime? @map("ended_at")
 
-  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  task    Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  apiKeys ApiKey[]
 
   @@map("execution_runs")
 }
@@ -252,18 +253,22 @@ model Activity {
 }
 
 model ApiKey {
-  id          String    @id @default(cuid())
+  id          String        @id @default(cuid())
   projectId   String? // nullable: null for global web-session keys
-  project     Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project     Project?      @relation(fields: [projectId], references: [id], onDelete: Cascade)
   name        String
   keyHash     String
   keyPrefix   String
   permissions String[]
   createdBy   String
   lastUsedAt  DateTime?
-  createdAt   DateTime  @default(now())
-  execRunId   String?   @map("exec_run_id")
-  expiresAt   DateTime? @map("expires_at")
+  createdAt   DateTime      @default(now())
+  execRunId   String?       @map("exec_run_id")
+  // R-080: relate exec-scoped keys to their run so the row is preserved (with
+  // execRunId nulled) when the run record is removed instead of leaving a
+  // dangling reference.
+  execRun     ExecutionRun? @relation(fields: [execRunId], references: [id], onDelete: SetNull)
+  expiresAt   DateTime?     @map("expires_at")
 
   @@index([execRunId])
   @@index([keyPrefix])

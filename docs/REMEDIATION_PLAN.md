@@ -1471,7 +1471,7 @@
 
 #### R-080 [MEDIUM] ApiKey.execRunId FK 到 execution_runs
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
