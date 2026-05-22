@@ -132,8 +132,15 @@ model PlanComment {
   createdAt  DateTime @default(now()) @map("created_at")
   updatedAt  DateTime @updatedAt @map("updated_at")
 
-  plan    Plan          @relation(fields: [planId], references: [id], onDelete: Cascade)
-  parent  PlanComment?  @relation("CommentReplies", fields: [parentId], references: [id])
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  // R-086: be explicit about the self-relation onDelete behaviour. The
+  // application uses soft delete (`isDeleted = true`) for comments, so a hard
+  // delete of a parent comment that still has replies should be rejected to
+  // avoid silently orphaning the thread (which is what the implicit Prisma
+  // default of `SetNull` previously did). Plan deletion still cascades the
+  // whole thread away because the `plan` relation above is `Cascade` and
+  // Postgres evaluates the cascade for the entire subtree in one statement.
+  parent  PlanComment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   replies PlanComment[] @relation("CommentReplies")
 
   @@map("plan_comments")
