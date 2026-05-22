@@ -315,7 +315,10 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     const connect = () => {
       if (cancelled) return;
       try {
-        es = new EventSource('/api/user-events');
+        // R-089 review #134: SSE auth is cookie/header only (no ?token=).
+        // withCredentials lets the browser attach the plansync-apikey cookie on
+        // both same-origin and cross-origin connections.
+        es = new EventSource('/api/user-events', { withCredentials: true });
       } catch {
         handleError();
         return;

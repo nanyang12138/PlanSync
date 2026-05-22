@@ -123,6 +123,13 @@ class AiClient {
     return this.provider?.name ?? 'none';
   }
 
+  // R-143: completion-verify writes the model name onto each run for audit.
+  // Returns null when no provider is configured so callers can distinguish
+  // "AI unavailable" from "AI returned no result".
+  get modelName(): string | null {
+    return this.provider ? this.model : null;
+  }
+
   async complete(system: string, user: string): Promise<string | null> {
     if (!this.provider) {
       logger.debug('No AI provider configured, skipping AI call');
