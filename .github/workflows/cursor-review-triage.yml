@@ -14,6 +14,16 @@ name: cursor-review-triage
 # Loop safety: only triggers on comments whose body starts with the
 # `<!-- cursor-review-action:review -->` marker. The summary comment we post
 # back uses a different marker, so it cannot retrigger this workflow.
+#
+# Author check: cursor-review.yml posts the review comment using either
+# GITHUB_TOKEN (author = github-actions[bot]) or CURSOR_REVIEW_PAT (author
+# = the PAT owner). Note that comments created via GITHUB_TOKEN do NOT
+# fire downstream workflow runs at all (GitHub anti-recursion rule), so
+# triage only ever sees the PAT-authored variant in practice. We keep the
+# author check loose (any repo OWNER / MEMBER / COLLABORATOR) and rely on
+# the marker + author_association as the security boundary, so that the
+# workflow keeps working if the PAT owner changes or a GitHub App token is
+# substituted later.
 
 on:
   issue_comment:
@@ -28,8 +38,8 @@ jobs:
   triage:
     if: >
       github.event.issue.pull_request != null &&
-      github.event.comment.user.login == 'github-actions[bot]' &&
-      startsWith(github.event.comment.body, '<!-- cursor-review-action:review -->')
+      startsWith(github.event.comment.body, '<!-- cursor-review-action:review -->') &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
     runs-on: ubuntu-latest
     # 10min: Cloud Agent spinup + run can take 30-60s on average and the
     # script's own hard timeout for the agent stream is 5min; we need
