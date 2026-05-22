@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { authenticate, requireProjectRole } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
@@ -180,6 +181,13 @@ export async function POST(req: NextRequest, { params }: Params) {
         // AI evidence-based verification for agent executors
         if (run.executorType === 'agent') {
           const task = run.task;
+          // R-143: persist every verification outcome (pass, fail, AI
+          // unavailable, AI error) so the owner can audit why a 422 fired
+          // and which model produced the score. The fields are written
+          // *before* we either return 422 or fall through to finalize —
+          // a 422 short-circuits the finalize updateMany below, so we
+          // can't fold these writes into that single UPDATE.
+          const aiVerifyModel = aiClient.modelName;
           try {
             const raw = await aiClient.complete(
               COMPLETION_VERIFY_SYSTEM,
@@ -201,6 +209,15 @@ export async function POST(req: NextRequest, { params }: Params) {
                 gaps: string[];
                 feedback: string;
               };
+              await prisma.executionRun.update({
+                where: { id: params.runId },
+                data: {
+                  aiVerifyScore: result.score,
+                  aiVerifyBreakdown: result.breakdown ?? Prisma.DbNull,
+                  aiVerifyFeedback: result.feedback,
+                  aiVerifyModel,
+                },
+              });
               if (!result.verified || result.score < 75) {
                 return NextResponse.json(
                   {
@@ -208,24 +225,56 @@ export async function POST(req: NextRequest, { params }: Params) {
                       code: 'COMPLETION_VERIFICATION_FAILED',
                       message: result.feedback,
                       details: {
+                        runId: params.runId,
                         score: result.score,
                         breakdown: result.breakdown,
                         gaps: result.gaps,
                         feedback: result.feedback,
+                        model: aiVerifyModel,
                       },
                     },
                   },
                   { status: 422 },
                 );
               }
+            } else {
+              // raw === null: AI unavailable (no provider configured or
+              // the call returned no result after retries). Record the
+              // "allowed through" decision so the owner sees explicitly
+              // that the gate was a no-op, not a silent pass.
+              await prisma.executionRun.update({
+                where: { id: params.runId },
+                data: {
+                  aiVerifyScore: null,
+                  aiVerifyBreakdown: Prisma.DbNull,
+                  aiVerifyFeedback: 'AI unavailable, allowed through',
+                  aiVerifyModel,
+                },
+              });
             }
-            // raw === null: AI unavailable, allow through
           } catch (err) {
-            // AI error: allow through, don't block on infra failure
+            // AI error: allow through, don't block on infra failure. Still
+            // surface the failure on the run row so the owner can tell
+            // "AI said pass" apart from "AI exploded mid-call".
+            const errMessage = err instanceof Error ? err.message : String(err);
             console.warn(
               `[completion-verify] AI verification failed for task ${params.taskId}, run ${params.runId} — allowing through:`,
-              err instanceof Error ? err.message : err,
+              errMessage,
             );
+            await prisma.executionRun
+              .update({
+                where: { id: params.runId },
+                data: {
+                  aiVerifyScore: null,
+                  aiVerifyBreakdown: Prisma.DbNull,
+                  aiVerifyFeedback: `AI error, allowed through: ${errMessage}`,
+                  aiVerifyModel,
+                },
+              })
+              .catch(() => {
+                // Best-effort audit write; never let the audit failure
+                // mask the original AI error or block the completion.
+              });
           }
         }
       }

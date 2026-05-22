@@ -10,6 +10,14 @@ inputs:
   project:
     description: 'Project ID'
     required: true
+  task-ids:
+    description: 'Comma-separated PlanSync task IDs to scope the drift check to. When provided, only drifts affecting these tasks gate the PR.'
+    required: false
+    default: ''
+  branch-name:
+    description: 'PR branch name. When provided (and `task-ids` is empty), the action looks up tasks whose `branchName` matches and scopes the drift check to them.'
+    required: false
+    default: ''
 outputs:
   drift-count:
     description: 'Number of open drift alerts'

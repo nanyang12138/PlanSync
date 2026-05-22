@@ -15,7 +15,22 @@ Rules:
 - Score 30-70: Task may need adjustment, suggest "rebind" with notes
 - Score < 30: Task is likely incompatible, suggest "cancel"`;
 
-export function buildImpactAnalysisUser(diff: any, task: any): string {
+export interface ImpactAnalysisDiffInput {
+  changes: unknown;
+}
+
+export interface ImpactAnalysisTaskInput {
+  title: string;
+  description?: string | null;
+  type?: string | null;
+  status: string;
+  boundPlanVersion: number;
+}
+
+export function buildImpactAnalysisUser(
+  diff: ImpactAnalysisDiffInput,
+  task: ImpactAnalysisTaskInput,
+): string {
   return `## Plan Changes
 ${JSON.stringify(diff.changes, null, 2)}
 

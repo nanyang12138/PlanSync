@@ -134,7 +134,14 @@ model PlanComment {
   updatedAt  DateTime @updatedAt @map("updated_at")
 
   plan    Plan          @relation(fields: [planId], references: [id], onDelete: Cascade)
-  parent  PlanComment?  @relation("CommentReplies", fields: [parentId], references: [id])
+  // R-086: be explicit about the self-relation onDelete behaviour. The
+  // application uses soft delete (`isDeleted = true`) for comments, so a hard
+  // delete of a parent comment that still has replies should be rejected to
+  // avoid silently orphaning the thread (which is what the implicit Prisma
+  // default of `SetNull` previously did). Plan deletion still cascades the
+  // whole thread away because the `plan` relation above is `Cascade` and
+  // Postgres evaluates the cascade for the entire subtree in one statement.
+  parent  PlanComment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   replies PlanComment[] @relation("CommentReplies")
 
   @@map("plan_comments")
@@ -196,6 +203,16 @@ model ExecutionRun {
   deliverablesMet  String[]  @default([]) @map("deliverables_met")
   startedAt        DateTime  @default(now()) @map("started_at")
   endedAt          DateTime? @map("ended_at")
+
+  // R-143: completion-verify observability. Each call to the AI completion
+  // verifier writes its score/breakdown/feedback/model back onto the run so
+  // the owner can see *why* a 422 happened (or that the AI was unavailable
+  // and the run was allowed through). The 422 response also echoes runId so
+  // the UI can deep-link to the failed verification record.
+  aiVerifyScore     Float?  @map("ai_verify_score")
+  aiVerifyBreakdown Json?   @map("ai_verify_breakdown")
+  aiVerifyFeedback  String? @map("ai_verify_feedback")
+  aiVerifyModel     String? @map("ai_verify_model")
 
   task    Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
   apiKeys ApiKey[]

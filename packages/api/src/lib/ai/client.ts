@@ -18,7 +18,17 @@ interface ProviderConfig {
   buildUrl: (model: string) => string;
   buildHeaders: (apiKey: string) => Record<string, string>;
   buildBody: (model: string, system: string, user: string) => object;
-  parseResponse: (data: any) => string | null;
+  parseResponse: (data: unknown) => string | null;
+}
+
+function pickFirstContentText(data: unknown): string | null {
+  if (typeof data !== 'object' || data === null) return null;
+  const content = (data as { content?: unknown }).content;
+  if (!Array.isArray(content) || content.length === 0) return null;
+  const first = content[0];
+  if (typeof first !== 'object' || first === null) return null;
+  const text = (first as { text?: unknown }).text;
+  return typeof text === 'string' && text.length > 0 ? text : null;
 }
 
 // AMD internal LLM uses the same Anthropic messages API format,
@@ -45,7 +55,7 @@ const AMD_PROVIDER: Omit<ProviderConfig, 'apiKey'> = {
     system,
     messages: [{ role: 'user', content: user }],
   }),
-  parseResponse: (data) => data?.content?.[0]?.text || null,
+  parseResponse: pickFirstContentText,
 };
 
 function parseCustomHeaders(raw: string): Record<string, string> {
@@ -78,7 +88,7 @@ const ANTHROPIC_PROVIDER: Omit<ProviderConfig, 'apiKey'> = {
     system,
     messages: [{ role: 'user', content: user }],
   }),
-  parseResponse: (data) => data?.content?.[0]?.text || null,
+  parseResponse: pickFirstContentText,
 };
 
 class AiClient {
@@ -113,6 +123,13 @@ class AiClient {
     return this.provider?.name ?? 'none';
   }
 
+  // R-143: completion-verify writes the model name onto each run for audit.
+  // Returns null when no provider is configured so callers can distinguish
+  // "AI unavailable" from "AI returned no result".
+  get modelName(): string | null {
+    return this.provider ? this.model : null;
+  }
+
   async complete(system: string, user: string): Promise<string | null> {
     if (!this.provider) {
       logger.debug('No AI provider configured, skipping AI call');
@@ -140,15 +157,20 @@ class AiClient {
           throw new Error(`${name} API ${res.status}: ${errText}`);
         }
 
-        const data = (await res.json()) as any;
+        const data: unknown = await res.json();
         const raw = parseResponse(data);
         return raw ? extractJson(raw) : null;
-      } catch (err: any) {
+      } catch (err: unknown) {
         clearTimeout(timer);
-        if (err.name === 'AbortError') {
+        const errName =
+          typeof err === 'object' && err !== null && 'name' in err
+            ? String((err as { name: unknown }).name)
+            : '';
+        const errMessage = err instanceof Error ? err.message : String(err);
+        if (errName === 'AbortError') {
           logger.warn({ attempt, provider: name }, 'AI call timed out');
         } else {
-          logger.warn({ err: err.message, attempt, provider: name }, 'AI call failed');
+          logger.warn({ err: errMessage, attempt, provider: name }, 'AI call failed');
         }
         if (attempt === this.maxRetries) return null;
         await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
