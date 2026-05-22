@@ -315,7 +315,12 @@ export class EventBusPG implements EventBusInterface {
         e: {
           type: envelope.e.type,
           projectId: envelope.e.projectId,
-          data: {},
+          // R-088 review #128: the envelope-level `t` flag is dropped by the
+          // dispatch path (it only forwards `envelope.e` to listeners), so we
+          // ALSO surface the truncation inside `data` itself. SSE consumers
+          // check `data._truncated === true` and trigger a refetch instead
+          // of trying to process an empty payload.
+          data: { _truncated: true },
           timestamp: envelope.e.timestamp,
         },
       };
@@ -345,10 +350,18 @@ export class EventBusPG implements EventBusInterface {
     // Drop our own echoes — local listeners already saw this event when
     // publish() ran in this process.
     if (envelope.i === this.instanceId) return;
+    // R-088 review #128: forward the envelope-level truncated flag into the
+    // PlanSyncEvent so consumers always see _truncated regardless of which
+    // peer sent the slim payload (older nodes may not have set it inside
+    // data).
+    const event =
+      envelope.t === true
+        ? { ...envelope.e, data: { ...envelope.e.data, _truncated: true } }
+        : envelope.e;
     if (channel.startsWith(PROJECT_PREFIX)) {
-      this.mem.dispatchProjectEvent(envelope.e);
+      this.mem.dispatchProjectEvent(event);
     } else if (channel.startsWith(USER_PREFIX) && typeof envelope.u === 'string') {
-      this.mem.dispatchUserEvent(envelope.u, envelope.e);
+      this.mem.dispatchUserEvent(envelope.u, event);
     }
   }
 }

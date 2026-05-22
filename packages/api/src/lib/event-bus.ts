@@ -31,7 +31,30 @@ function resolveBackend(): 'memory' | 'postgres' {
   return process.env.NODE_ENV === 'production' ? 'postgres' : 'memory';
 }
 
+/**
+ * Resolves whether silent fallback to the in-memory bus is allowed when the
+ * Postgres backend fails to initialise.
+ *
+ * R-088 / review #127: a silent fallback in production re-introduces exactly
+ * the cross-instance event-drop bug this remediation closes. We therefore:
+ *
+ *   - production (NODE_ENV=production) — throw by default; operator must
+ *     explicitly set `PLANSYNC_EVENT_BUS_ALLOW_FALLBACK=true` to opt in.
+ *   - non-production — fall back silently (preserves dev / test ergonomics
+ *     where `pg` may genuinely be unavailable).
+ *
+ * When the operator explicitly asked for `PLANSYNC_EVENT_BUS=postgres`, the
+ * fallback is ALWAYS rejected regardless of environment — the explicit value
+ * is treated as a contract.
+ */
+function allowFallback(explicit: string | undefined): boolean {
+  if (explicit === 'postgres') return false;
+  if (process.env.PLANSYNC_EVENT_BUS_ALLOW_FALLBACK === 'true') return true;
+  return process.env.NODE_ENV !== 'production';
+}
+
 function createEventBus(): EventBusInterface {
+  const explicit = process.env.PLANSYNC_EVENT_BUS;
   const backend = resolveBackend();
   if (backend === 'postgres') {
     try {
@@ -42,6 +65,15 @@ function createEventBus(): EventBusInterface {
       logger.info('EventBus: using Postgres LISTEN/NOTIFY backend');
       return new EventBusPG();
     } catch (err) {
+      if (!allowFallback(explicit)) {
+        logger.error(
+          { err, env: process.env.NODE_ENV, explicit },
+          'EventBusPG failed to initialise and fallback is forbidden in this ' +
+            'configuration. Set PLANSYNC_EVENT_BUS_ALLOW_FALLBACK=true to opt ' +
+            'into the lossy memory backend (cross-instance SSE will be dropped).',
+        );
+        throw err;
+      }
       logger.error(
         { err },
         'Failed to initialise EventBusPG; falling back to in-memory bus. ' +
