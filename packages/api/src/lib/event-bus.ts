@@ -48,6 +48,13 @@ function resolveBackend(): 'memory' | 'postgres' {
  * is treated as a contract.
  */
 function allowFallback(explicit: string | undefined): boolean {
+  // Next.js sets NEXT_PHASE=phase-production-build during `next build`. The
+  // build step's "collect page data" loads route modules, which would
+  // instantiate EventBusPG and attempt to dial Postgres — there is no real
+  // pg at build time, so a strict-mode throw would break every production
+  // build. Treat the build phase as a non-production environment for the
+  // purpose of fallback selection. Runtime production still throws.
+  if (process.env.NEXT_PHASE === 'phase-production-build') return true;
   if (explicit === 'postgres') return false;
   if (process.env.PLANSYNC_EVENT_BUS_ALLOW_FALLBACK === 'true') return true;
   return process.env.NODE_ENV !== 'production';
