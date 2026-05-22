@@ -16,7 +16,18 @@
 // the user-visible contract; the AI call itself stays out of scope so the
 // suite stays runnable on the default CI matrix (no LLM_API_KEY /
 // ANTHROPIC_API_KEY).
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+//
+// #140 / #141 follow-up: each test owns its own task fixtures and cleans
+// up afterwards. Previously the "filters out" case relied on tasks
+// inserted by an earlier test, which meant `vitest -t "filters out"`
+// (running that case in isolation) would silently see 0 active tasks and
+// the 'in_progress' assertions would no longer be meaningful. The same
+// shared-state habit was hiding a missing `blocked` case — the route
+// contract says `status in (in_progress, todo, blocked)` is forwarded,
+// but no fixture ever inserted a `blocked` row, so a regression that
+// silently dropped `blocked` from the predicate would not have failed
+// the suite. Both gaps are now closed.
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 
 // vi.mock is hoisted before module imports so the route picks up the stub.
 vi.mock('@/lib/ai/conflict-prediction', () => ({
@@ -54,8 +65,18 @@ describe('R-115: GET /tasks/conflicts integration', () => {
     await cleanupProject(projectId);
   });
 
-  beforeEach(() => {
+  // Each test rebuilds its own fixtures. Without this hook the order in
+  // which vitest resolves tests inside the file determined whether the
+  // "filters" case had any in_progress rows to forward — running
+  // `-t "filters out"` in isolation would silently drop the 'in_progress'
+  // expectation. (#140)
+  beforeEach(async () => {
     mockedPredictConflicts.mockReset();
+    await testPrisma.task.deleteMany({ where: { projectId } });
+  });
+
+  afterEach(async () => {
+    await testPrisma.task.deleteMany({ where: { projectId } });
   });
 
   async function createTask(
@@ -90,9 +111,8 @@ describe('R-115: GET /tasks/conflicts integration', () => {
   });
 
   it('returns 200 with empty conflicts + AI-unavailable hint when predictor returns null', async () => {
-    // Two in-progress tasks exist; predictConflicts() returning null mirrors
-    // the production no-AI-keys path. The CLI relies on the hint text to
-    // tell the user how to enable conflict prediction.
+    // Self-contained fixtures so the test can be run in isolation
+    // (`vitest -t "AI-unavailable"`) without depending on prior cases. (#140)
     await createTask('R-115 in_progress A', 'in_progress', owner);
     await createTask('R-115 in_progress B', 'in_progress', dev);
 
@@ -120,6 +140,11 @@ describe('R-115: GET /tasks/conflicts integration', () => {
   });
 
   it('returns AI-provided conflicts verbatim when the predictor resolves them', async () => {
+    // Self-contained: at least 2 active tasks so the route does not
+    // short-circuit in predictConflicts(). (#140)
+    await createTask('R-115 verbatim A', 'in_progress', owner);
+    await createTask('R-115 verbatim B', 'in_progress', dev);
+
     const stubbed = {
       conflicts: [
         {
@@ -144,13 +169,19 @@ describe('R-115: GET /tasks/conflicts integration', () => {
     expect(mockedPredictConflicts).toHaveBeenCalledTimes(1);
   });
 
-  it('filters out done/cancelled tasks before calling the predictor', async () => {
-    // Active set in the project so far: 2 x in_progress (from earlier test).
-    // Add one done + one cancelled + one fresh todo; only the todo should
-    // join the in_progress pair when forwarded to predictConflicts.
+  it('filters out done/cancelled tasks and includes blocked/todo/in_progress before calling the predictor', async () => {
+    // The route's contract is `status in (in_progress, todo, blocked)`. We
+    // create one of each so a regression that silently drops any of the
+    // three (or starts including done/cancelled) fails this case loudly.
+    // Two in_progress tasks are needed so we cover the "common case" path
+    // alongside the contract assertion. (#140 self-contained, #141 covers
+    // blocked.)
+    await createTask('R-115 in_progress A', 'in_progress', owner);
+    await createTask('R-115 in_progress B', 'in_progress', dev);
+    await createTask('R-115 todo (must be included)', 'todo', dev);
+    await createTask('R-115 blocked (must be included)', 'blocked', owner);
     await createTask('R-115 done (must be excluded)', 'done');
     await createTask('R-115 cancelled (must be excluded)', 'cancelled');
-    await createTask('R-115 todo (must be included)', 'todo', dev);
 
     mockedPredictConflicts.mockResolvedValueOnce({ conflicts: [] });
 
@@ -164,9 +195,42 @@ describe('R-115: GET /tasks/conflicts integration', () => {
       title: string;
       status: string;
     }>;
+
     const statuses = forwarded.map((t) => t.status).sort();
-    expect(statuses).toEqual(['in_progress', 'in_progress', 'todo']);
+    expect(statuses).toEqual(['blocked', 'in_progress', 'in_progress', 'todo']);
+
+    // Belt-and-braces: assert the active triple is each present at least
+    // once; if a future refactor reorders or de-duplicates the predicate
+    // the per-status check pinpoints which one slipped.
+    expect(forwarded.some((t) => t.status === 'blocked')).toBe(true);
+    expect(forwarded.some((t) => t.status === 'todo')).toBe(true);
+    expect(forwarded.some((t) => t.status === 'in_progress')).toBe(true);
+
     expect(forwarded.some((t) => t.title.includes('done'))).toBe(false);
     expect(forwarded.some((t) => t.title.includes('cancelled'))).toBe(false);
+  });
+
+  it('R-115 #141: a blocked-only project still forwards the rows to the predictor', async () => {
+    // Dedicated regression test for the case the contract says is allowed
+    // but no other case ever exercises in isolation: a project where the
+    // only active rows are `blocked`. If the route ever drops 'blocked'
+    // from its `status: { in: [...] }` predicate, this case fails.
+    await createTask('R-115 blocked-only A', 'blocked', owner);
+    await createTask('R-115 blocked-only B', 'blocked', dev);
+
+    mockedPredictConflicts.mockResolvedValueOnce({ conflicts: [] });
+
+    const res = await conflictsGet(
+      makeReq(`/api/projects/${projectId}/tasks/conflicts`, { userName: owner }),
+      { params: { projectId } },
+    );
+    expect(res.status).toBe(200);
+    expect(mockedPredictConflicts).toHaveBeenCalledTimes(1);
+
+    const forwarded = mockedPredictConflicts.mock.calls[0]?.[0] as Array<{
+      title: string;
+      status: string;
+    }>;
+    expect(forwarded.map((t) => t.status)).toEqual(['blocked', 'blocked']);
   });
 });
