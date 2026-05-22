@@ -172,6 +172,7 @@ describe('M: MCP Tools (Unit, mock ApiClient)', () => {
 
     it('M6: plansync_member_add → POST /api/projects/:id/members', async () => {
       mockPost.mockResolvedValue({ data: { id: 'm1', name: 'bob' } });
+      mockGet.mockResolvedValue({ data: [{ id: 'm1', name: 'bob' }] });
       await callTool(server, 'plansync_member_add', {
         projectId: 'p1',
         name: 'bob',
@@ -245,6 +246,7 @@ describe('M: MCP Tools (Unit, mock ApiClient)', () => {
 
     it('M16: plansync_plan_activate → POST /activate', async () => {
       mockPost.mockResolvedValue({ data: { status: 'active' } });
+      mockGet.mockResolvedValue({ data: { status: 'active' } });
       await callTool(server, 'plansync_plan_activate', { projectId: 'p1', planId: 'pl1' });
       expect(mockPost).toHaveBeenCalledWith(
         expect.stringContaining('/activate'),
@@ -359,6 +361,7 @@ describe('M: MCP Tools (Unit, mock ApiClient)', () => {
 
     it('M31: plansync_task_claim → POST /claim with assigneeType=agent', async () => {
       mockPost.mockResolvedValue({ data: { id: 't1' } });
+      mockGet.mockResolvedValue({ data: { status: 'in_progress' } });
       await callTool(server, 'plansync_task_claim', { projectId: 'p1', taskId: 't1' });
       expect(mockPost).toHaveBeenCalledWith(
         expect.stringContaining('/claim'),
@@ -390,6 +393,7 @@ describe('M: MCP Tools (Unit, mock ApiClient)', () => {
 
     it('M39: plansync_drift_resolve → POST drift action', async () => {
       mockPost.mockResolvedValue({ data: { status: 'resolved' } });
+      mockGet.mockResolvedValue({ data: { status: 'resolved' } });
       await callTool(server, 'plansync_drift_resolve', {
         projectId: 'p1',
         driftId: 'd1',
