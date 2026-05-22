@@ -140,16 +140,19 @@ describe('R-048: at most one active plan per project', () => {
     const a = await createProposedPlan('R-048 plan A');
     const b = await createProposedPlan('R-048 plan B');
 
+    // ?force=true bypasses the R-055 "no reviewers" gate so this test
+    // exercises the R-048 concurrency code path instead of being rejected
+    // upstream by the review-gate check.
     const [ra, rb] = await Promise.all([
       activatePost(
-        makeReq(`/api/projects/${projectId}/plans/${a.id}/activate`, {
+        makeReq(`/api/projects/${projectId}/plans/${a.id}/activate?force=true`, {
           method: 'POST',
           userName: owner,
         }),
         { params: { projectId, planId: a.id } },
       ),
       activatePost(
-        makeReq(`/api/projects/${projectId}/plans/${b.id}/activate`, {
+        makeReq(`/api/projects/${projectId}/plans/${b.id}/activate?force=true`, {
           method: 'POST',
           userName: owner,
         }),

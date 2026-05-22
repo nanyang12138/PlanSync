@@ -17,6 +17,24 @@ import { requirePlanInProject } from '@/lib/plan-scope';
 
 type Params = { params: { projectId: string; planId: string } };
 
+/**
+ * Hash a projectId string into a signed 64-bit int suitable for
+ * `pg_advisory_xact_lock(bigint)`. The hash is stable and deterministic so two
+ * concurrent requests for the same project always derive the same lock key.
+ */
+function hashProjectIdToInt64(projectId: string): bigint {
+  // FNV-1a 64-bit
+  let hash = 0xcbf29ce484222325n;
+  const prime = 0x100000001b3n;
+  const mask64 = (1n << 64n) - 1n;
+  for (let i = 0; i < projectId.length; i++) {
+    hash = (hash ^ BigInt(projectId.charCodeAt(i))) & mask64;
+    hash = (hash * prime) & mask64;
+  }
+  // Convert unsigned 64-bit to signed for PostgreSQL bigint.
+  return hash >= 1n << 63n ? hash - (1n << 64n) : hash;
+}
+
 export async function POST(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
@@ -61,6 +79,17 @@ export async function POST(req: NextRequest, { params }: Params) {
       // all SSE/email side-effects until after the transaction commits so that
       // a rolled-back transaction never produces "ghost" notifications.
       const result = await prisma.$transaction(async (tx) => {
+        // R-048: serialize concurrent activate requests per project. The
+        // partial unique index (`plans_one_active_per_project`) is the final
+        // safety net, but without serialization two interleaved requests can
+        // both fail (deadlock / P2002 on both sides), so the user-observable
+        // contract — at least one activate succeeds — is not met. Using a
+        // pg_advisory_xact_lock keyed by projectId ensures the
+        // updateMany→update sequence runs sequentially per project, which
+        // matches the intended semantics of "activate a single plan".
+        const lockKey = hashProjectIdToInt64(params.projectId);
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockKey})`;
+
         await tx.plan.updateMany({
           where: { projectId: params.projectId, status: 'active' },
           data: { status: 'superseded' },
