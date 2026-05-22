@@ -12,7 +12,14 @@ LOCAL_NPX_BIN="$LOCAL_NODE_DIR/bin/npx"
 LOCAL_NPM_CACHE="/tmp/npm-cache-$(whoami)"
 LOCAL_CACHE_DIR="$PROJECT_DIR/.cache"
 LOCAL_DEPS_STAMP="$LOCAL_CACHE_DIR/deps-installed.stamp"
-PG_BIN="${PG_BIN:-$([ -x /tool/pandora64/bin/pg_ctl ] && echo /tool/pandora64/bin || echo /usr/lib/postgresql/16/bin)}"
+# shellcheck source=scripts/pg-env.sh
+. "$SCRIPT_DIR/pg-env.sh"
+PG_BIN="$(detect_pg_bin || true)"
+if [ -z "${PG_BIN:-}" ]; then
+  # Preserve previous behavior of always assigning a value; downstream scripts
+  # already echo "Could not locate ..." when they actually try to use Postgres.
+  PG_BIN="/usr/lib/postgresql/16/bin"
+fi
 PG_PORT=${PG_PORT:-15432}
 PG_DATA="/tmp/plansync-pgdata-$(whoami)"
 
@@ -147,13 +154,28 @@ is_plansync_api_reachable() {
 port_in_use() {
   local port="$1"
 
-  if ! command -v ss >/dev/null 2>&1; then
-    return 1
+  # Preferred: `ss` (Linux iproute2). Fast and parses cleanly.
+  if command -v ss >/dev/null 2>&1; then
+    local output
+    output="$(ss -ltn "( sport = :$port )" 2>/dev/null || true)"
+    [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -gt 1 ]
+    return $?
   fi
 
-  local output
-  output="$(ss -ltn "( sport = :$port )" 2>/dev/null || true)"
-  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -gt 1 ]
+  # Fallback: `lsof` (macOS/BSD default; many Linux distros also ship it).
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+    return $?
+  fi
+
+  # Last-resort fallback: `netstat` if present.
+  if command -v netstat >/dev/null 2>&1; then
+    netstat -an 2>/dev/null \
+      | awk -v p=":$port" '$1 ~ /^(tcp|tcp4|tcp6)/ && $4 ~ p"$" { found=1 } END { exit !found }'
+    return $?
+  fi
+
+  return 1
 }
 
 ensure_env_file() {
