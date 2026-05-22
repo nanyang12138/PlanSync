@@ -2286,7 +2286,7 @@
 
 #### R-138 [HIGH] heartbeat-scanner 从 instrumentation 解耦，改为显式 worker 入口
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B10
 - **depends_on**: —
 - **interim_for**: R-166
