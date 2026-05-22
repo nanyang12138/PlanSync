@@ -28,8 +28,11 @@ export async function POST(req: NextRequest, { params }: Params) {
 
     const body = schema.parse(await req.json());
 
-    const task = await prisma.task.findUnique({ where: { id: params.taskId } });
-    if (!task || task.projectId !== params.projectId) {
+    // R-135: scope by projectId so complete-human cannot mark a task in another project as done.
+    const task = await prisma.task.findFirst({
+      where: { id: params.taskId, projectId: params.projectId },
+    });
+    if (!task) {
       throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
     }
     if (task.assigneeType === 'agent') {

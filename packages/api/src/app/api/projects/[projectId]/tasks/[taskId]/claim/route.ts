@@ -16,11 +16,12 @@ export async function POST(req: NextRequest, { params }: Params) {
     await requireProjectRole(auth, params.projectId);
     const body = await validateBody(req, claimTaskSchema);
 
-    const task = await prisma.task.findUnique({ where: { id: params.taskId } });
+    // R-135: scope by projectId so a member of project A cannot claim a task
+    // that lives in project B by guessing the taskId.
+    const task = await prisma.task.findFirst({
+      where: { id: params.taskId, projectId: params.projectId },
+    });
     if (!task) throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
-    if (task.projectId !== params.projectId) {
-      throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
-    }
     if (task.status !== 'todo') {
       throw new AppError(ErrorCode.STATE_CONFLICT, 'Only todo tasks can be claimed');
     }
@@ -51,7 +52,10 @@ export async function POST(req: NextRequest, { params }: Params) {
       });
     }
 
-    const updated = await prisma.task.findUnique({ where: { id: params.taskId } });
+    // R-135: scope re-read by projectId for consistency with the initial fetch.
+    const updated = await prisma.task.findFirst({
+      where: { id: params.taskId, projectId: params.projectId },
+    });
     if (!updated) {
       throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
     }
