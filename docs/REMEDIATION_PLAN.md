@@ -2029,7 +2029,7 @@
 
 #### R-122 [MEDIUM] webhook delivery 单测（HMAC、retry、idempotency）
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B12
 - **depends_on**: —
 - **effort**: medium
