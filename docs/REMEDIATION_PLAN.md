@@ -1483,7 +1483,7 @@
 
 #### R-081 [MEDIUM] DriftAlert.planDiffId FK 到 plan_diffs
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
