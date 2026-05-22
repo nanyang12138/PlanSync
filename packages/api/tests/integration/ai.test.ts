@@ -9,9 +9,12 @@ import {
   testPrisma,
 } from '../helpers/request';
 
-// Only run AI tests when explicitly opted in with PLANSYNC_AI_TESTS=1
-const HAS_AI_KEY = process.env.PLANSYNC_AI_TESTS === '1';
-const itWithAI = HAS_AI_KEY ? it : it.skip;
+// R-124: AI tests run by default against the deterministic mock provider
+// (PLANSYNC_AI_MOCK=1, set in tests/setup.ts). Opt-in to a real LLM via
+// PLANSYNC_AI_TESTS=1 plus a valid LLM_API_KEY/ANTHROPIC_API_KEY.
+const AI_AVAILABLE =
+  process.env.PLANSYNC_AI_TESTS === '1' || process.env.PLANSYNC_AI_MOCK === '1';
+const itWithAI = AI_AVAILABLE ? it : it.skip;
 // L3 tests "AI unavailable" graceful degradation — only meaningful when AI is NOT configured
 
 describe('L: AI Integration (Plan Diff)', () => {
@@ -120,9 +123,13 @@ describe('L: AI Integration (Plan Diff)', () => {
       { params: { projectId, planId } },
     );
     expect(res.status).toBe(200);
-    // Verify DB cache exists
+    // Verify DB cache exists. The route calls
+    //   getOrCreatePlanDiff(projectId, compareWith, params.planId)
+    // which stores fromPlanId=compareWith (=plan2Id), toPlanId=planId.
+    // (R-124: this query was reversed in the original test, which went
+    // undetected because L7 used to skip without an AI key.)
     const cached = await testPrisma.planDiff.findFirst({
-      where: { fromPlanId: planId, toPlanId: plan2Id },
+      where: { fromPlanId: plan2Id, toPlanId: planId },
     });
     expect(cached).not.toBeNull();
   });

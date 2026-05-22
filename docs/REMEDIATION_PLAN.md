@@ -2047,7 +2047,7 @@
 
 #### R-124 [MEDIUM] AI 完成验证 - 提供 AI mock 让默认 CI 也跑
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B12
 - **depends_on**: —
 - **effort**: medium

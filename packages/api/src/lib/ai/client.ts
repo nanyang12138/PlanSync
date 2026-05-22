@@ -1,4 +1,5 @@
 import { logger } from '../logger';
+import { getMockAiResponse } from './mock-responses';
 
 function extractJson(text: string): string {
   const fenceMatch = text.match(/```(?:\w*)\s*\n([\s\S]*?)\n```/);
@@ -10,7 +11,7 @@ function extractJson(text: string): string {
   return text.trim();
 }
 
-type Provider = 'amd' | 'anthropic';
+type Provider = 'amd' | 'anthropic' | 'mock';
 
 interface ProviderConfig {
   name: Provider;
@@ -73,6 +74,18 @@ const ANTHROPIC_BASE = (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic
 );
 const ANTHROPIC_CUSTOM_HEADERS = parseCustomHeaders(process.env.ANTHROPIC_CUSTOM_HEADERS || '');
 
+// R-124: deterministic mock provider used when PLANSYNC_AI_MOCK=1.
+// buildUrl/buildHeaders/buildBody are never invoked because complete()
+// short-circuits before any network call when name === 'mock'. They are kept
+// as no-op stubs so the ProviderConfig shape stays uniform.
+const MOCK_PROVIDER: Omit<ProviderConfig, 'apiKey'> = {
+  name: 'mock',
+  buildUrl: () => 'mock://ai',
+  buildHeaders: () => ({}),
+  buildBody: (model, system, user) => ({ model, system, user }),
+  parseResponse: pickFirstContentText,
+};
+
 const ANTHROPIC_PROVIDER: Omit<ProviderConfig, 'apiKey'> = {
   name: 'anthropic',
   buildUrl: () => `${ANTHROPIC_BASE}/v1/messages`,
@@ -98,10 +111,18 @@ class AiClient {
   private timeout = 60000;
 
   constructor() {
+    // R-124: PLANSYNC_AI_MOCK=1 forces a deterministic mock provider so CI
+    // can exercise AI code paths without real API keys. Mock takes precedence
+    // over any real key so tests stay hermetic even when keys are present.
+    const mockEnabled = process.env.PLANSYNC_AI_MOCK === '1';
     const amdKey = process.env.LLM_API_KEY?.trim() || '';
     const anthropicKey = process.env.ANTHROPIC_API_KEY?.trim() || '';
 
-    if (amdKey) {
+    if (mockEnabled) {
+      this.provider = { ...MOCK_PROVIDER, apiKey: 'mock' };
+      this.model = process.env.PLANSYNC_AI_MOCK_MODEL || 'mock-model';
+      logger.info({ provider: 'mock', model: this.model }, 'AI client using mock provider');
+    } else if (amdKey) {
       this.provider = { ...AMD_PROVIDER, apiKey: amdKey };
       this.model = process.env.LLM_MODEL_NAME || 'Claude-Sonnet-4.5';
       logger.info({ provider: 'amd', model: this.model }, 'AI client using AMD internal LLM API');
@@ -134,6 +155,15 @@ class AiClient {
     if (!this.provider) {
       logger.debug('No AI provider configured, skipping AI call');
       return null;
+    }
+
+    // R-124: mock provider returns canned responses without touching the
+    // network. `user` is intentionally unused — it is logged at debug level
+    // only — because mock responses are keyed off the system prompt.
+    if (this.provider.name === 'mock') {
+      logger.debug({ systemLen: system.length, userLen: user.length }, 'AI mock complete');
+      const raw = getMockAiResponse(system);
+      return extractJson(raw);
     }
 
     const { apiKey, buildUrl, buildHeaders, buildBody, parseResponse, name } = this.provider;
