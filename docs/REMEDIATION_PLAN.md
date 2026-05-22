@@ -840,7 +840,7 @@
 
 #### R-041 [HIGH] 所有 `/plans/[planId]/...` 路由验证 plan ∈ project
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B5
 - **depends_on**: —
 - **effort**: medium
