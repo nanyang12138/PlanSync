@@ -1584,7 +1584,7 @@
 
 #### R-088 [CRITICAL] EventBus 替换为 Postgres LISTEN/NOTIFY 或 Redis
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B9
 - **depends_on**: —
 - **effort**: large
