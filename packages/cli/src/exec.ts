@@ -509,7 +509,7 @@ export async function launchExec(
       : ['-p', execPrompt, '--session-id', sessionId, '--mcp-config', mcpConfigArg];
 
   console.log(
-    `\n${c.blue}→ Entering PlanSync Coding Mode (task: ${taskId}, run: ${runId}, executor: ${assignee})${c.reset}\n`,
+    `\n${c.blue}→ Entering PlanSync Coding Mode (task: ${taskId}, run: ${runId}, executor: ${decision.executorName})${c.reset}\n`,
   );
   rawOff();
   const child = spawn(cfg.genieOrClaude, spawnArgs, {
