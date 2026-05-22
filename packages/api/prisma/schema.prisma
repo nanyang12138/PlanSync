@@ -77,11 +77,12 @@ model Plan {
 
   @@unique([projectId, version])
   @@index([projectId, status])
-  // R-048: a partial unique index `plans_one_active_per_project` is created
-  // by a raw-SQL migration to enforce at most one active plan per project.
-  // Prisma does not currently support partial unique indexes in the schema
-  // DSL, so it is intentionally not declared here. See migration
-  // `20260521080000_one_active_plan_per_project`.
+  // R-048 / R-084: a partial unique index `plans_one_active_per_project` is
+  // created by a raw-SQL migration to enforce at most one active plan per
+  // project. Prisma does not currently support partial unique indexes in the
+  // schema DSL, so it is intentionally not declared here. See migration
+  // `20260521080000_one_active_plan_per_project` and
+  // `packages/api/prisma/migrations/README.md` for the full inventory.
   @@map("plans")
 }
 
@@ -206,6 +207,12 @@ model ExecutionRun {
   task    Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
   apiKeys ApiKey[]
 
+  // R-049 / R-084: a partial unique index `execution_runs_one_running_per_task`
+  // is created by a raw-SQL migration to enforce at most one running run per
+  // task. Prisma does not currently support partial unique indexes in the
+  // schema DSL, so it is intentionally not declared here. See migration
+  // `20260421000000_one_running_run_per_task` and
+  // `packages/api/prisma/migrations/README.md` for the full inventory.
   @@map("execution_runs")
 }
 

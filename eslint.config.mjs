@@ -18,12 +18,11 @@ export default [
     },
     rules: {
       ...tsPlugin.configs.recommended.rules,
-      // `any` is acceptable for error objects, AI prompt-builder inputs, and
-      // SDK boundary types in this codebase. Tracked for gradual removal
-      // in docs/REMEDIATION_PLAN.md (R-131). New code should prefer
-      // `unknown` + narrowing — this is a project-wide convention, not an
-      // automated rule.
-      '@typescript-eslint/no-explicit-any': 'off',
+      // R-133: `no-explicit-any` is re-enabled at warn level after migrating
+      // legacy `any` usages in errors.ts, AI prompt builders, AI client, and
+      // mcp-server boundary types to `unknown` + narrowing. The repo lint
+      // script enforces `--max-warnings 0`, so new `any` usage will fail CI.
+      '@typescript-eslint/no-explicit-any': 'warn',
       '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
       'no-unused-vars': 'off',
       'no-undef': 'off',
