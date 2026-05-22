@@ -69,6 +69,11 @@ model Plan {
   reviews     PlanReview[]
   suggestions PlanSuggestion[]
   comments    PlanComment[]
+  // R-082: back-references for PlanDiff FK constraints; if a plan is deleted
+  // (only drafts can be deleted today), any cached diffs referencing it are
+  // cascaded away because they are meaningless without the underlying plan.
+  diffsFrom   PlanDiff[]       @relation("PlanDiffFromPlan")
+  diffsTo     PlanDiff[]       @relation("PlanDiffToPlan")
 
   @@unique([projectId, version])
   @@index([projectId, status])
@@ -310,6 +315,11 @@ model PlanDiff {
   project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   fromPlanId  String
   toPlanId    String
+  // R-082: explicit FKs to plans so dangling diffs can never reference a
+  // missing plan row. Cascade matches the Project relation above and means
+  // a diff disappears if either of its endpoints is removed.
+  fromPlan    Plan     @relation("PlanDiffFromPlan", fields: [fromPlanId], references: [id], onDelete: Cascade)
+  toPlan      Plan     @relation("PlanDiffToPlan", fields: [toPlanId], references: [id], onDelete: Cascade)
   changes     Json
   generatedAt DateTime @default(now())
 
@@ -317,6 +327,8 @@ model PlanDiff {
   driftAlerts DriftAlert[]
 
   @@unique([fromPlanId, toPlanId])
+  @@index([fromPlanId])
+  @@index([toPlanId])
   @@map("plan_diffs")
 }
 

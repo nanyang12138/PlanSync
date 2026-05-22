@@ -46,13 +46,37 @@ describe('R-081: drift_alerts.plan_diff_id foreign key', () => {
       },
     });
     try {
-      // PlanDiff currently has no FK to plans (tracked by R-082), so we
-      // can use synthetic ids here without seeding real Plan rows.
+      // R-082 added real FKs from PlanDiff.fromPlanId/toPlanId to plans(id),
+      // so we must seed two real Plan rows before creating the PlanDiff.
+      const fromPlan = await prisma.plan.create({
+        data: {
+          projectId: project.id,
+          title: `r081-from-${suffix}`,
+          goal: 'g',
+          scope: 's',
+          version: 1,
+          status: 'superseded',
+          createdBy: 'r081-owner',
+        },
+      });
+      const toPlan = await prisma.plan.create({
+        data: {
+          projectId: project.id,
+          title: `r081-to-${suffix}`,
+          goal: 'g',
+          scope: 's',
+          version: 2,
+          status: 'active',
+          createdBy: 'r081-owner',
+          activatedAt: new Date(),
+          activatedBy: 'r081-owner',
+        },
+      });
       const planDiff = await prisma.planDiff.create({
         data: {
           projectId: project.id,
-          fromPlanId: `from-${suffix}`,
-          toPlanId: `to-${suffix}`,
+          fromPlanId: fromPlan.id,
+          toPlanId: toPlan.id,
           changes: { added: [], removed: [] },
         },
       });
