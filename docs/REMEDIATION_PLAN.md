@@ -883,7 +883,7 @@
 
 #### R-043 [HIGH] webhook URL 校验防 SSRF
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B5
 - **depends_on**: —
 - **effort**: small
