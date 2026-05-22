@@ -4,6 +4,14 @@ name: cursor-review
 # Requires the repository secret CURSOR_API_KEY to be set
 # (https://docs.cursor.com/account/api-keys). If the secret is missing,
 # the job is a no-op rather than a failure.
+#
+# Optional: CURSOR_REVIEW_PAT (fine-grained PAT with PR + Issues write).
+# When set, the action posts the review comment authored by the PAT user
+# instead of github-actions[bot]. This is REQUIRED to fire downstream
+# `issue_comment` workflows (cursor-review-triage), because GitHub
+# suppresses workflow chaining for events created by GITHUB_TOKEN. With
+# only the default token the review comment still posts, but triage,
+# dispatch, and cluster will silently never run.
 
 on:
   pull_request:
@@ -96,7 +104,7 @@ jobs:
         uses: nanyang12138/cursor-review-action@main
         with:
           cursor-api-key: ${{ secrets.CURSOR_API_KEY }}
-          github-token: ${{ github.token }}
+          github-token: ${{ secrets.CURSOR_REVIEW_PAT || github.token }}
           base-sha: ${{ steps.pr.outputs.base_sha }}
           head-sha: ${{ steps.pr.outputs.head_sha }}
           pr-number: ${{ steps.pr.outputs.number }}
