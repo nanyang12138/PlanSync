@@ -2038,7 +2038,7 @@
 
 #### R-123 [MEDIUM] auth.ts 密码缓存边界单测
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B12
 - **depends_on**: —
 - **effort**: small
