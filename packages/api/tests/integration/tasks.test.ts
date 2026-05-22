@@ -460,7 +460,14 @@ describe('F: Task Management', () => {
   });
 
   it('F8: POST /rebind → boundPlanVersion updated', async () => {
-    // Create a second active plan (supersedes current)
+    // Create a second active plan (supersedes current).
+    // R-048: the new partial unique index `plans_one_active_per_project`
+    // requires the previous active row to be moved off `active` *before*
+    // the new active row is inserted; reverse the previous order.
+    await testPrisma.plan.updateMany({
+      where: { projectId, status: 'active' },
+      data: { status: 'superseded' },
+    });
     const plan2 = await testPrisma.plan.create({
       data: {
         projectId,
@@ -477,11 +484,7 @@ describe('F: Task Management', () => {
         requiredReviewers: [],
       },
     });
-    // Mark old plan superseded
-    await testPrisma.plan.updateMany({
-      where: { projectId, status: 'active', id: { not: plan2.id } },
-      data: { status: 'superseded' },
-    });
+    void plan2;
 
     const res = await rebindPost(
       makeReq(`/api/projects/${projectId}/tasks/${taskId}/rebind`, {

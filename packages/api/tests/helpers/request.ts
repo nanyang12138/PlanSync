@@ -55,24 +55,33 @@ export async function addMember(
 }
 
 export async function createActivePlan(projectId: string, createdBy: string) {
-  const latest = await prisma.plan.findFirst({
-    where: { projectId },
-    orderBy: { version: 'desc' },
+  // R-048: enforce "at most one active plan per project" via a partial unique
+  // index. Direct test inserts must move any prior `active` row to
+  // `superseded` first, otherwise the second insert hits a P2002 error.
+  return prisma.$transaction(async (tx) => {
+    const latest = await tx.plan.findFirst({
+      where: { projectId },
+      orderBy: { version: 'desc' },
+    });
+    await tx.plan.updateMany({
+      where: { projectId, status: 'active' },
+      data: { status: 'superseded' },
+    });
+    const p = await tx.plan.create({
+      data: {
+        projectId,
+        title: 'Test Plan',
+        goal: 'Test goal',
+        scope: 'Test scope',
+        version: (latest?.version ?? 0) + 1,
+        status: 'active',
+        createdBy,
+        activatedAt: new Date(),
+        activatedBy: createdBy,
+      },
+    });
+    return { planId: p.id, version: p.version };
   });
-  const p = await prisma.plan.create({
-    data: {
-      projectId,
-      title: 'Test Plan',
-      goal: 'Test goal',
-      scope: 'Test scope',
-      version: (latest?.version ?? 0) + 1,
-      status: 'active',
-      createdBy,
-      activatedAt: new Date(),
-      activatedBy: createdBy,
-    },
-  });
-  return { planId: p.id, version: p.version };
 }
 
 export async function cleanupProject(projectId: string) {
