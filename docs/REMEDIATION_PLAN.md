@@ -1696,7 +1696,7 @@
 
 #### R-096 [HIGH] 删除 README 中不存在的 demo 脚本引用
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
