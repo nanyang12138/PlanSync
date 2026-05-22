@@ -2097,7 +2097,8 @@
 
 #### R-132 [HIGH] 升级 MCP SDK 并恢复 mcp-server typecheck
 
-- **status**: pending
+- **status**: blocked
+- **blocked_reason**: fix_step 5 要求修改 `.github/workflows/validate.yml`（恢复 mcp-server typecheck），autonomous Cloud Agent 硬约束禁止改动 `.github/workflows/*`；同时 fix_step 2 "处理 SDK 1.3 → 1.29 之间的 breaking API" 范围开放（`server.tool` 签名 / transport 接口的具体变化未在条目中给出），需人工调研后再分发。
 - **batch**: B4
 - **depends_on**: —
 - **effort**: medium
