@@ -3,13 +3,15 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build:action": "esbuild github-action/index.ts --bundle --platform=node --target=node20 --outfile=github-action/dist/index.js --format=cjs"
+    "build:action": "esbuild github-action/index.ts --bundle --platform=node --target=node20 --outfile=github-action/dist/index.js --format=cjs",
+    "test": "vitest run"
   },
   "dependencies": {
     "@actions/core": "^1.11.1"
   },
   "devDependencies": {
     "esbuild": "~0.24.2",
-    "typescript": "~5.7.3"
+    "typescript": "~5.7.3",
+    "vitest": "~2.1.8"
   }
 }
