@@ -2354,7 +2354,7 @@
 
 #### R-143 [HIGH] completion-verify 可观测：score / breakdown / model 写库
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
