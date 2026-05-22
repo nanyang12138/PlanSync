@@ -39,9 +39,7 @@ export function runShellCommand(cmd: string, deps: ShellCmdDeps): boolean {
   const trimmed = cmd.trim();
   if (!trimmed) return false;
 
-  const exec =
-    deps.exec ??
-    ((c2, opts) => execSync(c2, opts).toString());
+  const exec = deps.exec ?? ((c2, opts) => execSync(c2, opts).toString());
   const logger = deps.logger ?? { log: (m: string) => console.log(m) };
 
   logger.log(`\n${c.dim}$ ${trimmed}${c.reset}`);
@@ -54,7 +52,9 @@ export function runShellCommand(cmd: string, deps: ShellCmdDeps): boolean {
     if (out) logger.log(out);
   } catch (err: unknown) {
     const e = err as { stderr?: string; message?: string };
-    logger.log(`${c.red}${e.stderr?.toString().trim() || e.message || 'shell command failed'}${c.reset}`);
+    logger.log(
+      `${c.red}${e.stderr?.toString().trim() || e.message || 'shell command failed'}${c.reset}`,
+    );
   } finally {
     deps.rawInput.resume();
   }
