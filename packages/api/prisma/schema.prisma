@@ -197,6 +197,16 @@ model ExecutionRun {
   startedAt        DateTime  @default(now()) @map("started_at")
   endedAt          DateTime? @map("ended_at")
 
+  // R-143: completion-verify observability. Each call to the AI completion
+  // verifier writes its score/breakdown/feedback/model back onto the run so
+  // the owner can see *why* a 422 happened (or that the AI was unavailable
+  // and the run was allowed through). The 422 response also echoes runId so
+  // the UI can deep-link to the failed verification record.
+  aiVerifyScore     Float?  @map("ai_verify_score")
+  aiVerifyBreakdown Json?   @map("ai_verify_breakdown")
+  aiVerifyFeedback  String? @map("ai_verify_feedback")
+  aiVerifyModel     String? @map("ai_verify_model")
+
   task    Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
   apiKeys ApiKey[]
 
