@@ -52,6 +52,10 @@ describe('pickFirstContentText (#138)', () => {
 describe('AiClient.complete() error/timeout handling (#138)', () => {
   const ORIGINAL_LLM_API_KEY = process.env.LLM_API_KEY;
   const ORIGINAL_ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+  // R-124: setup.ts sets PLANSYNC_AI_MOCK=1 by default. These tests exercise
+  // the real-provider code paths so we must turn the mock off per-test and
+  // restore it afterwards.
+  const ORIGINAL_AI_MOCK = process.env.PLANSYNC_AI_MOCK;
 
   // Each test re-imports the module so the singleton sees the env we want.
   // The module caches the client on `globalThis.aiClient`, so resetting
@@ -62,6 +66,7 @@ describe('AiClient.complete() error/timeout handling (#138)', () => {
     delete (globalThis as { aiClient?: unknown }).aiClient;
     delete process.env.LLM_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.PLANSYNC_AI_MOCK;
   });
 
   afterEach(() => {
@@ -72,6 +77,8 @@ describe('AiClient.complete() error/timeout handling (#138)', () => {
     else process.env.LLM_API_KEY = ORIGINAL_LLM_API_KEY;
     if (ORIGINAL_ANTHROPIC_API_KEY === undefined) delete process.env.ANTHROPIC_API_KEY;
     else process.env.ANTHROPIC_API_KEY = ORIGINAL_ANTHROPIC_API_KEY;
+    if (ORIGINAL_AI_MOCK === undefined) delete process.env.PLANSYNC_AI_MOCK;
+    else process.env.PLANSYNC_AI_MOCK = ORIGINAL_AI_MOCK;
   });
 
   it('returns null when no provider is configured (no AI keys set)', async () => {
