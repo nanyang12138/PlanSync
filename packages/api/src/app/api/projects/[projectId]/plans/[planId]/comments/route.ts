@@ -60,11 +60,10 @@ export async function POST(req: NextRequest, { params }: Params) {
         select: { planId: true, isDeleted: true },
       });
       if (!parent || parent.planId !== params.planId) {
-        throw new AppError(
-          ErrorCode.NOT_FOUND,
-          'Parent comment not found in this plan',
-          { parentId: body.parentId, planId: params.planId },
-        );
+        throw new AppError(ErrorCode.NOT_FOUND, 'Parent comment not found in this plan', {
+          parentId: body.parentId,
+          planId: params.planId,
+        });
       }
       if (parent.isDeleted) {
         throw new AppError(
