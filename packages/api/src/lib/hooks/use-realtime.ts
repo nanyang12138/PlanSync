@@ -6,7 +6,12 @@ import { useRouter } from 'next/navigation';
 type EventHandler = (eventType: string, data: unknown) => void;
 
 export type UseRealtimeOptions = {
-  /** Bearer token for SSE when auth is enabled (sent as ?token=) */
+  /**
+   * @deprecated R-089: SSE no longer accepts `?token=`. Browser callers must
+   * rely on the `plansync-apikey` cookie (set by the login flow). This field
+   * is retained only to avoid breaking existing typed call sites and is
+   * ignored at runtime.
+   */
   token?: string;
   /** User name for SSE when auth is enabled (sent as ?user=) */
   userName?: string;
@@ -24,14 +29,13 @@ export function useRealtime(
 
   useEffect(() => {
     const search = new URLSearchParams();
-    if (options?.token) search.set('token', options.token);
     if (options?.userName) search.set('user', options.userName);
     const qs = search.toString();
     const url = qs
       ? `/api/projects/${projectId}/events?${qs}`
       : `/api/projects/${projectId}/events`;
 
-    const es = new EventSource(url);
+    const es = new EventSource(url, { withCredentials: true });
     eventSourceRef.current = es;
 
     const eventTypes = [
@@ -72,7 +76,7 @@ export function useRealtime(
     return () => {
       es.close();
     };
-  }, [projectId, router, options?.token, options?.userName]);
+  }, [projectId, router, options?.userName]);
 
   return eventSourceRef;
 }

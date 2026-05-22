@@ -9,8 +9,20 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function GET(req: NextRequest, { params }: { params: { projectId: string } }) {
+  // R-089: SSE no longer accepts `?token=` in the URL. Tokens leaked into
+  // browser history, server access logs, and referrer headers. Browser
+  // clients must authenticate via the `plansync-apikey` cookie (set by the
+  // login flow); CLI / non-browser clients keep using the Authorization
+  // header. `?user=` is still allowed because it only selects the user
+  // name for master delegation / AUTH_DISABLED mode and never carries a
+  // secret.
+  if (req.nextUrl.searchParams.has('token')) {
+    return new Response('Unauthorized: ?token= is no longer accepted for SSE; use cookie auth', {
+      status: 401,
+    });
+  }
+
   try {
-    // EventSource cannot set headers; clients may use ?token=<PLANSYNC_SECRET>&user=<name> (see authenticate).
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);
   } catch {

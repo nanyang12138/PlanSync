@@ -66,6 +66,11 @@ export function middleware(request: NextRequest) {
       'Content-Type, Authorization, X-User-Name',
     );
     response.headers.set('Access-Control-Max-Age', '86400');
+    // R-089 review #135: SSE clients call `new EventSource(url, { withCredentials: true })`
+    // so the cookie-bearing cross-origin request requires this CORS response
+    // header. Without it the browser drops the cookie and SSE auth silently
+    // fails on cross-origin deployments.
+    response.headers.set('Access-Control-Allow-Credentials', 'true');
   }
 
   if (request.method === 'OPTIONS') {
