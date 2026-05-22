@@ -17,11 +17,7 @@ export async function GET(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);
-    const {
-      page = 1,
-      pageSize = 20,
-      status,
-    } = validateSearchParams(req, driftListQuerySchema);
+    const { page = 1, pageSize = 20, status } = validateSearchParams(req, driftListQuerySchema);
     const skip = (page - 1) * pageSize;
 
     const where = {
