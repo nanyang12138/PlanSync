@@ -975,26 +975,18 @@ export interface TryCreateExecWorktreeOptions {
   /** Defaults to `child_process.execSync`. */
   exec?: (cmd: string, opts: { cwd: string; stdio: 'pipe' }) => unknown;
   /** Defaults to {@link failRun}. */
-  reportFailure?: (
-    projectId: string,
-    taskId: string,
-    runId: string,
-    reason: string,
-  ) => void;
+  reportFailure?: (projectId: string, taskId: string, runId: string, reason: string) => void;
   /** Defaults to `console.log`. */
   logger?: (line: string) => void;
 }
 
-export type TryCreateExecWorktreeResult =
-  | { ok: true }
-  | { ok: false; reason: string };
+export type TryCreateExecWorktreeResult = { ok: true } | { ok: false; reason: string };
 
 export function tryCreateExecWorktree(
   opts: TryCreateExecWorktreeOptions,
 ): TryCreateExecWorktreeResult {
   const exec =
-    opts.exec ??
-    ((cmd: string, options: { cwd: string; stdio: 'pipe' }) => execSync(cmd, options));
+    opts.exec ?? ((cmd: string, options: { cwd: string; stdio: 'pipe' }) => execSync(cmd, options));
   const reportFailure = opts.reportFailure ?? failRun;
   const logger = opts.logger ?? ((line: string) => console.log(line));
 
@@ -1007,12 +999,7 @@ export function tryCreateExecWorktree(
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     logger(`\n${c.red}✗ Failed to create worktree: ${msg}${c.reset}\n`);
-    reportFailure(
-      opts.projectId,
-      opts.taskId,
-      opts.runId,
-      `worktree-setup-failed: ${msg}`,
-    );
+    reportFailure(opts.projectId, opts.taskId, opts.runId, `worktree-setup-failed: ${msg}`);
     return { ok: false, reason: msg };
   }
 }
