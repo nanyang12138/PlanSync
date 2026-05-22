@@ -1770,7 +1770,7 @@
 
 #### R-100 [MEDIUM] bin/plansync 错误消息修正 `--format=cjs` → `--format=esm`
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
