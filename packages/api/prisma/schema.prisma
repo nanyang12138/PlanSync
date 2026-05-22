@@ -211,8 +211,12 @@ model DriftAlert {
   resolvedAt         DateTime? @map("resolved_at")
   resolvedBy         String?   @map("resolved_by")
 
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  task    Task    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  project  Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  task     Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  // R-081: planDiffId references plan_diffs(id). Use SetNull so deleting a
+  // PlanDiff (e.g. during cleanup) does not cascade-delete drift history; the
+  // alert remains visible with a null reference instead.
+  planDiff PlanDiff? @relation(fields: [planDiffId], references: [id], onDelete: SetNull)
 
   // R-076: composite indexes to back hot drift queries
   // (per-project drift listing filtered by status, per-task drift lookups).
@@ -298,6 +302,9 @@ model PlanDiff {
   toPlanId    String
   changes     Json
   generatedAt DateTime @default(now())
+
+  // R-081: drift alerts reference plan_diffs(id) via DriftAlert.planDiffId.
+  driftAlerts DriftAlert[]
 
   @@unique([fromPlanId, toPlanId])
   @@map("plan_diffs")
