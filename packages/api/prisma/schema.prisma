@@ -133,7 +133,7 @@ model PlanComment {
   createdAt  DateTime @default(now()) @map("created_at")
   updatedAt  DateTime @updatedAt @map("updated_at")
 
-  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  plan    Plan          @relation(fields: [planId], references: [id], onDelete: Cascade)
   // R-086: be explicit about the self-relation onDelete behaviour. The
   // application uses soft delete (`isDeleted = true`) for comments, so a hard
   // delete of a parent comment that still has replies should be rejected to
