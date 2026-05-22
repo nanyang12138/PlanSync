@@ -1,0 +1,52 @@
+name: cursor-review-stale
+
+# Weekly conservative sweep over open `review-finding` issues:
+#   - >= 14d + referenced file 404s on default branch  → label
+#     `stale:file-missing` + one-time comment (never auto-closes; a 404
+#     could mean rename/move, which keeps the finding valid at a new path)
+#   - >= 30/60/90d                                     → label stale:Nd
+#   - 90d also pings the repo owner
+#
+# No LLM is used; every label decision is a deterministic check against
+# issue metadata or the contents API.
+
+on:
+  schedule:
+    # Mondays 09:00 UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Log intended actions without mutating issues'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Checkout (script only)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            scripts/review-stale.mjs
+          sparse-checkout-cone-mode: false
+
+      - name: Run stale sweep
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REVIEW_STALE_OWNER: ${{ github.repository_owner }}
+          REVIEW_STALE_DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+        run: node scripts/review-stale.mjs

@@ -302,6 +302,19 @@ export interface AgentLoopResult {
 }
 
 /**
+ * R-069: User-facing warning emitted when the agent loop exhausts
+ * {@link cfg.maxTurns} consecutive tool/text rounds without the model deciding
+ * to stop on its own. Without this hint the loop just exits silently, which
+ * makes it look as if the agent simply ignored the request.
+ *
+ * Exposed as a separate function so unit tests can assert on its content
+ * without having to spin up a streaming HTTP mock for {@link runAgentLoop}.
+ */
+export function formatMaxTurnsWarning(maxTurns: number): string {
+  return `⚠ 已达最大轮次 (${maxTurns}); 请尝试更具体的请求`;
+}
+
+/**
  * Cheap, deterministic token estimator (chars / 4) used by {@link pruneHistory}.
  * Anthropic's exact tokeniser is not exposed to the CLI, but the chars/4 rule
  * is within ~15% for English/Chinese mixed content and is good enough for a
@@ -391,7 +404,8 @@ export async function runAgentLoop(
   const startIndex = messages.length - 1;
   let finalText = '';
 
-  for (let turn = 0; turn < cfg.maxTurns; turn++) {
+  let turn = 0;
+  for (; turn < cfg.maxTurns; turn++) {
     if (signal?.aborted) break;
     process.stdout.write('\n');
     const thinkSp = createSpinner('Thinking');
@@ -550,6 +564,10 @@ export async function runAgentLoop(
     }
 
     messages.push({ role: 'user', content: toolResults });
+  }
+
+  if (turn >= cfg.maxTurns && !signal?.aborted) {
+    console.log(`\n${c.yellow}${formatMaxTurnsWarning(cfg.maxTurns)}${c.reset}`);
   }
 
   if (finalText) {

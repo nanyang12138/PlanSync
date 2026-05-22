@@ -7,6 +7,7 @@ import { createSuggestionSchema, paginationSchema, AppError, ErrorCode } from '@
 import { createActivity } from '@/lib/activity';
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
+import { requirePlanInProject } from '@/lib/plan-scope';
 
 type Params = { params: { projectId: string; planId: string } };
 
@@ -14,6 +15,7 @@ export async function GET(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);
+    await requirePlanInProject(params.planId, params.projectId);
     const { page = 1, pageSize = 20 } = validateSearchParams(req, paginationSchema);
     const skip = (page - 1) * pageSize;
 
@@ -42,8 +44,7 @@ export async function POST(req: NextRequest, { params }: Params) {
     await requireProjectRole(auth, params.projectId);
     const body = await validateBody(req, createSuggestionSchema);
 
-    const plan = await prisma.plan.findUnique({ where: { id: params.planId } });
-    if (!plan) throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
+    const plan = await requirePlanInProject(params.planId, params.projectId);
     if (!['draft', 'proposed', 'active'].includes(plan.status)) {
       throw new AppError(
         ErrorCode.STATE_CONFLICT,

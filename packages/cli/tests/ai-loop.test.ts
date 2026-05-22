@@ -18,7 +18,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { estimateTokens, pruneHistory, type Message } from '../src/ai-loop.js';
+import {
+  estimateTokens,
+  formatMaxTurnsWarning,
+  pruneHistory,
+  type Message,
+} from '../src/ai-loop.js';
 
 const text = (s: string): Message => ({ role: 'user', content: s });
 const reply = (s: string): Message => ({ role: 'assistant', content: s });
@@ -145,5 +150,21 @@ describe('pruneHistory (R-063)', () => {
       (m) => typeof m.content === 'string' && /truncated/.test(m.content as string),
     );
     expect(summaryMatches.length).toBe(1);
+  });
+});
+
+describe('formatMaxTurnsWarning (R-069)', () => {
+  it('mentions the configured max-turn limit', () => {
+    expect(formatMaxTurnsWarning(12)).toContain('12');
+    expect(formatMaxTurnsWarning(7)).toContain('7');
+  });
+
+  it('tells the user the loop hit the cap and asks for a more specific prompt', () => {
+    const msg = formatMaxTurnsWarning(12);
+    // Core assertions: the warning surfaces what happened and what to do.
+    // Without these the loop exits silently, which is the bug R-069 fixes.
+    expect(msg).toMatch(/已达最大轮次/);
+    expect(msg).toMatch(/请尝试更具体的请求/);
+    expect(msg.startsWith('⚠')).toBe(true);
   });
 });
