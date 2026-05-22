@@ -31,10 +31,18 @@ export const cfg = {
   anthropicHostname: _anthropicUrl.hostname,
   anthropicPathPrefix: _anthropicUrl.pathname.replace(/\/$/, ''),
   anthropicCustomHeaders: parseCustomHeaders(process.env.ANTHROPIC_CUSTOM_HEADERS || ''),
+  // R-102: portable default. The previous hard-coded
+  // `/proj/verif_release_ro/genie/current/bin/genie` path was AMD-internal and
+  // failed silently on every other host with `ENOENT`. We fall back to
+  // `claude` so that PATH-resolution picks up whatever coding agent the user
+  // actually has installed; overrides remain in priority order:
+  //   1. `PLANSYNC_CODE_BIN` — preferred, agent-agnostic name
+  //   2. `GENIE_BIN`         — legacy AMD-internal name, kept for back-compat
+  //   3. `claude`            — generic fallback, resolved via $PATH
   genieOrClaude:
     process.env.PLANSYNC_CODE_BIN ||
     process.env.GENIE_BIN ||
-    '/proj/verif_release_ro/genie/current/bin/genie',
+    'claude',
   mcpServer: process.env.PLANSYNC_MCP_SERVER || _mcpAuto,
   nodeBin: process.env.PLANSYNC_NODE_BIN || process.execPath,
   maxOutputTokens: Number(process.env.PLANSYNC_MAX_OUTPUT_TOKENS) || 8192,
