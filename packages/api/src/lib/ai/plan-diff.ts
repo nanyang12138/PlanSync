@@ -39,7 +39,9 @@ export async function getOrCreatePlanDiff(
   if (!planA || !planB) return null;
   if (planA.projectId !== projectId || planB.projectId !== projectId) return null;
 
-  const response = await aiClient.complete(PLAN_DIFF_SYSTEM, buildPlanDiffUser(planA, planB));
+  const response = await aiClient.complete(PLAN_DIFF_SYSTEM, buildPlanDiffUser(planA, planB), {
+    purpose: 'plan_diff',
+  });
   if (!response) return null;
 
   try {

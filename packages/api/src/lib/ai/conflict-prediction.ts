@@ -30,6 +30,7 @@ export async function predictConflicts(
   const response = await aiClient.complete(
     CONFLICT_PREDICTION_SYSTEM,
     buildConflictPredictionUser(tasks),
+    { purpose: 'conflict_prediction' },
   );
   if (!response) return null;
 

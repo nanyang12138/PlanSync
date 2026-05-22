@@ -38,7 +38,7 @@ export async function POST(req: NextRequest, { params }: Params) {
     const body = bodySchema.parse(await req.json());
     const userMsg = `Project plan title: "${body.title}"${body.description ? `\nContext: ${body.description}` : ''}\n\nGenerate a complete plan draft as JSON.`;
 
-    const raw = await aiClient.complete(SYSTEM, userMsg);
+    const raw = await aiClient.complete(SYSTEM, userMsg, { purpose: 'plan_ai_draft' });
     if (!raw) {
       return NextResponse.json({ error: 'AI returned no response' }, { status: 502 });
     }

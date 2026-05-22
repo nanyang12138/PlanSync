@@ -27,6 +27,7 @@ export async function analyzeTaskImpact(
   const response = await aiClient.complete(
     IMPACT_ANALYSIS_SYSTEM,
     buildImpactAnalysisUser(diff, task),
+    { purpose: 'drift_impact' },
   );
   if (!response) return null;
 
