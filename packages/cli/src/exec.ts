@@ -302,7 +302,9 @@ export function rawOn(): void {
 // escape `\x1b[2J\x1b[H` to clear the screen, which wiped out scrollback
 // history that the user may want to read. Per R-073 we now print a visible
 // separator instead so the user retains full context.
-export function printCodeExitSeparator(writer: { write: (s: string) => void } = process.stdout): void {
+export function printCodeExitSeparator(
+  writer: { write: (s: string) => void } = process.stdout,
+): void {
   const rule = '─'.repeat(60);
   writer.write(`\n${c.blue}${rule}${c.reset}\n`);
   writer.write(`${c.blue}← Returned to PlanSync Terminal${c.reset}\n\n`);
