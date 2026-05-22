@@ -1679,7 +1679,7 @@
 
 #### R-095 [HIGH] PG_BIN / port_in_use 平台化
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
