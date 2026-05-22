@@ -10,4 +10,4 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 require_local_node_runtime
 use_local_node_runtime
 
-run_local_node "$PROJECT_DIR/node_modules/eslint/bin/eslint.js" packages/*/src
+run_local_node "$PROJECT_DIR/node_modules/eslint/bin/eslint.js" --max-warnings 0 packages/*/src

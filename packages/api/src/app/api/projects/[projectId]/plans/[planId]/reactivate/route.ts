@@ -88,18 +88,18 @@ export async function POST(req: NextRequest, { params }: Params) {
         actorName: 'system',
         actorType: 'system',
         summary: `${driftAlerts.length} drift alert(s) detected after plan reactivation`,
-        metadata: { alertIds: driftAlerts.map((a: any) => a.id) },
+        metadata: { alertIds: driftAlerts.map((a) => a.id) },
       });
 
       eventBus.publish(params.projectId, 'drift_detected', {
-        alerts: driftAlerts.map((a: any) => ({
+        alerts: driftAlerts.map((a) => ({
           alertId: a.id,
           taskId: a.taskId,
           severity: a.severity,
         })),
       });
       dispatchWebhooks(params.projectId, 'drift_detected', {
-        alerts: driftAlerts.map((a: any) => ({
+        alerts: driftAlerts.map((a) => ({
           alertId: a.id,
           taskId: a.taskId,
           severity: a.severity,

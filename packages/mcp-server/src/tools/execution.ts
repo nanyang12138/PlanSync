@@ -69,11 +69,11 @@ class HeartbeatManager {
     if (this.intervals.has(runId)) return;
     const id = setInterval(async () => {
       try {
-        const response = await api.post(
+        const response = await api.post<{ data?: { driftAlerts?: DriftAlert[] } }>(
           `/api/projects/${projectId}/tasks/${taskId}/runs/${runId}?action=heartbeat`,
           {},
         );
-        const driftAlerts = (response as any)?.data?.driftAlerts as DriftAlert[] | undefined;
+        const driftAlerts = response?.data?.driftAlerts;
         if (driftAlerts && driftAlerts.length > 0 && onDrift) {
           onDrift(driftAlerts);
         }
