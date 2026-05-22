@@ -65,7 +65,15 @@ function cryptoRandomUUID(): string {
   if (c && typeof c.randomUUID === 'function') {
     return c.randomUUID();
   }
-  // Node ≥14.17 fallback
-  const nodeCrypto = require('node:crypto') as { randomUUID: () => string };
-  return nodeCrypto.randomUUID();
+  // Pure-JS UUIDv4 fallback. The request id is a non-secret correlation id,
+  // so Math.random() is sufficient — and crucially this path stays free of
+  // `node:crypto`, which Next.js middleware (Edge Runtime) cannot bundle.
+  // globalThis.crypto.randomUUID is available in every supported runtime
+  // (Edge Runtime, browsers, Node ≥19, Node 18 with --experimental-global-
+  // webcrypto), so this fallback only fires on an exotic JS host.
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (ch) => {
+    const r = (Math.random() * 16) | 0;
+    const v = ch === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }
