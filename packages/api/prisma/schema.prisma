@@ -72,6 +72,11 @@ model Plan {
 
   @@unique([projectId, version])
   @@index([projectId, status])
+  // R-048: a partial unique index `plans_one_active_per_project` is created
+  // by a raw-SQL migration to enforce at most one active plan per project.
+  // Prisma does not currently support partial unique indexes in the schema
+  // DSL, so it is intentionally not declared here. See migration
+  // `20260521080000_one_active_plan_per_project`.
   @@map("plans")
 }
 
