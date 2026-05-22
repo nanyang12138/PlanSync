@@ -1493,7 +1493,7 @@
 
 #### R-082 [MEDIUM] PlanDiff.fromPlanId/toPlanId FK 到 plans
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
