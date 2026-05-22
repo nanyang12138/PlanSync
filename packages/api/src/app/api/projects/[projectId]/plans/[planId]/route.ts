@@ -6,6 +6,7 @@ import { validateBody } from '@/lib/validate';
 import { updatePlanSchema, AppError, ErrorCode } from '@plansync/shared';
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
+import { requirePlanInProject } from '@/lib/plan-scope';
 
 type Params = { params: { projectId: string; planId: string } };
 
@@ -14,14 +15,9 @@ export async function GET(req: NextRequest, { params }: Params) {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);
 
-    const plan = await prisma.plan.findUnique({
-      where: { id: params.planId },
-      include: { reviews: true },
-    });
-    if (!plan) throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
-    if (plan.projectId !== params.projectId) {
-      throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
-    }
+    const plan = await requirePlanInProject<{
+      reviews: Array<{ id: string; reviewerName: string; status: string }>;
+    }>(params.planId, params.projectId, { include: { reviews: true } });
 
     return NextResponse.json({ data: plan });
   } catch (error) {
@@ -36,11 +32,7 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     await requireProjectRole(auth, params.projectId, 'owner');
     const body = await validateBody(req, updatePlanSchema);
 
-    const plan = await prisma.plan.findUnique({ where: { id: params.planId } });
-    if (!plan) throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
-    if (plan.projectId !== params.projectId) {
-      throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
-    }
+    const plan = await requirePlanInProject(params.planId, params.projectId);
     if (plan.status !== 'draft') {
       // Proposed plans: only requiredReviewers can be updated (adding reviewers mid-review is safe)
       const bodyKeys = Object.keys(body);
@@ -108,11 +100,7 @@ export async function DELETE(req: NextRequest, { params }: Params) {
     requireNotExecScoped(auth);
     await requireProjectRole(auth, params.projectId, 'owner');
 
-    const plan = await prisma.plan.findUnique({ where: { id: params.planId } });
-    if (!plan) throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
-    if (plan.projectId !== params.projectId) {
-      throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
-    }
+    const plan = await requirePlanInProject(params.planId, params.projectId);
     if (plan.status !== 'draft') {
       throw new AppError(ErrorCode.STATE_CONFLICT, 'Only draft plans can be deleted');
     }

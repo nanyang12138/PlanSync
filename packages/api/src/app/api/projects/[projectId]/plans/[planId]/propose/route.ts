@@ -7,6 +7,7 @@ import { createActivity } from '@/lib/activity';
 import { eventBus } from '@/lib/event-bus';
 import { sendMail, userEmail } from '@/lib/email';
 import { logger } from '@/lib/logger';
+import { requirePlanInProject } from '@/lib/plan-scope';
 
 type Params = { params: { projectId: string; planId: string } };
 
@@ -28,11 +29,7 @@ export async function POST(req: NextRequest, { params }: Params) {
     }
     const body = proposePlanSchema.parse(rawBody);
 
-    const plan = await prisma.plan.findUnique({ where: { id: params.planId } });
-    if (!plan) throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
-    if (plan.projectId !== params.projectId) {
-      throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
-    }
+    const plan = await requirePlanInProject(params.planId, params.projectId);
     if (plan.status !== 'draft') {
       throw new AppError(ErrorCode.STATE_CONFLICT, 'Only draft plans can be proposed');
     }

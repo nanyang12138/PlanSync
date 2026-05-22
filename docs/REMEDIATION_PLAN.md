@@ -840,7 +840,7 @@
 
 #### R-041 [HIGH] 所有 `/plans/[planId]/...` 路由验证 plan ∈ project
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B5
 - **depends_on**: —
 - **effort**: medium
@@ -866,7 +866,7 @@
 
 #### R-042 [HIGH] task 状态 / drift 状态 query 参数加 zod 校验
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B5
 - **depends_on**: —
 - **effort**: small
@@ -1131,7 +1131,8 @@
 
 #### R-058 [LOW] drift_engine 使用 tx 读取（保持事务一致性）
 
-- **status**: pending
+- **status**: blocked
+- **blocked_reason**: fix_steps 引用的 `drift-engine.ts` 行 89-92 / 112-115 当前只剩注释；R-007 (PR #11) 的重构已经把所有裸 `prisma` 读移到 `dispatchDriftNotifications`（事务后调用），`runDriftScan` 与 `persistDriftAlerts` 当前已经 100% 使用 `tx`。无可改代码，问题已实质修复。
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small
@@ -1212,7 +1213,7 @@
 
 #### R-063 [HIGH] AI loop 保留 tool_use/tool_result 历史
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: medium
@@ -1244,7 +1245,7 @@
 
 #### R-065 [MEDIUM] `/clear` `/verbose` 等无 unmount 的命令统一加入 unmount
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1259,7 +1260,7 @@
 
 #### R-066 [MEDIUM] Ink 监听 SIGWINCH 重渲染
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1274,7 +1275,7 @@
 
 #### R-067 [MEDIUM] Ink 支持 bracketed paste 多行提交
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: medium
@@ -1289,7 +1290,7 @@
 
 #### R-068 [MEDIUM] Ink 非 TTY fallback
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1304,7 +1305,7 @@
 
 #### R-069 [MEDIUM] AI loop maxTurns 用户可见警告
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1334,7 +1335,7 @@
 
 #### R-071 [LOW] `/worker` Ctrl+C 中断子进程
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1349,7 +1350,7 @@
 
 #### R-072 [LOW] suggestion ↓ 从未选状态进入
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1398,7 +1399,7 @@
 
 #### R-075 [HIGH] tasks 表加复合索引
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
@@ -1417,7 +1418,7 @@
 
 #### R-076 [HIGH] drift_alerts 加复合索引
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
@@ -1429,7 +1430,7 @@
 
 #### R-077 [HIGH] api_keys.keyPrefix 加索引
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
@@ -1441,7 +1442,7 @@
 
 #### R-078 [MEDIUM] webhook_deliveries 加分页索引
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small

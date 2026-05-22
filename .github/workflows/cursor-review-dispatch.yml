@@ -1,0 +1,77 @@
+name: cursor-review-dispatch
+
+# When an issue gets the `cursor:dispatch` label, spawn a Cursor Cloud Agent
+# to fix the corresponding review-finding (or implement the suggested rule
+# changes for a `review-cluster` issue). The agent opens its own PR on a
+# `cursor/fix-rf-<n>-d31d` branch (already in auto-merge-cursor-pr.yml's
+# branch allow-list); the PR body's `Fixes #<n>` closes the issue on merge.
+#
+# Accepted target labels (must satisfy at least one, AND no `umbrella`):
+#   - `review-finding`   — single finding emitted by triage
+#   - `review-cluster`   — themed cluster issue from the monthly aggregator
+#
+# Idempotency: a `dispatched` label is added BEFORE calling the Cursor API.
+# Subsequent runs see that label and exit. If the Cursor API call FAILS, the
+# script removes the lock label (best-effort) so re-applying `cursor:dispatch`
+# automatically retries. To force a re-dispatch after a successful run, the
+# user must remove both `dispatched` and `cursor:dispatch`, then re-add
+# `cursor:dispatch`. We deliberately do NOT use a comment-marker for
+# idempotency — the issue payload already carries labels, and a label check
+# is unaffected by issue-comment pagination caps.
+#
+# Requires the `CURSOR_API_KEY` repository secret (already used by
+# cursor-review.yml). Without it, the workflow posts a guidance comment
+# on the issue and exits non-zero.
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: read
+  issues: write
+
+# Serialize dispatch attempts on a per-issue basis. Without this, two
+# rapid `cursor:dispatch` label events on the same issue could both pass
+# the in-script idempotency check before either has acquired the
+# `dispatched` label, race to call the Cursor API, and double-spawn the
+# agent. `cancel-in-progress: false` ensures the second attempt waits
+# for the first to finish (and observes its label/comment) rather than
+# being killed mid-acquire.
+concurrency:
+  group: cursor-review-dispatch-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    if: |
+      github.event.label.name == 'cursor:dispatch' &&
+      (
+        contains(github.event.issue.labels.*.name, 'review-finding') ||
+        contains(github.event.issue.labels.*.name, 'review-cluster')
+      ) &&
+      !contains(github.event.issue.labels.*.name, 'umbrella')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Checkout (script only)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            scripts/review-dispatch.mjs
+          sparse-checkout-cone-mode: false
+
+      - name: Run dispatcher
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          REVIEW_DISPATCH_BASE_REF: ${{ github.event.repository.default_branch }}
+          REVIEW_DISPATCH_MODEL: ${{ secrets.CURSOR_REVIEW_DISPATCH_MODEL }}
+        run: node scripts/review-dispatch.mjs
