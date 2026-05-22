@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
+import { REQUEST_ID_HEADER, resolveRequestId } from './lib/request-context';
 
 const ALLOWED_ORIGINS = [
   'http://localhost:3000',
@@ -22,6 +23,13 @@ export function middleware(request: NextRequest) {
   const isApiRoute = pathname.startsWith('/api/');
 
   const requestHeaders = new Headers(request.headers);
+
+  // R-111: ensure every request has a stable correlation id. Reuse an
+  // inbound id from upstream proxies (when it matches a safe shape) so a
+  // single id can be threaded end-to-end; otherwise mint a fresh uuid v4.
+  const reqId = resolveRequestId(request.headers.get(REQUEST_ID_HEADER));
+  requestHeaders.set(REQUEST_ID_HEADER, reqId);
+
   const apiKey = request.cookies.get('plansync-apikey')?.value;
 
   if (apiKey) {
@@ -45,6 +53,10 @@ export function middleware(request: NextRequest) {
   const response = NextResponse.next({
     request: { headers: requestHeaders },
   });
+
+  // Echo the request id back to the caller so clients (and downstream
+  // observability) can correlate a single API call with its server logs.
+  response.headers.set(REQUEST_ID_HEADER, reqId);
 
   // Auto-set legacy cookie on first visit in AUTH_DISABLED mode
   if (authDisabled && !apiKey && !request.cookies.get('plansync-user')?.value) {
@@ -85,7 +97,11 @@ export function middleware(request: NextRequest) {
   }
 
   if (request.method === 'OPTIONS') {
-    return new NextResponse(null, { status: 204, headers: response.headers });
+    const preflight = new NextResponse(null, { status: 204, headers: response.headers });
+    // NextResponse(null, { headers }) does not always preserve every header
+    // we set on `response` (CORS path), so reapply the request id explicitly.
+    preflight.headers.set(REQUEST_ID_HEADER, reqId);
+    return preflight;
   }
 
   return response;
