@@ -2120,7 +2120,7 @@
 
 #### R-133 [MEDIUM] 逐步消除 `any`，重新启用 `no-explicit-any` 警告
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: —
 - **effort**: medium（可拆 sub-tasks）
