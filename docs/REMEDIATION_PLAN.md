@@ -1804,7 +1804,7 @@
 
 #### R-101 [MEDIUM] start-mcp 自动构建逻辑也放到 CLI 启动路径
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
