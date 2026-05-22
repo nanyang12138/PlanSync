@@ -112,8 +112,7 @@ export async function validateProject(
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     const looksLikeNotFound =
-      /404|not[\s-]?found/i.test(message) ||
-      (err as { statusCode?: number })?.statusCode === 404;
+      /404|not[\s-]?found/i.test(message) || (err as { statusCode?: number })?.statusCode === 404;
     const headline = looksLikeNotFound
       ? `Project "${id}" not found.`
       : `Failed to verify project "${id}": ${message}`;
