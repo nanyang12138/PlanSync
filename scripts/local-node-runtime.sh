@@ -12,9 +12,81 @@ LOCAL_NPX_BIN="$LOCAL_NODE_DIR/bin/npx"
 LOCAL_NPM_CACHE="/tmp/npm-cache-$(whoami)"
 LOCAL_CACHE_DIR="$PROJECT_DIR/.cache"
 LOCAL_DEPS_STAMP="$LOCAL_CACHE_DIR/deps-installed.stamp"
-PG_BIN="${PG_BIN:-$([ -x /tool/pandora64/bin/pg_ctl ] && echo /tool/pandora64/bin || echo /usr/lib/postgresql/16/bin)}"
 PG_PORT=${PG_PORT:-15432}
 PG_DATA="/tmp/plansync-pgdata-$(whoami)"
+
+# Probe order for the PostgreSQL toolchain, most-specific-first.
+# Each candidate is checked for an executable `pg_ctl`; the first hit wins.
+# Override via the PG_BIN env var.
+#
+# - /tool/pandora64/bin           — AMD internal Pandora image
+# - /usr/lib/postgresql/16/bin    — Debian / Ubuntu apt postgresql-16
+# - /usr/lib/postgresql/15/bin    — Debian / Ubuntu apt postgresql-15 (fallback)
+# - /usr/pgsql-16/bin             — Red Hat / Rocky / Fedora pgdg
+# - /opt/homebrew/opt/postgresql@16/bin — macOS Apple Silicon Homebrew
+# - /usr/local/opt/postgresql@16/bin    — macOS Intel Homebrew
+# - /opt/local/lib/postgresql16/bin     — macOS MacPorts
+# - PATH lookup (last resort, prevents false-positives in CI sandboxes).
+PG_BIN_CANDIDATES_DEFAULT="/tool/pandora64/bin /usr/lib/postgresql/16/bin /usr/lib/postgresql/15/bin /usr/pgsql-16/bin /opt/homebrew/opt/postgresql@16/bin /usr/local/opt/postgresql@16/bin /opt/local/lib/postgresql16/bin"
+
+# detect_pg_bin: print the first probe directory that contains a real
+# `pg_ctl`, or the empty string if none does. Caller decides whether to
+# treat empty as fatal.
+#
+# - Honours PG_BIN if it is non-empty AND points at an executable pg_ctl.
+# - Otherwise probes PG_BIN_CANDIDATES (CSV / whitespace-separated) before
+#   falling back to PG_BIN_CANDIDATES_DEFAULT.
+# - Final fallback: PATH lookup via `command -v pg_ctl`.
+# - Pure: writes nothing to stderr / stdout except the result. Make all
+#   logging the caller's responsibility so unit tests can assert exit
+#   code + stdout deterministically.
+detect_pg_bin() {
+  if [ -n "${PG_BIN:-}" ] && [ -x "$PG_BIN/pg_ctl" ]; then
+    printf '%s' "$PG_BIN"
+    return 0
+  fi
+
+  local candidates="${PG_BIN_CANDIDATES:-$PG_BIN_CANDIDATES_DEFAULT}"
+  # Allow comma-separated lists for env-friendly overrides.
+  candidates="${candidates//,/ }"
+
+  local dir
+  for dir in $candidates; do
+    if [ -x "$dir/pg_ctl" ]; then
+      printf '%s' "$dir"
+      return 0
+    fi
+  done
+
+  # PATH-based fallback only as a last resort: in unit tests the PATH is
+  # cleared so this never accidentally picks up a host-installed Postgres
+  # and causes a false-positive in failure-path tests. Use bash parameter
+  # expansion (`%/*`) to strip the basename — `dirname` is itself an
+  # external command and may not be reachable when PATH is restricted.
+  local resolved
+  resolved="$(command -v pg_ctl 2>/dev/null || true)"
+  if [ -n "$resolved" ]; then
+    printf '%s' "${resolved%/*}"
+    return 0
+  fi
+
+  printf ''
+  return 1
+}
+
+# Resolve PG_BIN once at source time so subsequent calls do not re-probe
+# the filesystem on every script invocation. If detection fails, leave
+# PG_BIN unset (rather than the previous behaviour of setting it to a
+# bogus Debian-16 path that polluted PATH and broke pg_ctl invocations
+# silently on macOS / Red Hat hosts).
+if [ -z "${PG_BIN:-}" ]; then
+  if _resolved_pg_bin="$(detect_pg_bin)" && [ -n "$_resolved_pg_bin" ]; then
+    PG_BIN="$_resolved_pg_bin"
+  else
+    PG_BIN=""
+  fi
+  unset _resolved_pg_bin
+fi
 
 log_step() {
   echo "==> $*"
@@ -147,13 +219,29 @@ is_plansync_api_reachable() {
 port_in_use() {
   local port="$1"
 
-  if ! command -v ss >/dev/null 2>&1; then
-    return 1
+  # Linux + most BSDs ship `ss`. macOS does not — use `lsof` as a fallback.
+  # Returning 1 ('not in use') silently when no probe tool is available
+  # would mean pg-start.sh thinks a free port is occupied and fails the
+  # user with a confusing diagnostic — so use `lsof` here even though it
+  # is slower; it is the standard tool on every supported platform.
+  if command -v ss >/dev/null 2>&1; then
+    local output
+    output="$(ss -ltn "( sport = :$port )" 2>/dev/null || true)"
+    [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -gt 1 ]
+    return $?
   fi
 
-  local output
-  output="$(ss -ltn "( sport = :$port )" 2>/dev/null || true)"
-  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -gt 1 ]
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+    return $?
+  fi
+
+  # Last-resort: try /dev/tcp from bash. This will succeed iff something
+  # is listening on the port — works on every Linux/macOS host with bash.
+  if (echo > "/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+    return 0
+  fi
+  return 1
 }
 
 ensure_env_file() {
@@ -295,6 +383,14 @@ ensure_prisma_generated() {
 ensure_postgres_running() {
   local initialized_now=0
 
+  if [ -z "${PG_BIN:-}" ]; then
+    echo "✗ PostgreSQL toolchain not found. Tried PG_BIN, PG_BIN_CANDIDATES," >&2
+    echo "  and the PATH. Install postgresql or set PG_BIN explicitly." >&2
+    return 2
+  fi
+  # Prepend BOTH local node + PG_BIN to PATH. Skip an empty PG_BIN to
+  # avoid producing PATH=...::... where the empty entry is interpreted by
+  # bash as the current working directory.
   export PATH="$LOCAL_NODE_DIR/bin:$PG_BIN:$PATH"
 
   if [ ! -d "$PG_DATA" ]; then

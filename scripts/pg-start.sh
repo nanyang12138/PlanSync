@@ -1,9 +1,18 @@
 #!/bin/bash
 set -e
 
-PG_BIN="${PG_BIN:-$([ -x /tool/pandora64/bin/pg_ctl ] && echo /tool/pandora64/bin || echo /usr/lib/postgresql/16/bin)}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=local-node-runtime.sh
+. "$SCRIPT_DIR/local-node-runtime.sh"
+
 PG_PORT=${PG_PORT:-15432}
 PG_DATA="/tmp/plansync-pgdata-$(whoami)"
+
+if [ -z "${PG_BIN:-}" ]; then
+  echo "✗ PostgreSQL toolchain not found. Tried PG_BIN, PG_BIN_CANDIDATES," >&2
+  echo "  and the PATH. Install postgresql or set PG_BIN explicitly." >&2
+  exit 1
+fi
 
 export PATH="$PG_BIN:$PATH"
 
