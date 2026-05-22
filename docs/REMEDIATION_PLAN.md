@@ -1430,7 +1430,7 @@
 
 #### R-077 [HIGH] api_keys.keyPrefix 加索引
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
