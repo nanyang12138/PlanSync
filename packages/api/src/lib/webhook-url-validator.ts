@@ -1,5 +1,4 @@
 import { AppError, ErrorCode } from '@plansync/shared';
-import { env } from './env';
 
 /**
  * R-043: Validate a webhook target URL to mitigate SSRF.
@@ -36,16 +35,16 @@ export function validateWebhookUrl(rawUrl: string): URL {
     );
   }
 
-  const allowlist = parseAllowlist(env.PLANSYNC_WEBHOOK_ALLOWLIST);
+  // Read env vars lazily: importing './env' at module top-level forces
+  // env validation during Next.js production build's "Collecting page data"
+  // phase, which fails because CI build job does not set DATABASE_URL.
+  const allowlist = parseAllowlist(process.env.PLANSYNC_WEBHOOK_ALLOWLIST);
   const hostname = parsed.hostname.toLowerCase();
   const allowlisted = allowlist.includes(hostname);
 
-  if (env.NODE_ENV === 'production' && !allowlisted) {
+  if (process.env.NODE_ENV === 'production' && !allowlisted) {
     if (parsed.protocol !== 'https:') {
-      throw new AppError(
-        ErrorCode.VALIDATION_ERROR,
-        'Webhook URL must use https in production',
-      );
+      throw new AppError(ErrorCode.VALIDATION_ERROR, 'Webhook URL must use https in production');
     }
 
     if (isPrivateOrLoopbackHost(hostname)) {
