@@ -1151,7 +1151,7 @@
 
 #### R-059 [HIGH] CLI banner phase 改用 API 返回的 `project.phase`
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
