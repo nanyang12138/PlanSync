@@ -74,6 +74,14 @@ model Plan {
   // cascaded away because they are meaningless without the underlying plan.
   diffsFrom   PlanDiff[]       @relation("PlanDiffFromPlan")
   diffsTo     PlanDiff[]       @relation("PlanDiffToPlan")
+  // R-083: back-reference for the composite FK from Task.(projectId, boundPlanVersion)
+  // to Plan.(projectId, version). Tasks are bound to a specific plan version,
+  // and this FK gives Postgres a way to enforce that the bound version actually
+  // exists. Cascade-on-delete is intentional: in practice plans are only
+  // deleted as part of a project cascade (which already deletes tasks via the
+  // existing project FK), so adding the cascade here just makes the behaviour
+  // explicit and prevents orphaned tasks if a plan is ever hard-deleted.
+  boundTasks  Task[]           @relation("TaskBoundPlan")
 
   @@unique([projectId, version])
   @@index([projectId, status])
@@ -176,6 +184,15 @@ model Task {
   updatedAt           DateTime  @updatedAt @map("updated_at")
 
   project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  // R-083: composite FK to plans(projectId, version). The same `projectId`
+  // column participates in two relations (Project + Plan); Prisma allows this
+  // as long as the relations are otherwise unambiguous. The relation is named
+  // so the back-reference on Plan (`boundTasks`) can be wired up explicitly.
+  // onDelete: Cascade matches the existing project-cascade chain — when a
+  // project is deleted, its plans and tasks cascade independently, and adding
+  // a plan-side cascade here keeps the constraint satisfied regardless of the
+  // (undefined) order Postgres evaluates the two cascades.
+  boundPlan     Plan           @relation("TaskBoundPlan", fields: [projectId, boundPlanVersion], references: [projectId, version], onDelete: Cascade, onUpdate: Cascade)
   executionRuns ExecutionRun[]
   driftAlerts   DriftAlert[]
 
@@ -183,6 +200,9 @@ model Task {
   // (listing tasks by status, my-work / assignee lookups).
   @@index([projectId, status])
   @@index([projectId, assignee])
+  // R-083: index backing the composite FK above so the FK lookup and
+  // cascade-on-delete from Plan stay on a B-tree path.
+  @@index([projectId, boundPlanVersion])
   @@map("tasks")
 }
 
