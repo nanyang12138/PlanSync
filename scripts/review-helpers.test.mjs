@@ -14,9 +14,27 @@ import {
   fingerprint,
   normalizeForFingerprint,
   normalizeFinding,
+  consumeSse,
 } from './review-triage.mjs';
 
 import { extractFilePath, extractSourcePrNumber, ageInDays } from './review-stale.mjs';
+
+/**
+ * Build a fake `ReadableStreamDefaultReader`-compatible object that
+ * yields the given UTF-8 byte chunks (each chunk simulates one network
+ * frame from the SSE server). After all chunks are consumed the next
+ * read() resolves with `{ done: true }`.
+ */
+function makeFakeReader(chunks) {
+  const enc = new TextEncoder();
+  const queue = chunks.map((c) => (c instanceof Uint8Array ? c : enc.encode(c)));
+  return {
+    read: async () => {
+      if (queue.length === 0) return { value: undefined, done: true };
+      return { value: queue.shift(), done: false };
+    },
+  };
+}
 
 test('extractJsonArray', async (t) => {
   await t.test('parses clean JSON', () => {
@@ -173,5 +191,97 @@ test('ageInDays', async (t) => {
     const past = new Date(Date.now() - 7 * 86400 * 1000).toISOString();
     const age = ageInDays(past);
     assert.ok(age > 6.9 && age < 7.1, `expected ~7, got ${age}`);
+  });
+});
+
+test('consumeSse', async (t) => {
+  await t.test('happy path: assembles assistant deltas, sees terminal result', async () => {
+    const sse =
+      'event: status\ndata: {"runId":"r1","status":"RUNNING"}\n\n' +
+      'event: assistant\ndata: {"text":"Hello "}\n\n' +
+      'event: assistant\ndata: {"text":"world"}\n\n' +
+      'event: result\ndata: {"runId":"r1","status":"FINISHED"}\n\n';
+    const r = await consumeSse(makeFakeReader([sse]), new TextDecoder());
+    assert.equal(r.output, 'Hello world');
+    assert.equal(r.lastStatus, 'FINISHED');
+    assert.equal(r.lastError, null);
+    assert.equal(r.sawTerminal, true);
+  });
+
+  await t.test('chunk boundary in middle of an event field', async () => {
+    // Split the byte stream right in the middle of "Hello " — exercises
+    // the streaming-decoder buffering path.
+    const sse =
+      'event: assistant\ndata: {"text":"Hello "}\n\n' +
+      'event: assistant\ndata: {"text":"world"}\n\n' +
+      'event: done\ndata: {}\n\n';
+    const cut = sse.length / 2;
+    const r = await consumeSse(
+      makeFakeReader([sse.slice(0, cut), sse.slice(cut)]),
+      new TextDecoder(),
+    );
+    assert.equal(r.output, 'Hello world');
+    assert.equal(r.sawTerminal, true);
+  });
+
+  await t.test('flushes a trailing event missing a final blank line', async () => {
+    // No "\n\n" at the end of the stream — this is the bug the previous
+    // implementation had: the last event was silently dropped.
+    const sse =
+      'event: assistant\ndata: {"text":"abc"}\n\n' +
+      'event: result\ndata: {"runId":"r1","status":"FINISHED"}';
+    const r = await consumeSse(makeFakeReader([sse]), new TextDecoder());
+    assert.equal(r.output, 'abc');
+    assert.equal(r.lastStatus, 'FINISHED');
+    assert.equal(r.sawTerminal, true);
+  });
+
+  await t.test('captures error event payload + sawTerminal=true', async () => {
+    const sse =
+      'event: assistant\ndata: {"text":"partial"}\n\n' +
+      'event: error\ndata: {"code":"agent_failure","message":"boom"}\n\n';
+    const r = await consumeSse(makeFakeReader([sse]), new TextDecoder());
+    assert.equal(r.lastError, 'boom');
+    assert.equal(r.sawTerminal, true);
+    assert.equal(r.output, 'partial');
+  });
+
+  await t.test('no terminal event ⇒ sawTerminal=false (premature close)', async () => {
+    const sse = 'event: assistant\ndata: {"text":"only this"}\n\n';
+    const r = await consumeSse(makeFakeReader([sse]), new TextDecoder());
+    assert.equal(r.output, 'only this');
+    assert.equal(r.lastStatus, null);
+    assert.equal(r.sawTerminal, false);
+  });
+
+  await t.test('ignores SSE comment lines and unknown event types', async () => {
+    const sse =
+      ': keep-alive\n\n' +
+      'event: heartbeat\ndata: {}\n\n' +
+      'event: assistant\ndata: {"text":"x"}\n\n' +
+      'event: thinking\ndata: {"text":"shouldnt-go-into-output"}\n\n' +
+      'event: done\ndata: {}\n\n';
+    const r = await consumeSse(makeFakeReader([sse]), new TextDecoder());
+    assert.equal(r.output, 'x');
+    assert.equal(r.sawTerminal, true);
+  });
+
+  await t.test('tolerates malformed JSON in a single delta', async () => {
+    const sse =
+      'event: assistant\ndata: {"text":"good "}\n\n' +
+      'event: assistant\ndata: not-json\n\n' +
+      'event: assistant\ndata: {"text":"end"}\n\n' +
+      'event: done\ndata: {}\n\n';
+    const r = await consumeSse(makeFakeReader([sse]), new TextDecoder());
+    assert.equal(r.output, 'good end');
+    assert.equal(r.sawTerminal, true);
+  });
+
+  await t.test('handles \\r\\n line endings', async () => {
+    const sse =
+      'event: assistant\r\ndata: {"text":"hi"}\r\n\r\n' + 'event: done\r\ndata: {}\r\n\r\n';
+    const r = await consumeSse(makeFakeReader([sse]), new TextDecoder());
+    assert.equal(r.output, 'hi');
+    assert.equal(r.sawTerminal, true);
   });
 });
