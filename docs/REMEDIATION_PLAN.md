@@ -1,6 +1,6 @@
 # PlanSync 修复路线图（Remediation Plan）
 
-> **文档用途**：这是一份**可被 cron job 或自动化代理逐条消费**的修复清单，覆盖 2026-05-20 全量代码审计中发现的所有问题（共 130+ 条）。
+> **文档用途**：这是一份**可被 cron job 或自动化代理逐条消费**的修复清单，覆盖 2026-05-20 全量代码审计 + 2026-05-22 架构审计追加发现的所有问题（共 **181 条**，按 R-XXX 唯一 ID 编号；详见附录 A）。
 >
 > 每个条目都是**自包含、可独立验证**的工程任务，带稳定 ID、依赖关系、修复步骤和验证方法。
 
@@ -53,9 +53,12 @@
 ### 给 cron job 的解析约定
 
 - **ID 稳定**：`R-XXX` 永不复用，已完成的任务标 `status: done` 而不删除
-- **依赖图**：cron 调度时优先取 `depends_on` 全部为 `done` 的 `pending` 条目
+- **依赖图（唯一权威源）**：cron 调度时**只看 `depends_on` 字段**——其全部条目为 `done` 的 `pending` 条目即可 pickup。
+- **去重元数据**：条目的 `superseded_by` 字段一旦非空，cron **必须跳过**该条目；同目标的多个条目（典型如 R-144 / R-182）通过此字段串联，避免重复 migration / 重复 PR。
 - **同一批次内可并行**：除非显式 `depends_on`
-- **跨批次串行**：建议批次按字母顺序推进（B1 全完成再开 B2）
+- **跨批次调度**：默认沿 `B1 → B2 → ... → B12` 字母序串行**只是兜底建议**。**B13–B18 是新增的护城河批次，其内部条目已通过 `depends_on` 显式表达跨批次依赖（如 R-160 不依赖 B1..B12 的任何条目），允许与 B1..B12 并行启动**——cron 不要把"B13 必须等 B12 全 done"当作硬规则，否则架构 batch 长期无法启动。
+
+> 简单的判定准则：**`depends_on` 是事实，旧的"按字母顺序"建议只是兜底**。当二者冲突时以 `depends_on` 为准。
 
 ### 推荐的 cron job 工作流
 
@@ -2254,16 +2257,19 @@
 
 - **status**: pending
 - **batch**: B10
-- **depends_on**: —（B14/R-166 是终局；本条是过渡）
+- **depends_on**: —
+- **superseded_by**: R-166（B14 落地后 R-166 一次性完成进程拆分；本条是过渡，可独立先合）
 - **effort**: small
-- **files**: `instrumentation.ts`, 新增 `scripts/run-worker.ts`, `package.json`
-- **symptom**: Next.js 每个 Node worker 进程都开 60s 定时器
+- **files**: `packages/api/src/instrumentation.ts`, 新增 `packages/api/scripts/run-worker.ts`, `packages/api/package.json`
+- **symptom**: Next.js 每个 Node worker 进程都开 60s 定时器；advisory lock 已解决重复工作，但浪费资源 + serverless 部署完全不工作
+- **root_cause**: `instrumentation.ts` 无条件 `startHeartbeatScanner()`，把后台 worker 与 API 进程绑死
 - **fix_steps**:
-  1. 抽出 `scripts/run-worker.ts` 独立进程入口
-  2. `instrumentation.ts` 仅当 `PLANSYNC_RUN_WORKER_IN_API=true` 启动
+  1. 抽出 `packages/api/scripts/run-worker.ts` 独立进程入口
+  2. `instrumentation.ts` 仅当 `process.env.PLANSYNC_RUN_WORKER_IN_API === 'true'` 启动 scanner（保留单机部署体验）
   3. `package.json` 加 `"worker": "tsx scripts/run-worker.ts"`
-  4. `scripts/dev.sh` 默认设 flag 保留开发体验
-- **verification**: 未设 flag 起 API → 无定时器；`npm run worker` → scanner 正常
+  4. `scripts/dev.sh` 默认设 `PLANSYNC_RUN_WORKER_IN_API=true`
+- **verification**: 未设 flag 起 API → ps 看不到 60s 定时器；`npm run worker` → scanner 正常工作
+- **rollback**: 单文件 + 一行 env flag；保留旧行为只需删 if 分支
 
 ---
 
@@ -2271,17 +2277,21 @@
 
 - **status**: pending
 - **batch**: B9
-- **depends_on**: —（最终被 B14/R-164 整体替换；本条是过渡）
+- **depends_on**: R-138
+- **superseded_by**: R-164（B14 落地后 webhook dispatcher 改吃 outbox；本条是过渡，可独立先合）
 - **effort**: medium
-- **files**: schema 新表 `webhook_jobs`, `webhook.ts`, 新增 `webhook-worker.ts`
-- **symptom**: API 进程在 1s/5s/30s 重试 sleep 期间重启 → 重试表蒸发
+- **files**: `packages/api/prisma/schema.prisma`（新表 `webhook_jobs`）, `packages/api/src/lib/webhook.ts`, 新增 `packages/api/src/lib/webhook-worker.ts`
+- **symptom**: API 进程在 1s/5s/30s 重试 sleep 期间重启 → 整张重试表蒸发；用户看到失败
+- **root_cause**: `deliverWithRetry` 的 schedule 完全活在 `setTimeout` + Promise 内存里，进程级状态而非 DB 级
 - **fix_steps**:
-  1. 新表 `webhook_jobs { id, webhookId, event, body, attempt, nextAttemptAt, status }`
-  2. `dispatchWebhooks` 改为只 INSERT 一行
-  3. 新增 worker：每 1s 拉取 `status='pending' AND nextAttemptAt < now()`，advisory lock，发 HTTP
-  4. worker 入口接到 R-138
-- **verification**: vitest：插一行 → 杀进程 → 重启 → worker 续发
-- **rollback**: env flag `PLANSYNC_WEBHOOK_QUEUE=true`
+  1. 新表 `webhook_jobs { id, webhookId, event, body Json, attempt, nextAttemptAt, status }`
+  2. `dispatchWebhooks` 改为只 INSERT 一行（不再 inline 发 HTTP）
+  3. 新增 worker：每 1s 拉取 `status='pending' AND nextAttemptAt < now()`，advisory lock，发 HTTP；按 backoff 重排
+  4. worker 入口接到 R-138 的 `run-worker.ts`
+- **verification**:
+  - vitest：插一行 → 杀进程 → 重启 → worker 续发
+  - vitest：HTTP 500 三次后 attempt 计数正确，最后标 failed
+- **rollback**: env flag `PLANSYNC_WEBHOOK_QUEUE=true` 才切到新路径，旧 `deliverWithRetry` 兜底
 
 ---
 
@@ -2362,6 +2372,7 @@
 - **status**: pending
 - **batch**: B11
 - **depends_on**: —
+- **superseded_by**: R-182（若 R-182 状态为 `in_progress` 或 `done`，cron **必须**跳过本条；二者是同一目标的过渡版与最终版，避免重复 migration）
 - **effort**: medium
 - **files**: schema, `packages/api/src/lib/ai/client.ts`
 - **fix_steps**:
@@ -2531,15 +2542,18 @@
 
 - **status**: pending
 - **batch**: B13
-- **depends_on**: R-150
+- **depends_on**: R-150, R-152, R-155
 - **effort**: medium
 - **files**: `packages/integrations/github-action/index.ts`, `action.yml`
+- **symptom**: 当前 drift-gate 只做 "open drift count > 0?" 的二元判断，无法检测 "PR 修改的文件根本不属于任何 active deliverable" 这类语义 drift
+- **root_cause**: GitHub Action 与 plan 语义脱节；plan 中也没有结构化的 file_glob 引用可消费——必须先有 R-150 schema、R-152 写路径、R-155 deliverable API 才能落地
 - **fix_steps**:
   1. action 拉取 PR changed files
-  2. 调 `/api/projects/.../deliverables?type=file_glob` 获取 active glob
-  3. PR changed files 至少匹配一条？不匹配 → fail check + 评论
+  2. 调 `/api/projects/.../deliverables?type=file_glob`（**该 API 由 R-155 引入**）获取 active glob 列表
+  3. PR changed files 至少匹配一条？不匹配 → fail check + 评论 "修改的文件不在 deliverable 范围"
   4. 匹配但有 open drift → 旧逻辑保留
 - **verification**: 改无关文件 → action 失败；改 glob 内文件 → 通过
+- **rollback**: `action.yml` 提供 `legacyMode: true` 输入参数，回退到旧 "open drift count" 判定
 
 ---
 
@@ -2806,8 +2820,20 @@
 - **status**: pending
 - **batch**: B16
 - **depends_on**: —
+- **supersedes**: R-144（pickup 本条时，cron 应同步把 R-144 状态置为 `cancelled (superseded_by R-182)`，避免重复 migration / 重复 PR）
 - **effort**: medium
-- **fix_steps**: 同 R-144，额外要求：记 inputHash / outputHash 用于 dedup 与重放；`/api/ai-usage` 按 purpose 聚合
+- **files**: schema 新表 `ai_calls`（同 R-144），`packages/api/src/lib/ai/client.ts`
+- **symptom**: LLM 调用全无 observability：无 cost / latency / model / dedup；无法 ROI 评估；同 input 重复打到 provider
+- **root_cause**: `aiClient.complete` 只 logger.warn 失败，不记录任何成功调用元数据
+- **fix_steps**:
+  1. 实现 R-144 全部 fix_steps（新表 + INSERT + `/api/ai-usage`）
+  2. 额外字段：`inputHash`（sha256 of system+user）、`outputHash`、`promptVersion`
+  3. `/api/ai-usage` 按 purpose 聚合（count / p50 latency / total token / cache hit ratio）
+  4. R-183 缓存逻辑可直接 key=inputHash
+- **verification**:
+  - vitest：同一 prompt 第二次调用 → cache 命中（依赖 R-183 实现后验证），ai_calls 行 `cacheHit=true`
+  - vitest：provider 切换时新行 `provider` 字段正确
+- **rollback**: 单表 + 单文件；env flag `PLANSYNC_AI_OBSERVABILITY=false` 关闭 INSERT
 
 ---
 
@@ -3154,7 +3180,7 @@ done
 | R-132 | HIGH     | B4   | 升级 @modelcontextprotocol/sdk 1.3 → 1.29+ 并恢复 mcp-server typecheck         |
 | R-133 | MEDIUM   | B4   | 逐步把 `any` 替换为 `unknown`/具体类型，重新启用 ESLint `no-explicit-any` 警告 |
 | R-134 | MEDIUM   | B12  | plans.test.ts 抽出 `resetDraftPlans` helper（避免 R-036 guard 漏 cleanup）     |
-| R-135 | CRITICAL | B5   | task-pack 加 task↔project 归属校验                                             |
+| R-135 | CRITICAL | B5   | task-pack 加 task↔project 归属校验                                            |
 | R-136 | CRITICAL | B2   | PLANSYNC_SECRET 增加 audit / 范围限制 / 强制 TTL                               |
 | R-137 | HIGH     | B2   | exec-scoped key 在缺 execRunId 时也强制 keyProjectId 校验                      |
 | R-138 | HIGH     | B10  | heartbeat-scanner 从 instrumentation 解耦                                      |
@@ -3171,7 +3197,7 @@ done
 | R-152 | HIGH     | B13  | plan_update/propose/activate 改写新表                                          |
 | R-153 | HIGH     | B13  | Task→Deliverable FK 中间表                                                     |
 | R-154 | HIGH     | B13  | drift-engine 切换为图 diff                                                     |
-| R-155 | HIGH     | B13  | 新增 plansync_deliverable\_\* MCP 工具                                       |
+| R-155 | HIGH     | B13  | 新增 plansync_deliverable\_\* MCP 工具                                         |
 | R-156 | MEDIUM   | B13  | Web UI Deliverable 状态时间线                                                  |
 | R-157 | HIGH     | B13  | GitHub Action drift-gate 升级为语义 gate                                       |
 | R-160 | CRITICAL | B14  | 新增 domain_events 表 + 事务内 Outbox writer                                   |
@@ -3187,14 +3213,14 @@ done
 | R-173 | HIGH     | B15  | AGENTS.md 与 CLAUDE.md 合并到 generated source                                 |
 | R-174 | MEDIUM   | B15  | CLI ai-loop system prompt 从 generated 注入                                    |
 | R-175 | HIGH     | B15  | MCP tool surface 收敛到 ≤ 12 个                                                |
-| R-176 | MEDIUM   | B15  | 文档↔工具一致性 contract test                                                  |
+| R-176 | MEDIUM   | B15  | 文档↔工具一致性 contract test                                                 |
 | R-180 | HIGH     | B16  | completion-verify 改为 advisory：永不 422                                      |
 | R-181 | HIGH     | B16  | 声明式 verification_rules 表 + 评估器                                          |
 | R-182 | HIGH     | B16  | ai_calls 表 + provider observability                                           |
 | R-183 | MEDIUM   | B16  | AI provider fallback + 限流 + 缓存                                             |
 | R-184 | MEDIUM   | B16  | UI/CLI 暴露 AI 建议 vs 规则 gate 区分                                          |
 | R-190 | HIGH     | B17  | 接收 GitHub webhook                                                            |
-| R-191 | HIGH     | B17  | commit↔deliverable 关联表 + 自动推导                                           |
+| R-191 | HIGH     | B17  | commit↔deliverable 关联表 + 自动推导                                          |
 | R-192 | HIGH     | B17  | task 状态从 git + verification rules 自动推导                                  |
 | R-193 | MEDIUM   | B17  | PR template 自动注入 deliverable refs                                          |
 | R-200 | HIGH     | B18  | 抽出 @plansync/client-core view-model 包                                       |
@@ -3241,11 +3267,13 @@ done
 **报告生成时间**：2026-05-20（首发）/ 2026-05-22（追加 R-135..R-203 共 47 条新条目）
 **生成方式**：4 个并行 explore subagent 全量扫描 + 关键路径人工核对；2026-05-22 追加由架构审计 agent 补齐"补丁解决不了"的条目
 **预计总工作量**：
+
 - 旧 134 条：~40-60 PR
 - 新 47 条：~30-50 PR（B13/B14/B15 各按 1 个里程碑 PR 更合理）
 - 总和：~70-110 PR；按 cron 每天 1 PR、人工 review，整体 backlog 清完约 3-5 个月。
 
 **消费策略建议**：
+
 1. **R-135..R-146 补丁组**：可立刻并行派 5 个 cursor agent，48h 内全部 PR 完成
 2. **B14 outbox 地基**：1 个里程碑 PR（R-160 → R-166 一次性合并），独立 reviewer 团评 1 周
 3. **B13 plan-as-code**：先 R-150 schema PR、再 R-151 backfill PR、之后 R-152..R-157 可并行
