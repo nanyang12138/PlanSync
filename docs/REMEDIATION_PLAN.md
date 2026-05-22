@@ -1730,7 +1730,7 @@
 
 #### R-097 [HIGH] CLAUDE.md 删除"exec mode 下 task_update 允许"虚假承诺
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
