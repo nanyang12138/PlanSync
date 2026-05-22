@@ -1816,7 +1816,7 @@
 
 #### R-102 [MEDIUM] 默认 Genie 路径可配置 / 平台化
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
