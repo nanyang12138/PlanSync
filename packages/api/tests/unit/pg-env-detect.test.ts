@@ -23,7 +23,10 @@ function makeMockBin(dir: string, name = 'pg_ctl'): string {
  * Runs `bash -c <cmd>` with the helper sourced. Returns trimmed stdout.
  * `env` lets the test scrub PATH / PG_BIN.
  */
-function runBash(cmd: string, env: NodeJS.ProcessEnv = {}): { stdout: string; status: number | null } {
+function runBash(
+  cmd: string,
+  env: Record<string, string | undefined> = {},
+): { stdout: string; status: number | null } {
   const res = spawnSync('bash', ['-c', cmd], {
     env: { ...process.env, ...env },
     encoding: 'utf8',
@@ -64,20 +67,17 @@ describe('scripts/pg-env.sh — detect_pg_bin (R-095)', () => {
     const stubPath = path.join(workDir, 'stub-path');
     mkdirSync(stubPath, { recursive: true });
     const pgConfigScript = path.join(stubPath, 'pg_config');
-    writeFileSync(
-      pgConfigScript,
-      `#!/bin/sh\n[ "$1" = "--bindir" ] && echo '${fakeBin}'\n`,
-      { mode: 0o755 },
-    );
+    writeFileSync(pgConfigScript, `#!/bin/sh\n[ "$1" = "--bindir" ] && echo '${fakeBin}'\n`, {
+      mode: 0o755,
+    });
     chmodSync(pgConfigScript, 0o755);
 
     // PATH = ONLY our stub + /usr/bin:/bin so candidate dirs (which are
     // absolute paths) are checked but won't have pg_ctl on a clean test host.
     // Unset PG_BIN to force probing.
-    const { stdout, status } = runBash(
-      `unset PG_BIN; . "${PG_ENV_SH}" && detect_pg_bin`,
-      { PATH: `${stubPath}:/usr/bin:/bin` },
-    );
+    const { stdout, status } = runBash(`unset PG_BIN; . "${PG_ENV_SH}" && detect_pg_bin`, {
+      PATH: `${stubPath}:/usr/bin:/bin`,
+    });
 
     // On a CI host the absolute fallback list may include a real install
     // (e.g. /usr/lib/postgresql/16/bin). In that case the helper short-circuits
@@ -91,9 +91,12 @@ describe('scripts/pg-env.sh — detect_pg_bin (R-095)', () => {
   });
 
   it('returns non-zero exit when no PG bin can be located at all', () => {
-    // Empty PATH so neither pg_config nor any candidate dir is accessible.
-    // Also override candidates by passing PG_BIN to a non-existent dir so the
-    // first branch is skipped.
+    // R-095 review #152: on a CI host where one of the absolute candidate
+    // paths (e.g. /usr/lib/postgresql/16/bin) exists, this test would be
+    // a false negative. We explicitly override the candidate list to empty
+    // via PLANSYNC_PG_BIN_CANDIDATES_OVERRIDE="" so the test is hermetic
+    // regardless of what's installed on the host. PATH is also scrubbed so
+    // pg_config fallback cannot resolve either.
     const nowhere = path.join(workDir, 'definitely-not-pg');
     const { status } = runBash(
       // Wrap in subshell to avoid bash -e killing the whole script on failure
@@ -101,6 +104,7 @@ describe('scripts/pg-env.sh — detect_pg_bin (R-095)', () => {
       {
         PG_BIN: nowhere,
         PATH: '/nonexistent-dir',
+        PLANSYNC_PG_BIN_CANDIDATES_OVERRIDE: '',
       },
     );
 
@@ -120,10 +124,9 @@ describe('scripts/local-node-runtime.sh — port_in_use fallback chain (R-095)',
 
   it('returns "free" (non-zero exit) when no probe tool is available on PATH', () => {
     // Empty PATH so neither ss, lsof nor netstat resolves
-    const { status } = runBash(
-      `. "${LOCAL_RUNTIME_SH}" >/dev/null 2>&1; port_in_use 65535`,
-      { PATH: '/nonexistent-dir' },
-    );
+    const { status } = runBash(`. "${LOCAL_RUNTIME_SH}" >/dev/null 2>&1; port_in_use 65535`, {
+      PATH: '/nonexistent-dir',
+    });
 
     expect(status).not.toBe(0);
   });

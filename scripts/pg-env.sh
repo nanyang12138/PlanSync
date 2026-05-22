@@ -21,22 +21,33 @@ detect_pg_bin() {
     return 0
   fi
 
-  local candidates=(
-    "/tool/pandora64/bin"            # AMD internal
-    "/usr/local/pgsql/bin"           # source-build default
-    "/usr/lib/postgresql/16/bin"     # Debian/Ubuntu 16
-    "/usr/lib/postgresql/15/bin"     # Debian/Ubuntu 15
-    "/usr/lib/postgresql/14/bin"     # Debian/Ubuntu 14
-    "/opt/homebrew/opt/postgresql@16/bin" # Homebrew arm64
-    "/opt/homebrew/opt/postgresql@15/bin"
-    "/opt/homebrew/opt/postgresql@14/bin"
-    "/opt/homebrew/bin"              # Homebrew arm64 generic
-    "/usr/local/opt/postgresql@16/bin" # Homebrew x86_64
-    "/usr/local/opt/postgresql@15/bin"
-    "/usr/local/opt/postgresql@14/bin"
-    "/usr/local/bin"                 # Homebrew x86_64 generic
-    "/Applications/Postgres.app/Contents/Versions/latest/bin" # Postgres.app
-  )
+  # PLANSYNC_PG_BIN_CANDIDATES_OVERRIDE — colon-separated override list,
+  # used by tests so the "no postgres anywhere" path is reproducible on hosts
+  # that happen to have a system Postgres install in one of the default
+  # candidates. Empty string is a valid value (means: skip all candidates,
+  # let pg_config fallback decide).
+  local candidates
+  if [ -n "${PLANSYNC_PG_BIN_CANDIDATES_OVERRIDE+x}" ]; then
+    # IFS-split the colon list; empty string yields an empty array.
+    IFS=":" read -r -a candidates <<<"$PLANSYNC_PG_BIN_CANDIDATES_OVERRIDE"
+  else
+    candidates=(
+      "/tool/pandora64/bin"            # AMD internal
+      "/usr/local/pgsql/bin"           # source-build default
+      "/usr/lib/postgresql/16/bin"     # Debian/Ubuntu 16
+      "/usr/lib/postgresql/15/bin"     # Debian/Ubuntu 15
+      "/usr/lib/postgresql/14/bin"     # Debian/Ubuntu 14
+      "/opt/homebrew/opt/postgresql@16/bin" # Homebrew arm64
+      "/opt/homebrew/opt/postgresql@15/bin"
+      "/opt/homebrew/opt/postgresql@14/bin"
+      "/opt/homebrew/bin"              # Homebrew arm64 generic
+      "/usr/local/opt/postgresql@16/bin" # Homebrew x86_64
+      "/usr/local/opt/postgresql@15/bin"
+      "/usr/local/opt/postgresql@14/bin"
+      "/usr/local/bin"                 # Homebrew x86_64 generic
+      "/Applications/Postgres.app/Contents/Versions/latest/bin" # Postgres.app
+    )
+  fi
 
   local dir
   for dir in "${candidates[@]}"; do
