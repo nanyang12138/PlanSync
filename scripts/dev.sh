@@ -49,10 +49,24 @@ fi
 # differs from the one stored alongside the cache directory.
 # shellcheck source=scripts/next-cache-helper.sh
 . "$SCRIPT_DIR/next-cache-helper.sh"
-BUILD_DIR="$PROJECT_DIR/packages/api/tmp/ps-next-build-$(whoami)"
+# #287/#289: BUILD_DIR must use the same identity that next.config.js uses
+# (process.env.USER). Falling back to whoami silently created a different
+# directory than Next was emitting into when USER was unset (some systemd
+# units, some bin/sh fallbacks), so the marker / clear logic operated on
+# an empty directory and Next kept its real cache untouched. Honour USER
+# first; whoami is the last-resort fallback so the script still works on
+# minimal containers where USER is not in the env.
+PLANSYNC_BUILD_USER="${USER:-$(whoami)}"
+BUILD_DIR="$PROJECT_DIR/packages/api/tmp/ps-next-build-$PLANSYNC_BUILD_USER"
+# #286/#288: package-lock.json drives every transitive dep version Next
+# bakes into the build (and SDK upgrades like @modelcontextprotocol/sdk
+# change the bundle). Without including it, `npm install` of a new
+# dep version reused the stale webpack cache and produced confusing
+# "this works locally but not after deploy" failures.
 NEXT_CACHE_INPUTS=(
   "$PROJECT_DIR/packages/api/next.config.js"
   "$PROJECT_DIR/packages/api/package.json"
+  "$PROJECT_DIR/package-lock.json"
 )
 if should_clear_next_cache "$BUILD_DIR" "${NEXT_CACHE_INPUTS[@]}"; then
   echo "Clearing stale Next.js build cache (config changed)..."
