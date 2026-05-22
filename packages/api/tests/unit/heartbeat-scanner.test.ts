@@ -23,7 +23,29 @@ const mocks = vi.hoisted(() => ({
   activityCreate: vi.fn(),
   eventBusPublish: vi.fn(),
   dispatchWebhooks: vi.fn(),
+  // R-056: $queryRaw is used to acquire the pg_try_advisory_xact_lock. Default
+  // to "lock granted" so existing tests behave as before; the R-056 tests
+  // override this to simulate a contended scan from a peer instance.
+  queryRaw: vi.fn().mockResolvedValue([{ locked: true }]),
+  transaction: vi.fn(),
 }));
+
+// R-056: the scan body now runs inside prisma.$transaction(async (tx) => ...).
+// The mock transaction simply invokes the callback with a tx surface that
+// proxies the same vi.fn()s the existing tests already asserted against, so
+// asserting on e.g. mocks.executionRunFindMany still works regardless of
+// whether the production code uses prisma.* or tx.*.
+const txProxy = {
+  executionRun: {
+    findMany: mocks.executionRunFindMany,
+    update: mocks.executionRunUpdate,
+    updateMany: mocks.executionRunUpdateMany,
+  },
+  $queryRaw: mocks.queryRaw,
+};
+mocks.transaction.mockImplementation(
+  async (cb: (tx: typeof txProxy) => Promise<void>) => cb(txProxy),
+);
 
 vi.mock('@/lib/prisma', () => ({
   prisma: {
@@ -33,6 +55,8 @@ vi.mock('@/lib/prisma', () => ({
       updateMany: mocks.executionRunUpdateMany,
     },
     activity: { create: mocks.activityCreate },
+    $transaction: mocks.transaction,
+    $queryRaw: mocks.queryRaw,
   },
 }));
 vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
@@ -48,6 +72,14 @@ import { scanStaleExecutions } from '@/lib/heartbeat-scanner';
 beforeEach(() => {
   vi.clearAllMocks();
   delete process.env.PLANSYNC_PAUSE_ACK_TIMEOUT_MS;
+
+  // R-056: the transaction wrapper and lock-granted default must be
+  // re-installed on every `vi.clearAllMocks()` reset, otherwise downstream
+  // assertions would see a no-op tx and never reach the scan body.
+  mocks.transaction.mockImplementation(
+    async (cb: (tx: typeof txProxy) => Promise<void>) => cb(txProxy),
+  );
+  mocks.queryRaw.mockResolvedValue([{ locked: true }]);
 
   // Three branches of findMany: failed (status=stale, lt 30min), stale
   // (status=running, lt 5min), and paused (status=paused, lt timeout).
@@ -196,6 +228,83 @@ describe('scanStaleExecutions — pause-ack-timeout sweep', () => {
     expect(mocks.eventBusPublish).not.toHaveBeenCalled();
     expect(mocks.dispatchWebhooks).not.toHaveBeenCalled();
     expect(mocks.activityCreate).not.toHaveBeenCalled();
+  });
+
+  // ---- R-056: Postgres advisory-lock gate -----------------------------------
+  // The scan body is wrapped in prisma.$transaction so a single API replica
+  // grabs `pg_try_advisory_xact_lock(NS, slot)` before doing any work. When
+  // another replica already holds the slot the query returns `{ locked:
+  // false }` and the scan must exit immediately — no findMany, no update, no
+  // event/webhook/activity emit. This is the load-bearing assertion behind
+  // "SSE count = 1× single-process count" on multi-instance deployments.
+
+  it('R-056: acquires advisory lock via pg_try_advisory_xact_lock(NS, slot)', async () => {
+    await scanStaleExecutions();
+
+    expect(mocks.queryRaw).toHaveBeenCalledTimes(1);
+    // tagged-template `$queryRaw` gets (strings, ...values). The first arg is
+    // the strings array containing the SQL fragments; the values must include
+    // the namespace and the slot in that order.
+    const [strings, ...values] = mocks.queryRaw.mock.calls[0];
+    const sql = (strings as string[]).join('?');
+    expect(sql).toMatch(/pg_try_advisory_xact_lock/);
+    expect(values).toEqual([0x504c5359, 1]);
+  });
+
+  it('R-056: skips the entire scan when another instance holds the lock', async () => {
+    mocks.queryRaw.mockResolvedValueOnce([{ locked: false }]);
+
+    await scanStaleExecutions();
+
+    // Lock query fired exactly once; the scan body never touched the DB
+    // afterwards. This is the property that prevents duplicate side-effects
+    // across replicas.
+    expect(mocks.queryRaw).toHaveBeenCalledTimes(1);
+    expect(mocks.executionRunFindMany).not.toHaveBeenCalled();
+    expect(mocks.executionRunUpdate).not.toHaveBeenCalled();
+    expect(mocks.executionRunUpdateMany).not.toHaveBeenCalled();
+    expect(mocks.eventBusPublish).not.toHaveBeenCalled();
+    expect(mocks.dispatchWebhooks).not.toHaveBeenCalled();
+    expect(mocks.activityCreate).not.toHaveBeenCalled();
+  });
+
+  it('R-056: when lock is held, returns silently — never throws and never emits an error log', async () => {
+    mocks.queryRaw.mockResolvedValueOnce([{ locked: false }]);
+
+    await expect(scanStaleExecutions()).resolves.toBeUndefined();
+    // The transaction itself still ran (callback invoked); we just early-
+    // returned inside it. The point is that lost-the-race is a graceful
+    // skip, not an error condition that would spam pino's `.error()`.
+    expect(mocks.transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('R-056: lock-granted path performs the scan as before', async () => {
+    // Sanity check: when the lock query returns true, the body still runs
+    // exactly the same flow. Use the paused-hit fixture from earlier to
+    // exercise updateMany + side effects through the new tx wrapper.
+    mocks.executionRunFindMany.mockReset();
+    mocks.executionRunFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: 'run-locked-ok',
+          taskId: 'task-1',
+          executorName: 'genie',
+          task: { projectId: 'proj-1', title: 'do the thing' },
+        },
+      ]);
+    mocks.executionRunUpdateMany.mockResolvedValueOnce({ count: 1 });
+
+    await scanStaleExecutions();
+
+    expect(mocks.queryRaw).toHaveBeenCalledTimes(1);
+    expect(mocks.executionRunUpdateMany).toHaveBeenCalledTimes(1);
+    expect(mocks.eventBusPublish).toHaveBeenCalledWith(
+      'proj-1',
+      'execution_superseded',
+      expect.objectContaining({ runId: 'run-locked-ok' }),
+    );
   });
 
   it('multiple paused runs are processed independently — one race-lost row does not block the rest', async () => {

@@ -1099,7 +1099,7 @@
 
 #### R-056 [MEDIUM] heartbeat scanner 改为 DB advisory lock
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B6
 - **depends_on**: —
 - **effort**: medium
