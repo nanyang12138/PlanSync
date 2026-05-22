@@ -398,7 +398,7 @@ case "$HOST" in
     CLI_DIST="$PROJECT_DIR/packages/cli/dist/index.js"
     if [ ! -f "$CLI_DIST" ]; then
       echo "❌ PlanSync Terminal not built. Run:" >&2
-      echo "   cd $PROJECT_DIR/packages/cli && node ../../node_modules/.bin/esbuild src/index.ts --bundle --platform=node --target=node18 --outfile=dist/index.js --format=cjs" >&2
+      echo "   cd $PROJECT_DIR/packages/cli && node ../../node_modules/.bin/esbuild src/index.ts --bundle --platform=node --target=node18 --outfile=dist/index.js --format=esm" >&2
       exit 1
     fi
 

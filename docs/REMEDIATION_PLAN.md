@@ -52,24 +52,44 @@
 
 ### 给 cron job 的解析约定
 
-- **ID 稳定**：`R-XXX` 永不复用，已完成的任务标 `status: done` 而不删除
-- **依赖图（唯一权威源）**：cron 调度时**只看 `depends_on` 字段**——其全部条目为 `done` 的 `pending` 条目即可 pickup。
-- **去重元数据**：条目的 `superseded_by` 字段一旦非空，cron **必须跳过**该条目；同目标的多个条目（典型如 R-144 / R-182）通过此字段串联，避免重复 migration / 重复 PR。
-- **同一批次内可并行**：除非显式 `depends_on`
-- **跨批次调度**：默认沿 `B1 → B2 → ... → B12` 字母序串行**只是兜底建议**。**B13–B18 是新增的护城河批次，其内部条目已通过 `depends_on` 显式表达跨批次依赖（如 R-160 不依赖 B1..B12 的任何条目），允许与 B1..B12 并行启动**——cron 不要把"B13 必须等 B12 全 done"当作硬规则，否则架构 batch 长期无法启动。
+- **ID 稳定**：`R-XXX` 永不复用，已完成的任务标 `status: done` 而不删除。
+- **依赖图（唯一权威源）**：cron 调度时**只看 `depends_on` 字段**。其全部条目为 `done` 的 `pending` 条目即可 pickup。
+- **同一批次内可并行**：除非显式 `depends_on`。
+- **跨批次调度**：**完全由 `depends_on` 决定**，不存在"B1 必须先于 B2"或"按字母顺序"的兜底。批次号仅用于人类阅读分组。
 
-> 简单的判定准则：**`depends_on` 是事实，旧的"按字母顺序"建议只是兜底**。当二者冲突时以 `depends_on` 为准。
+#### 去重 / 过渡 / 取代的三种字段语义
+
+为了让 cron 自动化既能去重，又不会把"过渡条目"误杀，本文档使用三个互斥字段（**最多只能出现一个**）：
+
+| 字段                    | 取值                                | cron 行为                                                                                                | 典型用途                                                      |
+| ----------------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `superseded_by: R-YYY`  | 单个 R-ID（**机读，不带说明文本**） | **强语义**：cron **必须跳过**本条，无条件优先 pickup `R-YYY`。                                           | 同目标的两条条目，新条目完全取代旧条目（如 R-144 → R-182）。  |
+| `interim_for: R-YYY`    | 单个 R-ID                           | **弱语义 / 过渡条目**：仅当 `R-YYY.status ∈ {in_progress, done}` 时 cron 跳过本条；否则本条仍可 pickup。 | 终态方案未启动前的过渡补丁（如 R-138/R-139/R-088 → 等 B14）。 |
+| `supersedes: R-YYY[,…]` | 一个或多个 R-ID                     | cron pickup 本条时，**必须**把列出的每个 `R-YYY` 状态置为 `cancelled (superseded_by R-本条)`。           | 终态方案对应的"宣告取代"链（如 R-182.supersedes: R-144）。    |
+
+> **机读约束**：以上三个字段的值**必须只包含 R-ID（与逗号分隔）**，不允许内嵌中文说明或括号注释；如需补充说明，写到 `note` 字段或正文段落，不要污染机读字段。
+>
+> 本规范在 2026-05-22 第二轮修订中引入；之前版本 `superseded_by` 的"软语义"用法已统一迁移到 `interim_for`。
 
 ### 推荐的 cron job 工作流
 
 ```bash
-# 每天凌晨触发：
+# 每天凌晨触发（伪代码，实际实现见文末 §Cron Job 调度建议）：
 1. git pull origin master
-2. grep "status: pending" docs/REMEDIATION_PLAN.md → 取所有候选
-3. 过滤 depends_on 已 done 的
-4. 按严重度排序，取最高 N 个
-5. 为每个任务调用 cursor agent / Cloud Agent 执行
-6. agent 完成后：开 PR + 把文档里对应条目改 status: done + commit
+2. 解析 docs/REMEDIATION_PLAN.md，对每个 #### R-XXX 段落抽取：
+     status, depends_on, superseded_by, interim_for, supersedes, severity
+3. 过滤候选集合：
+     status == 'pending'
+     AND superseded_by 为空                                # 强取代：直接跳过
+     AND ( interim_for 为空
+           OR lookup(interim_for).status NOT IN {in_progress, done} )  # 过渡条目仅在终态未启动时保留
+     AND ALL(d in depends_on : lookup(d).status == 'done') # 依赖全部满足
+4. 按严重度（CRITICAL > HIGH > MEDIUM > LOW）排序，取最高 N 个
+5. 为每个任务调用 cursor agent / Cloud Agent 执行；agent 必须：
+     - 在开 PR 之前，若本条声明了 supersedes，把列出的每个 R-YYY 状态置为
+       'cancelled' 并 commit（避免下一次 cron 仍把 R-YYY 当 pending）
+     - 把本条 status: pending → in_progress + closed_in: <PR URL>
+     - PR 合并后再改为 status: done
 ```
 
 ### 状态字段维护规则
@@ -114,16 +134,16 @@
 | **B17** | Git 真集成                     | 4      | task 状态由 PR/commit 推导，不再自报      |
 | **B18** | Service 拆分 + view-model 共享 | 4      | API/Worker/Web 三进程，三 surface 单数据  |
 
-> **新批次依赖关系**（务必串行）：
+> **新批次依赖关系**（最终权威以每条 `depends_on` 为准；下方为人类阅读摘要）：
 >
-> - B13 ← 独立可启动；是 B17 的前置
-> - B14 ← 独立可启动；是 B15/B16/B17/B18 的事件层前置
-> - B15 ← 依赖 R-146（prompt 合并）
-> - B16 ← 依赖 R-143（AI observability 落地）
-> - B17 ← 依赖 B13（deliverable schema）+ B14（github webhook 走 outbox）
-> - B18 ← 依赖 B14（worker 拆分）+ B13/B15 schema 稳定后再做
+> - B13 ← 入口 R-150 独立可启动；是 B17 的前置
+> - B14 ← 入口 R-160 独立可启动；是 B15/B16/B17/B18 的事件层前置
+> - B15 ← 入口 R-170/R-171 独立可启动；R-172/R-173/R-174 依赖 R-146（prompt 合并）
+> - B16 ← R-180 依赖 R-143（AI observability 落地）；R-182 独立可启动
+> - B17 ← R-190 依赖 R-160（outbox），R-191/R-192 进一步依赖 B13 deliverable schema
+> - B18 ← R-202 依赖 R-138/R-166（worker 拆分）；R-200/R-201 依赖 R-027/R-030
 >
-> **首发推荐顺序**：先 R-135..R-146 补丁清场 → 启动 B14 outbox 地基 → B13 plan 重模 → B15 协议化 → B16/B17 并行 → 最后 B18 拆服务
+> **首发推荐顺序（建议，非强制；cron 仍只看 `depends_on`）**：先 R-135..R-146 补丁清场 → 启动 B14 outbox 地基 → B13 plan 重模 → B15 协议化 → B16/B17 并行 → 最后 B18 拆服务
 
 ---
 
@@ -1587,10 +1607,12 @@
 - **status**: in_progress
 - **batch**: B9
 - **depends_on**: —
+- **interim_for**: R-163
 - **effort**: large
 - **files**: `packages/api/src/lib/event-bus.ts` (行 134-136), 新文件 `event-bus-pg.ts`
 - **symptom**: 生产多实例 SSE 客户端收不到跨实例事件
 - **root_cause**: 内存 bus 实例隔离
+- **note**: B14 outbox 地基（R-160 → R-163）落地后，SSE relay 改吃 outbox（R-163），本条作为过渡补丁可独立先合；当 R-163 进入 `in_progress` 或 `done` 时，cron 自动跳过本条。
 - **fix_steps**:
   1. 新增 `EventBusPG` 实现：使用 `pg` 包的 LISTEN/NOTIFY；通道 `plansync_project_<id>` + `plansync_user_<name>`
   2. 现有 EventBus 接口保留为本地代理（前端 broadcast 仍要分发到本进程订阅）
@@ -1744,7 +1766,7 @@
 
 #### R-098 [MEDIUM] CLAUDE.md "Three contexts produce comments" 文案修正
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
@@ -1770,7 +1792,7 @@
 
 #### R-100 [MEDIUM] bin/plansync 错误消息修正 `--format=cjs` → `--format=esm`
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
@@ -1806,7 +1828,7 @@
 
 #### R-103 [LOW] dev.sh 不再每次清 .next
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
@@ -2007,7 +2029,7 @@
 
 #### R-122 [MEDIUM] webhook delivery 单测（HMAC、retry、idempotency）
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B12
 - **depends_on**: —
 - **effort**: medium
@@ -2016,7 +2038,7 @@
 
 #### R-123 [MEDIUM] auth.ts 密码缓存边界单测
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B12
 - **depends_on**: —
 - **effort**: small
@@ -2095,7 +2117,8 @@
 
 #### R-131 [HIGH] 升级 Next.js 14 → 16（修复残留 high CVE）
 
-- **status**: pending
+- **status**: blocked
+- **blocked_reason**: fix_step 5 要求修改 `.github/workflows/validate.yml`（恢复 audit-level=high），autonomous Cloud Agent 硬约束禁止改动 `.github/workflows/*`；此外 fix_step 3 "处理 App Router、middleware、Pages Router compatibility" 范围开放（涉及 Next 14→15→16 两个大版本跨越、React 18→19 升级，rollback 注释也明示"大 PR，建议单独 feature branch + 灰度 + revert plan"），不适合 autonomous run 一次完成，需人工分批分发后再 unblock。
 - **batch**: B10
 - **depends_on**: —
 - **effort**: large
@@ -2185,7 +2208,7 @@
 > - **R-135..R-146**：归入既有批次的**补丁型**修复（cron 可立刻 pickup）
 > - **R-150..R-203**：6 个**全新批次 B13–B18**，目标是把产品从"prompt-engineered PM tool"升级为"protocol-engineered AI orchestration runtime"
 >
-> Cron flow 按原规则消费。**强烈建议 B13/B14/B15 按顺序串行**——是其他改造的地基。
+> Cron flow 按原规则消费（仅看 `depends_on` + `superseded_by` + `interim_for`，详见 §"给 cron job 的解析约定"）。**B13、B14 入口条目 `depends_on` 为空，可立即并行启动**；B15/B16/B17/B18 的关键 cross-batch 依赖已写入对应条目的 `depends_on`，无需人工排批次顺序。
 
 ---
 
@@ -2197,7 +2220,7 @@
 
 #### R-135 [CRITICAL] task-pack 加 task↔project 归属校验，关闭跨项目读取
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B5
 - **depends_on**: —
 - **effort**: small
@@ -2225,16 +2248,23 @@
 - **symptom**: `PLANSYNC_SECRET` + 任意 `X-User-Name` → 以该用户身份操作；env 泄露 = 全量横向移动；目前**无审计、无白名单、无受限用户列表**
 - **root_cause**: master 路径设计为开发态调试工具，但 R-010 允许生产使用后没补滥用控制
 - **fix_steps**:
-  1. 新增 `master-audit.ts`：每次 master delegation 命中写 `master_delegations`（who, target, route, ip, ua, at）
+  1. 新增 `master-audit.ts`：每次 master delegation 命中写 `master_delegations`（who, target, route, ip, ua, at, expires_at）
   2. env.ts 新增 `PLANSYNC_MASTER_ALLOWED_TARGETS`（CSV，未配置时**生产默认禁用 master**）
   3. 新增 `PLANSYNC_MASTER_DENY_TARGETS`
   4. master 命中后**只能用于读取与 comment 类 safe write**，不能 propose/activate plan
   5. 暴露 `/api/auth/master-audit?since=` owner-only 查询
+  6. **强制 TTL**：env.ts 新增 `PLANSYNC_MASTER_DELEGATION_TTL_MIN`（默认 60，最大 1440）；
+     - `master_delegations` 表加 `expires_at TIMESTAMPTZ NOT NULL`，由 INSERT 时 `now() + ttl` 计算
+     - master 命中（同一 caller + targetUser）若 5 分钟内已有未过期 delegation → 复用，否则新插一行
+     - 每次进入 master 路径都强制比对 `expires_at > now()`，过期立即 401 + 要求重新发起 delegation；过期行不复用
+     - 后台 cron / scanner 每 10min 删除 `expires_at < now() - interval '7 days'` 的历史行
 - **verification**:
   - vitest：未设 ALLOWED 时生产模式调用 → 403
   - vitest：deny list 命中 → 403
   - vitest：调 plan_propose → 403
-- **rollback**: env flag `PLANSYNC_MASTER_LEGACY=true` 临时跳过
+  - vitest：TTL 默认 60min；伪造 `expires_at = now() - 1s` 的行被拒，返回 401 + `code: MASTER_DELEGATION_EXPIRED`
+  - vitest：连续两次 master 命中 < 5min 内只 INSERT 一行；超过 TTL 后第三次命中新插一行
+- **rollback**: env flag `PLANSYNC_MASTER_LEGACY=true` 临时跳过（仅开发环境允许）
 
 ---
 
@@ -2257,12 +2287,13 @@
 
 #### R-138 [HIGH] heartbeat-scanner 从 instrumentation 解耦，改为显式 worker 入口
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B10
 - **depends_on**: —
-- **superseded_by**: R-166（B14 落地后 R-166 一次性完成进程拆分；本条是过渡，可独立先合）
+- **interim_for**: R-166
 - **effort**: small
 - **files**: `packages/api/src/instrumentation.ts`, 新增 `packages/api/scripts/run-worker.ts`, `packages/api/package.json`
+- **note**: B14 落地后 R-166 一次性完成进程拆分；本条是过渡补丁，可独立先合；R-166 进入 `in_progress` 或 `done` 时 cron 自动跳过本条。
 - **symptom**: Next.js 每个 Node worker 进程都开 60s 定时器；advisory lock 已解决重复工作，但浪费资源 + serverless 部署完全不工作
 - **root_cause**: `instrumentation.ts` 无条件 `startHeartbeatScanner()`，把后台 worker 与 API 进程绑死
 - **fix_steps**:
@@ -2280,9 +2311,10 @@
 - **status**: pending
 - **batch**: B9
 - **depends_on**: R-138
-- **superseded_by**: R-164（B14 落地后 webhook dispatcher 改吃 outbox；本条是过渡，可独立先合）
+- **interim_for**: R-164
 - **effort**: medium
 - **files**: `packages/api/prisma/schema.prisma`（新表 `webhook_jobs`）, `packages/api/src/lib/webhook.ts`, 新增 `packages/api/src/lib/webhook-worker.ts`
+- **note**: B14 落地后 webhook dispatcher 改吃 outbox（R-164）；本条是过渡补丁，可独立先合；R-164 进入 `in_progress` 或 `done` 时 cron 自动跳过本条。
 - **symptom**: API 进程在 1s/5s/30s 重试 sleep 期间重启 → 整张重试表蒸发；用户看到失败
 - **root_cause**: `deliverWithRetry` 的 schedule 完全活在 `setTimeout` + Promise 内存里，进程级状态而非 DB 级
 - **fix_steps**:
@@ -2374,7 +2406,7 @@
 - **status**: pending
 - **batch**: B11
 - **depends_on**: —
-- **superseded_by**: R-182（若 R-182 状态为 `in_progress` 或 `done`，cron **必须**跳过本条；二者是同一目标的过渡版与最终版，避免重复 migration）
+- **superseded_by**: R-182
 - **effort**: medium
 - **files**: schema, `packages/api/src/lib/ai/client.ts`
 - **fix_steps**:
@@ -2382,7 +2414,7 @@
   2. `aiClient.complete` 加 `purpose` 参数，每次 INSERT
   3. `/api/ai-usage?since=` owner-only 汇总
 - **verification**: vitest：drift enrich → ai_calls 多一行 purpose='drift_impact'；provider 失败 → ok=false
-- **note**: 与 B16/R-182 同目标。若先做 R-182 则本条标 cancelled
+- **note**: 与 B16/R-182 同目标，R-182 是最终版（`R-182.supersedes` 显式列出本条）。强语义：cron 必跳过本条，pickup R-182 时由 agent 把本条状态置为 `cancelled`。
 
 ---
 
@@ -2405,7 +2437,8 @@
 
 #### R-146 [HIGH] CLAUDE.md / AGENTS.md / ai-loop prompt 合并到 single source
 
-- **status**: pending
+- **status**: blocked
+- **blocked_reason**: fix_step 3 强制要求新增 CI lint workflow，autonomous agent 受 hard-rule 限制不得修改 `.github/workflows/*`；同时 fix_steps 涉及对 CLAUDE.md/AGENTS.md（workspace 级 agent rule 源）做整体重写并落地 protocol.md + render-prompts.ts 双轨工具链，跨工具链 + 多 surface 重构超出单 run 安全范围，需要架构方先做拆条目设计。
 - **batch**: B10
 - **depends_on**: —
 - **effort**: medium
@@ -2533,10 +2566,13 @@
 - **batch**: B13
 - **depends_on**: R-155
 - **effort**: medium
-- **files**: 新增 `packages/api/src/components/plan/deliverable-timeline.tsx`
+- **files**: 新增 `packages/api/src/components/plan/deliverable-timeline.tsx`, `packages/api/src/app/projects/[projectId]/plans/[planId]/deliverables/page.tsx`
 - **fix_steps**:
   1. 每个 deliverable 一张卡片：status badge、引用它的 task 列表、historical superseded 链
   2. 挂 comment thread（PlanComment 加 `deliverableId`）
+- **verification**:
+  - playwright：打开计划页 → 看到 deliverable 卡片，状态 badge 与 API 返回一致
+  - vitest：`PlanComment.deliverableId` 在创建评论后正确写入并能按 deliverable 过滤拉取
 
 ---
 
@@ -2735,8 +2771,9 @@
 - **batch**: B15
 - **depends_on**: R-146, R-172
 - **effort**: small
+- **files**: `claude-md/protocol.md`, `scripts/render-prompts.ts`, `CLAUDE.md`, `AGENTS.md`
 - **fix_steps**: 一处权威源；render 输出 2 份目标
-- **verification**: CI 强制 render 一致
+- **verification**: CI 强制 render 一致（`npm run render:prompts && git diff --exit-code` 必须空）
 
 ---
 
@@ -2748,6 +2785,7 @@
 - **effort**: small
 - **files**: `packages/cli/src/ai-loop.ts`
 - **fix_steps**: `buildSystemPrompt` 改为读 `generated/system-prompt.txt`
+- **verification**: vitest：mock 文件读取 → `buildSystemPrompt` 输出与 generated 文件一致；缺文件时给出明确错误
 
 ---
 
@@ -2822,9 +2860,10 @@
 - **status**: pending
 - **batch**: B16
 - **depends_on**: —
-- **supersedes**: R-144（pickup 本条时，cron 应同步把 R-144 状态置为 `cancelled (superseded_by R-182)`，避免重复 migration / 重复 PR）
+- **supersedes**: R-144
 - **effort**: medium
 - **files**: schema 新表 `ai_calls`（同 R-144），`packages/api/src/lib/ai/client.ts`
+- **note**: pickup 本条时，agent 必须同步把 R-144 状态置为 `cancelled (superseded_by R-182)` 并 commit，避免重复 migration / 重复 PR；详见 §"给 cron job 的解析约定"。
 - **symptom**: LLM 调用全无 observability：无 cost / latency / model / dedup；无法 ROI 评估；同 input 重复打到 provider
 - **root_cause**: `aiClient.complete` 只 logger.warn 失败，不记录任何成功调用元数据
 - **fix_steps**:
@@ -2860,10 +2899,14 @@
 - **batch**: B16
 - **depends_on**: R-180, R-181
 - **effort**: small
+- **files**: `packages/api/src/app/api/projects/[projectId]/tasks/[taskId]/runs/[runId]/route.ts`, `packages/api/src/components/run/run-status.tsx`, `packages/cli/src/commands.ts`
 - **fix_steps**:
   1. complete 失败 error envelope 区分 `gate: 'rule'` vs `advisory: 'ai_low_score'`
   2. UI 不同颜色 / icon
   3. CLI `/explain rule <id>`
+- **verification**:
+  - vitest：rule gate 命中 → 422 body `{ gate: 'rule', ruleId: ... }`；AI 评低分 → 200 但响应含 `advisory.kind === 'ai_low_score'`
+  - playwright：UI 在两种场景渲染不同 badge
 
 ---
 
@@ -2884,6 +2927,7 @@
   1. 验证 GitHub HMAC
   2. 解析事件 → 写 `domain_events`（eventType=`github_push` 等）
   3. 项目级配置 `Project.githubRepo` + `Project.githubWebhookSecret`
+- **verification**: vitest：错 HMAC → 401；正确 push → `domain_events` 表新增一行 `eventType='github_push'`；payload 字段 schema-parse 通过
 
 ---
 
@@ -2893,10 +2937,11 @@
 - **batch**: B17
 - **depends_on**: R-190, R-150
 - **effort**: medium
-- **files**: schema 新表 `CommitDeliverableLink { sha, deliverableId, matchedBy }`
+- **files**: schema 新表 `CommitDeliverableLink { sha, deliverableId, matchedBy }`, 新增 `packages/api/src/lib/git/link-commits.ts`
 - **fix_steps**:
   1. worker 消费 `github_push` → 对每个 commit 比对文件 vs deliverable.refUri → 写关联
   2. commit message 含 `[deliverable:<slug>]` 时强匹配优先
+- **verification**: vitest：构造一个 push 事件 → 文件命中 deliverable A 的 glob → 写入 `CommitDeliverableLink(sha, A, matchedBy='glob')`；带 `[deliverable:slug]` 的 commit → `matchedBy='message'`
 
 ---
 
@@ -2906,9 +2951,11 @@
 - **batch**: B17
 - **depends_on**: R-181, R-191
 - **effort**: medium
+- **files**: `packages/api/src/app/api/projects/[projectId]/tasks/[taskId]/runs/[runId]/route.ts`, `packages/api/src/lib/task-state-machine.ts`
 - **fix_steps**:
   1. task.complete 不再由 agent 单方面发起；改 `request_complete` → 系统判 (PR merged) ∧ (deliverable evidence) ∧ (no drift) → auto done
   2. 任一未达成 → status='awaiting_evidence' + 列出缺失项
+- **verification**: vitest：PR 未合并 → status='awaiting_evidence'，response.missing 包含 `pr_merged`；全部命中 → status='done'
 
 ---
 
@@ -2918,7 +2965,9 @@
 - **batch**: B17
 - **depends_on**: R-157, R-191
 - **effort**: small
+- **files**: `packages/integrations/github-action/src/index.ts`, `packages/integrations/github-action/action.yml`
 - **fix_steps**: GitHub Action 在 PR 创建/更新时，update PR body 一段 `<!-- plansync-status -->...<!-- /plansync-status -->`
+- **verification**: action 集成测试：构造 PR 事件 → 调用 mock GitHub API → 看到 PR body 被注入 `<!-- plansync-status -->` 块；二次运行只更新块内内容、不重复追加
 
 ---
 
@@ -2951,10 +3000,12 @@
 - **batch**: B18
 - **depends_on**: R-200
 - **effort**: large
+- **files**: `packages/api/src/components/**`, `packages/cli/src/commands.ts`, `packages/cli/src/ai-loop.ts`, `packages/cli/src/sse-listener.ts`, 新增 `packages/client-core/`（由 R-200 提供）
 - **fix_steps**:
   1. Web RSC + client components 改用 client-core stores
   2. CLI commands.ts / ai-loop.ts / sse-listener.ts 改用同组 store
   3. **B7 中 CLI/Web 不一致条目** → 大量 close as cancelled
+- **verification**: 全包 `npm run build`、`npm run test` 全绿；旧 fetch 直调代码搜不到（`grep -r "psRequest" packages/cli/src/commands.ts | wc -l == 0`）
 
 ---
 
@@ -2969,6 +3020,7 @@
   1. API 包仅保留 `/api/*` + worker
   2. web 包保留 RSC + 客户端组件，调 API via env URL
   3. 部署文档：单机用 next.js + worker；多机/serverless 用三服务
+- **verification**: `packages/web` 可在没有 `packages/api` 同进程的情况下启动；e2e：通过 env `PLANSYNC_API_URL` 指向 API 实例时 UI 流程不回归
 
 ---
 
@@ -2983,6 +3035,7 @@
   1. 三服务：plansync-api, plansync-web, plansync-worker
   2. 一份 Postgres、可选 Redis
   3. README 增加部署矩阵
+- **verification**: `docker-compose up` 三服务全部 healthy；`helm template deploy/helm` 输出通过 `kubectl --dry-run=client apply -f -` 校验
 
 ---
 
@@ -2998,6 +3051,8 @@
 
 ### 简单实现思路（伪代码）
 
+> 实现完整去重过滤：`status=pending` ∧ `superseded_by` 为空 ∧（`interim_for` 为空 ∨ 目标条目状态 ∉ {in_progress, done}）∧ 全部 `depends_on` 已 `done`。Bash 解析能力有限，**生产请改用一个真正的解析器**（Python / Node 脚本读 markdown），下面只是最小可运行示例。
+
 ```bash
 #!/usr/bin/env bash
 # /opt/plansync-cron/dispatch.sh
@@ -3005,28 +3060,55 @@ set -euo pipefail
 cd /opt/plansync-repo
 git fetch origin && git checkout master && git pull
 
-# 抽出 pending 任务的 ID 列表
-PENDING=$(grep -E "^- \*\*status\*\*: pending" docs/REMEDIATION_PLAN.md \
-  | head -200 | awk -F'R-' '{print "R-"$2}' | awk '{print $1}')
+# 抽 R-XXX 段落里的某个字段；找不到回 ""
+field_of() {
+  local id="$1" key="$2"
+  sed -n "/^#### $id /,/^#### R-/p" docs/REMEDIATION_PLAN.md \
+    | grep "^\- \*\*$key\*\*:" | head -1 \
+    | sed "s/^- \*\*$key\*\*:[[:space:]]*//"
+}
 
-for ID in $PENDING; do
-  # 检查依赖是否已 done
-  DEPS=$(sed -n "/### $ID /,/^### /p" docs/REMEDIATION_PLAN.md \
-    | grep "depends_on" | sed 's/.*depends_on\*\*: //')
-  if [ "$DEPS" != "—" ]; then
+status_of()        { field_of "$1" status        | awk '{print $1}'; }
+deps_of()          { field_of "$1" depends_on; }
+superseded_by_of() { field_of "$1" superseded_by; }
+interim_for_of()   { field_of "$1" interim_for; }
+
+# 抽出 pending 任务的 ID 列表
+PENDING_IDS=$(grep -nE "^#### R-[0-9]+ " docs/REMEDIATION_PLAN.md \
+  | awk '{print $2}')                            # 形如 R-001 R-002 ...
+
+for ID in $PENDING_IDS; do
+  [ "$(status_of "$ID")" = "pending" ] || continue
+
+  # 1) 强语义取代：superseded_by 非空 → 直接跳过
+  SUP=$(superseded_by_of "$ID")
+  [ -n "$SUP" ] && [ "$SUP" != "—" ] && continue
+
+  # 2) 弱语义过渡：interim_for 非空 + 目标条目已启动 → 跳过
+  INT=$(interim_for_of "$ID")
+  if [ -n "$INT" ] && [ "$INT" != "—" ]; then
+    TGT_STATUS=$(status_of "$INT")
+    case "$TGT_STATUS" in
+      in_progress|done) continue ;;
+    esac
+  fi
+
+  # 3) 依赖图：depends_on 全部 done 才能 pickup
+  DEPS=$(deps_of "$ID")
+  if [ -n "$DEPS" ] && [ "$DEPS" != "—" ]; then
     UNMET=0
     for D in $(echo "$DEPS" | tr ',' ' '); do
       D=$(echo "$D" | xargs)
-      STATUS=$(sed -n "/### $D /,/^### /p" docs/REMEDIATION_PLAN.md \
-        | grep "^\- \*\*status\*\*" | head -1 | awk '{print $NF}')
-      [ "$STATUS" != "done" ] && UNMET=1
+      [ -z "$D" ] && continue
+      [ "$(status_of "$D")" != "done" ] && UNMET=1 && break
     done
     [ $UNMET -eq 1 ] && continue
   fi
 
-  # 调 Cloud Agent
+  # 4) 调 Cloud Agent；agent 自身负责处理 supersedes 字段（pickup 本条时
+  #    把列出的每个 R-YYY 状态置为 cancelled 并 commit）
   cursor-agent dispatch \
-    --prompt "Implement task $ID from docs/REMEDIATION_PLAN.md. Read the file, find the section for $ID, follow fix_steps exactly, add verification tests, open a PR. After PR is opened, update the entry to status: in_progress + closed_in: <PR URL>." \
+    --prompt "Implement task $ID from docs/REMEDIATION_PLAN.md. Read the file, find the section for $ID, follow fix_steps exactly, add verification tests, open a PR. If the entry has a 'supersedes:' field, set each listed R-YYY to status: cancelled (superseded_by $ID) in the same PR. After PR is opened, update the entry to status: in_progress + closed_in: <PR URL>." \
     --base master \
     --branch "cursor/$ID-auto"
 
@@ -3230,11 +3312,11 @@ done
 | R-202 | HIGH     | B18  | 拆 plansync-web 独立部署                                                       |
 | R-203 | MEDIUM   | B18  | 部署拓扑文档 + docker-compose / helm chart                                     |
 
-**统计**（含 2026-05-22 追加）：
+**统计**（含 2026-05-22 追加；与正文 `^#### R-XXX [SEVERITY]` 标题精确一致）：
 
-- CRITICAL: 7 + 8 = **15**
+- CRITICAL: 8 + 8 = **16**
 - HIGH: 62 + 30 = **92**
-- MEDIUM: 51 + 9 = **60**
+- MEDIUM: 50 + 9 = **59**
 - LOW: 14 + 0 = **14**
 - **合计 181 条**（其中 2026-05-22 追加 47 条）
 

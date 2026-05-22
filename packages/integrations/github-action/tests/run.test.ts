@@ -252,4 +252,129 @@ describe('github-action run()', () => {
     expect(coreMock.setOutput).toHaveBeenCalledWith('drift-count', '0');
     expect(coreMock.setOutput).toHaveBeenCalledWith('has-drift', 'false');
   });
+
+  // ---- #146 — drifts must paginate; a HIGH drift on page 2 must still gate ----
+  it('#146: paginates /drifts and surfaces HIGH severity entries on later pages', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'task-ids': 't-target',
+    });
+    // Page 1: full page of unrelated drifts (forces the loop to fetch page 2).
+    const page1 = Array.from({ length: 100 }, (_, i) => ({
+      id: `d-page1-${i}`,
+      taskId: `t-other-${i}`,
+      severity: 'low',
+      taskBoundVersion: 1,
+      currentPlanVersion: 2,
+    }));
+    // Page 2: contains the in-scope HIGH drift.
+    const page2 = [
+      {
+        id: 'd-target',
+        taskId: 't-target',
+        severity: 'high',
+        taskBoundVersion: 1,
+        currentPlanVersion: 2,
+      },
+    ];
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: page1 }));
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: page2 }));
+
+    const { run } = await import('../index');
+    await run();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(String(fetchSpy.mock.calls[0][0])).toMatch(/\/drifts\?status=open&page=1/);
+    expect(String(fetchSpy.mock.calls[1][0])).toMatch(/\/drifts\?status=open&page=2/);
+    expect(coreMock.setFailed).toHaveBeenCalledWith('High severity drift detected');
+    expect(coreMock.setOutput).toHaveBeenCalledWith('drift-count', '1');
+  });
+
+  // ---- #147 — whitespace branch-name must not silently pass the gate ----
+  it('#147: whitespace branch-name falls back to project-wide warning, not silent pass', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'branch-name': '   ',
+    });
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(200, {
+        data: [
+          {
+            id: 'd-high',
+            taskId: 't-something',
+            severity: 'high',
+            taskBoundVersion: 1,
+            currentPlanVersion: 2,
+          },
+        ],
+      }),
+    );
+
+    const { run } = await import('../index');
+    await run();
+
+    // Whitespace input must not be treated as a real branch — it must NOT
+    // fetch /tasks (which is what the previous bug did before failing the
+    // build silently).
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(String(fetchSpy.mock.calls[0][0])).toMatch(/\/drifts\?status=open/);
+
+    const warnings = coreMock.warning.mock.calls.map((c) => String(c[0]));
+    expect(warnings.some((w) => w.includes('project-wide mode'))).toBe(true);
+    // The HIGH drift is still gated — we did not silently pass.
+    expect(coreMock.setFailed).toHaveBeenCalledWith('High severity drift detected');
+  });
+
+  // ---- #147 — explicit branch with zero matching tasks must fail loudly ----
+  it('#147: explicit branch-name with 0 matching tasks fails the build loudly', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'branch-name': 'feat/typo',
+    });
+    // /tasks page 1 returns 0 tasks → no scoped IDs.
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] }));
+
+    const { run } = await import('../index');
+    await run();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const failed = String(coreMock.setFailed.mock.calls[0]?.[0] ?? '');
+    expect(failed).toMatch(/no tasks found with branchName="feat\/typo"/);
+  });
+
+  // ---- #148 — task pagination cap must surface, not silently truncate ----
+  it('#148: task pagination cap fails the build instead of returning a partial scope', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'branch-name': 'feat/big-project',
+    });
+    // Always return a full page so the loop never naturally terminates.
+    const fullPage = Array.from({ length: 100 }, (_, i) => ({
+      id: `t-${i}`,
+      branchName: 'feat/other',
+    }));
+    for (let i = 0; i < 50; i += 1) {
+      fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: fullPage }));
+    }
+
+    const { run } = await import('../index');
+    await run();
+
+    // 50 task fetches happened, then the action bailed out — no /drifts call.
+    expect(fetchSpy).toHaveBeenCalledTimes(50);
+    expect(
+      fetchSpy.mock.calls.every((c) => String(c[0]).includes('/tasks?page=')),
+    ).toBe(true);
+
+    const failed = String(coreMock.setFailed.mock.calls[0]?.[0] ?? '');
+    expect(failed).toMatch(/scope would be incomplete/);
+  });
 });
