@@ -2117,7 +2117,8 @@
 
 #### R-131 [HIGH] 升级 Next.js 14 → 16（修复残留 high CVE）
 
-- **status**: pending
+- **status**: blocked
+- **blocked_reason**: fix_step 5 要求修改 `.github/workflows/validate.yml`（恢复 audit-level=high），autonomous Cloud Agent 硬约束禁止改动 `.github/workflows/*`；此外 fix_step 3 "处理 App Router、middleware、Pages Router compatibility" 范围开放（涉及 Next 14→15→16 两个大版本跨越、React 18→19 升级，rollback 注释也明示"大 PR，建议单独 feature branch + 灰度 + revert plan"），不适合 autonomous run 一次完成，需人工分批分发后再 unblock。
 - **batch**: B10
 - **depends_on**: —
 - **effort**: large
