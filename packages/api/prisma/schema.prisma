@@ -161,6 +161,10 @@ model Task {
   executionRuns ExecutionRun[]
   driftAlerts   DriftAlert[]
 
+  // R-075: composite indexes to back hot task-list queries
+  // (listing tasks by status, my-work / assignee lookups).
+  @@index([projectId, status])
+  @@index([projectId, assignee])
   @@map("tasks")
 }
 
