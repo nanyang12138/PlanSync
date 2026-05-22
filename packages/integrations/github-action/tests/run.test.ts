@@ -82,4 +82,174 @@ describe('github-action run()', () => {
     expect(coreMock.setSecret).not.toHaveBeenCalled();
     expect(coreMock.setFailed).toHaveBeenCalledWith('unauthorized');
   });
+
+  it('warns and gates on all project drifts when neither task-ids nor branch-name is provided', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+    });
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(200, {
+        data: [
+          {
+            id: 'd1',
+            taskId: 't1',
+            severity: 'high',
+            taskBoundVersion: 1,
+            currentPlanVersion: 2,
+          },
+        ],
+      }),
+    );
+
+    const { run } = await import('../index');
+    await run();
+
+    // Surface the project-wide warning so users understand the gate is broad.
+    const warnings = coreMock.warning.mock.calls.map((c) => String(c[0]));
+    expect(warnings.some((w) => w.includes('project-wide mode'))).toBe(true);
+    expect(coreMock.setFailed).toHaveBeenCalledWith('High severity drift detected');
+    expect(coreMock.setOutput).toHaveBeenCalledWith('drift-count', '1');
+    expect(coreMock.setOutput).toHaveBeenCalledWith('has-drift', 'true');
+  });
+
+  it('R-094: only gates on drifts whose taskId is in the explicit task-ids input', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'task-ids': ' t1 , t2 ',
+    });
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(200, {
+        data: [
+          {
+            id: 'd-out',
+            taskId: 't-other',
+            severity: 'high',
+            taskBoundVersion: 1,
+            currentPlanVersion: 2,
+            task: { title: 'Unrelated PR task' },
+          },
+          {
+            id: 'd-in',
+            taskId: 't2',
+            severity: 'medium',
+            taskBoundVersion: 1,
+            currentPlanVersion: 2,
+            task: { title: 'My PR task' },
+          },
+        ],
+      }),
+    );
+
+    const { run } = await import('../index');
+    await run();
+
+    // The out-of-scope HIGH drift must NOT fail the build.
+    expect(coreMock.setFailed).not.toHaveBeenCalled();
+    // Only the in-scope MEDIUM drift counts.
+    expect(coreMock.setOutput).toHaveBeenCalledWith('drift-count', '1');
+    expect(coreMock.setOutput).toHaveBeenCalledWith('has-drift', 'true');
+
+    const infos = coreMock.info.mock.calls.map((c) => String(c[0]));
+    expect(infos.some((m) => m.includes('Scoping drift check to 2 explicit task id(s)'))).toBe(
+      true,
+    );
+    expect(infos.some((m) => m.includes('Ignored 1 open drift'))).toBe(true);
+
+    // The project-wide warning should NOT be emitted in scoped mode.
+    const warnings = coreMock.warning.mock.calls.map((c) => String(c[0]));
+    expect(warnings.some((w) => w.includes('project-wide mode'))).toBe(false);
+  });
+
+  it('R-094: branch-name input fetches tasks and scopes drifts to those with matching branchName', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'branch-name': 'feat/foo',
+    });
+
+    // First HTTP call: GET /tasks?page=1 — returns a page smaller than pageSize
+    // so the loop stops after one fetch.
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(200, {
+        data: [
+          { id: 't-match-1', branchName: 'feat/foo' },
+          { id: 't-other', branchName: 'feat/bar' },
+          { id: 't-null', branchName: null },
+        ],
+      }),
+    );
+
+    // Second HTTP call: GET /drifts — return one drift in scope (HIGH) and
+    // one drift on an unrelated branch (HIGH). Only the in-scope one should
+    // gate the build.
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(200, {
+        data: [
+          {
+            id: 'd-out',
+            taskId: 't-other',
+            severity: 'high',
+            taskBoundVersion: 1,
+            currentPlanVersion: 2,
+          },
+          {
+            id: 'd-in',
+            taskId: 't-match-1',
+            severity: 'high',
+            taskBoundVersion: 1,
+            currentPlanVersion: 2,
+          },
+        ],
+      }),
+    );
+
+    const { run } = await import('../index');
+    await run();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/tasks?page=1');
+    expect(String(fetchSpy.mock.calls[1][0])).toContain('/drifts?status=open');
+
+    expect(coreMock.setOutput).toHaveBeenCalledWith('drift-count', '1');
+    expect(coreMock.setFailed).toHaveBeenCalledWith('High severity drift detected');
+
+    const infos = coreMock.info.mock.calls.map((c) => String(c[0]));
+    expect(infos.some((m) => m.includes('Scoping drift check to 1 task(s) on branch "feat/foo"'))).toBe(
+      true,
+    );
+  });
+
+  it('R-094: scoped mode with no in-scope drifts passes the gate even when other open drifts exist', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'task-ids': 't-mine',
+    });
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(200, {
+        data: [
+          {
+            id: 'd-out',
+            taskId: 't-other',
+            severity: 'high',
+            taskBoundVersion: 1,
+            currentPlanVersion: 2,
+          },
+        ],
+      }),
+    );
+
+    const { run } = await import('../index');
+    await run();
+
+    expect(coreMock.setFailed).not.toHaveBeenCalled();
+    expect(coreMock.setOutput).toHaveBeenCalledWith('drift-count', '0');
+    expect(coreMock.setOutput).toHaveBeenCalledWith('has-drift', 'false');
+  });
 });
