@@ -256,6 +256,115 @@ async function archiveAgent(agentId) {
   }
 }
 
+/**
+ * Consume an SSE stream from a Cursor Cloud Agent run and accumulate the
+ * assistant text output. Pure(-ish) helper extracted so we can unit-test
+ * the framing: see `scripts/review-helpers.test.mjs`.
+ *
+ * Contract:
+ *   - `reader` is a ReadableStreamDefaultReader-like object yielding
+ *     `{ value: Uint8Array, done: boolean }`.
+ *   - `decoder` is a TextDecoder used in streaming mode (so multi-byte
+ *     characters split across chunk boundaries are handled correctly).
+ *
+ * Returns `{ output, lastStatus, lastError, sawTerminal }`:
+ *   - `output`        — concatenated `assistant` event text deltas.
+ *   - `lastStatus`    — the last `status`/`result` event's status string,
+ *                       or `null` if none seen.
+ *   - `lastError`     — payload of the first `error` event, or `null`.
+ *   - `sawTerminal`   — true iff we observed a `result` / `done` / `error`
+ *                       event. If the stream closed without one, this is
+ *                       false and the caller should treat the run as
+ *                       cut-off (incomplete) rather than trust `output`.
+ *
+ * Notes:
+ *   - When the underlying reader returns `done`, we flush the final
+ *     decoder buffer + any half-built event accumulator. This guards
+ *     against servers that close the connection without a trailing
+ *     `\n\n` between the last event and EOF.
+ */
+export async function consumeSse(reader, decoder) {
+  let output = '';
+  let lastStatus = null;
+  let lastError = null;
+  let sawTerminal = false;
+  let event = '';
+  let dataLines = [];
+  let buffer = '';
+  let streamDone = false;
+
+  const dispatchEvent = () => {
+    const data = dataLines.join('\n');
+    if (event === 'assistant') {
+      try {
+        const p = JSON.parse(data);
+        if (typeof p?.text === 'string') output += p.text;
+      } catch {
+        /* ignore malformed delta */
+      }
+    } else if (event === 'status' || event === 'result') {
+      try {
+        const p = JSON.parse(data);
+        if (p?.status) lastStatus = p.status;
+      } catch {
+        /* ignore */
+      }
+      if (event === 'result') {
+        sawTerminal = true;
+        streamDone = true;
+      }
+    } else if (event === 'done') {
+      sawTerminal = true;
+      streamDone = true;
+    } else if (event === 'error') {
+      try {
+        const p = JSON.parse(data);
+        lastError = p?.message || data;
+      } catch {
+        lastError = data;
+      }
+      sawTerminal = true;
+      streamDone = true;
+    }
+    event = '';
+    dataLines = [];
+  };
+
+  const consumeBufferLines = () => {
+    let nl;
+    while ((nl = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, nl).replace(/\r$/, '');
+      buffer = buffer.slice(nl + 1);
+      if (line === '') {
+        dispatchEvent();
+      } else if (line.startsWith(':')) {
+        // SSE comment, ignore
+      } else if (line.startsWith('event: ')) {
+        event = line.slice(7).trim();
+      } else if (line.startsWith('data: ')) {
+        dataLines.push(line.slice(6));
+      }
+    }
+  };
+
+  while (!streamDone) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    buffer += decoder.decode(chunk.value, { stream: true });
+    consumeBufferLines();
+  }
+
+  // Flush trailing decoder state + any unterminated final line.
+  buffer += decoder.decode();
+  if (buffer && !buffer.endsWith('\n')) buffer += '\n';
+  consumeBufferLines();
+  // If a final event was accumulated without a trailing blank line,
+  // dispatch it now.
+  if (event || dataLines.length) dispatchEvent();
+
+  return { output, lastStatus, lastError, sawTerminal };
+}
+
 async function streamRunOutput(agentId, runId) {
   const url = `https://api.cursor.com/v1/agents/${agentId}/runs/${runId}/stream`;
   const ac = new AbortController();
@@ -270,78 +379,24 @@ async function streamRunOutput(agentId, runId) {
       throw new Error(`Cursor stream ${res.status}: ${t.slice(0, 500)}`);
     }
 
-    let output = '';
-    let lastStatus = null;
-    let lastError = null;
-    let event = '';
-    let dataLines = [];
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let streamDone = false;
-
-    const dispatchEvent = () => {
-      const data = dataLines.join('\n');
-      if (event === 'assistant') {
-        try {
-          const p = JSON.parse(data);
-          if (typeof p?.text === 'string') output += p.text;
-        } catch {
-          /* ignore malformed delta */
-        }
-      } else if (event === 'status' || event === 'result') {
-        try {
-          const p = JSON.parse(data);
-          if (p?.status) lastStatus = p.status;
-        } catch {
-          /* ignore */
-        }
-        if (event === 'result') streamDone = true;
-      } else if (event === 'done') {
-        streamDone = true;
-      } else if (event === 'error') {
-        try {
-          const p = JSON.parse(data);
-          lastError = p?.message || data;
-        } catch {
-          lastError = data;
-        }
-        streamDone = true;
-      }
-      event = '';
-      dataLines = [];
-    };
-
-    while (!streamDone) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      buffer += decoder.decode(chunk.value, { stream: true });
-      let nl;
-      while ((nl = buffer.indexOf('\n')) !== -1) {
-        const line = buffer.slice(0, nl).replace(/\r$/, '');
-        buffer = buffer.slice(nl + 1);
-        if (line === '') {
-          dispatchEvent();
-        } else if (line.startsWith(':')) {
-          // SSE comment, ignore
-        } else if (line.startsWith('event: ')) {
-          event = line.slice(7).trim();
-        } else if (line.startsWith('data: ')) {
-          dataLines.push(line.slice(6));
-        }
-      }
+    const result = await consumeSse(res.body.getReader(), new TextDecoder());
+    if (result.lastError) {
+      throw new Error(`Cursor agent stream error: ${result.lastError}`);
     }
-
-    if (lastError) {
-      throw new Error(`Cursor agent stream error: ${lastError}`);
+    if (!result.sawTerminal) {
+      // Stream cut off before a terminal `result` / `done` / `error`
+      // event arrived. We can't trust `output` to be complete in this
+      // state — better to fail loudly so the caller (and the surrounding
+      // try/catch with reaction-lock release) treats it as a transient.
+      throw new Error('Cursor agent stream ended without a terminal event (run state unknown).');
     }
-    if (lastStatus) {
-      const term = String(lastStatus).toUpperCase();
+    if (result.lastStatus) {
+      const term = String(result.lastStatus).toUpperCase();
       if (!['FINISHED', 'COMPLETED'].includes(term)) {
-        throw new Error(`Cursor agent run terminated with status: ${lastStatus}`);
+        throw new Error(`Cursor agent run terminated with status: ${result.lastStatus}`);
       }
     }
-    return output;
+    return result.output;
   } finally {
     clearTimeout(timer);
   }
@@ -836,7 +891,8 @@ async function main() {
 
 // Export pure helpers for unit testing; only run main() when invoked
 // directly (so tests can `import { fingerprint } from './review-triage.mjs'`
-// without triggering the workflow logic).
+// without triggering the workflow logic). `consumeSse` is exported with
+// the others (despite being above) — see its definition further up.
 export {
   extractJsonArray,
   findBalancedArrayAt,

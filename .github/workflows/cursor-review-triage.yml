@@ -31,7 +31,12 @@ jobs:
       github.event.comment.user.login == 'github-actions[bot]' &&
       startsWith(github.event.comment.body, '<!-- cursor-review-action:review -->')
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # 10min: Cloud Agent spinup + run can take 30-60s on average and the
+    # script's own hard timeout for the agent stream is 5min; we need
+    # workflow > script timeout so a slow run gets a clean timeout from
+    # the script (which releases the reaction lock) rather than a SIGTERM
+    # from GitHub mid-acquire.
+    timeout-minutes: 10
     steps:
       - name: Check for Cursor API key
         id: key

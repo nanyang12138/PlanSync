@@ -181,6 +181,89 @@ async function archiveAgent(agentId) {
   }
 }
 
+// SSE stream consumer. See review-triage.mjs for the contract; this is a
+// verbatim duplicate to keep each script self-contained (matching the
+// existing convention for extractJsonArray / findBalancedArrayAt). The
+// triage-side copy is the one covered by review-helpers.test.mjs.
+async function consumeSse(reader, decoder) {
+  let output = '';
+  let lastStatus = null;
+  let lastError = null;
+  let sawTerminal = false;
+  let event = '';
+  let dataLines = [];
+  let buffer = '';
+  let streamDone = false;
+
+  const dispatchEvent = () => {
+    const data = dataLines.join('\n');
+    if (event === 'assistant') {
+      try {
+        const p = JSON.parse(data);
+        if (typeof p?.text === 'string') output += p.text;
+      } catch {
+        /* ignore malformed delta */
+      }
+    } else if (event === 'status' || event === 'result') {
+      try {
+        const p = JSON.parse(data);
+        if (p?.status) lastStatus = p.status;
+      } catch {
+        /* ignore */
+      }
+      if (event === 'result') {
+        sawTerminal = true;
+        streamDone = true;
+      }
+    } else if (event === 'done') {
+      sawTerminal = true;
+      streamDone = true;
+    } else if (event === 'error') {
+      try {
+        const p = JSON.parse(data);
+        lastError = p?.message || data;
+      } catch {
+        lastError = data;
+      }
+      sawTerminal = true;
+      streamDone = true;
+    }
+    event = '';
+    dataLines = [];
+  };
+
+  const consumeBufferLines = () => {
+    let nl;
+    while ((nl = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, nl).replace(/\r$/, '');
+      buffer = buffer.slice(nl + 1);
+      if (line === '') {
+        dispatchEvent();
+      } else if (line.startsWith(':')) {
+        /* SSE comment */
+      } else if (line.startsWith('event: ')) {
+        event = line.slice(7).trim();
+      } else if (line.startsWith('data: ')) {
+        dataLines.push(line.slice(6));
+      }
+    }
+  };
+
+  while (!streamDone) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    buffer += decoder.decode(chunk.value, { stream: true });
+    consumeBufferLines();
+  }
+
+  buffer += decoder.decode();
+  if (buffer && !buffer.endsWith('\n')) buffer += '\n';
+  consumeBufferLines();
+  if (event || dataLines.length) dispatchEvent();
+
+  return { output, lastStatus, lastError, sawTerminal };
+}
+
 async function streamRunOutput(agentId, runId) {
   const url = `https://api.cursor.com/v1/agents/${agentId}/runs/${runId}/stream`;
   const ac = new AbortController();
@@ -195,78 +278,20 @@ async function streamRunOutput(agentId, runId) {
       throw new Error(`Cursor stream ${res.status}: ${t.slice(0, 500)}`);
     }
 
-    let output = '';
-    let lastStatus = null;
-    let lastError = null;
-    let event = '';
-    let dataLines = [];
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let streamDone = false;
-
-    const dispatchEvent = () => {
-      const data = dataLines.join('\n');
-      if (event === 'assistant') {
-        try {
-          const p = JSON.parse(data);
-          if (typeof p?.text === 'string') output += p.text;
-        } catch {
-          /* ignore malformed delta */
-        }
-      } else if (event === 'status' || event === 'result') {
-        try {
-          const p = JSON.parse(data);
-          if (p?.status) lastStatus = p.status;
-        } catch {
-          /* ignore */
-        }
-        if (event === 'result') streamDone = true;
-      } else if (event === 'done') {
-        streamDone = true;
-      } else if (event === 'error') {
-        try {
-          const p = JSON.parse(data);
-          lastError = p?.message || data;
-        } catch {
-          lastError = data;
-        }
-        streamDone = true;
-      }
-      event = '';
-      dataLines = [];
-    };
-
-    while (!streamDone) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      buffer += decoder.decode(chunk.value, { stream: true });
-      let nl;
-      while ((nl = buffer.indexOf('\n')) !== -1) {
-        const line = buffer.slice(0, nl).replace(/\r$/, '');
-        buffer = buffer.slice(nl + 1);
-        if (line === '') {
-          dispatchEvent();
-        } else if (line.startsWith(':')) {
-          /* SSE comment */
-        } else if (line.startsWith('event: ')) {
-          event = line.slice(7).trim();
-        } else if (line.startsWith('data: ')) {
-          dataLines.push(line.slice(6));
-        }
-      }
+    const result = await consumeSse(res.body.getReader(), new TextDecoder());
+    if (result.lastError) {
+      throw new Error(`Cursor agent stream error: ${result.lastError}`);
     }
-
-    if (lastError) {
-      throw new Error(`Cursor agent stream error: ${lastError}`);
+    if (!result.sawTerminal) {
+      throw new Error('Cursor agent stream ended without a terminal event (run state unknown).');
     }
-    if (lastStatus) {
-      const term = String(lastStatus).toUpperCase();
+    if (result.lastStatus) {
+      const term = String(result.lastStatus).toUpperCase();
       if (!['FINISHED', 'COMPLETED'].includes(term)) {
-        throw new Error(`Cursor agent run terminated with status: ${lastStatus}`);
+        throw new Error(`Cursor agent run terminated with status: ${result.lastStatus}`);
       }
     }
-    return output;
+    return result.output;
   } finally {
     clearTimeout(timer);
   }
