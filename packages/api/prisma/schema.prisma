@@ -252,6 +252,7 @@ model ApiKey {
   expiresAt   DateTime? @map("expires_at")
 
   @@index([execRunId])
+  @@index([keyPrefix])
   @@map("api_keys")
 }
 
