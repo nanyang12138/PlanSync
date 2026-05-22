@@ -69,6 +69,13 @@ model Plan {
   reviews     PlanReview[]
   suggestions PlanSuggestion[]
   comments    PlanComment[]
+  // R-150: normalized plan-item split. The String[] columns above (constraints,
+  // standards, deliverables) remain the source of truth until R-151 backfills
+  // and R-152 switches writes; these tables exist so future code can attach
+  // status, supersedes, and per-item refs without touching the legacy arrays.
+  deliverableItems PlanDeliverable[]
+  constraintItems  PlanConstraint[]
+  standardItems    PlanStandard[]
   // R-082: back-references for PlanDiff FK constraints; if a plan is deleted
   // (only drafts can be deleted today), any cached diffs referencing it are
   // cascaded away because they are meaningless without the underlying plan.
@@ -153,6 +160,83 @@ model PlanComment {
   replies PlanComment[] @relation("CommentReplies")
 
   @@map("plan_comments")
+}
+
+// R-150: normalized PlanDeliverable. Each row represents one deliverable for a
+// specific plan version, with a stable human-readable `slug` so future code can
+// reference it across plan revisions (and so the drift engine can match by id
+// rather than free-text hashes). The status state machine is independent of
+// the parent Plan's status; for example a deliverable can be `done` while the
+// plan as a whole is still `active`. `supersededById` is a self-FK that
+// records when a later version replaces an earlier deliverable; we use
+// `onDelete: SetNull` to keep history readable even if the successor is
+// removed. The legacy `Plan.deliverables String[]` column remains the source
+// of truth until R-151/R-152; the table is currently a parallel view.
+model PlanDeliverable {
+  id             String   @id @default(cuid())
+  planId         String   @map("plan_id")
+  slug           String
+  title          String
+  body           String?
+  // refType ∈ ('file_glob' | 'api_spec' | 'figma_frame' | 'notion_page' | 'free')
+  refType        String?  @map("ref_type")
+  refUri         String?  @map("ref_uri")
+  // status ∈ ('draft' | 'active' | 'done' | 'deprecated')
+  status         String   @default("draft")
+  supersededById String?  @map("superseded_by_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  plan         Plan              @relation(fields: [planId], references: [id], onDelete: Cascade)
+  supersededBy PlanDeliverable?  @relation("PlanDeliverableSupersession", fields: [supersededById], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  successors   PlanDeliverable[] @relation("PlanDeliverableSupersession")
+
+  @@unique([planId, slug])
+  @@index([planId, status])
+  @@map("plan_deliverables")
+}
+
+// R-150: normalized PlanConstraint. Constraints unlike deliverables don't have
+// a per-item "done" state, but they do need a stable slug so tasks can
+// reference them (`Task.planConstraintRefs`) by id rather than text and so we
+// can carry kind/category labels (e.g. "security", "performance"). The legacy
+// `Plan.constraints String[]` column remains canonical until B13 migrates.
+model PlanConstraint {
+  id        String   @id @default(cuid())
+  planId    String   @map("plan_id")
+  slug      String
+  body      String
+  // kind is a free-form category label (e.g. "security", "performance",
+  // "compatibility"); no enum yet because B13 hasn't fully designed the
+  // taxonomy.
+  kind      String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, slug])
+  @@index([planId, kind])
+  @@map("plan_constraints")
+}
+
+// R-150: normalized PlanStandard. Mirrors PlanConstraint in shape; kept
+// separate because the surrounding code paths (plan suggestions, drift
+// classification) already special-case `standards` vs `constraints`.
+model PlanStandard {
+  id        String   @id @default(cuid())
+  planId    String   @map("plan_id")
+  slug      String
+  body      String
+  kind      String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, slug])
+  @@index([planId, kind])
+  @@map("plan_standards")
 }
 
 model Task {
