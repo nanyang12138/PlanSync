@@ -1,6 +1,11 @@
 import { logger } from './logger';
 import { MemoryEventBus } from './event-bus-memory';
-import type { EventBusInterface, PlanSyncEvent, PlanSyncEventType, Listener } from './event-bus-types';
+import type {
+  EventBusInterface,
+  PlanSyncEvent,
+  PlanSyncEventType,
+  Listener,
+} from './event-bus-types';
 
 export type { PlanSyncEvent, PlanSyncEventType, EventBusInterface, Listener };
 
@@ -21,10 +26,7 @@ function resolveBackend(): 'memory' | 'postgres' {
   const explicit = process.env.PLANSYNC_EVENT_BUS;
   if (explicit === 'memory' || explicit === 'postgres') return explicit;
   if (explicit) {
-    logger.warn(
-      { value: explicit },
-      'Unknown PLANSYNC_EVENT_BUS value; falling back to default',
-    );
+    logger.warn({ value: explicit }, 'Unknown PLANSYNC_EVENT_BUS value; falling back to default');
   }
   return process.env.NODE_ENV === 'production' ? 'postgres' : 'memory';
 }

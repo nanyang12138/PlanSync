@@ -1,5 +1,10 @@
 import { logger } from './logger';
-import type { EventBusInterface, PlanSyncEvent, PlanSyncEventType, Listener } from './event-bus-types';
+import type {
+  EventBusInterface,
+  PlanSyncEvent,
+  PlanSyncEventType,
+  Listener,
+} from './event-bus-types';
 
 /**
  * In-process pub/sub for SSE clients. This is the original implementation and
@@ -101,10 +106,7 @@ export class MemoryEventBus implements EventBusInterface {
       try {
         listener(event);
       } catch (err) {
-        logger.error(
-          { err, projectId: event.projectId, type: event.type },
-          'Event listener error',
-        );
+        logger.error({ err, projectId: event.projectId, type: event.type }, 'Event listener error');
       }
     }
   }
