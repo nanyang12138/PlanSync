@@ -1663,7 +1663,7 @@
 
 #### R-094 [HIGH] action drift gate 范围按 PR 任务过滤
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B10
 - **depends_on**: —
 - **effort**: medium
