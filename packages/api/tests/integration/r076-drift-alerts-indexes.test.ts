@@ -49,6 +49,22 @@ describe('R-076: drift_alerts composite indexes', () => {
       },
     });
     try {
+      // R-083: tasks now have a composite FK to plans(project_id, version),
+      // so seed a v1 plan before creating any tasks. Without this the
+      // task.create calls below fail with `tasks_project_id_bound_plan_version_fkey`.
+      await prisma.plan.create({
+        data: {
+          projectId: project.id,
+          title: 'r076 v1',
+          goal: 'g',
+          scope: 's',
+          version: 1,
+          status: 'active',
+          createdBy: 'r076-owner',
+          activatedAt: new Date(),
+          activatedBy: 'r076-owner',
+        },
+      });
       const tasks = await Promise.all(
         Array.from({ length: 10 }).map((_, i) =>
           prisma.task.create({

@@ -43,6 +43,22 @@ describe('R-075: tasks composite indexes', () => {
       },
     });
     try {
+      // R-083: tasks now have a composite FK to plans(project_id, version),
+      // so seed a v1 plan before bulk-inserting tasks. Without this the
+      // createMany below fails with `tasks_project_id_bound_plan_version_fkey`.
+      await prisma.plan.create({
+        data: {
+          projectId: project.id,
+          title: 'r075 v1',
+          goal: 'g',
+          scope: 's',
+          version: 1,
+          status: 'active',
+          createdBy: 'r075-owner',
+          activatedAt: new Date(),
+          activatedBy: 'r075-owner',
+        },
+      });
       const rows = Array.from({ length: 50 }).map((_, i) => ({
         projectId: project.id,
         title: `t-${i}`,

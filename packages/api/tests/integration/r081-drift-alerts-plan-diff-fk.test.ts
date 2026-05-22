@@ -128,6 +128,23 @@ describe('R-081: drift_alerts.plan_diff_id foreign key', () => {
       },
     });
     try {
+      // R-083: tasks have a composite FK to plans(project_id, version),
+      // so the plan must exist before the task is created. The check below
+      // is about drift_alerts.plan_diff_id, not tasks, but we still need a
+      // valid task row to attach the alert to.
+      await prisma.plan.create({
+        data: {
+          projectId: project.id,
+          title: 'r081-bad v1',
+          goal: 'g',
+          scope: 's',
+          version: 1,
+          status: 'active',
+          createdBy: 'r081-owner',
+          activatedAt: new Date(),
+          activatedBy: 'r081-owner',
+        },
+      });
       const task = await prisma.task.create({
         data: {
           projectId: project.id,
