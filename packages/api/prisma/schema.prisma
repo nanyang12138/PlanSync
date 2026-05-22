@@ -69,6 +69,14 @@ model Plan {
   reviews     PlanReview[]
   suggestions PlanSuggestion[]
   comments    PlanComment[]
+  // R-150: split plan items (deliverable / constraint / standard) into their
+  // own tables so future drift v2 / verification work can reference them by
+  // stable id+slug instead of opaque strings. The original String[] columns
+  // above are kept as the source of truth until R-151 backfills these tables;
+  // for now they are additive and unused by the API.
+  deliverables_v2 PlanDeliverable[]
+  constraints_v2  PlanConstraint[]
+  standards_v2    PlanStandard[]
   // R-082: back-references for PlanDiff FK constraints; if a plan is deleted
   // (only drafts can be deleted today), any cached diffs referencing it are
   // cascaded away because they are meaningless without the underlying plan.
@@ -153,6 +161,81 @@ model PlanComment {
   replies PlanComment[] @relation("CommentReplies")
 
   @@map("plan_comments")
+}
+
+// R-150: split deliverables/constraints/standards out of `Plan.{deliverables,
+// constraints, standards}: String[]` into proper tables so they can carry a
+// stable id, slug, status, ref metadata, and edit history. The original
+// String[] columns on Plan are intentionally kept until R-151 backfills these
+// tables and switches readers/writers; for now these models are additive.
+//
+// `slug` is a stable, human-readable identifier scoped per plan (e.g.
+// "auth/oidc-callback"). `(planId, slug)` is unique so other tables can
+// reference items by the (plan, slug) pair without collisions.
+//
+// `status` here is independent of `Plan.status` and tracks the lifecycle of an
+// individual deliverable (draft → active → done → deprecated). `(planId,
+// status)` is indexed because that is the hot read pattern for deliverable
+// listings.
+model PlanDeliverable {
+  id             String   @id @default(cuid())
+  planId         String   @map("plan_id")
+  slug           String
+  title          String
+  body           String
+  // refType ∈ ('file_glob' | 'api_spec' | 'figma_frame' | 'notion_page' | 'free').
+  // Stored as String so historical rows survive future enum tweaks; new code
+  // should use the shared zod schema for validation.
+  refType        String?  @map("ref_type")
+  refUri         String?  @map("ref_uri")
+  // status ∈ ('draft' | 'active' | 'done' | 'deprecated'). Independent of
+  // plan.status; see model-level comment above.
+  status         String   @default("active")
+  supersededById String?  @map("superseded_by_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  plan          Plan              @relation(fields: [planId], references: [id], onDelete: Cascade)
+  // Self-relation: when a deliverable is replaced by a newer revision the old
+  // row points at the new one. Use SetNull on delete so removing the new row
+  // does not cascade-delete the historical predecessor.
+  supersededBy  PlanDeliverable?  @relation("PlanDeliverableSupersession", fields: [supersededById], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  supersedes    PlanDeliverable[] @relation("PlanDeliverableSupersession")
+
+  @@unique([planId, slug])
+  @@index([planId, status])
+  @@map("plan_deliverables")
+}
+
+model PlanConstraint {
+  id        String   @id @default(cuid())
+  planId    String   @map("plan_id")
+  slug      String
+  body      String
+  // kind is a free-form classifier (e.g. "security", "performance") so the
+  // owner can group constraints in the UI without a hard enum.
+  kind      String   @default("general")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, slug])
+  @@index([planId, kind])
+  @@map("plan_constraints")
+}
+
+model PlanStandard {
+  id        String   @id @default(cuid())
+  planId    String   @map("plan_id")
+  slug      String
+  body      String
+  kind      String   @default("general")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, slug])
+  @@index([planId, kind])
+  @@map("plan_standards")
 }
 
 model Task {
