@@ -13,6 +13,7 @@ import {
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
 import { logger } from '@/lib/logger';
+import { requirePlanInProject } from '@/lib/plan-scope';
 
 type Params = { params: { projectId: string; planId: string } };
 
@@ -22,14 +23,9 @@ export async function POST(req: NextRequest, { params }: Params) {
     requireNotExecScoped(auth);
     await requireProjectRole(auth, params.projectId, 'owner');
 
-    const plan = await prisma.plan.findUnique({
-      where: { id: params.planId },
-      include: { reviews: true },
-    });
-    if (!plan) throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
-    if (plan.projectId !== params.projectId) {
-      throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
-    }
+    const plan = await requirePlanInProject<{
+      reviews: Array<{ id: string; reviewerName: string; status: string }>;
+    }>(params.planId, params.projectId, { include: { reviews: true } });
 
     if (plan.status !== 'draft' && plan.status !== 'proposed') {
       throw new AppError(ErrorCode.STATE_CONFLICT, 'Plan must be draft or proposed to activate');

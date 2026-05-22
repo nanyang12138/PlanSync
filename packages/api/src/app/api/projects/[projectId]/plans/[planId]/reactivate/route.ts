@@ -13,6 +13,7 @@ import {
   enrichDriftAlertsWithAi,
   dispatchDriftNotifications,
 } from '@/lib/drift-engine';
+import { requirePlanInProject } from '@/lib/plan-scope';
 
 type Params = { params: { projectId: string; planId: string } };
 
@@ -22,11 +23,7 @@ export async function POST(req: NextRequest, { params }: Params) {
     requireNotExecScoped(auth);
     await requireProjectRole(auth, params.projectId, 'owner');
 
-    const plan = await prisma.plan.findUnique({ where: { id: params.planId } });
-    if (!plan) throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
-    if (plan.projectId !== params.projectId) {
-      throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
-    }
+    const plan = await requirePlanInProject(params.planId, params.projectId);
     if (plan.status !== 'superseded') {
       throw new AppError(ErrorCode.STATE_CONFLICT, 'Only superseded plans can be reactivated');
     }

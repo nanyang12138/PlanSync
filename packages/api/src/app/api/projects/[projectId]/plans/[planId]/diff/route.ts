@@ -3,7 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { authenticate, requireProjectRole } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { getOrCreatePlanDiff } from '@/lib/ai/plan-diff';
-import { AppError, ErrorCode } from '@plansync/shared';
+import { requirePlanInProject } from '@/lib/plan-scope';
 
 type Params = { params: { projectId: string; planId: string } };
 
@@ -15,8 +15,7 @@ export async function GET(req: NextRequest, { params }: Params) {
     const compareWithParam = req.nextUrl.searchParams.get('compareWith');
     let compareWith = compareWithParam;
     if (!compareWith) {
-      const currentPlan = await prisma.plan.findUnique({ where: { id: params.planId } });
-      if (!currentPlan) throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
+      const currentPlan = await requirePlanInProject(params.planId, params.projectId);
       if (currentPlan.version <= 1) {
         return NextResponse.json({
           data: {
@@ -43,14 +42,12 @@ export async function GET(req: NextRequest, { params }: Params) {
       compareWith = predecessor.id;
     }
 
-    const [planA, planB] = await Promise.all([
-      prisma.plan.findUnique({ where: { id: compareWith } }),
-      prisma.plan.findUnique({ where: { id: params.planId } }),
+    // Both plans must belong to the project; collapse missing/wrong-project
+    // into the same NOT_FOUND so callers cannot probe for cross-project plans.
+    await Promise.all([
+      requirePlanInProject(compareWith, params.projectId),
+      requirePlanInProject(params.planId, params.projectId),
     ]);
-    if (!planA || !planB) throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
-    if (planA.projectId !== params.projectId || planB.projectId !== params.projectId) {
-      throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
-    }
 
     const diff = await getOrCreatePlanDiff(params.projectId, compareWith, params.planId);
     if (!diff) {
