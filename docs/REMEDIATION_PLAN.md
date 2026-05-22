@@ -1535,7 +1535,7 @@
 
 #### R-084 [MEDIUM] schema.prisma 标注 partial unique index
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
@@ -1647,7 +1647,8 @@
 
 #### R-092 [HIGH] 构建 GitHub Action `dist/index.js`
 
-- **status**: pending
+- **status**: blocked
+- **blocked_reason**: fix_step 5 要求"恢复 `.github/workflows/plansync-check.yml`"，autonomous Cloud Agent 硬约束禁止改动 `.github/workflows/*` 任何文件（同 R-132）。同时 fix_step 4 "把 action 发布到独立仓库 `plansync/drift-check-action`" 需要跨仓库发布权限，agent 无法在单 PR 内完成。建议人工接手或拆分为可独立提交的子条目（例如：build.sh 加构建步骤 + dist/ 提交 + CI guard 可单独提 PR，发布动作仓库与工作流恢复另起 owner-only 任务）。
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
@@ -1668,7 +1669,7 @@
 
 #### R-093 [HIGH] action 输入 api-key 加 `core.setSecret`
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
@@ -1683,7 +1684,7 @@
 
 #### R-094 [HIGH] action drift gate 范围按 PR 任务过滤
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B10
 - **depends_on**: —
 - **effort**: medium
@@ -1715,7 +1716,7 @@
 
 #### R-096 [HIGH] 删除 README 中不存在的 demo 脚本引用
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
@@ -2117,7 +2118,8 @@
 
 #### R-132 [HIGH] 升级 MCP SDK 并恢复 mcp-server typecheck
 
-- **status**: pending
+- **status**: blocked
+- **blocked_reason**: fix_step 5 要求修改 `.github/workflows/validate.yml`（恢复 mcp-server typecheck），autonomous Cloud Agent 硬约束禁止改动 `.github/workflows/*`；同时 fix_step 2 "处理 SDK 1.3 → 1.29 之间的 breaking API" 范围开放（`server.tool` 签名 / transport 接口的具体变化未在条目中给出），需人工调研后再分发。
 - **batch**: B4
 - **depends_on**: —
 - **effort**: medium
@@ -2139,7 +2141,7 @@
 
 #### R-133 [MEDIUM] 逐步消除 `any`，重新启用 `no-explicit-any` 警告
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: —
 - **effort**: medium（可拆 sub-tasks）

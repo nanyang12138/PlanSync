@@ -72,7 +72,7 @@ export class ApiClient {
 
   private async handleResponse<T>(res: Response, method: string, path: string): Promise<T> {
     const text = await res.text();
-    let json: any;
+    let json: unknown;
     try {
       json = text ? JSON.parse(text) : {};
     } catch {
@@ -82,10 +82,16 @@ export class ApiClient {
     }
 
     if (!res.ok) {
-      const errMsg = json?.error?.message || `API error ${res.status}`;
-      const errCode = json?.error?.code || 'UNKNOWN';
-      const errDetails = json?.error?.details;
-      logger.error({ method, path, status: res.status, error: json?.error }, 'API request failed');
+      const errEnvelope =
+        typeof json === 'object' && json !== null && 'error' in json
+          ? ((json as { error?: unknown }).error as
+              | { message?: string; code?: string; details?: unknown }
+              | undefined)
+          : undefined;
+      const errMsg = errEnvelope?.message || `API error ${res.status}`;
+      const errCode = errEnvelope?.code || 'UNKNOWN';
+      const errDetails = errEnvelope?.details;
+      logger.error({ method, path, status: res.status, error: errEnvelope }, 'API request failed');
       throw new ApiError(errMsg, errCode, res.status, errDetails);
     }
 

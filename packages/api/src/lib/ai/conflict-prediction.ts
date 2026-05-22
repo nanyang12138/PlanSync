@@ -39,8 +39,12 @@ export async function predictConflicts(
       logger.warn({ parsed }, 'Invalid conflict prediction response structure');
       return { conflicts: [] };
     }
-    const validated = parsed.conflicts.filter(
-      (c: any) => Array.isArray(c.taskIds) && typeof c.description === 'string',
+    const validated = (parsed.conflicts as unknown[]).filter(
+      (c): c is ConflictResult['conflicts'][number] =>
+        typeof c === 'object' &&
+        c !== null &&
+        Array.isArray((c as { taskIds?: unknown }).taskIds) &&
+        typeof (c as { description?: unknown }).description === 'string',
     );
     return { conflicts: validated };
   } catch (err) {
