@@ -12,11 +12,19 @@ type DriftRow = {
 
 type DriftsResponse = { data?: DriftRow[] };
 
-async function run() {
+export async function run() {
   try {
     const apiUrl = core.getInput('api-url').replace(/\/$/, '');
     const apiKey = core.getInput('api-key');
     const projectId = core.getInput('project');
+
+    // Mask the api-key so it never appears in GitHub Actions logs even when
+    // accidentally echoed (e.g. via `set -x`, child process stderr, or a
+    // contributor adding `core.debug(headers)` later). `setSecret` is a no-op
+    // when the value is empty, so it is safe to call unconditionally.
+    if (apiKey) {
+      core.setSecret(apiKey);
+    }
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${apiKey}`,
@@ -67,4 +75,9 @@ async function run() {
   }
 }
 
-void run();
+// When this module is the GitHub Action entrypoint, kick off `run()`
+// immediately. During unit tests we import `run` directly and drive it from
+// the test runner, so we suppress auto-invocation via VITEST.
+if (!process.env.VITEST) {
+  void run();
+}

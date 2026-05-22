@@ -1648,7 +1648,7 @@
 
 #### R-093 [HIGH] action 输入 api-key 加 `core.setSecret`
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
