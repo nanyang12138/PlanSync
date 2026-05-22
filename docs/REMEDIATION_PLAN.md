@@ -967,7 +967,7 @@
 
 #### R-048 [CRITICAL] plans 表加 partial unique "每项目一个 active"
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small

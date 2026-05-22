@@ -107,6 +107,12 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
       // Create the v2 plan row directly — this scenario specifically targets
       // the gate-on-mismatch behavior; the full plan-activate path is covered
       // separately in Phase B.
+      // R-048: supersede the previous active plan first, otherwise the new
+      // partial unique index `plans_one_active_per_project` rejects the insert.
+      await testPrisma.plan.updateMany({
+        where: { projectId, status: 'active' },
+        data: { status: 'superseded' },
+      });
       await testPrisma.plan.create({
         data: {
           projectId,
