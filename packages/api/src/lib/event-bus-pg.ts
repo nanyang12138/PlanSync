@@ -65,6 +65,16 @@ export class EventBusPG implements EventBusInterface {
   private readonly userChannels = new Map<string, string>();
   /** Channels that are currently LISTEN-ing on the live client. */
   private readonly subscribedChannels = new Set<string>();
+  /**
+   * Per-channel listener reference count for USER channels. We need this
+   * because (unlike project channels) the MemoryEventBus does not expose a
+   * per-user count, so we cannot ask it whether anyone is still listening.
+   * #131: without this, every subscribeUser permanently bumps
+   * subscribedChannels and on every reconnect we re-LISTEN every user
+   * channel that ever had a subscriber — RAM grows without bound and the
+   * Postgres LISTEN table fills with dead channels.
+   */
+  private readonly userChannelRefCount = new Map<string, number>();
 
   private listenClient: Client | null = null;
   private notifyClient: Client | null = null;
@@ -72,9 +82,26 @@ export class EventBusPG implements EventBusInterface {
   private reconnectAttempts = 0;
   private closed = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Whether we have ever successfully connected at least once. */
+  private everConnected = false;
 
   constructor(opts: { connectionString?: string } = {}) {
     this.connectionString = opts.connectionString ?? process.env.DATABASE_URL;
+    // #129: fail SYNCHRONOUSLY on construction when there is no connection
+    // string. The previous behaviour relied on `ensureConnected` rejecting
+    // an internal promise, which the `void this.ensureConnected()` call
+    // below swallowed — and every subsequent publish swallowed it again,
+    // so the operator never saw the failure and the bus appeared to "work"
+    // (events were locally dispatched but never crossed instances). A
+    // synchronous throw here makes the misconfiguration land in the
+    // `createEventBus()` try/catch in event-bus.ts, which then either
+    // re-throws (production) or falls back to MemoryEventBus (dev/test).
+    if (!this.connectionString) {
+      throw new Error(
+        'EventBusPG requires DATABASE_URL or an explicit connectionString. ' +
+          'Refusing to construct a bus that would silently no-op cross-instance NOTIFY.',
+      );
+    }
     // Eagerly connect so the first publish/subscribe doesn't pay the latency.
     void this.ensureConnected();
   }
@@ -121,19 +148,31 @@ export class EventBusPG implements EventBusInterface {
 
   subscribeUser(userName: string, listener: Listener): () => void {
     const channel = this.getUserChannel(userName);
-    const before = this.mem.getClientCount();
     const unsubLocal = this.mem.subscribeUser(userName, listener);
-    // Only LISTEN once per channel — if there were no user listeners for this
-    // userName before, we need to start LISTEN-ing.
-    const after = this.mem.getClientCount();
-    if (after > before && !this.subscribedChannels.has(channel)) {
+    // Track per-channel listener count and LISTEN only on the first
+    // subscriber. (#131: previously we never UNLISTEN-ed, which leaked
+    // channels into subscribedChannels and re-LISTEN-ed all of them on
+    // every reconnect.)
+    const newCount = (this.userChannelRefCount.get(channel) ?? 0) + 1;
+    this.userChannelRefCount.set(channel, newCount);
+    if (newCount === 1) {
       void this.listenChannel(channel);
     }
+    let unsubscribed = false;
     return () => {
+      if (unsubscribed) return; // make double-unsubscribe a no-op
+      unsubscribed = true;
       unsubLocal();
-      // We don't try to UNLISTEN user channels eagerly — userListeners come
-      // and go frequently and the cleanup cost outweighs the per-channel RAM
-      // savings. Channel set is cleaned up on connection drop.
+      const remaining = (this.userChannelRefCount.get(channel) ?? 1) - 1;
+      if (remaining <= 0) {
+        this.userChannelRefCount.delete(channel);
+        // Best effort UNLISTEN; if the listen client is currently
+        // disconnected the channel will simply drop out of
+        // subscribedChannels and not be re-LISTEN-ed on reconnect.
+        void this.unlistenChannel(channel);
+      } else {
+        this.userChannelRefCount.set(channel, remaining);
+      }
     };
   }
 
@@ -202,6 +241,7 @@ export class EventBusPG implements EventBusInterface {
       throw new Error('EventBusPG requires DATABASE_URL or an explicit connectionString');
     }
 
+    const isReconnect = this.reconnectAttempts > 0 || this.everConnected;
     this.connectPromise = (async () => {
       try {
         const listenClient = new Client({ connectionString: cs });
@@ -223,6 +263,7 @@ export class EventBusPG implements EventBusInterface {
         this.listenClient = listenClient;
         this.notifyClient = notifyClient;
         this.reconnectAttempts = 0;
+        this.everConnected = true;
 
         // Re-subscribe to any channels that were active before a reconnect.
         for (const channel of this.subscribedChannels) {
@@ -230,6 +271,19 @@ export class EventBusPG implements EventBusInterface {
         }
 
         logger.info({ instanceId: this.instanceId }, 'EventBusPG connected');
+
+        // #130: NOTIFY events emitted while the listenClient was offline
+        // are dropped by Postgres (the protocol buffers per-connection,
+        // not per-channel). Best-effort gap mitigation: after a reconnect,
+        // dispatch a synthetic resync event to every subscribed local
+        // listener so SSE consumers know to refetch the canonical state.
+        // This is intentionally a no-op on the very first connect —
+        // there is no gap to recover from yet. A durable replay is
+        // tracked separately in REMEDIATION_PLAN.md as R-160 / R-163
+        // (B14 outbox); this event is the bridge until that lands.
+        if (isReconnect) {
+          this.dispatchResync();
+        }
       } catch (err) {
         this.connectPromise = null;
         logger.error({ err }, 'EventBusPG connect failed; scheduling retry');
@@ -274,6 +328,46 @@ export class EventBusPG implements EventBusInterface {
         /* error already logged; further retries scheduled inside */
       });
     }, delay);
+  }
+
+  /**
+   * #130: dispatch a synthetic `bus_resync_required` event to every local
+   * subscriber after the listen client reconnects. The MemoryEventBus has
+   * no first-class iterator over its registrations, so we walk the
+   * channel maps we already maintain — every subscribed project channel
+   * gets an event addressed to its projectId, and every user channel ref
+   * count >= 1 gets a user-scoped event. Local-only dispatch on purpose:
+   * other instances saw the same Postgres outage and will dispatch their
+   * own resync.
+   */
+  private dispatchResync(): void {
+    const ts = new Date().toISOString();
+    for (const [projectId] of this.projectChannels) {
+      // Only dispatch if there are still local listeners for this project
+      // (the channel map can outlive its subscribers if subscribe/unsub
+      // raced with a reconnect; do not emit phantom resyncs).
+      if (this.mem.getClientCount(projectId) === 0) continue;
+      this.mem.dispatchProjectEvent({
+        type: 'bus_resync_required',
+        projectId,
+        data: { _resyncRequired: true, reason: 'eventbus_reconnect' },
+        timestamp: ts,
+      });
+    }
+    for (const [, channel] of this.userChannels) {
+      if ((this.userChannelRefCount.get(channel) ?? 0) === 0) continue;
+      // Find the userName whose hashed channel matches; emit per user.
+      for (const [userName, userChannel] of this.userChannels) {
+        if (userChannel === channel) {
+          this.mem.dispatchUserEvent(userName, {
+            type: 'bus_resync_required',
+            projectId: '',
+            data: { _resyncRequired: true, reason: 'eventbus_reconnect' },
+            timestamp: ts,
+          });
+        }
+      }
+    }
   }
 
   private async listenChannel(channel: string): Promise<void> {

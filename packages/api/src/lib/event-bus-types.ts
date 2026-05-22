@@ -30,7 +30,14 @@ export type PlanSyncEventType =
   | 'review_rejected'
   | 'member_updated'
   | 'comment_updated'
-  | 'comment_deleted';
+  | 'comment_deleted'
+  // #130: synthetic event the Postgres LISTEN client emits to local
+  // subscribers after a reconnect so SSE consumers know to refetch the
+  // canonical state (NOTIFY messages emitted during the disconnect window
+  // are dropped by Postgres). The `data` payload always carries
+  // `_resyncRequired: true` and is otherwise empty. Once R-160/R-163
+  // (B14 outbox + lastEventId replay) lands this becomes redundant.
+  | 'bus_resync_required';
 
 export interface PlanSyncEvent {
   type: PlanSyncEventType;
