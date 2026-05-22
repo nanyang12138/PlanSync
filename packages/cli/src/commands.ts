@@ -69,6 +69,61 @@ export function psRequest<T>(method: string, path: string, body?: unknown): Prom
 export const apiGet = <T>(path: string) => psRequest<T>('GET', path);
 export const apiPost = <T>(path: string, body?: unknown) => psRequest<T>('POST', path, body);
 
+// ─── Project validation ──────────────────────────────────────────────────────
+// R-074: `/project <id>` used to assign cfg.project without checking the API.
+// Typos or stale IDs produced a silent empty banner. validateProject calls
+// GET /api/projects/:id; on failure it returns a structured result with a
+// red CLI-formatted message that the handler prints. Tests can inject a
+// custom fetcher.
+
+export type ProjectFetcher = <T>(path: string) => Promise<T>;
+
+export interface ProjectValidationResult {
+  ok: boolean;
+  /** Project payload from the API when ok=true. */
+  project?: Record<string, unknown>;
+  /** Pre-formatted (with ANSI colors) error message when ok=false. */
+  errorMessage?: string;
+}
+
+export async function validateProject(
+  targetId: string,
+  getter: ProjectFetcher = apiGet,
+): Promise<ProjectValidationResult> {
+  const id = targetId.trim();
+  if (!id) {
+    return {
+      ok: false,
+      errorMessage: `\n  ${c.red}✗ Project id is required.${c.reset}\n`,
+    };
+  }
+  try {
+    const res = await getter<{ data?: Record<string, unknown> }>(
+      `/api/projects/${encodeURIComponent(id)}`,
+    );
+    const project = (res?.data ?? {}) as Record<string, unknown>;
+    if (!project || !project.id) {
+      return {
+        ok: false,
+        errorMessage: `\n  ${c.red}✗ Project "${id}" not found.${c.reset}\n`,
+      };
+    }
+    return { ok: true, project };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    const looksLikeNotFound =
+      /404|not[\s-]?found/i.test(message) ||
+      (err as { statusCode?: number })?.statusCode === 404;
+    const headline = looksLikeNotFound
+      ? `Project "${id}" not found.`
+      : `Failed to verify project "${id}": ${message}`;
+    return {
+      ok: false,
+      errorMessage: `\n  ${c.red}✗ ${headline}${c.reset}\n`,
+    };
+  }
+}
+
 // ─── Status fetcher ───────────────────────────────────────────────────────────
 
 export async function fetchStatus(): Promise<ProjectStatus> {
@@ -454,7 +509,17 @@ export async function handleSlashCommand(
   if (cmd === '/project') {
     const targetId = parts[1]?.trim();
     if (targetId) {
+      process.stdout.write(`${c.dim}Verifying project...${c.reset}\r`);
+      const validation = await validateProject(targetId);
+      process.stdout.write(' '.repeat(40) + '\r');
+      if (!validation.ok) {
+        ctx.rawInput.unmountForMenu();
+        console.log(validation.errorMessage);
+        return 'handled';
+      }
       cfg.project = targetId;
+      const name = validation.project?.name;
+      if (typeof name === 'string' && name) cfg.projectName = name;
     } else {
       // Unmount Ink before printing the project list so menu items aren't
       // hidden behind the Ink chrome. Ink remounts on the next nextLine().
