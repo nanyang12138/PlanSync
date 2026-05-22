@@ -235,4 +235,103 @@ describe('E: Comment System', () => {
     );
     expect(res.status).toBe(400);
   });
+
+  // ---- #162: parentId must belong to the SAME plan -----------------------
+
+  it('#162: POST with parentId pointing to a comment in a different plan → 404', async () => {
+    // Create a second plan in the same project, plus a comment that belongs
+    // to that other plan. The cross-plan parent reference must be rejected.
+    const otherPlan = await testPrisma.plan.create({
+      data: {
+        projectId,
+        title: 'Other plan',
+        goal: 'goal',
+        scope: 'scope',
+        version: 9,
+        status: 'draft',
+        createdBy: owner,
+      },
+    });
+    const otherPlanComment = await testPrisma.planComment.create({
+      data: {
+        planId: otherPlan.id,
+        authorName: owner,
+        authorType: 'human',
+        content: 'belongs to the other plan',
+      },
+    });
+
+    try {
+      const res = await POST(
+        makeReq(`/api/projects/${projectId}/plans/${planId}/comments`, {
+          method: 'POST',
+          userName: owner,
+          // parentId targets a comment from a different plan in the same project.
+          body: { content: 'cross-plan reply', parentId: otherPlanComment.id },
+        }),
+        { params: { projectId, planId } },
+      );
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error.code).toBe('NOT_FOUND');
+      expect(body.error.message).toMatch(/Parent comment not found in this plan/);
+
+      // The DB must not contain a stray cross-plan reply (regression guard).
+      const stray = await testPrisma.planComment.findFirst({
+        where: { planId: planId, parentId: otherPlanComment.id },
+      });
+      expect(stray).toBeNull();
+    } finally {
+      await testPrisma.planComment.delete({ where: { id: otherPlanComment.id } });
+      await testPrisma.plan.delete({ where: { id: otherPlan.id } });
+    }
+  });
+
+  it('#162: POST with non-existent parentId → 404 (no cross-plan info leak)', async () => {
+    const res = await POST(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/comments`, {
+        method: 'POST',
+        userName: owner,
+        body: { content: 'reply to ghost', parentId: 'cmt_does_not_exist_123' },
+      }),
+      { params: { projectId, planId } },
+    );
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('#162: POST with parentId of a soft-deleted comment in this plan → 400', async () => {
+    // Create a comment, then soft-delete it; replying to it should be refused
+    // with a clear 400 (not silently accepted, which would create a reply
+    // hanging off an empty thread root).
+    const target = await testPrisma.planComment.create({
+      data: {
+        planId,
+        authorName: owner,
+        authorType: 'human',
+        content: 'doomed parent',
+      },
+    });
+    await testPrisma.planComment.update({
+      where: { id: target.id },
+      data: { isDeleted: true, content: '' },
+    });
+
+    try {
+      const res = await POST(
+        makeReq(`/api/projects/${projectId}/plans/${planId}/comments`, {
+          method: 'POST',
+          userName: dev,
+          body: { content: 'reply', parentId: target.id },
+        }),
+        { params: { projectId, planId } },
+      );
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error.code).toBe('BAD_REQUEST');
+    } finally {
+      await testPrisma.planComment.delete({ where: { id: target.id } });
+    }
+  });
 });
