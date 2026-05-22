@@ -1916,7 +1916,7 @@
 
 #### R-111 [MEDIUM] logger 中间件加 correlation id
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B11
 - **depends_on**: —
 - **effort**: medium
