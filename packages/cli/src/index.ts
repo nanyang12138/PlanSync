@@ -13,6 +13,7 @@ import { cfg, selfDir } from './config.js';
 import { runShellCommand } from './shell-cmd.js';
 import { c, banner, showSplash } from './ui.js';
 import { McpClient } from './mcp-client.js';
+import { ensureMcpBuild } from './mcp-bootstrap.js';
 import { buildSystemPrompt, runAgentLoop, pruneHistory, Message } from './ai-loop.js';
 import { fetchStatus, handleSlashCommand, buildPrompt, selectProject } from './commands.js';
 import {
@@ -96,9 +97,26 @@ async function main() {
   }
 
   // ─── MCP server ───────────────────────────────────────────────────────────
+  // R-101: build the MCP server dist on demand. Mirrors `bin/start-mcp` so
+  // launching the CLI directly on a fresh clone (where dist/ is gitignored)
+  // does not crash with "Cannot find module …/dist/index.js".
   process.stdout.write(`${c.dim}Starting MCP server...${c.reset}\r`);
   const mcp = new McpClient();
   try {
+    const projectRoot = path.resolve(selfDir, '../../../');
+    const buildOutcome = ensureMcpBuild({
+      serverPath: cfg.mcpServer,
+      projectRoot,
+      nodeBin: cfg.nodeBin,
+      logger: (msg) => {
+        process.stdout.write(' '.repeat(40) + '\r');
+        console.log(`${c.dim}${msg}${c.reset}`);
+        process.stdout.write(`${c.dim}Starting MCP server...${c.reset}\r`);
+      },
+    });
+    if (!buildOutcome.ok) {
+      throw new Error(buildOutcome.error || 'MCP server dist not available');
+    }
     await mcp.start(cfg.mcpServer);
     process.stdout.write(' '.repeat(40) + '\r');
   } catch (err: unknown) {
