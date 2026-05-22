@@ -40,7 +40,7 @@ const VALID_STATUS_TRANSITIONS: Record<string, string[]> = {
 export async function PATCH(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
-    await requireProjectRole(auth, params.projectId);
+    const authed = await requireProjectRole(auth, params.projectId);
     const body = await validateBody(req, updateTaskSchema);
 
     // The plan*Refs fields together control (a) AI completion verification
@@ -70,16 +70,36 @@ export async function PATCH(req: NextRequest, { params }: Params) {
         );
       }
 
-      // Agent tasks require a completed ExecutionRun to be marked done
-      // Human / unassigned tasks can be marked done directly
-      if (body.status === 'done' && task.assigneeType === 'agent') {
+      // Marking a task done is the single most consequential PATCH on this
+      // route — it closes the loop on accountability for the assigned work.
+      // Without a guard, any project member could PATCH any task (their own
+      // or someone else's) straight to done, bypassing both execution
+      // tracking and ownership oversight. The rules below mirror the three
+      // legitimate ways a task can legitimately reach `done`:
+      //   1. Project owner administratively closes it.
+      //   2. A completed ExecutionRun exists (the normal flow via
+      //      execution_complete).
+      //   3. The current assignee finishes a human task themselves — but
+      //      only for human-typed tasks (agent tasks always need a run).
+      if (body.status === 'done') {
+        const isOwner = authed.projectRole === 'owner';
         const completedRun = await prisma.executionRun.findFirst({
           where: { taskId: params.taskId, status: 'completed' },
         });
-        if (!completedRun) {
+        const hasCompletedRun = completedRun !== null;
+        const isHumanSelfComplete =
+          task.assigneeType === 'human' && task.assignee === auth.userName;
+
+        if (!isOwner && !hasCompletedRun && !isHumanSelfComplete) {
+          if (task.assigneeType === 'agent') {
+            throw new AppError(
+              ErrorCode.STATE_CONFLICT,
+              'Agent task cannot be marked done without a completed execution run.',
+            );
+          }
           throw new AppError(
-            ErrorCode.STATE_CONFLICT,
-            'Agent task cannot be marked done without a completed execution run.',
+            ErrorCode.FORBIDDEN,
+            'Only the project owner, the current assignee (for human tasks), or execution_complete can mark a task done.',
           );
         }
       }
@@ -159,6 +179,27 @@ export async function DELETE(req: NextRequest, { params }: Params) {
     if (!task) throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
     if (task.projectId !== params.projectId) {
       throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+    }
+
+    // R-047: A `DELETE task` while an ExecutionRun is `running` would silently
+    // cascade-delete the run record, orphaning a live agent's heartbeats and
+    // its exec-scoped API key. The owner must explicitly cancel the run first
+    // (via /runs/[runId] action=cancel) so audit + key revocation happen
+    // through the normal path.
+    const runningRun = await prisma.executionRun.findFirst({
+      where: { taskId: params.taskId, status: 'running' },
+      select: { id: true, executorName: true, startedAt: true },
+    });
+    if (runningRun) {
+      throw new AppError(
+        ErrorCode.STATE_CONFLICT,
+        'Task has a running execution; cancel the run before deleting.',
+        {
+          runId: runningRun.id,
+          executorName: runningRun.executorName,
+          startedAt: runningRun.startedAt.toISOString(),
+        },
+      );
     }
 
     await prisma.task.delete({ where: { id: params.taskId } });

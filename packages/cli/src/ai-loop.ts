@@ -281,6 +281,110 @@ export async function streamOneTurn(
   });
 }
 
+/**
+ * Result of one user turn through the agent loop.
+ *
+ * - `text` is the final assistant-visible text reply (back-compat with the old
+ *   `Promise<string>` return).
+ * - `newMessages` is the full list of messages this turn appended to the
+ *   conversation, in order: the initial user input, every intermediate
+ *   assistant turn (carrying `tool_use` blocks), every `tool_result` user
+ *   turn, and the final assistant reply (text-only when no further tools
+ *   were called). Callers must push the entire array into their persisted
+ *   history so that subsequent turns can reference earlier tool calls and
+ *   their results. Storing only the final text (the pre-R-063 behaviour)
+ *   throws away the context the model needs to remain coherent across
+ *   related questions.
+ */
+export interface AgentLoopResult {
+  text: string;
+  newMessages: Message[];
+}
+
+/**
+ * R-069: User-facing warning emitted when the agent loop exhausts
+ * {@link cfg.maxTurns} consecutive tool/text rounds without the model deciding
+ * to stop on its own. Without this hint the loop just exits silently, which
+ * makes it look as if the agent simply ignored the request.
+ *
+ * Exposed as a separate function so unit tests can assert on its content
+ * without having to spin up a streaming HTTP mock for {@link runAgentLoop}.
+ */
+export function formatMaxTurnsWarning(maxTurns: number): string {
+  return `⚠ 已达最大轮次 (${maxTurns}); 请尝试更具体的请求`;
+}
+
+/**
+ * Cheap, deterministic token estimator (chars / 4) used by {@link pruneHistory}.
+ * Anthropic's exact tokeniser is not exposed to the CLI, but the chars/4 rule
+ * is within ~15% for English/Chinese mixed content and is good enough for a
+ * budget knob.
+ */
+export function estimateTokens(content: unknown): number {
+  if (content == null) return 0;
+  const s = typeof content === 'string' ? content : JSON.stringify(content);
+  return Math.ceil(s.length / 4);
+}
+
+function isToolResultMessage(m: Message): boolean {
+  if (m.role !== 'user' || !Array.isArray(m.content)) return false;
+  return m.content.some(
+    (block) =>
+      typeof block === 'object' &&
+      block !== null &&
+      (block as { type?: string }).type === 'tool_result',
+  );
+}
+
+function hasToolUseBlock(m: Message): boolean {
+  if (m.role !== 'assistant' || !Array.isArray(m.content)) return false;
+  return m.content.some(
+    (block) =>
+      typeof block === 'object' &&
+      block !== null &&
+      (block as { type?: string }).type === 'tool_use',
+  );
+}
+
+/**
+ * Trim history in-place so its total estimated token budget stays under
+ * `maxTokens`. Drops oldest messages first but never splits an
+ * `assistant{tool_use}` / `user{tool_result}` pair — leaving an orphan
+ * tool_result at the head makes Anthropic reject the request with a 400.
+ * When messages are dropped, a single short user-role stub is left at the
+ * head so the model knows the conversation was truncated.
+ *
+ * This is the lightweight implementation called for by R-063 fix step 2.
+ * A richer LLM-driven summariser is tracked under R-070.
+ */
+export function pruneHistory(history: Message[], maxTokens = 80000): void {
+  if (history.length === 0) return;
+  let totalTokens = 0;
+  for (const m of history) totalTokens += estimateTokens(m.content);
+  if (totalTokens <= maxTokens) return;
+
+  let dropEnd = 0;
+  while (totalTokens > maxTokens && dropEnd < history.length - 1) {
+    totalTokens -= estimateTokens(history[dropEnd].content);
+    dropEnd++;
+    while (dropEnd < history.length && isToolResultMessage(history[dropEnd])) {
+      totalTokens -= estimateTokens(history[dropEnd].content);
+      dropEnd++;
+    }
+  }
+  while (dropEnd > 0 && dropEnd < history.length && hasToolUseBlock(history[dropEnd - 1])) {
+    if (!isToolResultMessage(history[dropEnd])) break;
+    dropEnd--;
+  }
+
+  if (dropEnd <= 0) return;
+  const summary: Message = {
+    role: 'user',
+    content: `[${dropEnd} earlier message(s) truncated for length]`,
+  };
+  history.splice(0, dropEnd, summary);
+}
+
 export async function runAgentLoop(
   userInput: string,
   history: Message[],
@@ -293,12 +397,15 @@ export async function runAgentLoop(
     projectId: string,
     taskPack: unknown,
   ) => Promise<void>,
-): Promise<string> {
+): Promise<AgentLoopResult> {
   const tools = mcp.getAnthropicTools();
-  const messages: Message[] = [...history, { role: 'user', content: userInput }];
+  const userMessage: Message = { role: 'user', content: userInput };
+  const messages: Message[] = [...history, userMessage];
+  const startIndex = messages.length - 1;
   let finalText = '';
 
-  for (let turn = 0; turn < cfg.maxTurns; turn++) {
+  let turn = 0;
+  for (; turn < cfg.maxTurns; turn++) {
     if (signal?.aborted) break;
     process.stdout.write('\n');
     const thinkSp = createSpinner('Thinking');
@@ -441,7 +548,12 @@ export async function runAgentLoop(
             // Without this return, the AI would continue to the next turn and
             // re-execute the task itself, ignoring the "don't do more work" hint.
             toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: result });
-            return finalText;
+            // R-063: Persist the in-progress assistant turn + tool_result so a
+            // follow-up question after Genie can still reference the exec_start
+            // tool call and its response.
+            messages.push({ role: 'user', content: toolResults });
+            const newMessagesEarly = messages.slice(startIndex);
+            return { text: finalText, newMessages: newMessagesEarly };
           }
         } catch {
           /* parse failed — let AI handle normally */
@@ -454,5 +566,26 @@ export async function runAgentLoop(
     messages.push({ role: 'user', content: toolResults });
   }
 
-  return finalText;
+  if (turn >= cfg.maxTurns && !signal?.aborted) {
+    console.log(`\n${c.yellow}${formatMaxTurnsWarning(cfg.maxTurns)}${c.reset}`);
+  }
+
+  if (finalText) {
+    const last = messages[messages.length - 1];
+    const lastIsAssistantText =
+      last &&
+      last.role === 'assistant' &&
+      (typeof last.content === 'string'
+        ? last.content === finalText
+        : Array.isArray(last.content) &&
+          last.content.length === 1 &&
+          typeof (last.content[0] as { type?: string })?.type === 'string' &&
+          (last.content[0] as { type?: string }).type === 'text');
+    if (!lastIsAssistantText) {
+      messages.push({ role: 'assistant', content: finalText });
+    }
+  }
+
+  const newMessages = messages.slice(startIndex);
+  return { text: finalText, newMessages };
 }

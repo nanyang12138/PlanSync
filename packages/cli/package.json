@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "node_modules/esbuild/bin/esbuild src/index.ts --bundle --platform=node --target=node18 --outfile=dist/index.js --format=esm --jsx=automatic --alias:react-devtools-core=./src/stubs/react-devtools-core.js \"--banner:js=import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" && cp ../../node_modules/yoga-wasm-web/dist/yoga.wasm dist/yoga.wasm",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "test": "vitest run"
   },
   "dependencies": {
     "ink": "^4.4.1",
@@ -15,6 +16,7 @@
     "typescript": "~5.7.3",
     "@types/node": "~20.17.12",
     "@types/react": "~18.3.1",
-    "esbuild": "~0.24.2"
+    "esbuild": "~0.24.2",
+    "vitest": "~2.1.8"
   }
 }

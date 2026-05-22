@@ -6,7 +6,7 @@
  * nextLine() call, a 'reset' event re-enables it.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Box, Text, useInput, render, type Instance, type Key } from 'ink';
 import { EventEmitter } from 'events';
 import { createInterface } from 'readline';
@@ -14,6 +14,110 @@ import { appendInputHistory } from './session.js';
 import { type SlashCmd } from './input.js';
 
 export type { SlashCmd };
+
+// ─── Bracketed paste handling (R-067) ─────────────────────────────────────────
+
+/**
+ * Escape sequences emitted by terminals when bracketed paste mode is enabled.
+ * The terminal wraps any pasted text with these two markers so the
+ * application can distinguish a paste from typed input.
+ */
+export const PASTE_START = '\x1b[200~';
+export const PASTE_END = '\x1b[201~';
+
+/** Enable bracketed paste mode on the host terminal. */
+export const ENABLE_BRACKETED_PASTE = '\x1b[?2004h';
+/** Disable bracketed paste mode on the host terminal. */
+export const DISABLE_BRACKETED_PASTE = '\x1b[?2004l';
+
+export interface PasteParseResult {
+  /** Plain input that came before any paste-start marker. */
+  before: string;
+  /**
+   * Complete pasted payload, present only when both the start and the end
+   * marker arrived in this single chunk.
+   */
+  paste: string | null;
+  /**
+   * True when a paste-start marker was found but no matching end marker
+   * appeared in the same chunk. The caller should switch to streaming mode
+   * and feed subsequent chunks into {@link continueBracketedPaste}.
+   */
+  pasteStarted: boolean;
+  /** Partial paste content (after the start marker) when `pasteStarted`. */
+  pasteFragment: string;
+  /** Plain input that came after the paste-end marker. */
+  after: string;
+}
+
+/**
+ * Parse an input chunk that may contain bracketed-paste markers.
+ *
+ * Three outcomes:
+ *   - no start marker → all input is regular keystrokes (`before`)
+ *   - start marker without end → paste opened mid-chunk; caller should
+ *     buffer `pasteFragment` and continue parsing future chunks
+ *   - start and end markers → a complete paste payload is in `paste`
+ *
+ * Pure helper so the state machine can be unit-tested without mounting Ink.
+ */
+export function parseBracketedPaste(input: string): PasteParseResult {
+  const startIdx = input.indexOf(PASTE_START);
+  if (startIdx === -1) {
+    return {
+      before: input,
+      paste: null,
+      pasteStarted: false,
+      pasteFragment: '',
+      after: '',
+    };
+  }
+  const before = input.slice(0, startIdx);
+  const rest = input.slice(startIdx + PASTE_START.length);
+  const endIdx = rest.indexOf(PASTE_END);
+  if (endIdx === -1) {
+    return {
+      before,
+      paste: null,
+      pasteStarted: true,
+      pasteFragment: rest,
+      after: '',
+    };
+  }
+  return {
+    before,
+    paste: rest.slice(0, endIdx),
+    pasteStarted: true,
+    pasteFragment: '',
+    after: rest.slice(endIdx + PASTE_END.length),
+  };
+}
+
+export interface PasteContinueResult {
+  /** Complete paste payload (buffer + chunk up to end marker) once closed. */
+  paste: string | null;
+  /** Remaining input after the paste-end marker (treat as regular keystrokes). */
+  remainder: string;
+  /** Updated paste buffer when the end marker has not yet arrived. */
+  updatedBuffer: string;
+}
+
+/**
+ * Continue parsing a paste-in-progress. Call this from subsequent useInput
+ * chunks while a previous {@link parseBracketedPaste} call returned
+ * `pasteStarted: true` without a `paste` payload.
+ */
+export function continueBracketedPaste(buffer: string, input: string): PasteContinueResult {
+  const endIdx = input.indexOf(PASTE_END);
+  if (endIdx === -1) {
+    return { paste: null, remainder: '', updatedBuffer: buffer + input };
+  }
+  return {
+    paste: buffer + input.slice(0, endIdx),
+    remainder: input.slice(endIdx + PASTE_END.length),
+    updatedBuffer: '',
+  };
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -24,6 +128,60 @@ export interface Notif {
 }
 
 const NOTIF_TTL = 10 * 60 * 1000; // 10 minutes in ms
+
+// ─── Terminal width tracking ──────────────────────────────────────────────────
+
+/**
+ * Returns the current terminal width in columns, defaulting to 80 when the
+ * stream does not report a size (e.g. non-TTY).
+ */
+export function getTerminalColumns(stream: NodeJS.WriteStream = process.stdout): number {
+  return stream.columns || 80;
+}
+
+/**
+ * R-072: compute the next `selIdx` value when the user presses the ↓ key.
+ *
+ * Behaviour the prompt must guarantee:
+ *   - With suggestions visible and nothing currently selected (`selIdx === -1`),
+ *     ↓ enters the suggestion list at the first item (index 0). Previously the
+ *     handler required `selIdx >= 0` and silently fell through to history
+ *     navigation, leaving the suggestion list unreachable via ↓ alone.
+ *   - With a selection already active, ↓ advances by one but stops at the
+ *     last item (no wrap), matching the bounded behaviour of the original code.
+ *   - When there are no suggestions, ↓ should not be intercepted; we signal
+ *     that by returning `null` so the caller falls through to history nav.
+ *
+ * Returns either a non-negative integer index (the new `selIdx`) or `null`,
+ * meaning "the suggestion list does not handle this keystroke".
+ */
+export function nextSuggestionSelectionOnDown(
+  currentSelIdx: number,
+  suggestionsLength: number,
+): number | null {
+  if (suggestionsLength <= 0) return null;
+  if (currentSelIdx === -1) return 0;
+  return Math.min(suggestionsLength - 1, currentSelIdx + 1);
+}
+
+/**
+ * Subscribe `handler` to the host stream's `resize` event. Returns a teardown
+ * function that removes the listener.
+ *
+ * Extracted as a standalone helper so the SIGWINCH plumbing for PromptUI can
+ * be unit-tested without mounting Ink. PromptUI uses this inside a
+ * `useEffect` to re-render its separators whenever the user resizes the
+ * terminal window.
+ */
+export function subscribeToResize(
+  handler: () => void,
+  stream: NodeJS.WriteStream = process.stdout,
+): () => void {
+  stream.on('resize', handler);
+  return () => {
+    stream.off('resize', handler);
+  };
+}
 
 // ─── PromptUI component ───────────────────────────────────────────────────────
 
@@ -45,6 +203,36 @@ function PromptUI({ promptStr: initialPrompt, commands, history, events }: Promp
   const [promptStr, setPromptStr] = useState(initialPrompt);
   const [disabled, setDisabled] = useState(false);
   const [lastSubmitted, setLastSubmitted] = useState('');
+  const [columns, setColumns] = useState<number>(() => getTerminalColumns());
+
+  // R-066: re-render separators when the user resizes the terminal window.
+  // Without this, `process.stdout.columns` is captured only on initial render,
+  // leaving the top/bottom separator lines stuck at the original width.
+  useEffect(() => {
+    const update = () => setColumns(getTerminalColumns());
+    update();
+    return subscribeToResize(update);
+  }, []);
+
+  // R-067: enable bracketed paste mode so the host terminal wraps pasted text
+  // with \x1b[200~ … \x1b[201~. Without this, multi-line pastes are
+  // interpreted as a series of individual keystrokes — newlines fire `Enter`
+  // and submit each line separately.
+  useEffect(() => {
+    if (process.stdout.isTTY) {
+      process.stdout.write(ENABLE_BRACKETED_PASTE);
+    }
+    return () => {
+      if (process.stdout.isTTY) {
+        process.stdout.write(DISABLE_BRACKETED_PASTE);
+      }
+    };
+  }, []);
+
+  // R-067: paste buffer used when a paste spans multiple useInput chunks.
+  // Ref (not state) so consecutive chunks within the same tick see the latest
+  // buffer without waiting for a re-render.
+  const pasteBufferRef = useRef<string | null>(null);
 
   // Urgent-only flash: drift / stale / plan_activated / review events — auto-clears after 30s
   useEffect(() => {
@@ -101,7 +289,56 @@ function PromptUI({ promptStr: initialPrompt, commands, history, events }: Promp
     setSelIdx(-1);
   };
 
+  // R-067: insert pasted text into the buffer and immediately submit it as a
+  // single unit. We submit on paste-end rather than waiting for Enter because
+  // the alternative — treating the paste as ordinary keystrokes — re-introduces
+  // the multi-line-fragmentation bug this ticket exists to fix.
+  const submitPaste = (pastedText: string) => {
+    const newVal = value.slice(0, cursor) + pastedText + value.slice(cursor);
+    setLastSubmitted(newVal);
+    setDisabled(true);
+    setValue('');
+    setCursor(0);
+    setSuggestions([]);
+    setSelIdx(-1);
+    setTimeout(() => events.emit('submit', newVal), 0);
+  };
+
   useInput((input: string, key: Key) => {
+    // R-067 — handle bracketed paste before any other key processing. The
+    // terminal sends \x1b[200~…\x1b[201~ around pasted text; we accumulate
+    // across chunks if necessary and submit the entire payload as one
+    // multi-line message.
+    if (pasteBufferRef.current !== null) {
+      const cont = continueBracketedPaste(pasteBufferRef.current, input);
+      if (cont.paste === null) {
+        pasteBufferRef.current = cont.updatedBuffer;
+        return;
+      }
+      pasteBufferRef.current = null;
+      submitPaste(cont.paste);
+      // Any keystrokes after the paste-end marker are dropped: once we have
+      // submitted, the prompt is disabled and the AI loop owns input.
+      return;
+    }
+
+    if (input && input.includes(PASTE_START)) {
+      const parsed = parseBracketedPaste(input);
+      if (parsed.paste !== null) {
+        // Complete paste arrived in one chunk.
+        submitPaste(parsed.paste);
+        return;
+      }
+      if (parsed.pasteStarted) {
+        // Open paste — buffer the fragment and wait for the end marker.
+        pasteBufferRef.current = parsed.pasteFragment;
+        // We intentionally discard `parsed.before` here: typical terminals
+        // do not interleave keystrokes with the paste-start marker, and
+        // mixing them in would surprise the submit-on-paste-end semantics.
+        return;
+      }
+    }
+
     // Ctrl+C — always handled (even disabled), routes to external sigint handler
     if (key.ctrl && input === 'c') {
       events.emit('sigint');
@@ -167,8 +404,9 @@ function PromptUI({ promptStr: initialPrompt, commands, history, events }: Promp
     }
 
     if (key.downArrow) {
-      if (suggestions.length > 0 && selIdx >= 0) {
-        setSelIdx((prev) => Math.min(suggestions.length - 1, prev + 1));
+      const nextSel = nextSuggestionSelectionOnDown(selIdx, suggestions.length);
+      if (nextSel !== null) {
+        setSelIdx(nextSel);
       } else if (histIdx > 0) {
         const newIdx = histIdx - 1;
         const entry = history[history.length - 1 - newIdx] ?? '';
@@ -262,7 +500,7 @@ function PromptUI({ promptStr: initialPrompt, commands, history, events }: Promp
     suggestionRows.push({ type: 'item', cmd: s, idx: itemIdx++ });
   }
 
-  const sepDashes = process.stdout.columns || 80;
+  const sepDashes = columns;
 
   return (
     <Box flexDirection="column">
@@ -330,6 +568,38 @@ function PromptUI({ promptStr: initialPrompt, commands, history, events }: Promp
   );
 }
 
+// ─── Non-TTY fallback reader (R-068) ──────────────────────────────────────────
+
+/**
+ * Read exactly one line from `input`, writing `prompt` to `output` first.
+ *
+ * Resolves to:
+ *   - the typed line (without the trailing newline) when the user presses Enter
+ *   - `null` when the input stream closes before a line arrives (EOF)
+ *
+ * Pure helper around Node's `readline`. Pulled out of {@link InkSession} so
+ * tests can drive it with a {@link PassThrough} pair instead of stubbing
+ * `process.stdin` / `process.stdout`.
+ */
+export function readSingleLine(
+  prompt: string,
+  input: NodeJS.ReadableStream,
+  output: NodeJS.WritableStream,
+): Promise<string | null> {
+  return new Promise<string | null>((resolve) => {
+    let settled = false;
+    const rl = createInterface({ input, output });
+    const finish = (value: string | null) => {
+      if (settled) return;
+      settled = true;
+      rl.close();
+      resolve(value);
+    };
+    rl.question(prompt, (answer) => finish(answer));
+    rl.on('close', () => finish(null));
+  });
+}
+
 // ─── InkSession — same API as RawInput ───────────────────────────────────────
 
 export class InkSession {
@@ -344,6 +614,13 @@ export class InkSession {
   private resumeGate: Promise<void> | null = null;
   private resolveGate: (() => void) | null = null;
 
+  // R-068: non-TTY fallback. Ink requires a real TTY for raw mode; piped or
+  // redirected stdin (CI runs, `echo hi | plansync`, scripted tests) would
+  // otherwise hang forever waiting for keypress events that will never arrive.
+  // When stdin is not a TTY we switch to a plain readline-based reader that
+  // emits one prompt per turn.
+  private fallbackMode = false;
+
   /** Set by callers to intercept Ctrl+C during non-AI phases */
   onSigint: (() => void) | null = null;
 
@@ -357,6 +634,10 @@ export class InkSession {
   /** Load saved history (called once at startup). */
   start(savedHistory: string[]): void {
     this.history = [...savedHistory];
+    // R-068: pin the fallback decision at startup. Re-evaluating inside
+    // nextLine() each turn would defeat tests that swap stdin after
+    // construction; pinning it also matches RawInput.start() semantics.
+    this.fallbackMode = !process.stdin.isTTY;
   }
 
   /** Update the prompt string displayed to the left of the cursor. */
@@ -391,6 +672,11 @@ export class InkSession {
     // Wait for any pending resume (e.g. /code subprocess still running)
     if (this.resumeGate) await this.resumeGate;
     if (this.paused) return null;
+
+    // R-068: non-TTY fallback — pipes, redirects, CI runs.
+    if (this.fallbackMode) {
+      return this.fallbackReadLine();
+    }
 
     if (!this.instance) {
       // First call (or after pause): mount the persistent Ink app
@@ -509,6 +795,25 @@ export class InkSession {
         resolve(answer);
       });
     });
+  }
+
+  /**
+   * R-068: readline fallback used when stdin is not a TTY (piped input,
+   * CI, scripted tests). Mirrors RawInput.fallbackReadLine — resolves to
+   * the typed line, or null when stdin closes before a line is delivered.
+   */
+  private async fallbackReadLine(): Promise<string | null> {
+    const value = await readSingleLine(this.promptStr, process.stdin, process.stdout);
+    if (value !== null && value.trim()) {
+      this.history.push(value);
+      appendInputHistory(value);
+    }
+    return value;
+  }
+
+  /** R-068: exposed for tests — true when stdin was not a TTY at start(). */
+  isFallbackMode(): boolean {
+    return this.fallbackMode;
   }
 
   clearDisplay(): void {}

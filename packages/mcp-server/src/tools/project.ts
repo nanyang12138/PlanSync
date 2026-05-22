@@ -1,5 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { createProjectSchema, updateProjectSchema } from '@plansync/shared';
 import { ApiClient } from '../api-client';
 
 let activeProjectId: string | undefined;
@@ -26,11 +27,7 @@ export function registerProjectTools(server: McpServer, api: ApiClient) {
   server.tool(
     'plansync_project_create',
     'Create a new project',
-    {
-      name: z.string().describe('Project name'),
-      description: z.string().optional().describe('Project description'),
-      phase: z.enum(['planning', 'active', 'completed']).optional(),
-    },
+    createProjectSchema.shape,
     async (args) => {
       const result = await api.post('/api/projects', args);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
@@ -71,9 +68,7 @@ export function registerProjectTools(server: McpServer, api: ApiClient) {
     'Update project details',
     {
       projectId: z.string(),
-      name: z.string().optional(),
-      description: z.string().optional(),
-      phase: z.enum(['planning', 'active', 'completed']).optional(),
+      ...updateProjectSchema.shape,
     },
     async (args) => {
       const { projectId, ...body } = args;

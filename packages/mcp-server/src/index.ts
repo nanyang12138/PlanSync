@@ -14,7 +14,8 @@ import { registerTaskTools } from './tools/task';
 import { registerExecutionTools, heartbeatManager } from './tools/execution';
 import { registerDriftTools } from './tools/drift';
 import { registerStatusTools, getDelegationAgent } from './tools/status';
-import { isRunAborted, onRunAborted } from './abort-signal';
+import { onRunAborted } from './abort-signal';
+import { patchServerToolRegistration } from './tool-wrapper';
 
 function pushNotification(
   server: McpServer,
@@ -136,60 +137,17 @@ async function main() {
     'plansync_delegation_clear',
   ]);
 
-  {
-    const originalTool = server.tool.bind(server);
-    (server as any).tool = function (name: string, ...rest: any[]) {
-      // Execution mode: skip registration entirely — tool won't appear in AI's tool list
-      if (execMode && !EXEC_ALLOWED.has(name)) return;
-
-      // Wrap handler to check (a) drift v2 run-abort flag and (b) delegation
-      // mode at call time. The abort check is first because once the run has
-      // been aborted by the API (drift, version-mismatch, race-lost), no
-      // further tool call should reach the network — the agent must stop.
-      const originalHandler = rest[rest.length - 1];
-      rest[rest.length - 1] = async (args: any) => {
-        const abort = isRunAborted();
-        if (abort) {
-          return {
-            isError: true,
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  error: {
-                    code: 'RUN_ABORTED',
-                    abortCode: abort.code,
-                    message: abort.message,
-                    runId: abort.runId,
-                    taskId: abort.taskId,
-                    guidance:
-                      'This execution has been aborted by the API (drift v2). Do NOT call any more PlanSync tools. Stop the ai-loop, report the abort to the user, and let them decide next steps (rebind, cancel, or start a fresh execution after drift is resolved).',
-                  },
-                }),
-              },
-            ],
-          };
-        }
-        const delegationAgent = getDelegationAgent();
-        if (delegationAgent && !DELEGATION_ALLOWED.has(name)) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  error: 'DELEGATION_BLOCKED',
-                  message: `Delegation mode active (as: "${delegationAgent}") — "${name}" is blocked. Use plansync_plan_suggest to propose changes, or call plansync_delegation_clear first.`,
-                }),
-              },
-            ],
-          };
-        }
-        return originalHandler(args);
-      };
-
-      return originalTool(name, ...rest);
-    };
-  }
+  // R-037: centralised wrapper around `server.tool` registrations. Each tool
+  // call now goes through:
+  //   1. abort check (drift v2 run-abort flag)
+  //   2. delegation check (DELEGATION_ALLOWED)
+  //   3. try/catch around the handler → `{ isError: true, content: [...] }`
+  //      envelope on any thrown error (ApiError or otherwise).
+  patchServerToolRegistration(server as unknown as { tool: (...a: unknown[]) => unknown }, {
+    execAllowed: execMode ? EXEC_ALLOWED : undefined,
+    delegationAllowed: DELEGATION_ALLOWED,
+    getDelegationAgent: () => getDelegationAgent() ?? undefined,
+  });
 
   if (execMode) {
     logger.info(

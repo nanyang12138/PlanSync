@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { authenticate, requireProjectRole, requireNotExecScoped } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
-import { AppError, ErrorCode } from '@plansync/shared';
+import { AppError, ErrorCode, proposePlanSchema } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
 import { eventBus } from '@/lib/event-bus';
 import { sendMail, userEmail } from '@/lib/email';
@@ -16,13 +16,17 @@ export async function POST(req: NextRequest, { params }: Params) {
     requireNotExecScoped(auth);
     await requireProjectRole(auth, params.projectId, 'owner');
 
-    type ReviewerSpec = string | { name: string; focusNotes?: string; type?: 'human' | 'agent' };
-    let body: { reviewers?: ReviewerSpec[] } = {};
+    // Body is optional — empty body falls back to plan.requiredReviewers.
+    // Use the shared zod schema to validate any provided fields so invalid
+    // payloads (e.g. wrong type/role values, non-string names, >20 reviewers)
+    // are rejected with 400 instead of silently coerced.
+    let rawBody: unknown = {};
     try {
-      body = await req.json();
+      rawBody = await req.json();
     } catch {
-      /* empty body OK if requiredReviewers on plan */
+      rawBody = {};
     }
+    const body = proposePlanSchema.parse(rawBody);
 
     const plan = await prisma.plan.findUnique({ where: { id: params.planId } });
     if (!plan) throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');

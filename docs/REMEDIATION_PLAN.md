@@ -577,7 +577,7 @@
 
 #### R-025 [HIGH] psRequest 检查 HTTP 状态码
 
-- **status**: in_progress
+- **status**: done
 - **batch**: B3
 - **depends_on**: —
 - **effort**: small
@@ -647,7 +647,7 @@
 
 #### R-029 [MEDIUM] MCP `project_create/update` 补 repoUrl/defaultBranch
 
-- **status**: in_progress
+- **status**: done
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
@@ -692,7 +692,7 @@
 
 #### R-032 [MEDIUM] propose plan 接口建立 shared zod schema
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
@@ -709,7 +709,7 @@
 
 #### R-033 [MEDIUM] `createActivity` 强制 zod 校验 type
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
@@ -742,7 +742,7 @@
 
 #### R-035 [HIGH] env.ts 验证所有运行时使用的 env 变量
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
@@ -774,7 +774,7 @@
 
 #### R-037 [MEDIUM] MCP tool 统一错误格式（isError + 结构化）
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: —
 - **effort**: medium
@@ -791,7 +791,7 @@
 
 #### R-038 [MEDIUM] `review_reject` schema 强制 comment 非空
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
@@ -901,7 +901,7 @@
 
 #### R-044 [MEDIUM] notify 路由限流 + owner-only
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B5
 - **depends_on**: —
 - **effort**: small
@@ -918,7 +918,7 @@
 
 #### R-045 [HIGH] human task PATCH `done` 需要 execution 或 owner
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B5
 - **depends_on**: —
 - **effort**: small
@@ -933,7 +933,7 @@
 
 #### R-046 [MEDIUM] complete-human 加 open drift gate
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B5
 - **depends_on**: —
 - **effort**: small
@@ -948,7 +948,7 @@
 
 #### R-047 [MEDIUM] DELETE task 拒绝有 running run 的请求
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B5
 - **depends_on**: —
 - **effort**: small
@@ -985,7 +985,7 @@
 
 #### R-049 [HIGH] task_claim 用 conditional `updateMany` 原子化
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small
@@ -1007,7 +1007,7 @@
 
 #### R-050 [MEDIUM] plan 版本号生成放进事务
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small
@@ -1039,7 +1039,7 @@
 
 #### R-052 [HIGH] reactivate 把 drift 扫描放回事务
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small
@@ -1054,7 +1054,7 @@
 
 #### R-053 [MEDIUM] suggestion accept 单事务 apply+update
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small
@@ -1069,7 +1069,7 @@
 
 #### R-054 [HIGH] execution_start 拒绝 cancelled/blocked/done 任务
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small
@@ -1084,7 +1084,7 @@
 
 #### R-055 [HIGH] activate 路由要求非 0 reviewer 或 owner 强制
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small
@@ -1131,7 +1131,8 @@
 
 #### R-058 [LOW] drift_engine 使用 tx 读取（保持事务一致性）
 
-- **status**: pending
+- **status**: blocked
+- **blocked_reason**: fix_steps 引用的 `drift-engine.ts` 行 89-92 / 112-115 当前只剩注释；R-007 (PR #11) 的重构已经把所有裸 `prisma` 读移到 `dispatchDriftNotifications`（事务后调用），`runDriftScan` 与 `persistDriftAlerts` 当前已经 100% 使用 `tx`。无可改代码，问题已实质修复。
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small
@@ -1212,7 +1213,7 @@
 
 #### R-063 [HIGH] AI loop 保留 tool_use/tool_result 历史
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: medium
@@ -1244,7 +1245,7 @@
 
 #### R-065 [MEDIUM] `/clear` `/verbose` 等无 unmount 的命令统一加入 unmount
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1259,7 +1260,7 @@
 
 #### R-066 [MEDIUM] Ink 监听 SIGWINCH 重渲染
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1274,7 +1275,7 @@
 
 #### R-067 [MEDIUM] Ink 支持 bracketed paste 多行提交
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: medium
@@ -1289,7 +1290,7 @@
 
 #### R-068 [MEDIUM] Ink 非 TTY fallback
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1304,7 +1305,7 @@
 
 #### R-069 [MEDIUM] AI loop maxTurns 用户可见警告
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1334,7 +1335,7 @@
 
 #### R-071 [LOW] `/worker` Ctrl+C 中断子进程
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1349,7 +1350,7 @@
 
 #### R-072 [LOW] suggestion ↓ 从未选状态进入
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1398,7 +1399,7 @@
 
 #### R-075 [HIGH] tasks 表加复合索引
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
@@ -1417,7 +1418,7 @@
 
 #### R-076 [HIGH] drift_alerts 加复合索引
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
@@ -1429,7 +1430,7 @@
 
 #### R-077 [HIGH] api_keys.keyPrefix 加索引
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
@@ -2135,6 +2136,26 @@
 
 ---
 
+#### R-134 [MEDIUM] plans.test.ts 抽出 `resetDraftPlans` helper
+
+- **status**: done
+- **batch**: B12
+- **depends_on**: —
+- **effort**: small
+- **files**: `packages/api/tests/helpers/request.ts`, `packages/api/tests/integration/plans.test.ts`
+- **symptom**: PR #42 (R-032) CI `test` job 红 — 新加的三个 R-032 测试没在创建 draft 前清理已有 draft，被 R-036 引入的 server-side "one draft per project" guard 挡了，`POST /plans` 返回 400 而非 201，下一行 `(await res.json()).data.id` 抛 TypeError。
+- **root_cause**: R-036 (PR #43) 把"每项目唯一 active draft"做成 server-side hard guard 后，plans.test.ts 里 8 处建 draft 的测试都得手动 `prisma.plan.updateMany(...) → superseded` 清场。这段 inline snippet 重复 8 次，任何新加测试只要忘抄就 CI 红。
+- **fix_steps**:
+  1. 在 `tests/helpers/request.ts` 新增 `resetDraftPlans(projectId)` helper，封装上述 `updateMany` 调用
+  2. 替换 plans.test.ts 里全部 8 处 inline 调用为 `await resetDraftPlans(projectId)`
+- **verification**:
+  - `npx vitest run tests/integration/plans.test.ts` → 16/16 通过（与原行为一致）
+  - 后续新加测试只需一行 `await resetDraftPlans(projectId)` 即可避开 R-036 guard，不再静默 broken
+- **rollback**: 两个文件 revert
+- **closed_in**: 同 PR
+
+---
+
 ## Cron Job 调度建议
 
 ### 推荐节奏
@@ -2330,14 +2351,15 @@ done
 | R-131 | HIGH     | B10  | 升级 Next.js 14 → 16（修复 2 个残留 high CVE）                                 |
 | R-132 | HIGH     | B4   | 升级 @modelcontextprotocol/sdk 1.3 → 1.29+ 并恢复 mcp-server typecheck         |
 | R-133 | MEDIUM   | B4   | 逐步把 `any` 替换为 `unknown`/具体类型，重新启用 ESLint `no-explicit-any` 警告 |
+| R-134 | MEDIUM   | B12  | plans.test.ts 抽出 `resetDraftPlans` helper（避免 R-036 guard 漏 cleanup）     |
 
 **统计**：
 
 - CRITICAL: 7
 - HIGH: 62
-- MEDIUM: 50
+- MEDIUM: 51
 - LOW: 14
-- **合计 130 条**
+- **合计 134 条**
 
 ---
 

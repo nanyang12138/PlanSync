@@ -1,5 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { createTaskShape, updateTaskShape } from '@plansync/shared';
 import { ApiClient } from '../api-client';
 import { getDelegationAgent } from './status';
 
@@ -48,38 +49,16 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
     },
   );
 
+  // R-028: input schema reuses @plansync/shared `createTaskShape` so MCP and
+  // the API stay in lockstep — adding a field to the contract automatically
+  // surfaces it here (previously the MCP copy lacked `branchName`, `startDate`,
+  // `dueDate`, and was missing the `test` / `docs` task types).
   server.tool(
     'plansync_task_create',
     'Create a new task (auto-binds to active plan version). OWNER ONLY.',
     {
       projectId: z.string(),
-      title: z.string(),
-      description: z.string().optional(),
-      type: z.enum(['code', 'research', 'design', 'bug', 'refactor']),
-      priority: z.enum(['p0', 'p1', 'p2']).optional(),
-      assignee: z.string().optional(),
-      assigneeType: z.enum(['human', 'agent', 'unassigned']).optional(),
-      agentContext: z.string().optional(),
-      expectedOutput: z.string().optional(),
-      agentConstraints: z.array(z.string()).optional(),
-      planDeliverableRefs: z
-        .array(z.string())
-        .optional()
-        .describe(
-          'Which plan deliverables this task is responsible for. execution_complete AI verification will check only these, not all plan deliverables.',
-        ),
-      planConstraintRefs: z
-        .array(z.string())
-        .optional()
-        .describe(
-          'Drift v2: which plan constraints this task depends on. Empty/omitted = "depends on all" (conservative — any constraint change is breaking). Narrow per task to reduce false drift alerts. Owner-only.',
-        ),
-      planStandardRefs: z
-        .array(z.string())
-        .optional()
-        .describe(
-          'Drift v2: which plan standards this task depends on. Empty/omitted = "depends on all". Owner-only.',
-        ),
+      ...createTaskShape,
     },
     async (args) => {
       const { projectId, ...body } = args;
@@ -88,41 +67,21 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
     },
   );
 
+  // R-027: input schema reuses @plansync/shared `updateTaskShape`. Previously
+  // the MCP copy was missing `type`, `branchName`, `prUrl`, `agentContext`,
+  // `expectedOutput`, `agentConstraints`, `startDate`, and `dueDate`, so agents
+  // could not update those fields through MCP at all.
+  //
+  // Note: shared schema accepts status='done' (the API rejects it at the route
+  // layer with a "use plansync_execution_complete" error). We rely on the API
+  // to enforce that rule rather than re-validating here.
   server.tool(
     'plansync_task_update',
-    'Update a task (supports reassignment via assignee/assigneeType)',
+    'Update a task (supports reassignment via assignee/assigneeType). "done" status cannot be set directly — use plansync_execution_complete instead.',
     {
       projectId: z.string(),
       taskId: z.string(),
-      title: z.string().optional(),
-      description: z.string().optional(),
-      status: z
-        .enum(['todo', 'in_progress', 'blocked', 'cancelled'])
-        .optional()
-        .describe(
-          '"done" cannot be set directly — use plansync_execution_complete instead (requires deliverablesMet and AI verification for agents)',
-        ),
-      priority: z.enum(['p0', 'p1', 'p2']).optional(),
-      assignee: z.string().nullable().optional().describe('Set assignee name, or null to unassign'),
-      assigneeType: z.enum(['human', 'agent', 'unassigned']).optional(),
-      planDeliverableRefs: z
-        .array(z.string())
-        .optional()
-        .describe(
-          'Which plan deliverables this task is responsible for. execution_complete AI verification will check only these, not all plan deliverables.',
-        ),
-      planConstraintRefs: z
-        .array(z.string())
-        .optional()
-        .describe(
-          'Drift v2: which plan constraints this task depends on. Empty = "depends on all". Owner-only.',
-        ),
-      planStandardRefs: z
-        .array(z.string())
-        .optional()
-        .describe(
-          'Drift v2: which plan standards this task depends on. Empty = "depends on all". Owner-only.',
-        ),
+      ...updateTaskShape,
     },
     async (args) => {
       const { projectId, taskId, ...body } = args;

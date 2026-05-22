@@ -75,3 +75,69 @@ describe('env validation — PLANSYNC_SECRET production guard (R-010)', () => {
     expect(result.success).toBe(true);
   });
 });
+
+describe('env validation — runtime env vars (R-035)', () => {
+  it('accepts AI provider env vars (LLM_API_KEY / LLM_API_BASE / ANTHROPIC_API_KEY)', () => {
+    const result = envSchema.safeParse({
+      ...baseValid,
+      LLM_API_KEY: 'k-abc',
+      LLM_API_BASE: 'https://llm-api.amd.com/Anthropic',
+      LLM_MODEL_NAME: 'Claude-Sonnet-4.5',
+      ANTHROPIC_API_KEY: 'sk-ant-test',
+      ANTHROPIC_BASE_URL: 'https://api.anthropic.com',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-4-20250514',
+      ANTHROPIC_CUSTOM_HEADERS: 'X-Foo=bar',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.LLM_API_KEY).toBe('k-abc');
+      expect(result.data.LLM_API_BASE).toBe('https://llm-api.amd.com/Anthropic');
+      expect(result.data.ANTHROPIC_API_KEY).toBe('sk-ant-test');
+    }
+  });
+
+  it('accepts email env vars (EMAIL_FROM / EMAIL_DOMAIN / EMAIL_SENDMAIL)', () => {
+    const result = envSchema.safeParse({
+      ...baseValid,
+      EMAIL_FROM: 'plansync@example.com',
+      EMAIL_DOMAIN: 'example.com',
+      EMAIL_SENDMAIL: '/usr/sbin/sendmail',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.EMAIL_FROM).toBe('plansync@example.com');
+      expect(result.data.EMAIL_SENDMAIL).toBe('/usr/sbin/sendmail');
+    }
+  });
+
+  it('treats AI/email env vars as optional (all unset is valid)', () => {
+    const result = envSchema.safeParse(baseValid);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.LLM_API_KEY).toBeUndefined();
+      expect(result.data.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(result.data.EMAIL_FROM).toBeUndefined();
+      expect(result.data.EMAIL_SENDMAIL).toBeUndefined();
+    }
+  });
+
+  it('rejects malformed LLM_API_BASE URL', () => {
+    const result = envSchema.safeParse({
+      ...baseValid,
+      LLM_API_BASE: 'not-a-url',
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const issue = result.error.issues.find((i) => i.path[0] === 'LLM_API_BASE');
+      expect(issue).toBeDefined();
+    }
+  });
+
+  it('rejects empty-string optional secrets (must be either unset or non-empty)', () => {
+    const result = envSchema.safeParse({
+      ...baseValid,
+      LLM_API_KEY: '',
+    });
+    expect(result.success).toBe(false);
+  });
+});

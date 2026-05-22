@@ -79,4 +79,20 @@ export async function cleanupProject(projectId: string) {
   await prisma.project.delete({ where: { id: projectId } }).catch(() => {});
 }
 
+/**
+ * R-134: Mark every non-archived plan on the project as 'superseded' so that
+ * a fresh draft can be created. R-036 added a server-side guard preventing
+ * more than one active draft per project; the older plans.test.ts cases
+ * each inlined this exact updateMany, which silently broke when a new test
+ * forgot the snippet (e.g. R-032 PR #42 CI failure).
+ *
+ * Call this at the top of any test that creates a new draft plan.
+ */
+export async function resetDraftPlans(projectId: string) {
+  await prisma.plan.updateMany({
+    where: { projectId, status: { in: ['draft', 'proposed'] } },
+    data: { status: 'superseded' },
+  });
+}
+
 export { prisma as testPrisma };

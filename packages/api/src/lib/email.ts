@@ -1,6 +1,6 @@
 import { spawnSync } from 'child_process';
 
-const SENDMAIL = '/usr/sbin/sendmail';
+const SENDMAIL = process.env.EMAIL_SENDMAIL ?? '/usr/sbin/sendmail';
 const FROM = process.env.EMAIL_FROM ?? 'plansync@amd.com';
 const DOMAIN = process.env.EMAIL_DOMAIN ?? 'amd.com';
 

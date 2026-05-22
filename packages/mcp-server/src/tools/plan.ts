@@ -275,11 +275,14 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
 
   server.tool(
     'plansync_review_reject',
-    'Reject a plan review. Automatically finds your review by your username — no need to look up reviewId. Use asUser to reject on behalf of an agent member (delegation).',
+    'Reject a plan review. Automatically finds your review by your username — no need to look up reviewId. Use asUser to reject on behalf of an agent member (delegation). A non-empty comment explaining the rejection is required.',
     {
       projectId: z.string(),
       planId: z.string(),
-      comment: z.string().optional().describe('Required: reason for rejection'),
+      comment: z
+        .string()
+        .min(1, 'comment is required when rejecting a plan review')
+        .describe('Required: reason for rejection (non-empty)'),
       asUser: z
         .string()
         .optional()
