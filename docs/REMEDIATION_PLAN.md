@@ -1494,7 +1494,8 @@
 
 #### R-079 [HIGH] 把 String 状态字段改为 Prisma enum
 
-- **status**: pending
+- **status**: blocked
+- **blocked_reason**: B4 远未完成（R-027/028/030/031/032/033/034/036/037/038/039/040 仍在 in_progress/pending），且本条 rollback 显式建议"每个 enum 单独一批"与 autonomous run 的"1 PR 只实现 1 个 R-XXX"硬约束冲突；需先等 B4 收口并把本条拆成 12 个子条目（每个 enum 一条）再 unblock。
 - **batch**: B8
 - **depends_on**: B4 完成
 - **effort**: large
