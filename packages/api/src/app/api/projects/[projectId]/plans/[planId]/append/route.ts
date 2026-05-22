@@ -8,6 +8,7 @@ import { AppError, ErrorCode } from '@plansync/shared';
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
 import { createActivity } from '@/lib/activity';
+import { requirePlanInProject } from '@/lib/plan-scope';
 
 const APPENDABLE_FIELDS = ['constraints', 'standards', 'deliverables', 'openQuestions'] as const;
 type AppendableField = (typeof APPENDABLE_FIELDS)[number];
@@ -26,10 +27,7 @@ export async function POST(req: NextRequest, { params }: Params) {
     await requireProjectRole(auth, params.projectId, 'owner');
     const body = await validateBody(req, appendSchema);
 
-    const plan = await prisma.plan.findUnique({ where: { id: params.planId } });
-    if (!plan || plan.projectId !== params.projectId) {
-      throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
-    }
+    const plan = await requirePlanInProject(params.planId, params.projectId);
     if (plan.status !== 'draft') {
       throw new AppError(ErrorCode.STATE_CONFLICT, 'Only draft plans can be edited');
     }

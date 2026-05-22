@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as http from 'http';
 import * as https from 'https';
 import * as os from 'os';
-import { execSync, spawn, spawnSync } from 'child_process';
+import { execSync, spawn, spawnSync, ChildProcess } from 'child_process';
 import crypto from 'crypto';
 import { cfg, selfDir } from './config.js';
 import { c, createSpinner } from './ui.js';
@@ -1011,7 +1011,20 @@ export async function launchAutoExec(
   runId: string,
   projectId: string,
   _taskPack: unknown,
-  options: { autonomous?: boolean } = {},
+  options: {
+    autonomous?: boolean;
+    /**
+     * R-071: invoked synchronously every time `launchAutoExec` spawns a Genie
+     * child (Phase 1 and, in interactive mode, Phase 2). The caller can
+     * remember the live child so that an external SIGINT handler (e.g. the
+     * `/worker` poll loop) can forward `kill('SIGINT')` to the right
+     * subprocess instead of waiting for the launcher's internal cleanup. The
+     * callback receives `null` when the previously announced child has exited
+     * — this lets callers clear their reference and avoid sending signals to
+     * a dead PID.
+     */
+    onChildSpawned?: (child: ChildProcess | null) => void;
+  } = {},
 ): Promise<void> {
   // Auto-repair ~/.claude.json if corrupted (e.g. from a previous concurrent write).
   // claude-code rebuilds its own fields on startup, so resetting to {} is safe.
@@ -1165,6 +1178,7 @@ export async function launchAutoExec(
       env: childEnv,
       cwd: worktreeDir,
     });
+    options.onChildSpawned?.(child);
 
     let stdout = '';
     let stderr = '';
@@ -1199,6 +1213,7 @@ export async function launchAutoExec(
 
     child.on('close', (code) => {
       process.removeListener('SIGINT', cleanup);
+      options.onChildSpawned?.(null);
       if (code === 0) {
         spinner.done(
           options.autonomous ? 'Autonomous execution complete.' : 'Plan generation complete.',
@@ -1220,6 +1235,7 @@ export async function launchAutoExec(
     });
     child.on('error', (err) => {
       process.removeListener('SIGINT', cleanup);
+      options.onChildSpawned?.(null);
       spinner.fail(`Failed: ${err.message}`);
       if (!options.autonomous) rawOn();
       resolve(null);

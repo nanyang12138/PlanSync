@@ -1,0 +1,73 @@
+name: cursor-review-triage
+
+# Listens for cursor-review-action comments on PRs and triages them into
+# structured GitHub issues (must/should-fix only) via LLM. Fingerprint-based
+# dedupe across PRs. Posts a single summary comment back on the PR.
+#
+# Never blocks merging. Requires LLM_API_KEY (AMD internal) or ANTHROPIC_API_KEY
+# repository secrets — without either, this workflow is a no-op.
+#
+# Loop safety: only triggers on comments whose body starts with the
+# `<!-- cursor-review-action:review -->` marker. The summary comment we post
+# back uses a different marker, so it cannot retrigger this workflow.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  triage:
+    if: >
+      github.event.issue.pull_request != null &&
+      github.event.comment.user.login == 'github-actions[bot]' &&
+      startsWith(github.event.comment.body, '<!-- cursor-review-action:review -->')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check for LLM key
+        id: key
+        env:
+          LLM_KEY: ${{ secrets.LLM_API_KEY }}
+          ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "${LLM_KEY:-}${ANTHROPIC_KEY:-}" ]; then
+            echo "Neither LLM_API_KEY nor ANTHROPIC_API_KEY is set; skipping triage."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node
+        if: steps.key.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Checkout (script only)
+        if: steps.key.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            scripts/review-triage.mjs
+          sparse-checkout-cone-mode: false
+
+      - name: Run triage
+        if: steps.key.outputs.skip != 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_API_BASE: ${{ secrets.LLM_API_BASE }}
+          LLM_MODEL_NAME: ${{ secrets.LLM_MODEL_NAME }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ secrets.ANTHROPIC_DEFAULT_SONNET_MODEL }}
+          REVIEW_TRIAGE_MAX_ISSUES: '5'
+        run: node scripts/review-triage.mjs

@@ -17,6 +17,7 @@ interface InputAPI {
   rawReadLine(prompt: string): Promise<string>;
 }
 import { launchCode, launchExec, launchAutoExec } from './exec.js';
+import { createWorkerInterruptHandler, type WorkerChildHandle } from './worker-interrupt.js';
 
 // ─── API helpers ──────────────────────────────────────────────────────────────
 
@@ -304,6 +305,7 @@ export async function handleSlashCommand(
 
   if (cmd === '/clear') {
     ctx.history.length = 0;
+    ctx.rawInput.unmountForMenu();
     console.log(`\n${c.dim}Conversation history cleared.${c.reset}\n`);
     return 'handled';
   }
@@ -313,6 +315,7 @@ export async function handleSlashCommand(
     const state = cfg.verbose
       ? `${c.cyan}Verbose on${c.reset}  ${c.dim}(tool inputs/outputs shown)${c.reset}`
       : `${c.dim}Verbose off  (tool inputs/outputs hidden)${c.reset}`;
+    ctx.rawInput.unmountForMenu();
     console.log(`\n  ${state}\n`);
     return 'handled';
   }
@@ -322,6 +325,7 @@ export async function handleSlashCommand(
     const targetId = parts[1]?.trim();
 
     if (ctx.history.length > 0) {
+      ctx.rawInput.unmountForMenu();
       console.log(
         `\n${c.yellow}Session already active (${ctx.history.length} messages). Use /clear first.${c.reset}\n`,
       );
@@ -330,6 +334,7 @@ export async function handleSlashCommand(
 
     const sessions = listSessions(cfg.project);
     if (sessions.length === 0) {
+      ctx.rawInput.unmountForMenu();
       console.log(`\n${c.dim}No previous sessions found for this project.${c.reset}\n`);
       return 'handled';
     }
@@ -371,6 +376,7 @@ export async function handleSlashCommand(
 
     const msgs = loadSessionById(cfg.project, chosenId);
     if (msgs.length === 0) {
+      ctx.rawInput.unmountForMenu();
       console.log(`\n${c.yellow}Session "${chosenId}" not found or empty.${c.reset}\n`);
       return 'handled';
     }
@@ -378,6 +384,7 @@ export async function handleSlashCommand(
     ctx.history.push(...msgs);
     const meta = sessions.find((s) => s.id === chosenId);
     const dateStr = meta ? new Date(meta.startedAt).toLocaleString() : '';
+    ctx.rawInput.unmountForMenu();
     console.log(
       `\n${c.green}✔${c.reset} Resumed session ${c.dim}${chosenId}${c.reset}${dateStr ? ` (${dateStr})` : ''} — ${Math.floor(msgs.length / 2)} turns loaded.\n`,
     );
@@ -482,10 +489,12 @@ export async function handleSlashCommand(
   if (cmd === '/exec') {
     const taskId = parts[1]?.trim();
     if (!taskId) {
+      ctx.rawInput.unmountForMenu();
       console.log(`\n${c.yellow}Usage: /exec <taskId>${c.reset}\n`);
       return 'handled';
     }
     if (!cfg.project) {
+      ctx.rawInput.unmountForMenu();
       console.log(
         `\n${c.yellow}No project selected. Use /project to select one first.${c.reset}\n`,
       );
@@ -499,6 +508,7 @@ export async function handleSlashCommand(
 
   if (cmd === '/worker') {
     if (!cfg.project) {
+      ctx.rawInput.unmountForMenu();
       console.log(
         `\n${c.yellow}No project selected. Use /project to select one first.${c.reset}\n`,
       );
@@ -520,11 +530,13 @@ export async function handleSlashCommand(
       );
       pending = (res.data || []) as Array<{ id: string; title: string; priority: string }>;
     } catch {
+      ctx.rawInput.unmountForMenu();
       console.log(`\n${c.red}✗ Failed to fetch tasks.${c.reset}\n`);
       return 'handled';
     }
 
     if (pending.length === 0) {
+      ctx.rawInput.unmountForMenu();
       console.log(
         `\n${c.dim}No pending agent tasks assigned to ${workerTarget}.${c.reset}\n` +
           `  Assign tasks with assigneeType="agent" and assignee="${workerTarget}" to use worker mode.\n`,
@@ -566,14 +578,23 @@ export async function handleSlashCommand(
 
     const selectedSet = new Set(selectedIds);
 
-    // Worker loop — pause rawInput so the terminal doesn't accept commands mid-loop
+    // Worker loop — pause rawInput so the terminal doesn't accept commands mid-loop.
+    // R-071: because rawInput is paused, no keypress events fire while the worker
+    // runs, so a SIGINT handler hung off `rawInput.onSigint` never executed.
+    // Register a process-level handler instead and track the live Genie child so
+    // Ctrl+C can interrupt the in-flight execution immediately instead of waiting
+    // for it to run to completion.
     ctx.rawInput.pause();
     let stopWorker = false;
-    const origSigint = ctx.rawInput.onSigint;
-    ctx.rawInput.onSigint = () => {
-      stopWorker = true;
-      console.log(`\n${c.yellow}⚠ Worker stopping after current task...${c.reset}`);
-    };
+    let currentChild: WorkerChildHandle | null = null;
+    const sigintHandler = createWorkerInterruptHandler({
+      setStop: () => {
+        stopWorker = true;
+      },
+      getChild: () => currentChild,
+      logger: (msg) => console.log(`\n${c.yellow}${msg}${c.reset}`),
+    });
+    process.on('SIGINT', sigintHandler);
 
     const taskCount = selectedSet.size;
     console.log(
@@ -673,7 +694,15 @@ export async function handleSlashCommand(
           }
 
           // Execute autonomously in git worktree sandbox
-          await launchAutoExec(task.id, runId, cfg.project, taskPack, { autonomous: true });
+          await launchAutoExec(task.id, runId, cfg.project, taskPack, {
+            autonomous: true,
+            // R-071: surface the child handle so the worker SIGINT handler can
+            // forward Ctrl+C straight to Genie instead of letting the
+            // autonomous run finish first.
+            onChildSpawned: (child) => {
+              currentChild = child;
+            },
+          });
           selectedSet.delete(task.id);
           if (selectedSet.size === 0) {
             stopWorker = true;
@@ -688,7 +717,8 @@ export async function handleSlashCommand(
         }
       }
     } finally {
-      ctx.rawInput.onSigint = origSigint;
+      process.off('SIGINT', sigintHandler);
+      currentChild = null;
       ctx.rawInput.resume();
       console.log(`\n${c.blue}[Worker] Stopped.${c.reset}\n`);
     }
