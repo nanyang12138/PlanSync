@@ -38,8 +38,8 @@
 
 ```
 ### R-XXX [严重度] 标题
-- **status**: pending | in_progress | done | blocked
-- **batch**: B1..B12
+- **status**: pending | in_progress | done | blocked | cancelled
+- **batch**: B1..B18
 - **depends_on**: R-YYY, R-ZZZ
 - **effort**: small (<2h) | medium (2-8h) | large (>1d)
 - **files**: 受影响的文件路径列表
@@ -50,10 +50,21 @@
 - **rollback**: 如果出问题如何回滚
 ```
 
+> **status 枚举权威定义**：
+>
+> - `pending` — 等待 cron 取项
+> - `in_progress` — agent 已开 PR，等待合并
+> - `done` — PR 已合并，目标行为已落地
+> - `blocked` — 依赖外部修复或拆分中，cron 不取
+> - `cancelled` — 已被 `supersedes` 链上的另一条目取代，**等同于 done**
+>   作为 `depends_on` 满足条件（见下方 cron 解析约定）
+
 ### 给 cron job 的解析约定
 
-- **ID 稳定**：`R-XXX` 永不复用，已完成的任务标 `status: done` 而不删除。
-- **依赖图（唯一权威源）**：cron 调度时**只看 `depends_on` 字段**。其全部条目为 `done` 的 `pending` 条目即可 pickup。
+- **ID 稳定**：`R-XXX` 永不复用，已完成的任务标 `status: done` 或 `cancelled` 而不删除。
+- **依赖图（唯一权威源）**：cron 调度时**只看 `depends_on` 字段**。其全部条目为 `done` 或 `cancelled` 的 `pending` 条目即可 pickup。
+  - 把 `cancelled` 视为依赖满足是为了避免 supersedes 链断裂：当 R-X.supersedes: R-Y 被 pickup 时 R-Y 被置为 cancelled，否则任何 `depends_on: R-Y` 的下游会永久阻塞。
+  - `blocked` 与 `in_progress` **不**视为满足，避免在拆分中或外部依赖未到位时启动后继。
 - **同一批次内可并行**：除非显式 `depends_on`。
 - **跨批次调度**：**完全由 `depends_on` 决定**，不存在"B1 必须先于 B2"或"按字母顺序"的兜底。批次号仅用于人类阅读分组。
 
@@ -61,13 +72,17 @@
 
 为了让 cron 自动化既能去重，又不会把"过渡条目"误杀，本文档使用三个互斥字段（**最多只能出现一个**）：
 
-| 字段                    | 取值                                | cron 行为                                                                                                | 典型用途                                                      |
-| ----------------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| `superseded_by: R-YYY`  | 单个 R-ID（**机读，不带说明文本**） | **强语义**：cron **必须跳过**本条，无条件优先 pickup `R-YYY`。                                           | 同目标的两条条目，新条目完全取代旧条目（如 R-144 → R-182）。  |
-| `interim_for: R-YYY`    | 单个 R-ID                           | **弱语义 / 过渡条目**：仅当 `R-YYY.status ∈ {in_progress, done}` 时 cron 跳过本条；否则本条仍可 pickup。 | 终态方案未启动前的过渡补丁（如 R-138/R-139/R-088 → 等 B14）。 |
-| `supersedes: R-YYY[,…]` | 一个或多个 R-ID                     | cron pickup 本条时，**必须**把列出的每个 `R-YYY` 状态置为 `cancelled (superseded_by R-本条)`。           | 终态方案对应的"宣告取代"链（如 R-182.supersedes: R-144）。    |
+| 字段                    | 取值                                | cron 行为                                                                                                           | 典型用途                                                      |
+| ----------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `superseded_by: R-YYY`  | 单个 R-ID（**机读，不带说明文本**） | **强语义**：cron **必须跳过**本条，无条件优先 pickup `R-YYY`。                                                      | 同目标的两条条目，新条目完全取代旧条目（如 R-144 → R-182）。  |
+| `interim_for: R-YYY`    | 单个 R-ID                           | **弱语义 / 过渡条目**：仅当 `R-YYY.status ∈ {in_progress, done, cancelled}` 时 cron 跳过本条；否则本条仍可 pickup。 | 终态方案未启动前的过渡补丁（如 R-138/R-139/R-088 → 等 B14）。 |
+| `supersedes: R-YYY[,…]` | 一个或多个 R-ID                     | cron pickup 本条时，**必须**把列出的每个 `R-YYY` 状态置为 `cancelled (superseded_by R-本条)`。                      | 终态方案对应的"宣告取代"链（如 R-182.supersedes: R-144）。    |
 
 > **机读约束**：以上三个字段的值**必须只包含 R-ID（与逗号分隔）**，不允许内嵌中文说明或括号注释；如需补充说明，写到 `note` 字段或正文段落，不要污染机读字段。
+>
+> **互斥约束**：单条目最多只能出现以上三个字段之一。`scripts/lint-remediation.mjs` 在 CI 中强制此规则。
+>
+> **interim_for + depends_on 约束**：声明 `interim_for: R-Y` 的过渡条目**不应**同时把 `R-Y` 的同批次依赖（如 R-Y 本身的 `depends_on`）当作本条的 `depends_on`——否则当 R-Y 完成后过渡条目仍可能被错误地保留。规范是：过渡条目只声明 `interim_for: R-Y`，依赖只声明真正要求的前置 R-ID。
 >
 > 本规范在 2026-05-22 第二轮修订中引入；之前版本 `superseded_by` 的"软语义"用法已统一迁移到 `interim_for`。
 
@@ -82,9 +97,9 @@
      status == 'pending'
      AND superseded_by 为空                                # 强取代：直接跳过
      AND ( interim_for 为空
-           OR lookup(interim_for).status NOT IN {in_progress, done} )  # 过渡条目仅在终态未启动时保留
-     AND ALL(d in depends_on : lookup(d).status == 'done') # 依赖全部满足
-4. 按严重度（CRITICAL > HIGH > MEDIUM > LOW）排序，取最高 N 个
+           OR lookup(interim_for).status NOT IN {in_progress, done, cancelled} )  # 过渡条目仅在终态未启动且未放弃时保留
+     AND ALL(d in depends_on : lookup(d).status IN {done, cancelled})  # 依赖必须 done 或 cancelled（supersedes 链）
+4. 按严重度（CRITICAL > HIGH > MEDIUM > LOW）降序排序后取最高优先级的 N 个；同等严重度时按 R-ID 自然序兜底
 5. 为每个任务调用 cursor agent / Cloud Agent 执行；agent 必须：
      - 在开 PR 之前，若本条声明了 supersedes，把列出的每个 R-YYY 状态置为
        'cancelled' 并 commit（避免下一次 cron 仍把 R-YYY 当 pending）
@@ -97,6 +112,7 @@
 - **agent 接手时**：把 `status: pending` 改为 `status: in_progress` 并 commit
 - **PR 合并后**：把 `status: in_progress` 改为 `status: done`，加 `closed_in: PR#123`
 - **发现需要拆分**：保持原条目 `status: blocked`，新增子条目 `R-XXX.a`, `R-XXX.b`
+- **被 supersedes 取代**：`status: cancelled`，加 `cancelled_by: R-YYY`（指向取代它的条目）。cron 把 `cancelled` 视作 `done` 的等价依赖满足态，避免下游永久阻塞。
 
 ---
 
@@ -3008,7 +3024,7 @@
   1. Web RSC + client components 改用 client-core stores
   2. CLI commands.ts / ai-loop.ts / sse-listener.ts 改用同组 store
   3. **B7 中 CLI/Web 不一致条目** → 大量 close as cancelled
-- **verification**: 全包 `npm run build`、`npm run test` 全绿；旧 fetch 直调代码搜不到（`grep -r "psRequest" packages/cli/src/commands.ts | wc -l == 0`）
+- **verification**: 全包 `npm run build`、`npm run test` 全绿；旧 fetch 直调代码搜不到（`[ "$(grep -rc 'psRequest' packages/cli/src/commands.ts)" -eq 0 ]`）
 
 ---
 
@@ -3016,9 +3032,10 @@
 
 - **status**: pending
 - **batch**: B18
-- **depends_on**: R-138, R-166
+- **depends_on**: R-166
 - **effort**: large
 - **files**: 新建 `packages/web/`
+- **note**: R-138 是 R-166 的 interim_for 过渡条目；`depends_on` 不应同时列出二者，否则当 R-166 先 done 时 R-138 自动 cancelled，cron 把它视为依赖满足是正确行为，但同时列出会让人误以为 R-138 必须独立完成。规范由本条改为只依赖终态条目 R-166。
 - **fix_steps**:
   1. API 包仅保留 `/api/*` + worker
   2. web 包保留 RSC + 客户端组件，调 API via env URL
@@ -3054,70 +3071,115 @@
 
 ### 简单实现思路（伪代码）
 
-> 实现完整去重过滤：`status=pending` ∧ `superseded_by` 为空 ∧（`interim_for` 为空 ∨ 目标条目状态 ∉ {in_progress, done}）∧ 全部 `depends_on` 已 `done`。Bash 解析能力有限，**生产请改用一个真正的解析器**（Python / Node 脚本读 markdown），下面只是最小可运行示例。
+> 实现完整去重过滤：`status=pending` ∧ `superseded_by` 为空 ∧（`interim_for` 为空 ∨ 目标条目状态 ∉ {in_progress, done, cancelled}）∧ 全部 `depends_on` 已 `done` 或 `cancelled`，并按严重度降序取首个。
+>
+> Bash 解析能力有限，**生产请改用** `scripts/lint-remediation.mjs --dispatch`（Node 解析器，按本文档的机读字段语义工作）。下面是仅供说明的最小可运行示例。
 
 ```bash
 #!/usr/bin/env bash
 # /opt/plansync-cron/dispatch.sh
+# Reference implementation. Production: use scripts/lint-remediation.mjs.
 set -euo pipefail
 cd /opt/plansync-repo
 git fetch origin && git checkout master && git pull
 
-# 抽 R-XXX 段落里的某个字段；找不到回 ""
+# 抽 R-XXX 段落里的某个字段；找不到回 ""。
+# Bug fix: the previous version used `,/^#### R-/p` as the sed range end —
+# that regex matches the section's OWN header line (it starts with `^#### R-`),
+# so the range was empty and every field came back blank. Use awk to walk
+# from the section header to the next `^#### R-` header (exclusive).
 field_of() {
   local id="$1" key="$2"
-  sed -n "/^#### $id /,/^#### R-/p" docs/REMEDIATION_PLAN.md \
-    | grep "^\- \*\*$key\*\*:" | head -1 \
-    | sed "s/^- \*\*$key\*\*:[[:space:]]*//"
+  awk -v id="$id" -v key="$key" '
+    BEGIN { inside = 0 }
+    /^#### R-[0-9]+ / {
+      if (inside) exit
+      if ($2 == id) { inside = 1; next }
+    }
+    inside && $0 ~ "^- \\*\\*" key "\\*\\*:" {
+      sub("^- \\*\\*" key "\\*\\*:[[:space:]]*", "")
+      print
+      exit
+    }
+  ' docs/REMEDIATION_PLAN.md
 }
 
 status_of()        { field_of "$1" status        | awk '{print $1}'; }
+severity_of()      { field_of "$1" severity      ; }   # not currently used
 deps_of()          { field_of "$1" depends_on; }
 superseded_by_of() { field_of "$1" superseded_by; }
 interim_for_of()   { field_of "$1" interim_for; }
+supersedes_of()    { field_of "$1" supersedes; }
 
-# 抽出 pending 任务的 ID 列表
-PENDING_IDS=$(grep -nE "^#### R-[0-9]+ " docs/REMEDIATION_PLAN.md \
-  | awk '{print $2}')                            # 形如 R-001 R-002 ...
+# Severity to priority weight (highest first)
+sev_weight() {
+  case "$1" in
+    CRITICAL) echo 4 ;;
+    HIGH)     echo 3 ;;
+    MEDIUM)   echo 2 ;;
+    LOW)      echo 1 ;;
+    *)        echo 0 ;;
+  esac
+}
 
-for ID in $PENDING_IDS; do
+# 1) 抽 R-ID + 严重度（从 #### 标题里提取的 [SEVERITY]），过滤候选并按
+#    严重度降序排序。
+CANDIDATES=$(awk '
+  match($0, /^#### (R-[0-9]+) \[([A-Z]+)\] /, m) { print m[1] " " m[2] }
+' docs/REMEDIATION_PLAN.md)
+
+PICK=""
+PICK_WEIGHT=-1
+while IFS=' ' read -r ID SEV; do
+  [ -z "$ID" ] && continue
   [ "$(status_of "$ID")" = "pending" ] || continue
 
-  # 1) 强语义取代：superseded_by 非空 → 直接跳过
+  # 强取代：superseded_by 非空 → 直接跳过。
   SUP=$(superseded_by_of "$ID")
   [ -n "$SUP" ] && [ "$SUP" != "—" ] && continue
 
-  # 2) 弱语义过渡：interim_for 非空 + 目标条目已启动 → 跳过
+  # 过渡条目：interim_for 非空 + 目标条目已启动/完成/放弃 → 跳过。
   INT=$(interim_for_of "$ID")
   if [ -n "$INT" ] && [ "$INT" != "—" ]; then
     TGT_STATUS=$(status_of "$INT")
     case "$TGT_STATUS" in
-      in_progress|done) continue ;;
+      in_progress|done|cancelled) continue ;;
     esac
   fi
 
-  # 3) 依赖图：depends_on 全部 done 才能 pickup
+  # depends_on：每一项必须 done 或 cancelled（cancelled 是 supersedes 链
+  # 的等价 done）。
   DEPS=$(deps_of "$ID")
   if [ -n "$DEPS" ] && [ "$DEPS" != "—" ]; then
     UNMET=0
     for D in $(echo "$DEPS" | tr ',' ' '); do
       D=$(echo "$D" | xargs)
       [ -z "$D" ] && continue
-      [ "$(status_of "$D")" != "done" ] && UNMET=1 && break
+      DSTAT=$(status_of "$D")
+      case "$DSTAT" in
+        done|cancelled) ;;
+        *) UNMET=1; break ;;
+      esac
     done
     [ $UNMET -eq 1 ] && continue
   fi
 
-  # 4) 调 Cloud Agent；agent 自身负责处理 supersedes 字段（pickup 本条时
-  #    把列出的每个 R-YYY 状态置为 cancelled 并 commit）
-  cursor-agent dispatch \
-    --prompt "Implement task $ID from docs/REMEDIATION_PLAN.md. Read the file, find the section for $ID, follow fix_steps exactly, add verification tests, open a PR. If the entry has a 'supersedes:' field, set each listed R-YYY to status: cancelled (superseded_by $ID) in the same PR. After PR is opened, update the entry to status: in_progress + closed_in: <PR URL>." \
-    --base master \
-    --branch "cursor/$ID-auto"
+  # 候选：保留权重最高的一个。
+  W=$(sev_weight "$SEV")
+  if [ "$W" -gt "$PICK_WEIGHT" ]; then
+    PICK="$ID"
+    PICK_WEIGHT="$W"
+  fi
+done <<<"$CANDIDATES"
 
-  # 一次只派一个，避免并发冲突
-  break
-done
+[ -z "$PICK" ] && { echo "No pickable entry"; exit 0; }
+
+# 2) 调 Cloud Agent；agent 自身负责处理 supersedes（pickup 本条时把列出
+#    的每个 R-YYY 改 status: cancelled + cancelled_by: $PICK 并 commit）。
+cursor-agent dispatch \
+  --prompt "Implement task $PICK from docs/REMEDIATION_PLAN.md. Read the file, find the section for $PICK, follow fix_steps exactly, add verification tests, open a PR. If the entry has a 'supersedes:' field, set each listed R-YYY to status: cancelled (cancelled_by: $PICK) in the same PR. After PR is opened, update the entry to status: in_progress + closed_in: <PR URL>." \
+  --base master \
+  --branch "cursor/$PICK-auto"
 ```
 
 ### 安全栏

@@ -15,6 +15,7 @@
     "db:stop": "bash scripts/pg-stop.sh",
     "db:reset": "bash scripts/db-reset.sh",
     "db:psql": "bash scripts/db-psql.sh",
+    "lint:remediation": "node scripts/lint-remediation.mjs",
     "prepare": "husky"
   },
   "devDependencies": {
