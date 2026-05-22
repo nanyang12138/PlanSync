@@ -54,6 +54,27 @@ export async function POST(req: NextRequest, { params }: Params) {
       throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
     }
 
+    // R-054: Only 'todo' or 'in_progress' tasks may start a new execution run.
+    // Previously, a 'done', 'cancelled', or 'blocked' task would silently fall through
+    // both status branches below and create a run with the task in a terminal/blocked
+    // state — corrupting status invariants (a 'done' task could end up with a fresh
+    // running run hanging off it). Reject up front and direct the caller to the right
+    // recovery action.
+    if (task.status !== 'todo' && task.status !== 'in_progress') {
+      throw new AppError(
+        ErrorCode.STATE_CONFLICT,
+        `Cannot start execution: task is "${task.status}". Only "todo" or "in_progress" tasks may start a new run. ` +
+          (task.status === 'blocked'
+            ? 'Resolve open drift alerts (or PATCH the task back to in_progress) before retrying.'
+            : task.status === 'done'
+              ? 'Reopen the task by PATCHing status back to "todo" first.'
+              : task.status === 'cancelled'
+                ? 'Cancelled tasks cannot be restarted; create a new task instead.'
+                : 'Set the task status to "todo" or "in_progress" before retrying.'),
+        { taskStatus: task.status },
+      );
+    }
+
     // Authorization: humans cannot impersonate other users; agents must match task.assignee.
     if (body.executorType === 'human' && body.executorName !== auth.userName) {
       throw new AppError(ErrorCode.FORBIDDEN, 'Cannot start execution as another user');

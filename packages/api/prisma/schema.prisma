@@ -166,6 +166,10 @@ model Task {
   executionRuns ExecutionRun[]
   driftAlerts   DriftAlert[]
 
+  // R-075: composite indexes to back hot task-list queries
+  // (listing tasks by status, my-work / assignee lookups).
+  @@index([projectId, status])
+  @@index([projectId, assignee])
   @@map("tasks")
 }
 
@@ -215,6 +219,10 @@ model DriftAlert {
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   task    Task    @relation(fields: [taskId], references: [id], onDelete: Cascade)
 
+  // R-076: composite indexes to back hot drift queries
+  // (per-project drift listing filtered by status, per-task drift lookups).
+  @@index([projectId, status])
+  @@index([taskId, status])
   @@map("drift_alerts")
 }
 
@@ -249,6 +257,7 @@ model ApiKey {
   expiresAt   DateTime? @map("expires_at")
 
   @@index([execRunId])
+  @@index([keyPrefix])
   @@map("api_keys")
 }
 
@@ -280,6 +289,9 @@ model WebhookDelivery {
   attempt      Int
   createdAt    DateTime @default(now())
 
+  // R-078: paginate per-webhook delivery history newest-first.
+  // Backs queries like `findMany({ where: { webhookId }, orderBy: { createdAt: 'desc' } })`.
+  @@index([webhookId, createdAt(sort: Desc)])
   @@map("webhook_deliveries")
 }
 

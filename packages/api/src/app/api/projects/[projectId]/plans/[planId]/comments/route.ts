@@ -7,6 +7,7 @@ import { createCommentSchema, paginationSchema } from '@plansync/shared';
 import { eventBus } from '@/lib/event-bus';
 import { createActivity } from '@/lib/activity';
 import { dispatchWebhooks } from '@/lib/webhook';
+import { requirePlanInProject } from '@/lib/plan-scope';
 
 type Params = { params: { projectId: string; planId: string } };
 
@@ -14,6 +15,7 @@ export async function GET(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);
+    await requirePlanInProject(params.planId, params.projectId);
     const { page = 1, pageSize = 20 } = validateSearchParams(req, paginationSchema);
     const skip = (page - 1) * pageSize;
 
@@ -40,6 +42,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);
+    await requirePlanInProject(params.planId, params.projectId);
     const body = await validateBody(req, createCommentSchema);
 
     const member = await prisma.projectMember.findUnique({

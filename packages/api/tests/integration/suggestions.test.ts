@@ -1,10 +1,11 @@
 // D module: Suggestion system
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import {
   POST as suggestPost,
   GET as suggestGet,
 } from '@/app/api/projects/[projectId]/plans/[planId]/suggestions/route';
 import { POST as resolvePost } from '@/app/api/projects/[projectId]/plans/[planId]/suggestions/[suggestionId]/route';
+import { prisma as routePrisma } from '@/lib/prisma';
 import {
   makeReq,
   createTestProject,
@@ -253,6 +254,60 @@ describe('D: Suggestion System', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.resolvedComment).toBe('looks good to me');
+  });
+
+  it('R-053: accept apply+update is atomic — when suggestion update fails, plan changes roll back', async () => {
+    const createRes = await suggestPost(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/suggestions`, {
+        method: 'POST',
+        userName: owner,
+        body: { field: 'goal', action: 'set', value: 'should-not-persist', reason: 'r' },
+      }),
+      { params: { projectId, planId } },
+    );
+    const suggestionId = (await createRes.json()).data.id;
+
+    const planBefore = await testPrisma.plan.findUnique({ where: { id: planId } });
+    const originalGoal = planBefore!.goal;
+
+    // Force a rollback after the route's transaction body has applied the plan
+    // change but before the transaction commits. If apply+update were not
+    // wrapped in $transaction, the plan.goal change would survive.
+    const realTx = routePrisma.$transaction.bind(routePrisma);
+    const txSpy = vi
+      .spyOn(routePrisma, '$transaction')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .mockImplementation(async (arg: any, opts?: any) => {
+        if (typeof arg === 'function') {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          return realTx(async (tx: any) => {
+            await arg(tx);
+            throw new Error('simulated mid-transaction failure (R-053 atomicity test)');
+          }, opts);
+        }
+        return realTx(arg, opts);
+      });
+
+    try {
+      const res = await resolvePost(
+        makeReq(
+          `/api/projects/${projectId}/plans/${planId}/suggestions/${suggestionId}?action=accept`,
+          { method: 'POST', userName: owner, body: {} },
+        ),
+        { params: { projectId, planId, suggestionId } },
+      );
+      // Route catches the error via handleApiError → 500
+      expect(res.status).toBeGreaterThanOrEqual(500);
+    } finally {
+      txSpy.mockRestore();
+    }
+
+    const planAfter = await testPrisma.plan.findUnique({ where: { id: planId } });
+    expect(planAfter!.goal).toBe(originalGoal);
+
+    const sugAfter = await testPrisma.planSuggestion.findUnique({ where: { id: suggestionId } });
+    expect(sugAfter?.status).toBe('pending');
+    expect(sugAfter?.resolvedBy).toBeNull();
   });
 
   it('D11: accept set → 同字段第2个 pending → conflict', async () => {

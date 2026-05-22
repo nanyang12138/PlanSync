@@ -13,6 +13,7 @@ import {
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
 import { logger } from '@/lib/logger';
+import { requirePlanInProject } from '@/lib/plan-scope';
 
 type Params = { params: { projectId: string; planId: string } };
 
@@ -22,23 +23,33 @@ export async function POST(req: NextRequest, { params }: Params) {
     requireNotExecScoped(auth);
     await requireProjectRole(auth, params.projectId, 'owner');
 
-    const plan = await prisma.plan.findUnique({
-      where: { id: params.planId },
-      include: { reviews: true },
-    });
-    if (!plan) throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
-    if (plan.projectId !== params.projectId) {
-      throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
-    }
+    const plan = await requirePlanInProject<{
+      reviews: Array<{ id: string; reviewerName: string; status: string }>;
+    }>(params.planId, params.projectId, { include: { reviews: true } });
 
     if (plan.status !== 'draft' && plan.status !== 'proposed') {
       throw new AppError(ErrorCode.STATE_CONFLICT, 'Plan must be draft or proposed to activate');
     }
 
-    if (plan.status === 'proposed' && plan.reviews.length > 0) {
-      const allApproved = plan.reviews.every((r) => r.status === 'approved');
-      if (!allApproved) {
-        throw new AppError(ErrorCode.STATE_CONFLICT, 'Not all reviewers have approved');
+    // R-055: a 'proposed' plan with 0 reviewers must not slip through the
+    // review gate. The propose flow itself permits zero reviewers (falls back
+    // to plan.requiredReviewers, which may also be empty), so without this
+    // check the review pathway can be bypassed entirely. Owners can still
+    // override by passing ?force=true, which makes the decision auditable.
+    if (plan.status === 'proposed') {
+      if (plan.reviews.length === 0) {
+        const force = new URL(req.url).searchParams.get('force') === 'true';
+        if (!force) {
+          throw new AppError(
+            ErrorCode.STATE_CONFLICT,
+            'Cannot activate a proposed plan with no reviewers. Owner must pass ?force=true to override.',
+          );
+        }
+      } else {
+        const allApproved = plan.reviews.every((r) => r.status === 'approved');
+        if (!allApproved) {
+          throw new AppError(ErrorCode.STATE_CONFLICT, 'Not all reviewers have approved');
+        }
       }
     }
 
