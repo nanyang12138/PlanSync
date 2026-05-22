@@ -104,6 +104,23 @@
 | **B10** | 文档与脚本对齐                 | 12     | 删过期文档、补 env、平台兼容              |
 | **B11** | Activity log 与可观测性        | 10     | 状态变更全部审计                          |
 | **B12** | 测试补齐                       | 18+    | 关键路径回归保障                          |
+| **B13** | Plan-as-code（结构化 plan 图） | 8      | 把 String[] plan 升级为可 FK 的关系图     |
+| **B14** | Outbox + 持久事件流            | 7      | 干掉 in-memory EventBus / webhook 队列    |
+| **B15** | Protocol-as-state-machine      | 7      | CLAUDE.md prose → MCP server 状态机强制   |
+| **B16** | AI 从 gate 变 advisor          | 5      | 消除"AI 错杀合法提交"，引入声明式 rule    |
+| **B17** | Git 真集成                     | 4      | task 状态由 PR/commit 推导，不再自报      |
+| **B18** | Service 拆分 + view-model 共享 | 4      | API/Worker/Web 三进程，三 surface 单数据  |
+
+> **新批次依赖关系**（务必串行）：
+>
+> - B13 ← 独立可启动；是 B17 的前置
+> - B14 ← 独立可启动；是 B15/B16/B17/B18 的事件层前置
+> - B15 ← 依赖 R-146（prompt 合并）
+> - B16 ← 依赖 R-143（AI observability 落地）
+> - B17 ← 依赖 B13（deliverable schema）+ B14（github webhook 走 outbox）
+> - B18 ← 依赖 B14（worker 拆分）+ B13/B15 schema 稳定后再做
+>
+> **首发推荐顺序**：先 R-135..R-146 补丁清场 → 启动 B14 outbox 地基 → B13 plan 重模 → B15 协议化 → B16/B17 并行 → 最后 B18 拆服务
 
 ---
 
@@ -2156,6 +2173,791 @@
 
 ---
 
+## 2026-05-22 架构审计追加条目（R-135 起）
+
+> **背景**：在原始 B1–B12 之外，对 plan 模型 / 协议层 / 事件流 / AI 使用 / 部署形态 / 安全边界做了一次完整复审，发现一类"补丁解决不了，必须架构跃迁"的问题。新条目分两类：
+>
+> - **R-135..R-146**：归入既有批次的**补丁型**修复（cron 可立刻 pickup）
+> - **R-150..R-203**：6 个**全新批次 B13–B18**，目标是把产品从"prompt-engineered PM tool"升级为"protocol-engineered AI orchestration runtime"
+>
+> Cron flow 按原规则消费。**强烈建议 B13/B14/B15 按顺序串行**——是其他改造的地基。
+
+---
+
+### B2/B5/B6/B8/B9/B10/B11 — 追加补丁条目（R-135..R-146）
+
+> 挂在既有批次下，没有新概念，cron 可以立刻 pickup。
+
+---
+
+#### R-135 [CRITICAL] task-pack 加 task↔project 归属校验，关闭跨项目读取
+
+- **status**: pending
+- **batch**: B5
+- **depends_on**: —
+- **effort**: small
+- **files**: `packages/api/src/lib/task-pack.ts`, 全文搜 `prisma.task.findUnique` 的所有调用点
+- **symptom**: 拿到任意 `taskId` + 自己合法的 `projectId`，可以通过 `plansync_task_pack` 读出另一项目里的 task 标题 / agentContext / expectedOutput / plan 全文
+- **root_cause**: `buildTaskPack(taskId, projectId)` 用 `prisma.task.findUnique({ id: taskId })`，**完全不校验 `task.projectId === projectId`**
+- **fix_steps**:
+  1. `buildTaskPack` 第一步改为 `prisma.task.findFirst({ where: { id: taskId, projectId } })`，找不到立即 `return null`
+  2. 全局搜 `prisma.task.findUnique` → 每一处都附加 projectId 谓词
+  3. 增加 audit log：caller 传的 projectId ≠ task.projectId 时写 `logger.warn({ suspectCrossProject: true })`
+- **verification**:
+  - vitest：用 owner A 的 token 调 `task_pack(taskB_in_projectB, projectA)` → 404
+  - vitest：合法组合仍 200
+- **rollback**: 单文件改动
+
+---
+
+#### R-136 [CRITICAL] PLANSYNC_SECRET 增加 audit / 范围限制 / 强制 TTL
+
+- **status**: pending
+- **batch**: B2
+- **depends_on**: R-010
+- **effort**: medium
+- **files**: `packages/api/src/lib/auth.ts`, `packages/api/src/lib/env.ts`, 新增 `master-audit.ts`, schema 新表 `master_delegations`
+- **symptom**: `PLANSYNC_SECRET` + 任意 `X-User-Name` → 以该用户身份操作；env 泄露 = 全量横向移动；目前**无审计、无白名单、无受限用户列表**
+- **root_cause**: master 路径设计为开发态调试工具，但 R-010 允许生产使用后没补滥用控制
+- **fix_steps**:
+  1. 新增 `master-audit.ts`：每次 master delegation 命中写 `master_delegations`（who, target, route, ip, ua, at）
+  2. env.ts 新增 `PLANSYNC_MASTER_ALLOWED_TARGETS`（CSV，未配置时**生产默认禁用 master**）
+  3. 新增 `PLANSYNC_MASTER_DENY_TARGETS`
+  4. master 命中后**只能用于读取与 comment 类 safe write**，不能 propose/activate plan
+  5. 暴露 `/api/auth/master-audit?since=` owner-only 查询
+- **verification**:
+  - vitest：未设 ALLOWED 时生产模式调用 → 403
+  - vitest：deny list 命中 → 403
+  - vitest：调 plan_propose → 403
+- **rollback**: env flag `PLANSYNC_MASTER_LEGACY=true` 临时跳过
+
+---
+
+#### R-137 [HIGH] exec-scoped key 在缺 execRunId 时也强制 keyProjectId 校验
+
+- **status**: pending
+- **batch**: B2
+- **depends_on**: R-011
+- **effort**: small
+- **files**: `packages/api/src/lib/auth.ts`（line 148-178）
+- **symptom**: 历史 ApiKey 行有 `projectId` 但 `execRunId` 为 null → `requireProjectRole` 不拦截跨项目，R-011 语义被绕过
+- **root_cause**: 检查条件是 `if (auth.execRunId && auth.keyProjectId && ...)`，两者 AND 才校验
+- **fix_steps**:
+  1. 拆为独立检查：`auth.keyProjectId && auth.keyProjectId !== projectId` → 403；`auth.execRunId && !auth.keyProjectId` → 视为脏数据 → 403
+  2. `verifyApiKey` 返回时若 `projectId == null && execRunId != null` → logger 标可疑
+- **verification**:
+  - vitest：构造 ApiKey { projectId: P1, execRunId: null } 访问 P2 → 403
+
+---
+
+#### R-138 [HIGH] heartbeat-scanner 从 instrumentation 解耦，改为显式 worker 入口
+
+- **status**: pending
+- **batch**: B10
+- **depends_on**: —（B14/R-166 是终局；本条是过渡）
+- **effort**: small
+- **files**: `instrumentation.ts`, 新增 `scripts/run-worker.ts`, `package.json`
+- **symptom**: Next.js 每个 Node worker 进程都开 60s 定时器
+- **fix_steps**:
+  1. 抽出 `scripts/run-worker.ts` 独立进程入口
+  2. `instrumentation.ts` 仅当 `PLANSYNC_RUN_WORKER_IN_API=true` 启动
+  3. `package.json` 加 `"worker": "tsx scripts/run-worker.ts"`
+  4. `scripts/dev.sh` 默认设 flag 保留开发体验
+- **verification**: 未设 flag 起 API → 无定时器；`npm run worker` → scanner 正常
+
+---
+
+#### R-139 [HIGH] webhook 重试改为持久化队列
+
+- **status**: pending
+- **batch**: B9
+- **depends_on**: —（最终被 B14/R-164 整体替换；本条是过渡）
+- **effort**: medium
+- **files**: schema 新表 `webhook_jobs`, `webhook.ts`, 新增 `webhook-worker.ts`
+- **symptom**: API 进程在 1s/5s/30s 重试 sleep 期间重启 → 重试表蒸发
+- **fix_steps**:
+  1. 新表 `webhook_jobs { id, webhookId, event, body, attempt, nextAttemptAt, status }`
+  2. `dispatchWebhooks` 改为只 INSERT 一行
+  3. 新增 worker：每 1s 拉取 `status='pending' AND nextAttemptAt < now()`，advisory lock，发 HTTP
+  4. worker 入口接到 R-138
+- **verification**: vitest：插一行 → 杀进程 → 重启 → worker 续发
+- **rollback**: env flag `PLANSYNC_WEBHOOK_QUEUE=true`
+
+---
+
+#### R-140 [HIGH] 新增 `task.executionGate` 字段，区分 system block 与 owner block
+
+- **status**: pending
+- **batch**: B6
+- **depends_on**: R-002, R-008
+- **effort**: medium
+- **files**: schema, `drift-engine.ts`, `drifts/[driftId]/route.ts`
+- **symptom**: drift 自动 block task.status，owner 看不出"系统因 drift"还是"owner 手动"
+- **fix_steps**:
+  1. schema 加 `Task.executionGate String?`（`null|drift_high|drift_medium|manual_block`）
+  2. drift-engine 不改 task.status，改写 executionGate
+  3. `execution_start` 路径：`executionGate != null` → 拒绝
+  4. `drift_resolve` 清 executionGate，**不动 status**
+  5. CLI/Web banner 区分显示
+- **verification**:
+  - vitest：plan v2 activate → task.status 不变、executionGate='drift_high'
+  - vitest：drift_resolve rebind → executionGate=null
+
+---
+
+#### R-141 [MEDIUM] ApiKey scrypt 热路径优化（内存缓存）
+
+- **status**: pending
+- **batch**: B8
+- **depends_on**: R-077
+- **effort**: small
+- **files**: `packages/api/src/lib/auth.ts`
+- **symptom**: agent 每 30s heartbeat → 每次都跑 scrypt，CPU hot spot
+- **fix_steps**:
+  1. `_pwCache` 抽为通用 `_authCache`，key 用 `sha256(rawKey)`
+  2. `verifyApiKey` 命中写 cache，TTL 5min
+  3. `lastUsedAt` 改异步更新
+  4. LRU max=10000
+- **verification**: 微基准 1000 次同 key < 1ms；lastUsedAt 仍刷新
+
+---
+
+#### R-142 [HIGH] MCP `execution_aborted` 改为 protocol-level error
+
+- **status**: pending
+- **batch**: B1
+- **depends_on**: R-005
+- **effort**: medium
+- **files**: `packages/mcp-server/src/index.ts`, `tool-wrapper.ts`, `abort-signal.ts`
+- **symptom**: 通用 MCP 客户端把 `execution_aborted` 当 chat log 渲染，agent 继续跑
+- **fix_steps**:
+  1. abort 触发后，所有后续工具调用立即返回 `isError: true, code: RUN_ABORTED`
+  2. `tool-wrapper.ts` 内加 `if (abortSignal.aborted) return abortErrorEnvelope(...)`
+  3. 保留 `sendLoggingMessage` 作软提示
+  4. README + AGENTS.md 加：返回 RUN_ABORTED → 立即停止该轮
+- **verification**: vitest：触发 abort → 下一个工具调用 isError + code=RUN_ABORTED
+- **rollback**: env flag `PLANSYNC_MCP_LEGACY_ABORT=true`
+
+---
+
+#### R-143 [HIGH] completion-verify 可观测：score / breakdown / model 写库
+
+- **status**: pending
+- **batch**: B4
+- **depends_on**: —
+- **effort**: small
+- **files**: schema（ExecutionRun 加 4 个 ai\_\* 字段）, `runs/[runId]/route.ts`
+- **symptom**: AI 把合法 evidence 评 74 分 → 用户 422 但**没法看到分数明细**
+- **fix_steps**:
+  1. ExecutionRun 加 `aiVerifyScore Float?` / `aiVerifyBreakdown Json?` / `aiVerifyFeedback String?` / `aiVerifyModel String?`
+  2. 每次 verify 调用都写 4 个字段
+  3. 422 响应 body echo `runId`
+  4. UI ExecutionHistory 卡片显示 breakdown
+- **verification**: vitest：422 case 后 DB 行有完整字段；LLM 返回 null 时 feedback='AI unavailable, allowed through'
+
+---
+
+#### R-144 [MEDIUM] 新增 `ai_calls` 表，所有 LLM 调用全链路记录
+
+- **status**: pending
+- **batch**: B11
+- **depends_on**: —
+- **effort**: medium
+- **files**: schema, `packages/api/src/lib/ai/client.ts`
+- **fix_steps**:
+  1. 新表 `ai_calls { id, purpose, provider, model, promptHash, latencyMs, inputTokens?, outputTokens?, ok, errorCode?, createdAt }`
+  2. `aiClient.complete` 加 `purpose` 参数，每次 INSERT
+  3. `/api/ai-usage?since=` owner-only 汇总
+- **verification**: vitest：drift enrich → ai_calls 多一行 purpose='drift_impact'；provider 失败 → ok=false
+- **note**: 与 B16/R-182 同目标。若先做 R-182 则本条标 cancelled
+
+---
+
+#### R-145 [HIGH] `PlanDiff.changes` JSON 列强制 shared zod schema 校验
+
+- **status**: pending
+- **batch**: B4
+- **depends_on**: R-034
+- **effort**: small
+- **files**: 新增 `packages/shared/src/schemas/plan-diff.ts`, `packages/api/src/lib/ai/plan-diff.ts`
+- **symptom**: `PlanDiff.changes: Json` 没 schema；消费者各自做窄投影 → 静默错位
+- **fix_steps**:
+  1. shared 增加 `planDiffChangesSchema`
+  2. `getOrCreatePlanDiff` 写库前 `parse`
+  3. 读 hot path 用 `safeParse`，失败 → 视为 stale 重新计算
+  4. CI 加 schema-drift test
+- **verification**: vitest：写入畸形数据立即抛错；CI `plan-diff-schema-drift.test.ts`
+
+---
+
+#### R-146 [HIGH] CLAUDE.md / AGENTS.md / ai-loop prompt 合并到 single source
+
+- **status**: pending
+- **batch**: B10
+- **depends_on**: —
+- **effort**: medium
+- **files**: 新增 `claude-md/protocol.md`, `scripts/render-prompts.ts`, 现 `CLAUDE.md` / `AGENTS.md` / `cli/src/ai-loop.ts`
+- **symptom**: 三份 prompt 已互相矛盾（syntax-inconsistencies-report Finding 8）；改一处流程要改 3 处
+- **fix_steps**:
+  1. 抽出 `claude-md/protocol.md`（章节用 `<!-- @block:session-start -->` 划分）
+  2. `scripts/render-prompts.ts` 根据 frontmatter map 生成 3 份目标
+  3. CI 加 lint：render 后 `git diff --exit-code` 必须空
+  4. ai-loop `buildSystemPrompt` 改为读 `generated/cli-loop.txt`
+- **verification**: 改一处 protocol.md → 三个目标一致更新；CI 在未 render 的 PR 上失败
+
+---
+
+### B13 — Plan-as-code：把计划升级为结构化、可寻址、可 FK 的图
+
+> **目标**：把 `Plan.constraints/standards/deliverables: String[]` 升级为**带稳定 ID + 版本 + 类型化引用**的关系图。task 通过 FK 引用 deliverable，drift 引擎变为纯粹的图 diff，alert fatigue 物理消除。
+>
+> **护城河价值**：让 "plan-aware execution" 从口号变成可验证的事实；GitHub Action drift-gate 升级为语义级判定。
+>
+> **风险**：schema 大改 + 跨 4 个 surface 适配；**R-150 → R-157 务必严格串行**。
+
+---
+
+#### R-150 [CRITICAL] 设计并落地 Deliverable / Constraint / Standard 分表 schema
+
+- **status**: pending
+- **batch**: B13
+- **depends_on**: —
+- **effort**: large
+- **files**: `packages/api/prisma/schema.prisma`, 新增 migration `2026XXXX_plan_items_split`
+- **symptom**: 当前 `String[]` 无法表达版本、状态机、引用关系、独立编辑历史
+- **root_cause**: 早期 MVP 选了 array-of-strings；drift v2 ref-by-string 是补丁
+- **fix_steps**:
+  1. 新增三张同构表：`PlanDeliverable { id, planId, slug, title, body, refType?, refUri?, status, createdAt, supersededById? }`、`PlanConstraint { id, planId, slug, body, kind, createdAt }`、`PlanStandard { id, planId, slug, body, kind, createdAt }`
+  2. `slug` 在 (planId, slug) 唯一；slug 是稳定可读 ID（如 `auth/oidc-callback`）
+  3. `refType ∈ ('file_glob' | 'api_spec' | 'figma_frame' | 'notion_page' | 'free')`
+  4. `status ∈ ('draft' | 'active' | 'done' | 'deprecated')`，独立于 plan.status
+  5. 加 (planId, status) 索引
+  6. **不删旧 String[] 列**，作为 derived view
+- **verification**: migration up/down OK；prisma generate OK；smoke plan_show 仍返回旧 String[] 形状
+- **rollback**: down migration 删 3 表
+
+---
+
+#### R-151 [CRITICAL] 历史 plan 数据双写迁移：String[] → 分表
+
+- **status**: pending
+- **batch**: B13
+- **depends_on**: R-150
+- **effort**: large
+- **files**: 新 migration `2026XXXX_plan_items_backfill`, 新增 `packages/api/src/lib/plan-items.ts`
+- **fix_steps**:
+  1. backfill：每个 plan 把 `deliverables: String[]` 转一行 `PlanDeliverable { slug: slugify(item, i), title: item, status: 'active', refType: 'free' }`
+  2. 新增 `plan-items.ts` 暴露 `writeBoth(planId, patch)` 与 `readMerged(planId)`
+  3. 所有写路径必须经过 `writeBoth`；CI invariant：随机抽 plan，String[] vs 分表 1:1
+- **verification**: 现有 plan 测试全过；`plan-items-mirror.test.ts`
+- **rollback**: 关 backfill；`writeBoth` 退化为只写 String[]
+
+---
+
+#### R-152 [HIGH] plan_update / propose / activate / append 全部改写新表
+
+- **status**: pending
+- **batch**: B13
+- **depends_on**: R-151
+- **effort**: large
+- **files**: `packages/api/src/app/api/projects/[projectId]/plans/...` 全部 plan write 路由
+- **fix_steps**:
+  1. `writeBoth` 内部：先写分表（事务内）→ 再 derive String[] 写回 Plan 行
+  2. activate：当前版本 deliverable.status='active'，老版本对应 slug 自动 `supersededById = 新 id`
+  3. `append` 工具改为给分表加行
+- **verification**: 端到端 propose → review → activate，PlanDeliverable.status 转换正确
+
+---
+
+#### R-153 [HIGH] Task→Deliverable FK 中间表
+
+- **status**: pending
+- **batch**: B13
+- **depends_on**: R-151
+- **effort**: large
+- **files**: schema, `task-pack.ts`, 所有 task write 路由
+- **fix_steps**:
+  1. 新表 `TaskDeliverableLink { taskId, deliverableId, createdAt }`
+  2. backfill：`Task.planDeliverableRefs: String[]` 按 slug 查 PlanDeliverable → 写中间表
+  3. task_pack 用 JOIN 取回；旧字段降级为 derived
+  4. drift v2 的 `refsFromTask` 改为读中间表
+- **verification**: vitest：rename slug 后 task 仍 join；drift severity 分项级别准确
+
+---
+
+#### R-154 [HIGH] drift-engine 切换为图 diff：基于 Deliverable.id 而非文本哈希
+
+- **status**: pending
+- **batch**: B13
+- **depends_on**: R-152, R-153
+- **effort**: medium
+- **files**: `drift-engine.ts`, `shared/src/drift/index.ts`
+- **fix_steps**:
+  1. `runDriftScan` 按 deliverable.id 比对 added/removed/modified
+  2. severity：引用 removed/modified.body 的 → high；引用 modified.refUri → medium；其他 → low
+  3. **空中间表 task → severity=low**（不再保守 high），消除 alert fatigue
+- **verification**: vitest：rename title 但 id 不变 → 不触发 high；删除一条 deliverable → 仅引用它的 task 触发 high
+
+---
+
+#### R-155 [HIGH] 新增 `plansync_deliverable_*` MCP 工具集（list / show / create / update / supersede）
+
+- **status**: pending
+- **batch**: B13
+- **depends_on**: R-152
+- **effort**: medium
+- **files**: 新增 `packages/mcp-server/src/tools/deliverable.ts`, 新路由 `.../plans/[planId]/deliverables/...`
+- **fix_steps**:
+  1. 5 个工具：list / show / create / update / supersede
+  2. owner-only writes；plan_suggest 增加 `deliverableId?` 字段
+- **verification**: MCP smoke 全过
+
+---
+
+#### R-156 [MEDIUM] Web UI Deliverable 状态时间线 + per-deliverable 评论
+
+- **status**: pending
+- **batch**: B13
+- **depends_on**: R-155
+- **effort**: medium
+- **files**: 新增 `packages/api/src/components/plan/deliverable-timeline.tsx`
+- **fix_steps**:
+  1. 每个 deliverable 一张卡片：status badge、引用它的 task 列表、historical superseded 链
+  2. 挂 comment thread（PlanComment 加 `deliverableId`）
+
+---
+
+#### R-157 [HIGH] GitHub Action drift-gate 升级为语义 gate
+
+- **status**: pending
+- **batch**: B13
+- **depends_on**: R-150
+- **effort**: medium
+- **files**: `packages/integrations/github-action/index.ts`, `action.yml`
+- **fix_steps**:
+  1. action 拉取 PR changed files
+  2. 调 `/api/projects/.../deliverables?type=file_glob` 获取 active glob
+  3. PR changed files 至少匹配一条？不匹配 → fail check + 评论
+  4. 匹配但有 open drift → 旧逻辑保留
+- **verification**: 改无关文件 → action 失败；改 glob 内文件 → 通过
+
+---
+
+### B14 — Outbox + 持久事件流：把 in-memory 事件总线送进土
+
+> **目标**：每条 state-changing 事件在**同一个 DB 事务**里写进 `domain_events`；SSE / webhook / email / scanner 全部变成 outbox 消费者。
+>
+> **护城河价值**：消除 in-memory EventBus、in-memory webhook 重试、SSE 丢消息三类 bug；产品具备多副本能力 + 完整审计。
+
+---
+
+#### R-160 [CRITICAL] 新增 `domain_events` 表 + 事务内 Outbox writer API
+
+- **status**: pending
+- **batch**: B14
+- **depends_on**: —
+- **effort**: medium
+- **files**: schema, 新增 `packages/api/src/lib/outbox.ts`
+- **fix_steps**:
+  1. `DomainEvent { id bigserial, eventType, projectId?, userName?, payload Json, createdAt, deliveredAt?, attempt }`
+  2. 索引 (deliveredAt is null, id ASC)
+  3. `outbox.ts` 暴露 `await outbox.emit(tx, eventType, payload)`——只在 tx 内调用
+  4. shared 加 `domainEventPayloadSchema`（discriminated union）
+- **verification**: vitest：tx 内 emit + rollback → 不存在；commit 后存在且通过 schema
+
+---
+
+#### R-161 [CRITICAL] 全部 `eventBus.publish` 改写 `outbox.emit`
+
+- **status**: pending
+- **batch**: B14
+- **depends_on**: R-160
+- **effort**: large
+- **files**: 全部含 `eventBus.publish` 的 route.ts（~20 个）, `drift-engine.ts`, `heartbeat-scanner.ts`
+- **fix_steps**:
+  1. 全局搜替换：`eventBus.publish | dispatchWebhooks | sendMail | createActivity` → `outbox.emit(tx, ...)`
+  2. tx 外的调用用 `outbox.emitOutOfTx(...)` 起独立 1-row tx
+  3. 旧 sinks 暂时保留——由 worker 调用
+- **verification**: vitest：plan_activate 后 domain_events 表有正确事件序列
+- **rollback**: env flag 双路 dispatch
+
+---
+
+#### R-162 [CRITICAL] 新增 plansync-worker 进程：消费 outbox 扇出到旧 sinks
+
+- **status**: pending
+- **batch**: B14
+- **depends_on**: R-161, R-138
+- **effort**: large
+- **files**: `packages/api/scripts/run-worker.ts`, 新增 `outbox-consumer.ts`
+- **fix_steps**:
+  1. worker 用 `LISTEN domain_events_new`（trigger NOTIFY on insert）+ fallback 1s 轮询
+  2. FOR UPDATE SKIP LOCKED 取 batch，按 eventType dispatch
+  3. 成功后 UPDATE deliveredAt=now()
+  4. 失败 → attempt++，exponential 重试
+- **verification**: 多副本 API → 单 worker fanout；杀 worker → 重启后未交付事件继续派发
+
+---
+
+#### R-163 [HIGH] SSE relay 改为 worker 推送 + 支持 `lastEventId` 回放
+
+- **status**: pending
+- **batch**: B14
+- **depends_on**: R-162
+- **effort**: medium
+- **files**: `events/route.ts`, `user-events/route.ts`, `event-bus.ts`
+- **fix_steps**:
+  1. SSE 路由接 `Last-Event-ID` header → 先 SELECT 回放再 attach live
+  2. SSE event id = DomainEvent.id（连续 bigserial）
+  3. EventBus 改为 worker-only；API 进程不持 listeners
+- **verification**: 断线 5s 重连不丢事件；vitest：Last-Event-ID 能拉到之前 10 条
+
+---
+
+#### R-164 [HIGH] Webhook dispatcher 改吃 outbox（取代 R-139 过渡）
+
+- **status**: pending
+- **batch**: B14
+- **depends_on**: R-162, R-139
+- **effort**: small
+- **files**: `webhook-worker.ts`
+- **fix_steps**:
+  1. outbox-consumer 拉到匹配 event → 写 `webhook_jobs`
+  2. webhook-worker 继续从 jobs 表消费
+- **verification**: R-139 测试通过 + 多副本不重复
+
+---
+
+#### R-165 [HIGH] Email 改为 outbox 消费者，加去重 + 限流
+
+- **status**: pending
+- **batch**: B14
+- **depends_on**: R-162
+- **effort**: small
+- **files**: `email.ts`, outbox-consumer
+- **fix_steps**:
+  1. Email 不再 inline send；worker pull `eventType IN (drift_detected | review_requested | ...)`
+  2. 5min 内同 (user, eventType, taskId) 去重
+- **verification**: vitest：5min 内同 user 多次 drift → 只发 1 封
+
+---
+
+#### R-166 [HIGH] 删除 instrumentation 启动 scanner，scanner 改吃 outbox
+
+- **status**: pending
+- **batch**: B14
+- **depends_on**: R-138, R-162
+- **effort**: small
+- **files**: `instrumentation.ts`, `heartbeat-scanner.ts`
+- **fix_steps**:
+  1. scanner 移到 worker 进程独立 timer
+  2. scanner state change（stale/failed/superseded）必须经 outbox
+  3. 完全删除 `startHeartbeatScanner` 启动路径
+- **verification**: 起 API 进程 → 无定时器；多 API 副本 + 单 worker → 不重复扫
+
+---
+
+### B15 — Protocol-as-state-machine：流程从 prose 变 mechanism
+
+> **目标**：消除"agent 必须读 CLAUDE.md 才能做对事"。流程编码到 MCP server 状态机里，乱序调用直接 reject。
+>
+> **护城河价值**：把产品从"prompt-engineered"升级为"protocol-engineered"。
+
+---
+
+#### R-170 [CRITICAL] 设计 ExecContextToken + nextRequired 状态机协议
+
+- **status**: pending
+- **batch**: B15
+- **depends_on**: —
+- **effort**: medium
+- **files**: 新增 `packages/shared/src/protocol/exec-state.ts`, `docs/PROTOCOL.md`
+- **fix_steps**:
+  1. 有限状态机：`UNINITIALIZED → CONTEXT_LOADED → PACK_FETCHED → RUN_STARTED → COMPLETED | ABORTED`
+  2. 每个状态定义 `allowedTools: string[]` 与 `requiredNextOneOf: string[]`
+  3. server 端返回 opaque `stateToken`（HMAC of {runId, state, ts}）
+  4. 后续工具必须带 token；状态非 allowed → reject `OUT_OF_SEQUENCE`
+  5. 文档化状态图
+- **verification**: 设计 review 文档 merged
+
+---
+
+#### R-171 [HIGH] MCP server 实施 stateToken 校验 + OUT_OF_SEQUENCE error
+
+- **status**: pending
+- **batch**: B15
+- **depends_on**: R-170
+- **effort**: large
+- **files**: `tool-wrapper.ts`, 所有 `tools/*.ts`
+- **fix_steps**:
+  1. wrapper 内 `validateStateTransition(stateToken, toolName)` → 失败返回 OUT_OF_SEQUENCE + hint
+  2. handler 完成后返回新 stateToken
+  3. exec-mode 绑死 token
+- **verification**: vitest：跳过 task_pack 直接 complete → OUT_OF_SEQUENCE；合法顺序无回归
+- **rollback**: env flag
+
+---
+
+#### R-172 [HIGH] CLAUDE.md 重写为 thin pointer
+
+- **status**: pending
+- **batch**: B15
+- **depends_on**: R-171, R-146
+- **effort**: medium
+- **files**: `CLAUDE.md`, `claude-md/protocol.md`
+- **fix_steps**:
+  1. CLAUDE.md 仅留产品介绍 + "流程错误以工具返回的 OUT_OF_SEQUENCE.nextRequired 为准"
+  2. 删 ~400 行流程描述（协议已强制）
+  3. 保留 comment 模板等内容质量指引
+- **verification**: syntax-inconsistencies-report 中 5 条 HIGH 变成 N/A
+
+---
+
+#### R-173 [HIGH] AGENTS.md 与 CLAUDE.md 合并到 generated source
+
+- **status**: pending
+- **batch**: B15
+- **depends_on**: R-146, R-172
+- **effort**: small
+- **fix_steps**: 一处权威源；render 输出 2 份目标
+- **verification**: CI 强制 render 一致
+
+---
+
+#### R-174 [MEDIUM] CLI ai-loop system prompt 从 generated source 注入
+
+- **status**: pending
+- **batch**: B15
+- **depends_on**: R-146
+- **effort**: small
+- **files**: `packages/cli/src/ai-loop.ts`
+- **fix_steps**: `buildSystemPrompt` 改为读 `generated/system-prompt.txt`
+
+---
+
+#### R-175 [HIGH] MCP tool surface 收敛到 ≤ 12 个
+
+- **status**: pending
+- **batch**: B15
+- **depends_on**: R-027, R-030
+- **effort**: large
+- **files**: `packages/mcp-server/src/tools/*.ts`, `cli/src/ai-loop.ts`
+- **fix_steps**:
+  1. 合并 4 个 `*_append` → `plan_patch(planId, patch)`
+  2. `execution_start/heartbeat/complete` → `run(runId, action)`
+  3. `task_create/update/claim/decline/rebind` → `task(action, args)`
+  4. 目标：`plan_show / plan_patch / plan_propose / plan_activate / task_show / task_patch / run / drift_resolve / comment / suggest / exec_context / status` ≤ 12
+  5. 老工具名保留 deprecated alias 一个 release
+- **verification**: tools/list ≤ 12；LLM eval：新接口准确率 ≥ 老接口
+
+---
+
+#### R-176 [MEDIUM] 文档↔工具一致性 contract test
+
+- **status**: pending
+- **batch**: B15
+- **depends_on**: R-172, R-175
+- **effort**: small
+- **files**: 新增 `packages/mcp-server/tests/integration/docs-contract.test.ts`
+- **fix_steps**: 扫 protocol.md / CLAUDE.md / AGENTS.md 抽 `plansync_*` 与 tools/list 比对
+- **verification**: CI 红 → 任一边漂移立刻发现
+
+---
+
+### B16 — AI 从 gate 变 advisor：消除"AI 错杀合法提交"
+
+> **目标**：LLM 只写建议、生成评语；真正的 gate 是**规则化、可编辑、可解释**的 verifier。
+
+---
+
+#### R-180 [HIGH] completion-verify 改为 advisory：永不 422
+
+- **status**: pending
+- **batch**: B16
+- **depends_on**: R-143
+- **effort**: small
+- **files**: `runs/[runId]/route.ts`
+- **fix_steps**:
+  1. 删除 422 分支
+  2. AI score < 75 → 写 `RunReview { runId, kind: 'ai_verification', score, feedback }`
+  3. complete 永远放行（hard gate 转给 R-181）
+- **verification**: 旧"AI 评 74 拒绝" case 现在 complete 成功 + 留下 advisory 评论
+
+---
+
+#### R-181 [HIGH] 声明式 `verification_rules` 表 + 评估器
+
+- **status**: pending
+- **batch**: B16
+- **depends_on**: R-180
+- **effort**: large
+- **files**: schema, 新增 `packages/api/src/lib/verification-rules.ts`, owner UI
+- **fix_steps**:
+  1. `VerificationRule { id, projectId, scope, scopeValue?, kind, params Json }`
+  2. kind: `require_files_changed` / `require_commits_on_branch` / `require_pr_merged` / `require_deliverable_evidence_for_each_ref` / `min_output_summary_chars`
+  3. complete 调评估器 → 失败 422 + 列出失败规则
+  4. owner UI 编辑规则
+- **verification**: vitest：require_files_changed 在空 filesChanged 时拒绝；规则可被 owner 关闭
+
+---
+
+#### R-182 [HIGH] ai_calls 表 + provider observability（合并/取代 R-144）
+
+- **status**: pending
+- **batch**: B16
+- **depends_on**: —
+- **effort**: medium
+- **fix_steps**: 同 R-144，额外要求：记 inputHash / outputHash 用于 dedup 与重放；`/api/ai-usage` 按 purpose 聚合
+
+---
+
+#### R-183 [MEDIUM] AI provider fallback + 限流 + 缓存
+
+- **status**: pending
+- **batch**: B16
+- **depends_on**: R-182
+- **effort**: medium
+- **files**: `packages/api/src/lib/ai/client.ts`
+- **fix_steps**:
+  1. provider 改为有序数组 `[AMD, Anthropic]`，第一个失败/限流 → fallback
+  2. 同 inputHash + purpose 5min 内复用结果
+  3. token-bucket 限流（per purpose）
+- **verification**: mock AMD 限流 → 命中 Anthropic；缓存命中计数器 +1
+
+---
+
+#### R-184 [MEDIUM] UI/CLI 区分 "AI 建议" vs "规则 gate"
+
+- **status**: pending
+- **batch**: B16
+- **depends_on**: R-180, R-181
+- **effort**: small
+- **fix_steps**:
+  1. complete 失败 error envelope 区分 `gate: 'rule'` vs `advisory: 'ai_low_score'`
+  2. UI 不同颜色 / icon
+  3. CLI `/explain rule <id>`
+
+---
+
+### B17 — Git 真集成：让 plan-aware 与 code-aware 闭环
+
+> **目标**：commit / PR / merge 状态作为 task 状态的输入源；不再依赖 agent 自报 filesChanged。
+
+---
+
+#### R-190 [HIGH] 接收 GitHub webhook：push / pull_request / pull_request_review
+
+- **status**: pending
+- **batch**: B17
+- **depends_on**: R-160
+- **effort**: medium
+- **files**: 新增 `packages/api/src/app/api/integrations/github/webhook/route.ts`
+- **fix_steps**:
+  1. 验证 GitHub HMAC
+  2. 解析事件 → 写 `domain_events`（eventType=`github_push` 等）
+  3. 项目级配置 `Project.githubRepo` + `Project.githubWebhookSecret`
+
+---
+
+#### R-191 [HIGH] commit↔deliverable 关联表 + 自动推导
+
+- **status**: pending
+- **batch**: B17
+- **depends_on**: R-190, R-150
+- **effort**: medium
+- **files**: schema 新表 `CommitDeliverableLink { sha, deliverableId, matchedBy }`
+- **fix_steps**:
+  1. worker 消费 `github_push` → 对每个 commit 比对文件 vs deliverable.refUri → 写关联
+  2. commit message 含 `[deliverable:<slug>]` 时强匹配优先
+
+---
+
+#### R-192 [HIGH] task 状态从 git + verification rules 自动推导
+
+- **status**: pending
+- **batch**: B17
+- **depends_on**: R-181, R-191
+- **effort**: medium
+- **fix_steps**:
+  1. task.complete 不再由 agent 单方面发起；改 `request_complete` → 系统判 (PR merged) ∧ (deliverable evidence) ∧ (no drift) → auto done
+  2. 任一未达成 → status='awaiting_evidence' + 列出缺失项
+
+---
+
+#### R-193 [MEDIUM] PR template 自动注入 deliverable refs + drift 状态
+
+- **status**: pending
+- **batch**: B17
+- **depends_on**: R-157, R-191
+- **effort**: small
+- **fix_steps**: GitHub Action 在 PR 创建/更新时，update PR body 一段 `<!-- plansync-status -->...<!-- /plansync-status -->`
+
+---
+
+### B18 — Service 拆分 + view-model 共享：让三个 surface 一致
+
+> **目标**：消除 Web/CLI/MCP 三 surface 各自实现一遍业务逻辑的 N=3 重复。
+>
+> **护城河价值**：B7（CLI 体验对齐）这类 batch 不再需要——一处修改、三处生效。
+
+---
+
+#### R-200 [HIGH] 抽出 `@plansync/client-core` view-model 包
+
+- **status**: pending
+- **batch**: B18
+- **depends_on**: R-027, R-030
+- **effort**: large
+- **files**: 新建 `packages/client-core/`
+- **fix_steps**:
+  1. 暴露 `ProjectStore` / `PlanStore` / `TaskStore` / `DriftStore` / `RunStore`，状态机驱动
+  2. 内置 SSE 订阅、增量更新、optimistic update
+  3. 接口 `api: ApiClient`，三 surface 各实现 transport
+- **verification**: vitest：mock api → store 状态变化符合预期
+
+---
+
+#### R-201 [HIGH] Web 与 CLI 改用 client-core
+
+- **status**: pending
+- **batch**: B18
+- **depends_on**: R-200
+- **effort**: large
+- **fix_steps**:
+  1. Web RSC + client components 改用 client-core stores
+  2. CLI commands.ts / ai-loop.ts / sse-listener.ts 改用同组 store
+  3. **B7 中 CLI/Web 不一致条目** → 大量 close as cancelled
+
+---
+
+#### R-202 [HIGH] 拆 plansync-web 为独立部署单元
+
+- **status**: pending
+- **batch**: B18
+- **depends_on**: R-138, R-166
+- **effort**: large
+- **files**: 新建 `packages/web/`
+- **fix_steps**:
+  1. API 包仅保留 `/api/*` + worker
+  2. web 包保留 RSC + 客户端组件，调 API via env URL
+  3. 部署文档：单机用 next.js + worker；多机/serverless 用三服务
+
+---
+
+#### R-203 [MEDIUM] 部署拓扑文档化 + docker-compose / k8s helm chart
+
+- **status**: pending
+- **batch**: B18
+- **depends_on**: R-202
+- **effort**: medium
+- **files**: 新增 `deploy/docker-compose.yml`, `deploy/helm/`
+- **fix_steps**:
+  1. 三服务：plansync-api, plansync-web, plansync-worker
+  2. 一份 Postgres、可选 Redis
+  3. README 增加部署矩阵
+
+---
+
 ## Cron Job 调度建议
 
 ### 推荐节奏
@@ -2352,14 +3154,63 @@ done
 | R-132 | HIGH     | B4   | 升级 @modelcontextprotocol/sdk 1.3 → 1.29+ 并恢复 mcp-server typecheck         |
 | R-133 | MEDIUM   | B4   | 逐步把 `any` 替换为 `unknown`/具体类型，重新启用 ESLint `no-explicit-any` 警告 |
 | R-134 | MEDIUM   | B12  | plans.test.ts 抽出 `resetDraftPlans` helper（避免 R-036 guard 漏 cleanup）     |
+| R-135 | CRITICAL | B5   | task-pack 加 task↔project 归属校验                                             |
+| R-136 | CRITICAL | B2   | PLANSYNC_SECRET 增加 audit / 范围限制 / 强制 TTL                               |
+| R-137 | HIGH     | B2   | exec-scoped key 在缺 execRunId 时也强制 keyProjectId 校验                      |
+| R-138 | HIGH     | B10  | heartbeat-scanner 从 instrumentation 解耦                                      |
+| R-139 | HIGH     | B9   | webhook 重试改为持久化队列                                                     |
+| R-140 | HIGH     | B6   | 新增 task.executionGate 字段区分 system block                                  |
+| R-141 | MEDIUM   | B8   | ApiKey scrypt 热路径优化（内存缓存）                                           |
+| R-142 | HIGH     | B1   | MCP execution_aborted 改 protocol error                                        |
+| R-143 | HIGH     | B4   | completion-verify 可观测：score/breakdown/model 写库                           |
+| R-144 | MEDIUM   | B11  | 新增 ai_calls 表，所有 LLM 调用持久化                                          |
+| R-145 | HIGH     | B4   | PlanDiff.changes 强制 shared zod schema                                        |
+| R-146 | HIGH     | B10  | CLAUDE.md/AGENTS.md/ai-loop prompt 合并 single source                          |
+| R-150 | CRITICAL | B13  | 设计 Deliverable/Constraint/Standard 分表 schema                               |
+| R-151 | CRITICAL | B13  | 历史 plan 数据双写迁移                                                         |
+| R-152 | HIGH     | B13  | plan_update/propose/activate 改写新表                                          |
+| R-153 | HIGH     | B13  | Task→Deliverable FK 中间表                                                     |
+| R-154 | HIGH     | B13  | drift-engine 切换为图 diff                                                     |
+| R-155 | HIGH     | B13  | 新增 plansync_deliverable\_\* MCP 工具                                       |
+| R-156 | MEDIUM   | B13  | Web UI Deliverable 状态时间线                                                  |
+| R-157 | HIGH     | B13  | GitHub Action drift-gate 升级为语义 gate                                       |
+| R-160 | CRITICAL | B14  | 新增 domain_events 表 + 事务内 Outbox writer                                   |
+| R-161 | CRITICAL | B14  | 全部 eventBus.publish 改写 outbox.emit                                         |
+| R-162 | CRITICAL | B14  | 新增 plansync-worker 消费 outbox                                               |
+| R-163 | HIGH     | B14  | SSE relay 支持 lastEventId 回放                                                |
+| R-164 | HIGH     | B14  | Webhook dispatcher 改吃 outbox                                                 |
+| R-165 | HIGH     | B14  | Email 改为 outbox 消费者 + 去重                                                |
+| R-166 | HIGH     | B14  | 删除 instrumentation 启动 scanner，scanner 改吃 outbox                         |
+| R-170 | CRITICAL | B15  | 设计 ExecContextToken + nextRequired 状态机                                    |
+| R-171 | HIGH     | B15  | MCP server 实施 stateToken 校验                                                |
+| R-172 | HIGH     | B15  | CLAUDE.md 重写为 thin pointer                                                  |
+| R-173 | HIGH     | B15  | AGENTS.md 与 CLAUDE.md 合并到 generated source                                 |
+| R-174 | MEDIUM   | B15  | CLI ai-loop system prompt 从 generated 注入                                    |
+| R-175 | HIGH     | B15  | MCP tool surface 收敛到 ≤ 12 个                                                |
+| R-176 | MEDIUM   | B15  | 文档↔工具一致性 contract test                                                  |
+| R-180 | HIGH     | B16  | completion-verify 改为 advisory：永不 422                                      |
+| R-181 | HIGH     | B16  | 声明式 verification_rules 表 + 评估器                                          |
+| R-182 | HIGH     | B16  | ai_calls 表 + provider observability                                           |
+| R-183 | MEDIUM   | B16  | AI provider fallback + 限流 + 缓存                                             |
+| R-184 | MEDIUM   | B16  | UI/CLI 暴露 AI 建议 vs 规则 gate 区分                                          |
+| R-190 | HIGH     | B17  | 接收 GitHub webhook                                                            |
+| R-191 | HIGH     | B17  | commit↔deliverable 关联表 + 自动推导                                           |
+| R-192 | HIGH     | B17  | task 状态从 git + verification rules 自动推导                                  |
+| R-193 | MEDIUM   | B17  | PR template 自动注入 deliverable refs                                          |
+| R-200 | HIGH     | B18  | 抽出 @plansync/client-core view-model 包                                       |
+| R-201 | HIGH     | B18  | Web/CLI 改用 client-core                                                       |
+| R-202 | HIGH     | B18  | 拆 plansync-web 独立部署                                                       |
+| R-203 | MEDIUM   | B18  | 部署拓扑文档 + docker-compose / helm chart                                     |
 
-**统计**：
+**统计**（含 2026-05-22 追加）：
 
-- CRITICAL: 7
-- HIGH: 62
-- MEDIUM: 51
-- LOW: 14
-- **合计 134 条**
+- CRITICAL: 7 + 8 = **15**
+- HIGH: 62 + 30 = **92**
+- MEDIUM: 51 + 9 = **60**
+- LOW: 14 + 0 = **14**
+- **合计 181 条**（其中 2026-05-22 追加 47 条）
+
+> 新增条目按"补丁先行 / 架构串行"原则消费，详见批次总览表下方的依赖关系。
 
 ---
 
@@ -2387,6 +3238,16 @@ done
 
 ---
 
-**报告生成时间**：2026-05-20
-**生成方式**：4 个并行 explore subagent 全量扫描 + 关键路径人工核对
-**预计总工作量**：~40-60 个 PR；按 cron 每天 1 PR、人工 review，整个 backlog 清完约 2-3 个月。
+**报告生成时间**：2026-05-20（首发）/ 2026-05-22（追加 R-135..R-203 共 47 条新条目）
+**生成方式**：4 个并行 explore subagent 全量扫描 + 关键路径人工核对；2026-05-22 追加由架构审计 agent 补齐"补丁解决不了"的条目
+**预计总工作量**：
+- 旧 134 条：~40-60 PR
+- 新 47 条：~30-50 PR（B13/B14/B15 各按 1 个里程碑 PR 更合理）
+- 总和：~70-110 PR；按 cron 每天 1 PR、人工 review，整体 backlog 清完约 3-5 个月。
+
+**消费策略建议**：
+1. **R-135..R-146 补丁组**：可立刻并行派 5 个 cursor agent，48h 内全部 PR 完成
+2. **B14 outbox 地基**：1 个里程碑 PR（R-160 → R-166 一次性合并），独立 reviewer 团评 1 周
+3. **B13 plan-as-code**：先 R-150 schema PR、再 R-151 backfill PR、之后 R-152..R-157 可并行
+4. **B15 协议化**：与 B13 解耦，可并行启动；R-170 设计 PR 必须先于 R-171
+5. **B16/B17/B18**：作为下一季度的护城河工程，启动前确认 B13/B14 已稳定
