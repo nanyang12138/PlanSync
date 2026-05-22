@@ -2,8 +2,15 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { authenticate, requireProjectRole, requireNotExecScoped } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
+import { z } from 'zod';
 import { validateBody, validateSearchParams } from '@/lib/validate';
-import { createTaskSchema, paginationSchema, AppError, ErrorCode } from '@plansync/shared';
+import {
+  createTaskSchema,
+  paginationSchema,
+  taskStatusSchema,
+  AppError,
+  ErrorCode,
+} from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
@@ -12,15 +19,25 @@ import { logger } from '@/lib/logger';
 
 type Params = { params: { projectId: string } };
 
+// R-042: validate task list query params against shared enums so that callers
+// passing e.g. ?status=foo get a clear 400 instead of an empty result set.
+const taskListQuerySchema = paginationSchema.extend({
+  status: taskStatusSchema.optional(),
+  assignee: z.string().trim().min(1).optional(),
+});
+
 export async function GET(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);
-    const { page = 1, pageSize = 20 } = validateSearchParams(req, paginationSchema);
+    const {
+      page = 1,
+      pageSize = 20,
+      status,
+      assignee,
+    } = validateSearchParams(req, taskListQuerySchema);
     const skip = (page - 1) * pageSize;
 
-    const status = req.nextUrl.searchParams.get('status') || undefined;
-    const assignee = req.nextUrl.searchParams.get('assignee') || undefined;
     const where = {
       projectId: params.projectId,
       ...(status ? { status } : {}),
