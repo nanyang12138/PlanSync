@@ -39,10 +39,7 @@ export const cfg = {
   //   1. `PLANSYNC_CODE_BIN` — preferred, agent-agnostic name
   //   2. `GENIE_BIN`         — legacy AMD-internal name, kept for back-compat
   //   3. `claude`            — generic fallback, resolved via $PATH
-  genieOrClaude:
-    process.env.PLANSYNC_CODE_BIN ||
-    process.env.GENIE_BIN ||
-    'claude',
+  genieOrClaude: process.env.PLANSYNC_CODE_BIN || process.env.GENIE_BIN || 'claude',
   mcpServer: process.env.PLANSYNC_MCP_SERVER || _mcpAuto,
   nodeBin: process.env.PLANSYNC_NODE_BIN || process.execPath,
   maxOutputTokens: Number(process.env.PLANSYNC_MAX_OUTPUT_TOKENS) || 8192,
