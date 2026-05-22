@@ -2020,7 +2020,7 @@
 
 #### R-121 [HIGH] MCP plan*activate/reactivate/append/review*\* 单测
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B12
 - **depends_on**: —
 - **effort**: medium
