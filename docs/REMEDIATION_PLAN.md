@@ -1627,7 +1627,8 @@
 
 #### R-092 [HIGH] 构建 GitHub Action `dist/index.js`
 
-- **status**: pending
+- **status**: blocked
+- **blocked_reason**: fix_step 5 要求"恢复 `.github/workflows/plansync-check.yml`"，autonomous Cloud Agent 硬约束禁止改动 `.github/workflows/*` 任何文件（同 R-132）。同时 fix_step 4 "把 action 发布到独立仓库 `plansync/drift-check-action`" 需要跨仓库发布权限，agent 无法在单 PR 内完成。建议人工接手或拆分为可独立提交的子条目（例如：build.sh 加构建步骤 + dist/ 提交 + CI guard 可单独提 PR，发布动作仓库与工作流恢复另起 owner-only 任务）。
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
