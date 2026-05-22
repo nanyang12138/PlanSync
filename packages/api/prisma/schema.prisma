@@ -69,6 +69,14 @@ model Plan {
   reviews     PlanReview[]
   suggestions PlanSuggestion[]
   comments    PlanComment[]
+  // R-150: relational mirrors of the legacy String[] columns
+  // (`deliverables` / `constraints` / `standards`). The old columns are kept
+  // intact as a derived view so existing reads keep working; later remediation
+  // items (R-151..R-152) will dual-write through these tables, and R-154 will
+  // run drift on the typed graph.
+  planDeliverables PlanDeliverable[]
+  planConstraints  PlanConstraint[]
+  planStandards    PlanStandard[]
   // R-082: back-references for PlanDiff FK constraints; if a plan is deleted
   // (only drafts can be deleted today), any cached diffs referencing it are
   // cascaded away because they are meaningless without the underlying plan.
@@ -128,6 +136,85 @@ model PlanSuggestion {
   plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
 
   @@map("plan_suggestions")
+}
+
+// R-150 (B13): Plan-as-code split tables.
+//
+// Today plans store deliverables/constraints/standards as `String[]` columns
+// on `plans`. That representation cannot express stable IDs, status, history
+// or typed references — drift v2's "ref by string" workaround is a patch on
+// top. R-150 introduces three sibling tables that mirror the array columns
+// without removing them. This is intentionally additive: the old String[]
+// columns stay as the canonical surface (used by `plan_show`, `plan_pack`
+// and the GraphQL/Web responses) until later remediation items wire writes
+// through these tables (R-151), task ↔ deliverable FKs (R-153) and the
+// graph-diff drift engine (R-154).
+//
+// Naming conventions:
+// * snake_case `@map` on every column (consistent with R-085).
+// * `slug` is a stable, human-readable identifier within a plan
+//   (e.g. `auth/oidc-callback`); unique per `(planId, slug)` so backfills
+//   can pick one even if the same title is repeated across versions.
+// * `refType` enumerates how `refUri` should be interpreted by callers
+//   (`file_glob` / `api_spec` / `figma_frame` / `notion_page` / `free`).
+//   Stored as String to stay consistent with the rest of the schema; the
+//   set is enforced at the Zod boundary (see shared schemas, future R-152).
+// * `status` enumerates the deliverable lifecycle independent from
+//   `plan.status` (`draft` / `active` / `done` / `deprecated`). Only the
+//   deliverable table has a status column — constraints and standards are
+//   value-typed and supersede via plan version replacement instead.
+// * `supersededById` builds a self-link so an `active` deliverable can be
+//   marked as replaced when the plan is re-activated, without losing the
+//   original row.
+model PlanDeliverable {
+  id             String   @id @default(cuid())
+  planId         String   @map("plan_id")
+  slug           String
+  title          String
+  body           String
+  refType        String?  @map("ref_type") // file_glob | api_spec | figma_frame | notion_page | free
+  refUri         String?  @map("ref_uri")
+  status         String   @default("draft") // draft | active | done | deprecated
+  supersededById String?  @map("superseded_by_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  plan         Plan              @relation(fields: [planId], references: [id], onDelete: Cascade)
+  // Self-relation: a deliverable can point at the row that replaced it. Use
+  // SetNull so deleting the replacement does not cascade-delete history.
+  supersededBy PlanDeliverable?  @relation("PlanDeliverableSupersede", fields: [supersededById], references: [id], onDelete: SetNull)
+  supersedes   PlanDeliverable[] @relation("PlanDeliverableSupersede")
+
+  @@unique([planId, slug])
+  @@index([planId, status])
+  @@map("plan_deliverables")
+}
+
+model PlanConstraint {
+  id        String   @id @default(cuid())
+  planId    String   @map("plan_id")
+  slug      String
+  body      String
+  kind      String   @default("free")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, slug])
+  @@map("plan_constraints")
+}
+
+model PlanStandard {
+  id        String   @id @default(cuid())
+  planId    String   @map("plan_id")
+  slug      String
+  body      String
+  kind      String   @default("free")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, slug])
+  @@map("plan_standards")
 }
 
 model PlanComment {
