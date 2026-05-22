@@ -98,6 +98,42 @@ describe('predictConflicts type predicate (#137)', () => {
     expect(result?.conflicts).toEqual([]);
   });
 
+  it('#199/#216/#223: drops conflicts whose taskIds is an empty array', async () => {
+    mockComplete.mockResolvedValueOnce(
+      JSON.stringify({
+        conflicts: [
+          {
+            taskIds: [],
+            type: 'overlap',
+            severity: 'high',
+            description: 'd',
+            recommendation: 'r',
+          },
+        ],
+      }),
+    );
+    const result = await predictConflicts(TASKS);
+    expect(result?.conflicts).toEqual([]);
+  });
+
+  it('#199/#216/#223: drops conflicts whose taskIds has only 1 entry', async () => {
+    mockComplete.mockResolvedValueOnce(
+      JSON.stringify({
+        conflicts: [
+          {
+            taskIds: ['t1'], // single id is not a "conflict"
+            type: 'overlap',
+            severity: 'high',
+            description: 'd',
+            recommendation: 'r',
+          },
+        ],
+      }),
+    );
+    const result = await predictConflicts(TASKS);
+    expect(result?.conflicts).toEqual([]);
+  });
+
   it('drops conflicts whose taskIds contain non-string entries', async () => {
     mockComplete.mockResolvedValueOnce(
       JSON.stringify({
