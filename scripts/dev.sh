@@ -56,4 +56,10 @@ fi
 run_local_prisma migrate deploy --schema "$PROJECT_DIR/packages/api/prisma/schema.prisma"
 run_local_prisma generate --schema "$PROJECT_DIR/packages/api/prisma/schema.prisma"
 
+# R-138: keep single-machine dev experience identical by running the heartbeat
+# scanner in-process with the API. Multi-replica / serverless deployments must
+# leave this unset and run `npm run --workspace=@plansync/api worker` in a
+# dedicated process instead.
+export PLANSYNC_RUN_WORKER_IN_API=true
+
 exec "$LOCAL_NPM_BIN" run --workspace=@plansync/api dev -- --port "$PORT"
