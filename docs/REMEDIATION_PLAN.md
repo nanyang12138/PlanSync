@@ -1503,7 +1503,7 @@
 
 #### R-083 [MEDIUM] Task.boundPlanVersion 加复合 FK
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
 - **depends_on**: —
 - **effort**: medium
