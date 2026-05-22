@@ -217,12 +217,16 @@ model ExecutionRun {
   task    Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
   apiKeys ApiKey[]
 
-  // R-049 / R-084: a partial unique index `execution_runs_one_running_per_task`
-  // is created by a raw-SQL migration to enforce at most one running run per
+  // R-084: a partial unique index `execution_runs_one_running_per_task` is
+  // created by a raw-SQL migration to enforce at most one running run per
   // task. Prisma does not currently support partial unique indexes in the
   // schema DSL, so it is intentionally not declared here. See migration
   // `20260421000000_one_running_run_per_task` and
   // `packages/api/prisma/migrations/README.md` for the full inventory.
+  //
+  // (Historical note: a previous comment cross-referenced R-049 — that ID
+  //  belongs to the unrelated B6 work item "task_claim conditional
+  //  updateMany atomicity" and was attached to this index in error.)
   @@map("execution_runs")
 }
 

@@ -3,7 +3,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-PG_BIN="${PG_BIN:-$([ -x /tool/pandora64/bin/pg_ctl ] && echo /tool/pandora64/bin || echo /usr/lib/postgresql/16/bin)}"
+# shellcheck source=scripts/pg-env.sh
+. "$SCRIPT_DIR/pg-env.sh"
+PG_BIN="$(detect_pg_bin || true)"
+if [ -z "$PG_BIN" ]; then
+  echo "✗ Could not locate a PostgreSQL install (pg_ctl not found)." >&2
+  echo "  Install Postgres or export PG_BIN to its bin directory." >&2
+  exit 1
+fi
 PG_PORT=${PG_PORT:-15432}
 PG_DATA="/tmp/plansync-pgdata-$(whoami)"
 
