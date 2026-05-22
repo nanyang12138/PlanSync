@@ -13,7 +13,7 @@ import { execSync } from 'child_process';
 import { cfg, selfDir } from './config.js';
 import { c, banner, showSplash } from './ui.js';
 import { McpClient } from './mcp-client.js';
-import { buildSystemPrompt, runAgentLoop, Message } from './ai-loop.js';
+import { buildSystemPrompt, runAgentLoop, pruneHistory, Message } from './ai-loop.js';
 import { fetchStatus, handleSlashCommand, buildPrompt, selectProject } from './commands.js';
 import {
   scanInterruptedExecs,
@@ -24,6 +24,7 @@ import {
 import { startSession, appendToSession, loadInputHistory } from './session.js';
 import { InkSession, SlashCmd } from './prompt.js';
 import { CliSseListener, describeEvent } from './sse-listener.js';
+import { apiEvents, type AuthFailurePayload } from './api-errors.js';
 
 // ─── Genie settings writer ────────────────────────────────────────────────────
 
@@ -175,6 +176,17 @@ async function main() {
   // CLI guarantees the user sees plan/drift updates in real time. We tell the
   // MCP server to skip its listener via PLANSYNC_MCP_DISABLE_SSE so events
   // aren't double-printed.
+  // R-025: surface auth failures from psRequest/psPost as a notification so
+  // the user sees "please re-login" instead of an apparently empty status
+  // banner. Coalesced once per minute to avoid spamming on retry storms.
+  let lastAuthFailureNotice = 0;
+  apiEvents.on('authFailure', (payload: AuthFailurePayload) => {
+    const now = Date.now();
+    if (now - lastAuthFailureNotice < 60_000) return;
+    lastAuthFailureNotice = now;
+    notify(`${c.red}⚠ ${payload.message}${c.reset}`, true);
+  });
+
   const sseListener = new CliSseListener((eventType, data) => {
     const msg = describeEvent(eventType, data);
     if (msg) notify(msg, URGENT_EVENTS.has(eventType));
@@ -333,7 +345,7 @@ async function main() {
     };
     process.once('SIGINT', processSigintHandler);
 
-    const reply = await runAgentLoop(
+    const loopResult = await runAgentLoop(
       input,
       history,
       currentSystem,
@@ -352,13 +364,17 @@ async function main() {
     currentAbort = null;
     rawInput.onSigint = origSigint;
 
-    if (reply) {
+    if (loopResult.text) {
+      // R-063: persist the complete sequence (user input → assistant text/tool_use →
+      // tool_result → ... → final assistant text) instead of just the text reply.
+      // Keeping tool_use and tool_result blocks in history lets the model reference
+      // earlier tool calls in follow-up questions; storing only the surface text
+      // amputates that context.
       const userMsg: Message = { role: 'user', content: input };
-      const assistantMsg: Message = { role: 'assistant', content: reply };
-      history.push(userMsg);
-      history.push(assistantMsg);
+      const assistantMsg: Message = { role: 'assistant', content: loopResult.text };
+      history.push(...loopResult.newMessages);
       appendToSession(cfg.project, currentSessionId, userMsg, assistantMsg);
-      if (history.length > 40) history.splice(0, history.length - 40);
+      pruneHistory(history);
       currentStatus = await fetchStatus();
       currentSystem = buildSystemPrompt(currentStatus);
     }

@@ -1,0 +1,4 @@
+# Test fixture private keys for verify-creds.test.ts (R-026).
+# These are throwaway self-signed certificates generated for unit tests, not
+# real secrets — they never leave the test process.
+packages/cli/tests/fixtures/test-key.pem:private-key:1

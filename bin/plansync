@@ -126,18 +126,14 @@ _load_env() {
 # Subsequent runs verify existing credentials against the server before continuing.
 _ensure_credentials() {
   if [ -n "$PLANSYNC_API_KEY" ]; then
-    # Verify existing credentials against server (read-only, does not invalidate browser sessions)
+    # Verify existing credentials against server (read-only, does not invalidate browser sessions).
+    # Picks http or https module from URL protocol via the standalone helper (see R-026).
     _ec_ok=$(
-      _EC_URL="$PLANSYNC_API_URL" _EC_U="${PLANSYNC_USER:-$USER}" _EC_P="$PLANSYNC_API_KEY" \
-      "$LOCAL_NODE_BIN" -e "
-        const h=require('http'),u=new URL('/api/auth/verify',process.env._EC_URL);
-        const b=JSON.stringify({userName:process.env._EC_U,password:process.env._EC_P});
-        h.request({hostname:u.hostname,port:u.port||80,path:u.pathname,
-          method:'POST',headers:{'Content-Type':'application/json'}},r=>{
-          let d='';r.on('data',c=>d+=c);
-          r.on('end',()=>{try{process.stdout.write(JSON.parse(d).success?'ok':'fail');}catch{process.stdout.write('fail');}});
-        }).end(b);
-      " 2>/dev/null
+      PLANSYNC_VERIFY_URL="$PLANSYNC_API_URL" \
+      PLANSYNC_VERIFY_USER="${PLANSYNC_USER:-$USER}" \
+      PLANSYNC_VERIFY_PASS="$PLANSYNC_API_KEY" \
+      PLANSYNC_VERIFY_MODE="simple" \
+      "$LOCAL_NODE_BIN" "$PROJECT_DIR/scripts/plansync-verify-creds.mjs" 2>/dev/null
     )
     if [ "$_ec_ok" = "ok" ]; then
       return 0   # credentials valid, fast path
@@ -167,25 +163,13 @@ _ensure_credentials() {
   done
   # Verify credentials via /api/auth/verify — safe for CLI use, does NOT invalidate browser sessions.
   # This endpoint also creates a new account if the user does not exist yet.
+  # Picks http or https module from URL protocol via the standalone helper (see R-026).
   _ec_ok=$(
-    _EC_URL="$PLANSYNC_API_URL" _EC_U="$_ec_user" _EC_P="$_ec_pass" \
-    "$LOCAL_NODE_BIN" -e "
-      const h=require('http'),u=new URL('/api/auth/verify',process.env._EC_URL);
-      const b=JSON.stringify({userName:process.env._EC_U,password:process.env._EC_P});
-      const req=h.request({hostname:u.hostname,port:u.port||80,path:u.pathname,
-        method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(b)}},r=>{
-        let d='';r.on('data',c=>d+=c);
-        r.on('end',()=>{
-          try{
-            const j=JSON.parse(d);
-            if(j.success){process.stdout.write(j.isNewUser?'new':'ok');}
-            else{process.stdout.write('ERR:'+(j.error||'unknown error'));}
-          }catch{process.stdout.write('ERR:invalid response');}
-        });
-      });
-      req.on('error',e=>process.stdout.write('ERR:'+e.message));
-      req.write(b);req.end();
-    " 2>/dev/null
+    PLANSYNC_VERIFY_URL="$PLANSYNC_API_URL" \
+    PLANSYNC_VERIFY_USER="$_ec_user" \
+    PLANSYNC_VERIFY_PASS="$_ec_pass" \
+    PLANSYNC_VERIFY_MODE="full" \
+    "$LOCAL_NODE_BIN" "$PROJECT_DIR/scripts/plansync-verify-creds.mjs" 2>/dev/null
   )
   if [ "$_ec_ok" = "ok" ] || [ "$_ec_ok" = "new" ]; then
     mkdir -p "$HOME/.config/plansync"

@@ -31,14 +31,30 @@ export async function POST(req: NextRequest, { params }: Params) {
       });
     }
 
-    const updated = await prisma.task.update({
-      where: { id: params.taskId },
+    const claimResult = await prisma.task.updateMany({
+      where: {
+        id: params.taskId,
+        projectId: params.projectId,
+        assignee: null,
+        status: 'todo',
+      },
       data: {
         assignee: auth.userName,
         assigneeType: body.assigneeType,
         ...(body.startImmediately ? { status: 'in_progress' } : {}),
       },
     });
+
+    if (claimResult.count === 0) {
+      throw new AppError(ErrorCode.CONFLICT, 'Task is already assigned', {
+        code: 'TASK_ALREADY_CLAIMED',
+      });
+    }
+
+    const updated = await prisma.task.findUnique({ where: { id: params.taskId } });
+    if (!updated) {
+      throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+    }
 
     await createActivity({
       projectId: params.projectId,

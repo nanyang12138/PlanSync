@@ -1,0 +1,87 @@
+name: cursor-review-cluster
+
+# Monthly aggregator: clusters `review-finding` issues from the last 90 days
+# via LLM and opens a tracking issue with high-frequency themes + suggested
+# action (eslint_rule / agent_rule / doc_constraint / no_action). The user
+# (or a downstream `cursor:dispatch`) decides how to act on each cluster.
+#
+# This workflow only OPENS a tracking issue; it never edits source rules
+# itself — that's deliberate, to keep the loop human-in-the-loop until
+# clustering quality is validated over time.
+#
+# Requires LLM_API_KEY or ANTHROPIC_API_KEY. No-op without either.
+
+on:
+  schedule:
+    # First Monday of each month at 10:00 UTC (cron approximation: every Monday,
+    # script self-checks and bails if too few findings)
+    - cron: '0 10 1-7 * 1'
+  workflow_dispatch:
+    inputs:
+      window_days:
+        description: 'Lookback window in days'
+        required: false
+        type: string
+        default: '90'
+      min_count:
+        description: 'Minimum findings per cluster'
+        required: false
+        type: string
+        default: '3'
+      dry_run:
+        description: 'Log intended actions without creating an issue'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  cluster:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check for LLM key
+        id: key
+        env:
+          LLM_KEY: ${{ secrets.LLM_API_KEY }}
+          ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "${LLM_KEY:-}${ANTHROPIC_KEY:-}" ]; then
+            echo "No LLM key configured, skipping clustering."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node
+        if: steps.key.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Checkout (script only)
+        if: steps.key.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            scripts/review-cluster.mjs
+          sparse-checkout-cone-mode: false
+
+      - name: Run cluster
+        if: steps.key.outputs.skip != 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_API_BASE: ${{ secrets.LLM_API_BASE }}
+          LLM_MODEL_NAME: ${{ secrets.LLM_MODEL_NAME }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ secrets.ANTHROPIC_DEFAULT_SONNET_MODEL }}
+          REVIEW_CLUSTER_DAYS: ${{ inputs.window_days || '90' }}
+          REVIEW_CLUSTER_MIN_COUNT: ${{ inputs.min_count || '3' }}
+          REVIEW_CLUSTER_DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+        run: node scripts/review-cluster.mjs

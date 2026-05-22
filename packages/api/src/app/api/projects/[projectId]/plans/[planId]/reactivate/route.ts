@@ -13,6 +13,7 @@ import {
   enrichDriftAlertsWithAi,
   dispatchDriftNotifications,
 } from '@/lib/drift-engine';
+import { requirePlanInProject } from '@/lib/plan-scope';
 
 type Params = { params: { projectId: string; planId: string } };
 
@@ -22,22 +23,23 @@ export async function POST(req: NextRequest, { params }: Params) {
     requireNotExecScoped(auth);
     await requireProjectRole(auth, params.projectId, 'owner');
 
-    const plan = await prisma.plan.findUnique({ where: { id: params.planId } });
-    if (!plan) throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
-    if (plan.projectId !== params.projectId) {
-      throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
-    }
+    const plan = await requirePlanInProject(params.planId, params.projectId);
     if (plan.status !== 'superseded') {
       throw new AppError(ErrorCode.STATE_CONFLICT, 'Only superseded plans can be reactivated');
     }
 
-    const reactivated = await prisma.$transaction(async (tx) => {
+    // R-052: scan and persist drift alerts inside the transaction so that if
+    // persistDriftAlerts (or any later step) fails, the reactivation rolls
+    // back and the project never observes "plan active but no drift alerts".
+    // Side-effects (SSE, webhooks, email, AI enrichment) are deferred until
+    // after the transaction commits (R-007).
+    const { reactivated, driftAlerts, scannedAlerts } = await prisma.$transaction(async (tx) => {
       await tx.plan.updateMany({
         where: { projectId: params.projectId, status: 'active' },
         data: { status: 'superseded' },
       });
 
-      return tx.plan.update({
+      const r = await tx.plan.update({
         where: { id: params.planId },
         data: {
           status: 'active',
@@ -45,6 +47,11 @@ export async function POST(req: NextRequest, { params }: Params) {
           activatedBy: auth.userName,
         },
       });
+
+      const scanResult = await runDriftScan(tx, params.projectId, r.version);
+      const alerts = await persistDriftAlerts(tx, params.projectId, scanResult.alerts);
+
+      return { reactivated: r, driftAlerts: alerts, scannedAlerts: scanResult.alerts };
     });
 
     await createActivity({
@@ -69,13 +76,8 @@ export async function POST(req: NextRequest, { params }: Params) {
       activatedBy: auth.userName,
     });
 
-    const scanResult = await runDriftScan(prisma, params.projectId, reactivated.version);
-    let driftAlerts: any[] = [];
-    if (scanResult.alerts.length > 0) {
-      driftAlerts = await persistDriftAlerts(prisma, params.projectId, scanResult.alerts);
-      // R-007: per-assignee SSE + email run *after* persist resolves so a
-      // failure in persistDriftAlerts does not leave ghost notifications.
-      await dispatchDriftNotifications(params.projectId, scanResult.alerts);
+    if (driftAlerts.length > 0) {
+      await dispatchDriftNotifications(params.projectId, scannedAlerts);
       enrichDriftAlertsWithAi(params.projectId, reactivated.id, driftAlerts).catch((err) =>
         logger.error({ err }, 'Background AI drift enrichment failed'),
       );

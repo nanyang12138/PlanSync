@@ -6,6 +6,7 @@ import { AppError, ErrorCode } from '@plansync/shared';
 import { eventBus } from '@/lib/event-bus';
 import { sendMail, userEmail } from '@/lib/email';
 import { logger } from '@/lib/logger';
+import { requirePlanInProject } from '@/lib/plan-scope';
 
 type Params = { params: { projectId: string; planId: string } };
 
@@ -13,6 +14,7 @@ export async function GET(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);
+    await requirePlanInProject(params.planId, params.projectId);
 
     const reviews = await prisma.planReview.findMany({
       where: { planId: params.planId },
@@ -35,9 +37,7 @@ export async function POST(req: NextRequest, { params }: Params) {
     const reviewer = body.reviewer?.trim();
     if (!reviewer) throw new AppError(ErrorCode.VALIDATION_ERROR, 'reviewer is required');
 
-    const plan = await prisma.plan.findUnique({ where: { id: params.planId } });
-    if (!plan || plan.projectId !== params.projectId)
-      throw new AppError(ErrorCode.NOT_FOUND, 'Plan not found');
+    const plan = await requirePlanInProject(params.planId, params.projectId);
     if (plan.status !== 'proposed')
       throw new AppError(ErrorCode.STATE_CONFLICT, 'Can only add reviewers to a proposed plan');
 
