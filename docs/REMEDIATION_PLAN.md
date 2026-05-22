@@ -883,7 +883,7 @@
 
 #### R-043 [HIGH] webhook URL 校验防 SSRF
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B5
 - **depends_on**: —
 - **effort**: small
@@ -967,7 +967,7 @@
 
 #### R-048 [CRITICAL] plans 表加 partial unique "每项目一个 active"
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small
@@ -1099,7 +1099,7 @@
 
 #### R-056 [MEDIUM] heartbeat scanner 改为 DB advisory lock
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B6
 - **depends_on**: —
 - **effort**: medium
@@ -1151,7 +1151,7 @@
 
 #### R-059 [HIGH] CLI banner phase 改用 API 返回的 `project.phase`
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1181,7 +1181,7 @@
 
 #### R-061 [HIGH] worktree 失败时调用 failRun
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1230,7 +1230,7 @@
 
 #### R-064 [HIGH] `!shell` 命令在 Ink 之前 pause/unmount
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1365,7 +1365,7 @@
 
 #### R-073 [LOW] `/code` 退出不清屏
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1380,7 +1380,7 @@
 
 #### R-074 [MEDIUM] `/project <id>` 验证项目存在
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small

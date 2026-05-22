@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { authenticate, requireProjectRole, requireNotExecScoped } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { AppError, ErrorCode } from '@plansync/shared';
+import { validateWebhookUrl } from '@/lib/webhook-url-validator';
 
 type Params = { params: { projectId: string } };
 
@@ -49,6 +50,8 @@ export async function POST(req: NextRequest, { params }: Params) {
     ) {
       throw new AppError(ErrorCode.VALIDATION_ERROR, 'events must be a non-empty string array');
     }
+
+    validateWebhookUrl(url);
 
     const webhook = await prisma.webhook.create({
       data: {

@@ -297,6 +297,19 @@ export function rawOn(): void {
 
 // ─── /code command ────────────────────────────────────────────────────────────
 
+// Printed when a `/code` child process (Claude / Codex / Genie) exits and we
+// return control to the PlanSync terminal. Earlier versions wrote the ANSI
+// escape `\x1b[2J\x1b[H` to clear the screen, which wiped out scrollback
+// history that the user may want to read. Per R-073 we now print a visible
+// separator instead so the user retains full context.
+export function printCodeExitSeparator(
+  writer: { write: (s: string) => void } = process.stdout,
+): void {
+  const rule = '─'.repeat(60);
+  writer.write(`\n${c.blue}${rule}${c.reset}\n`);
+  writer.write(`${c.blue}← Returned to PlanSync Terminal${c.reset}\n\n`);
+}
+
 export function launchCode(): ReturnType<typeof spawn> {
   const projectRoot = cfg.workDir;
   const original = patchProjectInSettings(cfg.project);
@@ -327,9 +340,7 @@ export function launchCode(): ReturnType<typeof spawn> {
   };
   child.on('close', () => {
     restore();
-    // Clear any leftover output from the alternate screen restore, then print separator
-    process.stdout.write('\x1b[2J\x1b[H'); // clear screen, cursor to top
-    console.log(`${c.blue}← Returned to PlanSync Terminal${c.reset}\n`);
+    printCodeExitSeparator(process.stdout);
   });
   child.on('error', (err) => {
     restore();
@@ -753,7 +764,7 @@ function patchTask(projectId: string, taskId: string, body: Record<string, unkno
   }
 }
 
-function failRun(
+export function failRun(
   projectId: string,
   taskId: string,
   runId: string,
@@ -1015,6 +1026,54 @@ function buildAutonomousPrompt(worktreeDir: string): string {
   ].join('\n');
 }
 
+// ─── Worktree setup (with failRun on failure) ────────────────────────────────
+//
+// R-061: when `git worktree add` fails we must mark the already-registered
+// execution run as `failed`, otherwise the run stays `running` until the
+// heartbeat scanner declares it stale (≥5 minutes) and the task is silently
+// stuck `in_progress` for that whole window.
+//
+// Extracted as a standalone, dependency-injectable helper so the failure
+// path can be unit-tested without spawning a real `git` process.
+
+export interface TryCreateExecWorktreeOptions {
+  worktreeDir: string;
+  projectRoot: string;
+  projectId: string;
+  taskId: string;
+  runId: string;
+  /** Defaults to `child_process.execSync`. */
+  exec?: (cmd: string, opts: { cwd: string; stdio: 'pipe' }) => unknown;
+  /** Defaults to {@link failRun}. */
+  reportFailure?: (projectId: string, taskId: string, runId: string, reason: string) => void;
+  /** Defaults to `console.log`. */
+  logger?: (line: string) => void;
+}
+
+export type TryCreateExecWorktreeResult = { ok: true } | { ok: false; reason: string };
+
+export function tryCreateExecWorktree(
+  opts: TryCreateExecWorktreeOptions,
+): TryCreateExecWorktreeResult {
+  const exec =
+    opts.exec ?? ((cmd: string, options: { cwd: string; stdio: 'pipe' }) => execSync(cmd, options));
+  const reportFailure = opts.reportFailure ?? failRun;
+  const logger = opts.logger ?? ((line: string) => console.log(line));
+
+  try {
+    exec(`git worktree add --detach "${opts.worktreeDir}"`, {
+      cwd: opts.projectRoot,
+      stdio: 'pipe',
+    });
+    return { ok: true };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger(`\n${c.red}✗ Failed to create worktree: ${msg}${c.reset}\n`);
+    reportFailure(opts.projectId, opts.taskId, opts.runId, `worktree-setup-failed: ${msg}`);
+    return { ok: false, reason: msg };
+  }
+}
+
 // ─── Auto-exec (git worktree sandbox) ────────────────────────────────────────
 
 export async function launchAutoExec(
@@ -1064,11 +1123,14 @@ export async function launchAutoExec(
 
   const worktreeDir = path.join(projectRoot, '.plansync-exec', runId);
 
-  try {
-    execSync(`git worktree add --detach "${worktreeDir}"`, { cwd: projectRoot, stdio: 'pipe' });
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.log(`\n${c.red}✗ Failed to create worktree: ${msg}${c.reset}\n`);
+  const setup = tryCreateExecWorktree({
+    worktreeDir,
+    projectRoot,
+    projectId,
+    taskId,
+    runId,
+  });
+  if (!setup.ok) {
     return;
   }
 
