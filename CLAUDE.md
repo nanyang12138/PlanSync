@@ -410,7 +410,7 @@ Then wait for the user to choose. Do not pick `no_impact` or `cancel` on the use
 
 ## Comment Templates
 
-Three contexts produce comments — two structured templates (`<review>`, `<pre-work>`) and one free-form (`<decision>`). Pick the matching format.
+Three contexts produce comments — two structured templates and one free-form. Pick the matching format.
 
 ### `<review>` — when reviewing a proposed plan (P1 work)
 

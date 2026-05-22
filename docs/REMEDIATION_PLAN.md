@@ -1766,7 +1766,7 @@
 
 #### R-098 [MEDIUM] CLAUDE.md "Three contexts produce comments" 文案修正
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
