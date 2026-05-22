@@ -840,7 +840,7 @@
 
 #### R-041 [HIGH] 所有 `/plans/[planId]/...` 路由验证 plan ∈ project
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B5
 - **depends_on**: —
 - **effort**: medium
@@ -866,7 +866,7 @@
 
 #### R-042 [HIGH] task 状态 / drift 状态 query 参数加 zod 校验
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B5
 - **depends_on**: —
 - **effort**: small
@@ -1399,7 +1399,7 @@
 
 #### R-075 [HIGH] tasks 表加复合索引
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
@@ -1418,7 +1418,7 @@
 
 #### R-076 [HIGH] drift_alerts 加复合索引
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
@@ -1430,7 +1430,7 @@
 
 #### R-077 [HIGH] api_keys.keyPrefix 加索引
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
@@ -1442,7 +1442,7 @@
 
 #### R-078 [MEDIUM] webhook_deliveries 加分页索引
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
