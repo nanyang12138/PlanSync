@@ -9,7 +9,12 @@
 //   --mcp-config JSON               passes MCP server config directly (no settings.json)
 // This avoids settings.json manipulation and prevents genie from blocking on permission
 // prompts when stdin is already consumed by the prompt text.
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+// MCP SDK 1.29+ exposes `./client` (no `index.js` suffix) as the canonical
+// subpath in package `exports`. The wildcard `./*` mapping further down the
+// exports object would also accept the historic `./client/index.js` path,
+// but TypeScript's `bundler` moduleResolution does not follow that wildcard
+// for type lookup, so we use the canonical subpath here.
+import { Client } from '@modelcontextprotocol/sdk/client';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { spawnSync } from 'child_process';
 import fs from 'fs';
