@@ -1561,7 +1561,7 @@
 
 #### R-086 [LOW] PlanComment.parent 关系 onDelete 显式
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
