@@ -105,18 +105,29 @@ export async function POST(req: NextRequest) {
       key: rawKey,
     });
 
+    // #200: when the deployment serves the API and the Web UI on different
+    // origins (e.g. plansync-api.example.com + plansync.example.com), the
+    // browser will only forward the cookie on cross-site requests if it has
+    // SameSite=None; Secure. Default to lax for local / same-origin dev.
+    // The CORS allow-origin list is enforced by middleware.ts in BOTH cases.
+    const crossSite = process.env.PLANSYNC_COOKIE_CROSS_SITE === 'true';
+    const sameSite = crossSite ? ('none' as const) : ('lax' as const);
+    const secure = crossSite || process.env.NODE_ENV === 'production';
+
     // httpOnly: JS cannot read or tamper with this cookie
     response.cookies.set('plansync-apikey', rawKey, {
       path: '/',
       maxAge: 31536000,
-      sameSite: 'lax',
+      sameSite,
+      secure,
       httpOnly: true,
     });
     // Non-httpOnly: server components (Next.js RSC) read this for display/filtering
     response.cookies.set('plansync-user', name, {
       path: '/',
       maxAge: 31536000,
-      sameSite: 'lax',
+      sameSite,
+      secure,
     });
 
     return response;
