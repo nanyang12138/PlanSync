@@ -1828,7 +1828,7 @@
 
 #### R-103 [LOW] dev.sh 不再每次清 .next
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
