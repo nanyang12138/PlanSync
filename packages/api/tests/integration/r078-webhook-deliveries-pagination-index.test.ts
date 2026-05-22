@@ -15,9 +15,10 @@ describe('R-078: webhook_deliveries pagination index', () => {
     );
     const match = rows.find(
       (r) =>
-        // Composite index whose first column is webhookId and whose second
-        // column is createdAt DESC. Column names are quoted with mixed case
-        // by Prisma migrations ("webhookId", "createdAt").
+        // Composite index whose first column is webhook_id and whose second
+        // column is created_at DESC. Historically these were camelCase
+        // ("webhookId", "createdAt"); after R-085 they are snake_case
+        // ("webhook_id", "created_at"). Accept either spelling.
         /\(\s*"?webhook_?id"?\s*,\s*"?created_?at"?\s+DESC\s*\)/i.test(
           r.indexdef,
         ) && !/\bWHERE\b/i.test(r.indexdef),
@@ -63,7 +64,7 @@ describe('R-078: webhook_deliveries pagination index', () => {
       const planText = await prisma.$transaction(async (tx) => {
         await tx.$executeRawUnsafe(`SET LOCAL enable_seqscan = off`);
         const plan = await tx.$queryRawUnsafe<Array<{ 'QUERY PLAN': string }>>(
-          `EXPLAIN SELECT id FROM webhook_deliveries WHERE "webhookId" = $1 ORDER BY "createdAt" DESC LIMIT 20`,
+          `EXPLAIN SELECT id FROM webhook_deliveries WHERE "webhook_id" = $1 ORDER BY "created_at" DESC LIMIT 20`,
           webhook.id,
         );
         return plan.map((r) => r['QUERY PLAN']).join('\n');

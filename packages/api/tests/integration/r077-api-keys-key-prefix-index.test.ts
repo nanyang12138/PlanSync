@@ -15,7 +15,10 @@ describe('R-077: api_keys key_prefix index', () => {
     );
     const match = rows.find(
       (r) =>
-        // Index on a single column key_prefix (the column may be quoted with mixed case "keyPrefix").
+        // Index on a single column key_prefix. Historically the column was
+        // stored as camelCase ("keyPrefix"); after R-085 it is snake_case
+        // ("key_prefix"). Accept either spelling so the test stays valid
+        // across the rename migration.
         /\(\s*"?key_?prefix"?\s*\)/i.test(r.indexdef) &&
         !/\bWHERE\b/i.test(r.indexdef),
     );
@@ -52,7 +55,7 @@ describe('R-077: api_keys key_prefix index', () => {
       const planText = await prisma.$transaction(async (tx) => {
         await tx.$executeRawUnsafe(`SET LOCAL enable_seqscan = off`);
         const plan = await tx.$queryRawUnsafe<Array<{ 'QUERY PLAN': string }>>(
-          `EXPLAIN SELECT id FROM api_keys WHERE "keyPrefix" = $1`,
+          `EXPLAIN SELECT id FROM api_keys WHERE "key_prefix" = $1`,
           'ps_key_0000001',
         );
         return plan.map((r) => r['QUERY PLAN']).join('\n');

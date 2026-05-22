@@ -278,15 +278,17 @@ model Activity {
 
 model ApiKey {
   id          String        @id @default(cuid())
-  projectId   String? // nullable: null for global web-session keys
+  // R-085: every column on this table now has an explicit `@map` so the DB
+  // uses snake_case identifiers consistently with the rest of the schema.
+  projectId   String?       @map("project_id") // nullable: null for global web-session keys
   project     Project?      @relation(fields: [projectId], references: [id], onDelete: Cascade)
   name        String
-  keyHash     String
-  keyPrefix   String
+  keyHash     String        @map("key_hash")
+  keyPrefix   String        @map("key_prefix")
   permissions String[]
-  createdBy   String
-  lastUsedAt  DateTime?
-  createdAt   DateTime      @default(now())
+  createdBy   String        @map("created_by")
+  lastUsedAt  DateTime?     @map("last_used_at")
+  createdAt   DateTime      @default(now()) @map("created_at")
   execRunId   String?       @map("exec_run_id")
   // R-080: relate exec-scoped keys to their run so the row is preserved (with
   // execRunId nulled) when the run record is removed instead of leaving a
@@ -301,14 +303,15 @@ model ApiKey {
 
 model Webhook {
   id        String   @id @default(cuid())
-  projectId String
+  // R-085: snake_case `@map` for every column.
+  projectId String   @map("project_id")
   project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   url       String
   events    String[]
   secret    String?
   active    Boolean  @default(true)
-  createdBy String
-  createdAt DateTime @default(now())
+  createdBy String   @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
 
   deliveries WebhookDelivery[]
 
@@ -317,15 +320,16 @@ model Webhook {
 
 model WebhookDelivery {
   id           String   @id @default(cuid())
-  webhookId    String
+  // R-085: snake_case `@map` for every column.
+  webhookId    String   @map("webhook_id")
   webhook      Webhook  @relation(fields: [webhookId], references: [id], onDelete: Cascade)
   event        String
-  requestBody  Json
-  responseCode Int
+  requestBody  Json     @map("request_body")
+  responseCode Int      @map("response_code")
   success      Boolean
-  errorMessage String?
+  errorMessage String?  @map("error_message")
   attempt      Int
-  createdAt    DateTime @default(now())
+  createdAt    DateTime @default(now()) @map("created_at")
 
   // R-078: paginate per-webhook delivery history newest-first.
   // Backs queries like `findMany({ where: { webhookId }, orderBy: { createdAt: 'desc' } })`.
@@ -335,17 +339,18 @@ model WebhookDelivery {
 
 model PlanDiff {
   id          String   @id @default(cuid())
-  projectId   String
+  // R-085: snake_case `@map` for every column.
+  projectId   String   @map("project_id")
   project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  fromPlanId  String
-  toPlanId    String
+  fromPlanId  String   @map("from_plan_id")
+  toPlanId    String   @map("to_plan_id")
   // R-082: explicit FKs to plans so dangling diffs can never reference a
   // missing plan row. Cascade matches the Project relation above and means
   // a diff disappears if either of its endpoints is removed.
   fromPlan    Plan     @relation("PlanDiffFromPlan", fields: [fromPlanId], references: [id], onDelete: Cascade)
   toPlan      Plan     @relation("PlanDiffToPlan", fields: [toPlanId], references: [id], onDelete: Cascade)
   changes     Json
-  generatedAt DateTime @default(now())
+  generatedAt DateTime @default(now()) @map("generated_at")
 
   // R-081: drift alerts reference plan_diffs(id) via DriftAlert.planDiffId.
   driftAlerts DriftAlert[]

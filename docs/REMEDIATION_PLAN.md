@@ -1549,7 +1549,7 @@
 
 #### R-085 [LOW] 统一所有 camelCase 列名为 snake_case `@map`
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
 - **depends_on**: —
 - **effort**: medium
