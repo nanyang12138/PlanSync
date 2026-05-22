@@ -214,6 +214,10 @@ model DriftAlert {
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   task    Task    @relation(fields: [taskId], references: [id], onDelete: Cascade)
 
+  // R-076: composite indexes to back hot drift queries
+  // (per-project drift listing filtered by status, per-task drift lookups).
+  @@index([projectId, status])
+  @@index([taskId, status])
   @@map("drift_alerts")
 }
 

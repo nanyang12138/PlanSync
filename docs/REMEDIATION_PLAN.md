@@ -1418,7 +1418,7 @@
 
 #### R-076 [HIGH] drift_alerts 加复合索引
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
