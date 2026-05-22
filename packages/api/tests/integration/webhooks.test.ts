@@ -207,6 +207,35 @@ describe('J: Webhook Delivery', () => {
     }
   });
 
+  it('R-043: register webhook with ftp:// URL → 400 VALIDATION_ERROR', async () => {
+    const res = await webhooksPost(
+      makeReq(`/api/projects/${projectId}/webhooks`, {
+        method: 'POST',
+        userName: owner,
+        body: { url: 'ftp://example.com/hook', events: ['plan_activated'] },
+      }),
+      { params: { projectId } },
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+    expect(body.error.message).toMatch(/http or https/);
+  });
+
+  it('R-043: register webhook with unparseable URL → 400 VALIDATION_ERROR', async () => {
+    const res = await webhooksPost(
+      makeReq(`/api/projects/${projectId}/webhooks`, {
+        method: 'POST',
+        userName: owner,
+        body: { url: 'not-a-real-url', events: ['plan_activated'] },
+      }),
+      { params: { projectId } },
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+  });
+
   it('J11: register webhook with empty events → 400 VALIDATION_ERROR', async () => {
     const res = await webhooksPost(
       makeReq(`/api/projects/${projectId}/webhooks`, {

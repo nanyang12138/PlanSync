@@ -36,6 +36,12 @@ const baseEnvSchema = z.object({
   EMAIL_FROM: z.string().min(1).optional(),
   EMAIL_DOMAIN: z.string().min(1).optional(),
   EMAIL_SENDMAIL: z.string().min(1).optional(),
+
+  // R-043: SSRF allowlist for webhook target URLs. Comma-separated hostname
+  // list. Hosts on the allowlist bypass the production-only private-IP and
+  // https requirement enforced by `validateWebhookUrl`. Leave empty in
+  // production unless you need to point a webhook at an internal host.
+  PLANSYNC_WEBHOOK_ALLOWLIST: z.string().optional(),
 });
 
 export const envSchema = baseEnvSchema.superRefine((data, ctx) => {
