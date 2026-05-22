@@ -1442,7 +1442,7 @@
 
 #### R-078 [MEDIUM] webhook_deliveries 加分页索引
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
