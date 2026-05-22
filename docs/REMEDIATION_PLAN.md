@@ -1230,7 +1230,7 @@
 
 #### R-064 [HIGH] `!shell` 命令在 Ink 之前 pause/unmount
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
