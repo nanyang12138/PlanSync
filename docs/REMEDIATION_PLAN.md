@@ -1515,7 +1515,7 @@
 
 #### R-084 [MEDIUM] schema.prisma 标注 partial unique index
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
