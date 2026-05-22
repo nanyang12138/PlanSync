@@ -64,7 +64,7 @@ Drift         ⚠ 2 alerts (rebind required)
 
 <!--
 📸 Screenshot slots — drop PNGs into docs/img/ and the references below light up.
-   Suggested captures (run `bash scripts/demo-terminal.sh` then snap):
+   Suggested captures (start a project with `./bin/ps-admin start`, then snap):
      - docs/img/dashboard.png       ← project list with drift badges
      - docs/img/drift-alert.png     ← task page with drift card + AI semantic diff
      - docs/img/plan-diff.png       ← side-by-side plan version diff
@@ -303,10 +303,9 @@ PlanSync/
 │   ├── ps-connect       # NFS / cluster: SSH + port-forward + connect
 │   └── start-mcp        # MCP entry-point (used by .claude/settings.json)
 ├── scripts/
-│   ├── demo-terminal.sh # Multi-user end-to-end demo
-│   ├── demo-webui.js    # Browser-driven Web UI walkthrough
 │   ├── setup.sh · dev.sh · build.sh
-│   └── db-reset.sh · db-psql.sh
+│   ├── test.sh · lint.sh · format.sh
+│   └── db-reset.sh · db-psql.sh · pg-start.sh · pg-stop.sh
 ├── CLAUDE.md            # Terminal Mode behaviour spec
 └── AGENTS.md            # Agent execution rules (drift handling, exec flow)
 ```

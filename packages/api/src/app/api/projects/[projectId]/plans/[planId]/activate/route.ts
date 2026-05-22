@@ -180,14 +180,14 @@ export async function POST(req: NextRequest, { params }: Params) {
 
     if (driftAlerts.length > 0) {
       eventBus.publish(params.projectId, 'drift_detected', {
-        alerts: driftAlerts.map((a: any) => ({
+        alerts: driftAlerts.map((a) => ({
           alertId: a.id,
           taskId: a.taskId,
           severity: a.severity,
         })),
       });
       dispatchWebhooks(params.projectId, 'drift_detected', {
-        alerts: driftAlerts.map((a: any) => ({
+        alerts: driftAlerts.map((a) => ({
           alertId: a.id,
           taskId: a.taskId,
           severity: a.severity,

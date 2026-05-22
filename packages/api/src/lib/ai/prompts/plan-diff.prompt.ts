@@ -17,7 +17,19 @@ Respond in JSON format:
   "breakingChanges": true | false
 }`;
 
-export function buildPlanDiffUser(planA: any, planB: any): string {
+export interface PlanDiffInput {
+  version: number;
+  status: string;
+  title: string;
+  goal?: string | null;
+  scope?: string | null;
+  constraints?: unknown;
+  standards?: unknown;
+  deliverables?: unknown;
+  openQuestions?: unknown;
+}
+
+export function buildPlanDiffUser(planA: PlanDiffInput, planB: PlanDiffInput): string {
   return `Compare these two plan versions:
 
 ## Plan v${planA.version} (${planA.status})
