@@ -297,6 +297,19 @@ export function rawOn(): void {
 
 // ─── /code command ────────────────────────────────────────────────────────────
 
+// Printed when a `/code` child process (Claude / Codex / Genie) exits and we
+// return control to the PlanSync terminal. Earlier versions wrote the ANSI
+// escape `\x1b[2J\x1b[H` to clear the screen, which wiped out scrollback
+// history that the user may want to read. Per R-073 we now print a visible
+// separator instead so the user retains full context.
+export function printCodeExitSeparator(
+  writer: { write: (s: string) => void } = process.stdout,
+): void {
+  const rule = '─'.repeat(60);
+  writer.write(`\n${c.blue}${rule}${c.reset}\n`);
+  writer.write(`${c.blue}← Returned to PlanSync Terminal${c.reset}\n\n`);
+}
+
 export function launchCode(): ReturnType<typeof spawn> {
   const projectRoot = cfg.workDir;
   const original = patchProjectInSettings(cfg.project);
@@ -327,15 +340,70 @@ export function launchCode(): ReturnType<typeof spawn> {
   };
   child.on('close', () => {
     restore();
-    // Clear any leftover output from the alternate screen restore, then print separator
-    process.stdout.write('\x1b[2J\x1b[H'); // clear screen, cursor to top
-    console.log(`${c.blue}← Returned to PlanSync Terminal${c.reset}\n`);
+    printCodeExitSeparator(process.stdout);
   });
   child.on('error', (err) => {
     restore();
     console.log(`\n${c.red}✗ ${err.message}${c.reset}\n`);
   });
   return child;
+}
+
+// ─── /exec assignee resolution (R-060) ────────────────────────────────────────
+//
+// Decides whether `/exec` may be invoked on a given task and, if so, which
+// executor identity (executorType + executorName) to register the run as.
+//
+// Allowed cases:
+//   - task is assigned to an agent member  → executorType='agent', executorName=assignee
+//   - task is assigned to a human AND that human is the current CLI user
+//                                          → executorType='human', executorName=currentUser
+//
+// Anything else (unassigned, human-assigned to someone else, unknown type) is
+// rejected with a user-visible reason. The helper is pure (no I/O) so it can
+// be unit-tested in isolation.
+
+export type ExecAssigneeInput = {
+  assignee?: string | null;
+  assigneeType?: string | null;
+};
+
+export type ExecAssigneeDecision =
+  | { ok: true; executorType: 'agent' | 'human'; executorName: string }
+  | { ok: false; reason: string };
+
+export function resolveExecAssignee(
+  task: ExecAssigneeInput,
+  currentUser: string,
+): ExecAssigneeDecision {
+  const assignee = task.assignee ?? null;
+  const assigneeType = task.assigneeType ?? null;
+
+  if (!assignee) {
+    return {
+      ok: false,
+      reason: `/exec requires the task to have an assignee. Current assignee: none (${assigneeType ?? 'unassigned'}).`,
+    };
+  }
+
+  if (assigneeType === 'agent') {
+    return { ok: true, executorType: 'agent', executorName: assignee };
+  }
+
+  if (assigneeType === 'human') {
+    if (assignee === currentUser) {
+      return { ok: true, executorType: 'human', executorName: assignee };
+    }
+    return {
+      ok: false,
+      reason: `/exec on a human-assigned task requires you to be the assignee. Task is assigned to "${assignee}" but you are signed in as "${currentUser}".`,
+    };
+  }
+
+  return {
+    ok: false,
+    reason: `/exec requires the task to be assigned to an agent member or a human matching the current user. Current assignee: ${assignee} (${assigneeType ?? 'unassigned'}).`,
+  };
 }
 
 // ─── /exec command ────────────────────────────────────────────────────────────
@@ -368,25 +436,27 @@ export async function launchExec(
     return;
   }
 
-  // /exec must be invoked on an agent-assigned task; the executor identity is the assignee.
+  // R-060: /exec must be invoked on an agent-assigned task OR a human-assigned task where
+  // the assignee matches the current user. In the human case, the executor identity is
+  // the current user; in the agent case, the executor identity is the assigned agent.
   const taskInfo = pack.task ?? {};
-  const assignee = taskInfo.assignee;
-  const assigneeType = taskInfo.assigneeType;
-  if (!assignee || assigneeType !== 'agent') {
-    console.log(
-      `\n${c.red}✗ /exec requires the task to be assigned to an agent member. Current assignee: ${assignee ?? 'none'} (${assigneeType ?? 'unassigned'}).${c.reset}\n`,
-    );
+  const decision = resolveExecAssignee(
+    { assignee: taskInfo.assignee, assigneeType: taskInfo.assigneeType },
+    cfg.user,
+  );
+  if (!decision.ok) {
+    console.log(`\n${c.red}✗ ${decision.reason}${c.reset}\n`);
     return;
   }
 
-  // Pre-register the execution run as the assigned agent. The spawned engine
+  // Pre-register the execution run as the resolved executor. The spawned engine
   // receives runId via PLANSYNC_EXEC_RUN_ID env (see buildMcpConfigArg) and
   // calls plansync_exec_context to retrieve it — no execution_start from the LLM.
   let runId: string;
   try {
     const startResp = await apiPost<{ data?: { id?: string } }>(
       `/api/projects/${cfg.project}/tasks/${taskId}/runs`,
-      { executorType: 'agent', executorName: assignee },
+      { executorType: decision.executorType, executorName: decision.executorName },
     );
     runId = startResp?.data?.id ?? '';
     if (!runId) throw new Error('execution_start returned no runId');
@@ -450,7 +520,7 @@ export async function launchExec(
       : ['-p', execPrompt, '--session-id', sessionId, '--mcp-config', mcpConfigArg];
 
   console.log(
-    `\n${c.blue}→ Entering PlanSync Coding Mode (task: ${taskId}, run: ${runId}, executor: ${assignee})${c.reset}\n`,
+    `\n${c.blue}→ Entering PlanSync Coding Mode (task: ${taskId}, run: ${runId}, executor: ${decision.executorName})${c.reset}\n`,
   );
   rawOff();
   const child = spawn(cfg.genieOrClaude, spawnArgs, {

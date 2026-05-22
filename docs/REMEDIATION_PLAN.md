@@ -1166,7 +1166,7 @@
 
 #### R-060 [HIGH] `/exec` 允许 human assignee
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1365,7 +1365,7 @@
 
 #### R-073 [LOW] `/code` 退出不清屏
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1380,7 +1380,7 @@
 
 #### R-074 [MEDIUM] `/project <id>` 验证项目存在
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
