@@ -866,7 +866,7 @@
 
 #### R-042 [HIGH] task 状态 / drift 状态 query 参数加 zod 校验
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B5
 - **depends_on**: —
 - **effort**: small
