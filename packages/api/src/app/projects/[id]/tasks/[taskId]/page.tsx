@@ -25,15 +25,17 @@ export default async function TaskDetailPage({
   });
   if (!project) notFound();
 
-  const task = await prisma.task.findUnique({
-    where: { id: params.taskId },
+  // R-135: scope by projectId so the task page cannot render a task belonging
+  // to a different project even when the visitor knows the taskId.
+  const task = await prisma.task.findFirst({
+    where: { id: params.taskId, projectId: params.id },
     include: {
       executionRuns: { orderBy: { startedAt: 'desc' }, take: 10 },
       driftAlerts: { where: { status: 'open' }, orderBy: { createdAt: 'desc' } },
     },
   });
 
-  if (!task || task.projectId !== params.id) notFound();
+  if (!task) notFound();
 
   const activePlan = await prisma.plan.findFirst({
     where: { projectId: params.id, status: 'active' },

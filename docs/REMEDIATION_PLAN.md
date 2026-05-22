@@ -2219,7 +2219,7 @@
 
 #### R-135 [CRITICAL] task-pack 加 task↔project 归属校验，关闭跨项目读取
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B5
 - **depends_on**: —
 - **effort**: small
