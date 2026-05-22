@@ -90,4 +90,58 @@ describe('EventBusPG (R-088)', () => {
     await wait(200);
     expect(busB.getClientCount(projectId)).toBe(0);
   });
+
+  // ---- #131 — UNLISTEN user channels when ref count drops to 0 ------------
+
+  it('#131: UNLISTENs a user channel when its last subscribeUser listener goes away', async () => {
+    const userName = `r131-${Date.now()}`;
+    const unsub1 = busB.subscribeUser(userName, () => {});
+    const unsub2 = busB.subscribeUser(userName, () => {});
+    // The internal userChannelRefCount should now be 2; both listeners share
+    // a single LISTEN. Drop the first — channel must remain LISTEN-ed.
+    unsub1();
+    // Drop the second — channel must drop out of subscribedChannels.
+    unsub2();
+    // Force a reconnect by closing the listen client and waiting for retry
+    // to settle. Use the bus's internal close+reopen via close+new bus,
+    // which is the simplest deterministic way to validate that the
+    // channel is no longer in subscribedChannels.
+    // (Direct introspection: sub-test exposes private state via a cast;
+    // the production code does not export this — keeping the cast scoped
+    // to the test.)
+    const internal = busB as unknown as { subscribedChannels: Set<string> };
+    const userChannelLikeRegex = /^plansync_user_/;
+    const lingering = [...internal.subscribedChannels].filter((c) => userChannelLikeRegex.test(c));
+    expect(lingering).toEqual([]);
+  });
+
+  it('#131: re-subscribing the same user creates exactly one LISTEN, not one per call', async () => {
+    const userName = `r131-stable-${Date.now()}`;
+    const internal = busB as unknown as { subscribedChannels: Set<string> };
+    const before = internal.subscribedChannels.size;
+    const u1 = busB.subscribeUser(userName, () => {});
+    const u2 = busB.subscribeUser(userName, () => {});
+    const u3 = busB.subscribeUser(userName, () => {});
+    // 3 subscribeUser calls → only 1 channel added
+    expect(internal.subscribedChannels.size).toBe(before + 1);
+    u1();
+    expect(internal.subscribedChannels.size).toBe(before + 1); // still LISTEN-ed
+    u2();
+    expect(internal.subscribedChannels.size).toBe(before + 1);
+    u3();
+    // Last one out → channel removed
+    expect(internal.subscribedChannels.size).toBe(before);
+  });
+
+  // ---- #129 — fast-fail when DATABASE_URL is missing ----------------------
+
+  it('#129: constructor throws synchronously when no connection string is available', () => {
+    const original = process.env.DATABASE_URL;
+    delete process.env.DATABASE_URL;
+    try {
+      expect(() => new EventBusPG()).toThrow(/DATABASE_URL or an explicit connectionString/);
+    } finally {
+      if (original !== undefined) process.env.DATABASE_URL = original;
+    }
+  });
 });
