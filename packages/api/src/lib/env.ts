@@ -42,6 +42,12 @@ const baseEnvSchema = z.object({
   // https requirement enforced by `validateWebhookUrl`. Leave empty in
   // production unless you need to point a webhook at an internal host.
   PLANSYNC_WEBHOOK_ALLOWLIST: z.string().optional(),
+
+  // R-088: Event-bus backend selection.
+  //   memory   — in-process fan-out only (single API instance).
+  //   postgres — Postgres LISTEN/NOTIFY (required for multi-instance prod).
+  // Default: postgres in production, memory elsewhere.
+  PLANSYNC_EVENT_BUS: z.enum(['memory', 'postgres']).optional(),
 });
 
 export const envSchema = baseEnvSchema.superRefine((data, ctx) => {

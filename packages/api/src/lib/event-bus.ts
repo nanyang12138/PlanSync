@@ -1,140 +1,57 @@
 import { logger } from './logger';
+import { MemoryEventBus } from './event-bus-memory';
+import type { EventBusInterface, PlanSyncEvent, PlanSyncEventType, Listener } from './event-bus-types';
 
-export type PlanSyncEventType =
-  | 'plan_created'
-  | 'plan_proposed'
-  | 'plan_activated'
-  | 'plan_draft_updated'
-  | 'drift_detected'
-  | 'drift_resolved'
-  | 'task_created'
-  | 'task_assigned'
-  | 'task_unassigned'
-  | 'task_started'
-  | 'task_completed'
-  | 'execution_stale'
-  // Drift v2: emitted when a run transitions to `superseded` outside the
-  // normal complete/fail/cancel paths — today only from the pause-ack
-  // timeout scanner; future ack_pause endpoint will reuse this type.
-  | 'execution_superseded'
-  | 'suggestion_created'
-  | 'suggestion_resolved'
-  | 'comment_added'
-  | 'member_added'
-  | 'member_removed'
-  | 'review_requested'
-  | 'review_approved'
-  | 'review_rejected'
-  | 'member_updated'
-  | 'comment_updated'
-  | 'comment_deleted';
+export type { PlanSyncEvent, PlanSyncEventType, EventBusInterface, Listener };
 
-export interface PlanSyncEvent {
-  type: PlanSyncEventType;
-  projectId: string;
-  data: Record<string, unknown>;
-  timestamp: string;
-}
-
-type Listener = (event: PlanSyncEvent) => void;
-
-class EventBus {
-  private listeners = new Map<string, Set<Listener>>();
-  // Per-user channels carry events the user must hear about even when they
-  // are not (yet) subscribed to the originating project — primarily
-  // membership changes that grant or revoke access to a project.
-  private userListeners = new Map<string, Set<Listener>>();
-
-  subscribe(projectId: string, listener: Listener): () => void {
-    if (!this.listeners.has(projectId)) {
-      this.listeners.set(projectId, new Set());
-    }
-    this.listeners.get(projectId)!.add(listener);
-    logger.debug(
-      { projectId, count: this.listeners.get(projectId)!.size },
-      'SSE client subscribed',
+/**
+ * Resolves which event-bus implementation to instantiate.
+ *
+ * - `PLANSYNC_EVENT_BUS=postgres` → multi-process safe LISTEN/NOTIFY backend.
+ * - `PLANSYNC_EVENT_BUS=memory` → in-process EventEmitter-style fanout.
+ * - When unset: `postgres` in production, `memory` everywhere else (so unit
+ *   tests, dev servers, and `vitest run` do not need a live pg connection).
+ *
+ * R-088: an in-memory bus cannot deliver SSE events across instances. In
+ * production deployments with more than one API process the memory backend
+ * silently drops cross-instance events, which is exactly the symptom this
+ * remediation closes.
+ */
+function resolveBackend(): 'memory' | 'postgres' {
+  const explicit = process.env.PLANSYNC_EVENT_BUS;
+  if (explicit === 'memory' || explicit === 'postgres') return explicit;
+  if (explicit) {
+    logger.warn(
+      { value: explicit },
+      'Unknown PLANSYNC_EVENT_BUS value; falling back to default',
     );
-
-    return () => {
-      const set = this.listeners.get(projectId);
-      if (set) {
-        set.delete(listener);
-        if (set.size === 0) this.listeners.delete(projectId);
-      }
-      logger.debug({ projectId, count: set?.size ?? 0 }, 'SSE client unsubscribed');
-    };
   }
-
-  subscribeUser(userName: string, listener: Listener): () => void {
-    if (!this.userListeners.has(userName)) {
-      this.userListeners.set(userName, new Set());
-    }
-    this.userListeners.get(userName)!.add(listener);
-
-    return () => {
-      const set = this.userListeners.get(userName);
-      if (set) {
-        set.delete(listener);
-        if (set.size === 0) this.userListeners.delete(userName);
-      }
-    };
-  }
-
-  publish(projectId: string, type: PlanSyncEventType, data: Record<string, unknown>): void {
-    const event: PlanSyncEvent = {
-      type,
-      projectId,
-      data,
-      timestamp: new Date().toISOString(),
-    };
-
-    const set = this.listeners.get(projectId);
-    if (!set || set.size === 0) return;
-
-    logger.debug({ projectId, type, clientCount: set.size }, 'Publishing event');
-    for (const listener of set) {
-      try {
-        listener(event);
-      } catch (err) {
-        logger.error({ err, projectId, type }, 'Event listener error');
-      }
-    }
-  }
-
-  publishToUser(
-    userName: string,
-    type: PlanSyncEventType,
-    projectId: string,
-    data: Record<string, unknown>,
-  ): void {
-    const set = this.userListeners.get(userName);
-    if (!set || set.size === 0) return;
-
-    const event: PlanSyncEvent = {
-      type,
-      projectId,
-      data,
-      timestamp: new Date().toISOString(),
-    };
-
-    for (const listener of set) {
-      try {
-        listener(event);
-      } catch (err) {
-        logger.error({ err, userName, type }, 'User event listener error');
-      }
-    }
-  }
-
-  getClientCount(projectId?: string): number {
-    if (projectId) return this.listeners.get(projectId)?.size ?? 0;
-    let total = 0;
-    for (const set of this.listeners.values()) total += set.size;
-    for (const set of this.userListeners.values()) total += set.size;
-    return total;
-  }
+  return process.env.NODE_ENV === 'production' ? 'postgres' : 'memory';
 }
 
-const globalForBus = globalThis as unknown as { eventBus: EventBus | undefined };
-export const eventBus = globalForBus.eventBus ?? new EventBus();
+function createEventBus(): EventBusInterface {
+  const backend = resolveBackend();
+  if (backend === 'postgres') {
+    try {
+      // Lazy require keeps the `pg` dependency out of cold paths (e.g. CLI
+      // bundles that import shared types but never serve SSE).
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { EventBusPG } = require('./event-bus-pg') as typeof import('./event-bus-pg');
+      logger.info('EventBus: using Postgres LISTEN/NOTIFY backend');
+      return new EventBusPG();
+    } catch (err) {
+      logger.error(
+        { err },
+        'Failed to initialise EventBusPG; falling back to in-memory bus. ' +
+          'Cross-instance SSE events will be dropped until the issue is resolved.',
+      );
+      return new MemoryEventBus();
+    }
+  }
+  logger.debug('EventBus: using in-memory backend');
+  return new MemoryEventBus();
+}
+
+const globalForBus = globalThis as unknown as { eventBus: EventBusInterface | undefined };
+export const eventBus: EventBusInterface = globalForBus.eventBus ?? createEventBus();
 if (process.env.NODE_ENV !== 'production') globalForBus.eventBus = eventBus;
