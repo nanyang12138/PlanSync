@@ -284,6 +284,9 @@ model WebhookDelivery {
   attempt      Int
   createdAt    DateTime @default(now())
 
+  // R-078: paginate per-webhook delivery history newest-first.
+  // Backs queries like `findMany({ where: { webhookId }, orderBy: { createdAt: 'desc' } })`.
+  @@index([webhookId, createdAt(sort: Desc)])
   @@map("webhook_deliveries")
 }
 
