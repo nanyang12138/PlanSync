@@ -13,6 +13,7 @@ import { cfg, selfDir } from './config.js';
 import { runShellCommand } from './shell-cmd.js';
 import { c, banner, showSplash } from './ui.js';
 import { McpClient } from './mcp-client.js';
+import { ensureMcpBuild } from './ensure-mcp-build.js';
 import { buildSystemPrompt, runAgentLoop, pruneHistory, Message } from './ai-loop.js';
 import { fetchStatus, handleSlashCommand, buildPrompt, selectProject } from './commands.js';
 import {
@@ -99,6 +100,21 @@ async function main() {
   process.stdout.write(`${c.dim}Starting MCP server...${c.reset}\r`);
   const mcp = new McpClient();
   try {
+    // R-101: bin/start-mcp self-heals when packages/mcp-server/dist/index.js
+    // is missing (e.g., right after a clone or a `clean`). The CLI starts
+    // MCP directly and used to die with MODULE_NOT_FOUND in the same case;
+    // share the bundle-on-demand logic so both entry points behave the same.
+    try {
+      const built = ensureMcpBuild(cfg.mcpServer);
+      if (built.built) {
+        process.stdout.write(`${c.dim}Built MCP server bundle on first run.${c.reset}\n`);
+      }
+    } catch (buildErr: unknown) {
+      process.stdout.write(' '.repeat(40) + '\r');
+      const msg = buildErr instanceof Error ? buildErr.message : String(buildErr);
+      console.log(`${c.yellow}⚠ MCP server bundle missing and rebuild failed: ${msg}${c.reset}`);
+      throw buildErr;
+    }
     await mcp.start(cfg.mcpServer);
     process.stdout.write(' '.repeat(40) + '\r');
   } catch (err: unknown) {
