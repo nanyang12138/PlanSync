@@ -1816,7 +1816,7 @@
 
 #### R-102 [MEDIUM] 默认 Genie 路径可配置 / 平台化
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
@@ -1916,7 +1916,7 @@
 
 #### R-111 [MEDIUM] logger 中间件加 correlation id
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B11
 - **depends_on**: —
 - **effort**: medium

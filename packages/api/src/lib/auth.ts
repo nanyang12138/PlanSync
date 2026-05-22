@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { NextRequest } from 'next/server';
 import { AppError, ErrorCode } from '@plansync/shared';
 import { prisma } from './prisma';
+import { enterRequestContextFromHeaders } from './request-context';
 
 export interface AuthContext {
   userName: string;
@@ -74,6 +75,11 @@ async function verifyApiKey(
 }
 
 export async function authenticate(req: NextRequest): Promise<AuthContext> {
+  // R-111: every authenticated route enters the request context once, so all
+  // downstream logger calls (drift engine, webhooks, prisma helpers) inherit
+  // the same correlation id without per-route wiring.
+  enterRequestContextFromHeaders(req.headers);
+
   const authDisabled = process.env.AUTH_DISABLED === 'true';
   const qpToken = req.nextUrl.searchParams.get('token');
   const qpUser = req.nextUrl.searchParams.get('user');
