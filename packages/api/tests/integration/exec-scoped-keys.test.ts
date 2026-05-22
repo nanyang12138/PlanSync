@@ -293,6 +293,71 @@ describe('Exec-scoped API key', () => {
     }
   });
 
+  // R-080: ApiKey.execRunId now has an FK to execution_runs with
+  // ON DELETE SET NULL, so removing the run preserves the key row but
+  // clears the back-reference. This protects audit history (we keep the
+  // ApiKey for traceability) while preventing dangling pointers.
+  it('R-080: deleting the execution run nulls execRunId on associated keys', async () => {
+    await testPrisma.apiKey.deleteMany({ where: { execRunId: runId } });
+    const issueRes = await issuePost(
+      makeReq('/api/exec-sessions/issue-token', {
+        method: 'POST',
+        userName: owner,
+        body: { runId, taskId, projectId },
+      }),
+    );
+    expect(issueRes.status).toBe(201);
+    const key = await testPrisma.apiKey.findFirst({ where: { execRunId: runId } });
+    expect(key).not.toBeNull();
+    const keyId = key!.id;
+
+    const isolatedRun = await testPrisma.executionRun.create({
+      data: {
+        taskId,
+        executorType: 'human',
+        executorName: owner,
+        boundPlanVersion: activePlanVersion,
+        status: 'completed',
+        taskPackSnapshot: {},
+        filesChanged: [],
+        blockers: [],
+        driftSignals: [],
+        endedAt: new Date(),
+      },
+    });
+    await testPrisma.apiKey.update({
+      where: { id: keyId },
+      data: { execRunId: isolatedRun.id },
+    });
+
+    await testPrisma.executionRun.delete({ where: { id: isolatedRun.id } });
+
+    const refreshed = await testPrisma.apiKey.findUnique({ where: { id: keyId } });
+    expect(refreshed).not.toBeNull();
+    expect(refreshed!.execRunId).toBeNull();
+
+    await testPrisma.apiKey.delete({ where: { id: keyId } });
+  });
+
+  // R-080: with the FK in place, inserting an api_keys row referencing
+  // a missing execution run must fail. Previously this silently produced
+  // a dangling reference.
+  it('R-080: inserting api_key with unknown execRunId is rejected by the FK', async () => {
+    await expect(
+      testPrisma.apiKey.create({
+        data: {
+          projectId,
+          name: 'orphan',
+          keyHash: 'hash',
+          keyPrefix: 'ps_key_orphan_',
+          permissions: [],
+          createdBy: owner,
+          execRunId: 'cl_does_not_exist_zzz',
+        },
+      }),
+    ).rejects.toThrow();
+  });
+
   it('revoke endpoint deletes the scoped key row', async () => {
     // Issue a fresh one (the previous one was expired in the test above)
     await testPrisma.apiKey.deleteMany({ where: { execRunId: runId } });
