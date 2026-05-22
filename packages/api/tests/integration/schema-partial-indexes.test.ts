@@ -3,8 +3,10 @@
 // `packages/api/prisma/migrations/README.md`. This test guards against the
 // common foot-gun of someone running `prisma db push` (or otherwise
 // regenerating the schema from `schema.prisma`) and silently dropping the
-// indexes — without them, two CRITICAL race conditions reopen (R-048 multiple
-// active plans per project, R-049 multiple running runs per task).
+// indexes — without them, two race conditions reopen:
+//   - R-048: multiple active plans per project
+//   - "one running execution run per task" — pre-dates the R-### scheme,
+//     no separate ID; see prisma/migrations/README.md inventory.
 import { describe, it, expect } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 
