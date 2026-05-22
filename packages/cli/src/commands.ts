@@ -125,6 +125,20 @@ export async function validateProject(
 
 // ─── Status fetcher ───────────────────────────────────────────────────────────
 
+/**
+ * Read the project's lifecycle phase from the API response. The phase is the
+ * authoritative project state stored in the `projects.phase` column — the CLI
+ * must never re-derive it from plan presence (see R-059).
+ *
+ * Valid values: 'planning' | 'active' | 'completed'. Unknown / missing values
+ * fall back to 'planning' to match the Prisma default.
+ */
+export function derivePhase(project: Record<string, unknown> | null | undefined): string {
+  const raw = project?.phase;
+  if (raw === 'planning' || raw === 'active' || raw === 'completed') return raw;
+  return 'planning';
+}
+
 export async function fetchStatus(): Promise<ProjectStatus> {
   if (!cfg.project) return emptyStatus();
   try {
@@ -172,7 +186,7 @@ export async function fetchStatus(): Promise<ProjectStatus> {
     return {
       projectId: cfg.project,
       projectName: (project.name as string) || cfg.projectName || cfg.project,
-      phase: project.phase === 'completed' ? 'completed' : plan || proposed ? 'active' : 'planning',
+      phase: derivePhase(project),
       activePlan: plan
         ? {
             version: plan.version as number,
