@@ -2437,7 +2437,8 @@
 
 #### R-146 [HIGH] CLAUDE.md / AGENTS.md / ai-loop prompt 合并到 single source
 
-- **status**: pending
+- **status**: blocked
+- **blocked_reason**: fix_step 3 强制要求新增 CI lint workflow，autonomous agent 受 hard-rule 限制不得修改 `.github/workflows/*`；同时 fix_steps 涉及对 CLAUDE.md/AGENTS.md（workspace 级 agent rule 源）做整体重写并落地 protocol.md + render-prompts.ts 双轨工具链，跨工具链 + 多 surface 重构超出单 run 安全范围，需要架构方先做拆条目设计。
 - **batch**: B10
 - **depends_on**: —
 - **effort**: medium
