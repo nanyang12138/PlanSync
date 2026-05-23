@@ -9,6 +9,7 @@ import { dispatchWebhooks } from '@/lib/webhook';
 import { sendMail, userEmail } from '@/lib/email';
 import { logger } from '@/lib/logger';
 import { auditCrossProjectTaskIfNeeded } from '@/lib/task-scope';
+import { createActivity } from '@/lib/activity';
 
 type Params = { params: { projectId: string; taskId: string } };
 
@@ -131,7 +132,46 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       data: body,
     });
 
+    // R-105: audit-log task PATCH effects. PATCH is the canonical mutation
+    // surface for status flips and assignee changes, but until now only the
+    // execution-driven mutations (claim, complete-human, execution_complete)
+    // wrote activity rows — owner / member edits via PATCH bypassed the
+    // audit log entirely, which hides accountability for status flips
+    // (todo→blocked, blocked→in_progress) and reassignments from one
+    // member to another. We emit one row per axis that changed so the
+    // activity feed reflects exactly what the caller asked for.
+    if (body.status && body.status !== task.status) {
+      await createActivity({
+        projectId: params.projectId,
+        type: 'task_status_changed',
+        actorName: auth.userName,
+        actorType: 'human',
+        summary: `Task "${updated.title}" status ${task.status} → ${body.status}`,
+        metadata: {
+          taskId: params.taskId,
+          fromStatus: task.status,
+          toStatus: body.status,
+        },
+      });
+    }
+
     if (body.assignee !== undefined && body.assignee !== task.assignee) {
+      await createActivity({
+        projectId: params.projectId,
+        type: 'task_reassigned',
+        actorName: auth.userName,
+        actorType: 'human',
+        summary:
+          body.assignee === null
+            ? `Task "${updated.title}" unassigned (was ${task.assignee})`
+            : `Task "${updated.title}" reassigned ${task.assignee} → ${body.assignee}`,
+        metadata: {
+          taskId: params.taskId,
+          fromAssignee: task.assignee,
+          toAssignee: body.assignee,
+        },
+      });
+
       if (body.assignee === null) {
         eventBus.publish(params.projectId, 'task_unassigned', {
           taskId: params.taskId,
