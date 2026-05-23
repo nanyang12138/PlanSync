@@ -9,6 +9,7 @@ export const actorTypeSchema = z.enum(['human', 'agent', 'system']);
 
 export const activityTypeSchema = z.enum([
   'project_created',
+  'project_updated',
   'plan_created',
   'plan_proposed',
   'plan_activated',

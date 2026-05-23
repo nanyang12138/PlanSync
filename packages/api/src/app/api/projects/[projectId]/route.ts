@@ -4,6 +4,7 @@ import { authenticate, requireProjectRole, requireNotExecScoped } from '@/lib/au
 import { handleApiError } from '@/lib/errors';
 import { validateBody } from '@/lib/validate';
 import { updateProjectSchema, AppError, ErrorCode } from '@plansync/shared';
+import { createActivity } from '@/lib/activity';
 
 type Params = { params: { projectId: string } };
 
@@ -49,9 +50,36 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     await requireProjectRole(auth, params.projectId, 'owner');
     const body = await validateBody(req, updateProjectSchema);
 
+    const before = await prisma.project.findUnique({
+      where: { id: params.projectId },
+      select: { phase: true },
+    });
+    if (!before) throw new AppError(ErrorCode.NOT_FOUND, 'Project not found');
+
     const project = await prisma.project.update({
       where: { id: params.projectId },
       data: body,
+    });
+
+    // R-110: audit trail for owner-driven project edits. Records the changed
+    // fields plus phase transitions (planning → active → completed) so the
+    // activity log can explain *what* changed without diffing the project
+    // record after the fact.
+    const fields = Object.keys(body);
+    const phaseChanged = body.phase !== undefined && body.phase !== before.phase;
+    await createActivity({
+      projectId: project.id,
+      type: 'project_updated',
+      actorName: auth.userName,
+      actorType: 'human',
+      summary:
+        fields.length > 0
+          ? `Project "${project.name}" updated (${fields.join(', ')})`
+          : `Project "${project.name}" updated`,
+      metadata: {
+        fields,
+        ...(phaseChanged ? { phaseFrom: before.phase, phaseTo: project.phase } : {}),
+      },
     });
 
     return NextResponse.json({ data: project });
