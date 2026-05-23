@@ -148,12 +148,25 @@ export function buildErrorEnvelope(err: unknown, toolName: string): ToolErrorEnv
 /** Result of running the pre-flight checks for a single tool invocation. */
 type PreflightResult =
   | { kind: 'allow' }
-  | { kind: 'short-circuit'; response: ToolErrorEnvelope | ToolDelegationEnvelope };
+  | {
+      kind: 'short-circuit';
+      response: ToolErrorEnvelope | ToolDelegationEnvelope | OutOfSequenceEnvelope;
+    };
 
 /**
  * Pre-flight checks run before every tool handler invocation. Exported for
  * tests; the production wrapper composes this with the handler call + the
  * error translator.
+ *
+ * Order matters:
+ *   1. RUN_ABORTED — once the API kills the run, every subsequent call
+ *      must be rejected uniformly regardless of FSM state.
+ *   2. DELEGATION_BLOCKED — operator policy gate runs before FSM gating
+ *      so a delegated agent gets the same explanation it would get
+ *      outside exec mode.
+ *   3. OUT_OF_SEQUENCE (R-171) — FSM check. May only reject in `enforce`
+ *      mode; in `shadow` mode it logs + allows, in `off` mode it tracks
+ *      state silently. See `ExecStateManager.recordToolCall`.
  */
 export function evaluatePreflight(toolName: string, options: ToolWrapperOptions): PreflightResult {
   const getAbort = options.getRunAbortReason ?? isRunAborted;
@@ -168,6 +181,13 @@ export function evaluatePreflight(toolName: string, options: ToolWrapperOptions)
       kind: 'short-circuit',
       response: buildDelegationEnvelope(delegationAgent, toolName),
     };
+  }
+
+  if (options.execStateManager) {
+    const fsmResult = options.execStateManager.recordToolCall(toolName);
+    if (!fsmResult.ok) {
+      return { kind: 'short-circuit', response: fsmResult.envelope };
+    }
   }
 
   return { kind: 'allow' };
