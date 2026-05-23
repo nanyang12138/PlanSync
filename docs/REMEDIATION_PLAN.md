@@ -3005,7 +3005,7 @@
 
 #### R-183 [MEDIUM] AI provider fallback + 限流 + 缓存
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B16
 - **depends_on**: R-182
 - **effort**: medium
