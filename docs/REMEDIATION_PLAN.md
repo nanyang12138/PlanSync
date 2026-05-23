@@ -602,7 +602,7 @@
 
 #### R-022 [HIGH] MCP callTool 加单次重试
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B3
 - **depends_on**: R-021
 - **effort**: small
