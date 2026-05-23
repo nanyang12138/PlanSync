@@ -510,7 +510,7 @@
 
 #### R-017 [HIGH] `withUser` 在普通 API key 下抛错或退化警告
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B2
 - **depends_on**: R-010
 - **effort**: small
