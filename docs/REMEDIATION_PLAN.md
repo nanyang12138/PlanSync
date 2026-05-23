@@ -3106,7 +3106,7 @@
 
 #### R-200 [HIGH] 抽出 `@plansync/client-core` view-model 包
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B18
 - **depends_on**: R-027, R-030
 - **effort**: large
