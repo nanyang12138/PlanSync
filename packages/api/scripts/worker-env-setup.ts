@@ -2,29 +2,32 @@
  * Worker-process pre-flight env setup.
  *
  * Loaded via `node --require` (or ts-node's --require) from the `worker`
- * npm script BEFORE run-worker.ts and any of its imports. The single
- * responsibility is to set environment variables that other modules read
- * at module-load time — once `event-bus.ts` (or anything that transitively
- * imports it) is required, its singleton is created with whatever
- * PLANSYNC_EVENT_BUS resolves to right then. Putting that decision here
- * guarantees the worker always picks the cross-process backend, instead
- * of relying on every operator to set the env var by hand on every host.
+ * npm script BEFORE run-worker.ts and any of its imports. Two
+ * responsibilities, in order:
  *
- * Reviewers (#232, #265, #273):
- *   - The worker's only output channel is eventBus.publish — scanner
- *     emits execution_stale / execution_superseded.
- *   - Without this preamble, when NODE_ENV !== 'production' the bus
- *     resolves to MemoryEventBus and every published event is fanned
- *     out only inside the worker process (= nowhere observable).
- *   - The API process's SSE / webhook subscribers see nothing, the
- *     symptom is "stale runs are detected but the UI never updates",
- *     and ops debugging starts at the wrong layer.
+ *   1. Load the repo-root .env so unset shell vars get filled in. This
+ *      MUST happen before step 2; #571 / #605 / #608 reported that the
+ *      previous version of this file applied the PLANSYNC_EVENT_BUS
+ *      default before .env was read, so a deliberate
+ *      `PLANSYNC_EVENT_BUS=memory` in .env was silently overwritten by
+ *      the default.
  *
- * Operator override: set PLANSYNC_EVENT_BUS=memory explicitly to opt
- * out (single-host single-process dev where you really do want only
- * an in-process bus). The check below honours any pre-existing value.
+ *   2. Apply worker-only defaults. Only PLANSYNC_EVENT_BUS=postgres
+ *      today: the worker's only output channel is eventBus.publish; the
+ *      memory backend (default in non-production) silently drops every
+ *      event. Other workers (run-worker.ts) cannot set this env var
+ *      because the bus singleton is created at module-load time, before
+ *      any of their code runs — see #232 / #265 / #273 for the original
+ *      report.
+ *
+ * The file is intentionally tiny — it runs on every worker boot.
  */
+import { loadRepoDotenv } from './load-dotenv';
 
+// 1. shell env > .env > defaults
+loadRepoDotenv();
+
+// 2. worker-side defaults
 if (!process.env.PLANSYNC_EVENT_BUS) {
   process.env.PLANSYNC_EVENT_BUS = 'postgres';
 }
