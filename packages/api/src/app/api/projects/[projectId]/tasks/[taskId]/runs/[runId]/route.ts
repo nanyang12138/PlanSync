@@ -229,6 +229,13 @@ export async function POST(req: NextRequest, { params }: Params) {
 
           // ---- Phase 1: AI call ----------------------------------------
           let raw: string | null;
+          // #548 / #558 / #583: track whether Phase 1 already wrote an
+          // audit row, so the `if (raw === null)` branch below does NOT
+          // overwrite the Phase 1 error message ("AI error, allowed
+          // through: <stack>") with the generic "AI unavailable, allowed
+          // through". Without this flag, Phase 1's error context was
+          // silently lost on every thrown AI call.
+          let phase1Audited = false;
           try {
             raw = await aiClient.complete(
               COMPLETION_VERIFY_SYSTEM,
@@ -255,20 +262,23 @@ export async function POST(req: NextRequest, { params }: Params) {
               aiVerifyFeedback: `AI error, allowed through: ${errMessage}`,
               aiVerifyModel,
             });
+            phase1Audited = true;
             raw = null;
           }
 
-          if (raw === null) {
-            // AI unavailable (no provider configured, retries exhausted, or
-            // Phase 1 already audited the failure above). Mark explicitly
-            // so the owner sees the gate was a no-op rather than a pass.
+          if (raw === null && !phase1Audited) {
+            // AI unavailable (no provider configured, or retries exhausted
+            // with raw=null). Mark explicitly so the owner sees the gate
+            // was a no-op rather than a pass. Note: when Phase 1 threw,
+            // we already wrote a more specific 'AI error, allowed through'
+            // row above and skip this branch.
             await bestEffortAudit({
               aiVerifyScore: null,
               aiVerifyBreakdown: Prisma.DbNull,
               aiVerifyFeedback: 'AI unavailable, allowed through',
               aiVerifyModel,
             });
-          } else {
+          } else if (raw !== null) {
             // ---- Phase 2: JSON.parse ----------------------------------
             let result: {
               verified: boolean;
