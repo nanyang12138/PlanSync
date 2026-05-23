@@ -17,13 +17,21 @@ export class ApiClient {
   constructor(private config: McpConfig) {}
 
   /** Return a new ApiClient that sends a different X-User-Name header (for delegation).
-   *  If a delegationSecret is configured, it is used as the Bearer token so the API
-   *  can authenticate any registered user without their individual password. */
+   *  Requires `PLANSYNC_SECRET` to be configured — the delegation secret is used as
+   *  the Bearer token so the API can authenticate any registered user without their
+   *  individual password.
+   *
+   *  Without a delegation secret we used to silently fall back to the caller's own
+   *  API token, which meant every "delegated" request actually ran as the key owner
+   *  (a hidden privilege escalation / wrong-actor bug). We now fail loudly instead. */
   withUser(userName: string): ApiClient {
+    if (!this.config.delegationSecret) {
+      throw new Error('Delegation requires PLANSYNC_SECRET');
+    }
     return new ApiClient({
       ...this.config,
       userName,
-      apiToken: this.config.delegationSecret || this.config.apiToken,
+      apiToken: this.config.delegationSecret,
     });
   }
 
