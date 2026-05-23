@@ -2955,7 +2955,7 @@
 
 #### R-180 [HIGH] completion-verify 改为 advisory：永不 422
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B16
 - **depends_on**: R-143
 - **effort**: small
