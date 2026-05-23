@@ -3,7 +3,21 @@ import { authenticate, requireProjectRole } from '@/lib/auth';
 import { eventBus, PlanSyncEvent } from '@/lib/event-bus';
 import { logger } from '@/lib/logger';
 
-const MAX_SSE_CLIENTS = 1000;
+// R-091: SSE client cap is now scoped per-project. The previous global
+// 1000-client cap let a single noisy project starve every other project
+// of SSE slots; counting per `(projectId)` instead means one runaway
+// project can saturate its own quota without affecting peers. The
+// default of 100 is intentionally well below the previous global cap —
+// real deployments should rarely see more than a handful of subscribers
+// per project (one per logged-in browser tab + CLI). Override via
+// `PLANSYNC_MAX_SSE_CLIENTS_PER_PROJECT` if needed.
+function resolveMaxSseClientsPerProject(): number {
+  const raw = process.env.PLANSYNC_MAX_SSE_CLIENTS_PER_PROJECT;
+  if (!raw) return 100;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 100;
+  return parsed;
+}
 
 /**
  * R-090: per-client backpressure / slow-client handling.
@@ -55,8 +69,9 @@ export async function GET(req: NextRequest, { params }: { params: { projectId: s
     return new Response('Unauthorized', { status: 401 });
   }
 
-  if (eventBus.getClientCount() >= MAX_SSE_CLIENTS) {
-    return new Response('Too many SSE connections', { status: 503 });
+  const maxClientsPerProject = resolveMaxSseClientsPerProject();
+  if (eventBus.getClientCount(params.projectId) >= maxClientsPerProject) {
+    return new Response('Too many SSE connections for this project', { status: 503 });
   }
 
   const encoder = new TextEncoder();
