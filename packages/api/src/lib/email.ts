@@ -14,8 +14,31 @@ const RETRY_BASE_DELAY_MS = 500;
  * until the API process OOMs. 1000 is a generous ceiling for a single
  * Node process; deployments that legitimately exceed it should switch to
  * the durable webhook_jobs / outbox table tracked by R-164 / R-165.
+ *
+ * #543 / #563 / #577 / #584 / #594 / #600: an invalid env value
+ * (PLANSYNC_EMAIL_QUEUE_LIMIT='abc' or '') was previously coerced to NaN,
+ * and `queue.length >= NaN` is always false — silently lifting the cap.
+ * `parseQueueLimit` rejects NaN / non-positive integers with a single
+ * one-time logger.warn and falls back to the documented default.
  */
-const QUEUE_LIMIT = Number(process.env.PLANSYNC_EMAIL_QUEUE_LIMIT ?? 1000);
+function parseQueueLimit(rawEnv: string | undefined): number {
+  const DEFAULT = 1000;
+  if (rawEnv === undefined || rawEnv === '') return DEFAULT;
+  const parsed = Number(rawEnv);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+    // Defer the warn until the logger has had a chance to initialise; the
+    // env is read at module load and the logger is still being wired up.
+    setImmediate(() => {
+      logger.warn(
+        { rawEnv, fallback: DEFAULT },
+        '[email] PLANSYNC_EMAIL_QUEUE_LIMIT is not a positive integer; using default',
+      );
+    });
+    return DEFAULT;
+  }
+  return parsed;
+}
+const QUEUE_LIMIT = parseQueueLimit(process.env.PLANSYNC_EMAIL_QUEUE_LIMIT);
 
 export function userEmail(userName: string): string {
   return `${userName}@${DOMAIN}`;

@@ -78,21 +78,106 @@ export async function register() {
     const procWithFlag = process as NodeJS.Process & { __plansyncMailFlush?: boolean };
     if (!procWithFlag.__plansyncMailFlush) {
       procWithFlag.__plansyncMailFlush = true;
-      const { flushSendMailQueue } = await import('./lib/email');
-      const drainOnExit = (signal: NodeJS.Signals) => {
-        // Best-effort: 5s budget so a stuck sendmail does not block
-        // shutdown indefinitely. We log + exit rather than awaiting
-        // forever.
-        const DRAIN_TIMEOUT_MS = 5000;
-        Promise.race([
-          flushSendMailQueue(),
-          new Promise<void>((resolve) => setTimeout(resolve, DRAIN_TIMEOUT_MS)),
-        ]).finally(() => {
-          console.warn(`[instrumentation] mail queue drained on ${signal}`);
-        });
-      };
-      process.on('SIGTERM', () => drainOnExit('SIGTERM'));
-      process.on('SIGINT', () => drainOnExit('SIGINT'));
+      const { flushSendMailQueue, _sendMailQueueLengthForTests } = await import('./lib/email');
+      registerMailDrainOnExit({
+        flushSendMailQueue,
+        getPendingCount: _sendMailQueueLengthForTests,
+        onExit: (code) => process.exit(code),
+        installSignalHandler: (signal, handler) => {
+          process.on(signal, handler);
+        },
+      });
     }
   }
+}
+
+/**
+ * Build + register the SIGTERM / SIGINT drain handler.
+ *
+ * Pulled out into a pure function so the unit test can inject fake
+ * `flushSendMailQueue`, `onExit`, `getPendingCount`, and a synchronous
+ * signal-handler installer, then assert the contract:
+ *
+ *   - the handler awaits `flushSendMailQueue()`
+ *   - it bounds the wait at DRAIN_TIMEOUT_MS so a stuck sendmail does not
+ *     block shutdown indefinitely
+ *   - it logs whether the queue actually drained or the timeout fired
+ *   - it calls `onExit(0)` when the drain is clean and `onExit(1)` when
+ *     the timeout fired with messages still pending
+ *   - duplicate signals (a frantic SIGTERM SIGTERM SIGTERM from an
+ *     impatient orchestrator) do not re-enter the drain
+ *
+ * Reviewer-driven (#541 / #542 / #561 / #562 / #576 / #585 / #586 / #592 /
+ * #599 / #608): the previous fire-and-forget Promise.race never awaited
+ * the flush — Node would exit the moment the signal handler returned,
+ * cancelling the in-flight sendmail children with SIGKILL.
+ */
+export interface MailDrainDeps {
+  flushSendMailQueue: () => Promise<void>;
+  getPendingCount: () => number;
+  onExit: (code: number) => void;
+  installSignalHandler: (
+    signal: 'SIGTERM' | 'SIGINT',
+    handler: (signal: NodeJS.Signals) => void,
+  ) => void;
+  drainTimeoutMs?: number;
+  logger?: { info: (...a: unknown[]) => void; warn: (...a: unknown[]) => void };
+}
+
+const DEFAULT_DRAIN_TIMEOUT_MS = 5000;
+
+export function registerMailDrainOnExit(deps: MailDrainDeps): void {
+  const drainTimeoutMs = deps.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
+  const log = deps.logger ?? {
+    info: (...a: unknown[]) => console.warn(...(a as [unknown, ...unknown[]])),
+    warn: (...a: unknown[]) => console.warn(...(a as [unknown, ...unknown[]])),
+  };
+  let draining = false;
+
+  async function drainOnExit(signal: NodeJS.Signals): Promise<void> {
+    if (draining) {
+      // A second SIGTERM during the drain — typical of supervisors that
+      // escalate after a few seconds. Surface the warning but don't
+      // stack another flush.
+      log.warn(`[instrumentation] ${signal} received during drain; ignoring`);
+      return;
+    }
+    draining = true;
+
+    let timedOut = false;
+    const timeout = new Promise<'timeout'>((resolve) =>
+      setTimeout(() => {
+        timedOut = true;
+        resolve('timeout');
+      }, drainTimeoutMs),
+    );
+
+    try {
+      await Promise.race([deps.flushSendMailQueue(), timeout]);
+    } catch (err) {
+      log.warn(
+        `[instrumentation] mail flush threw during ${signal} drain: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+
+    const pending = deps.getPendingCount();
+    if (timedOut && pending > 0) {
+      log.warn(
+        `[instrumentation] mail queue drain timed out on ${signal}; ${pending} message(s) lost (timeout=${drainTimeoutMs}ms)`,
+      );
+      deps.onExit(1);
+      return;
+    }
+    log.info(`[instrumentation] mail queue drained on ${signal}`);
+    deps.onExit(0);
+  }
+
+  deps.installSignalHandler('SIGTERM', (s) => {
+    void drainOnExit(s);
+  });
+  deps.installSignalHandler('SIGINT', (s) => {
+    void drainOnExit(s);
+  });
 }
