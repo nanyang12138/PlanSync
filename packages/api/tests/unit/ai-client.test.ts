@@ -96,13 +96,9 @@ describe('AiClient.complete() error/timeout handling (#138)', () => {
 
     // Throw a non-Error value to exercise the `err instanceof Error ? ... : String(err)`
     // branch that #138 calls out as untested.
-    const fetchSpy = vi
-      .spyOn(globalThis, 'fetch')
-      // eslint-disable-next-line @typescript-eslint/only-throw-error
-      .mockImplementation(async () => {
-        // eslint-disable-next-line @typescript-eslint/no-throw-literal
-        throw 'plain-string-rejection';
-      });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      throw 'plain-string-rejection';
+    });
 
     const promise = aiClient.complete('sys', 'user');
     // Drain the retry backoff (1s, 2s) without waiting real time.
@@ -118,16 +114,19 @@ describe('AiClient.complete() error/timeout handling (#138)', () => {
     process.env.ANTHROPIC_API_KEY = 'test-key';
     const { aiClient } = await import('../../src/lib/ai/client');
 
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response('rate limited', { status: 429 }),
-    );
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('rate limited', { status: 429 }));
 
     const promise = aiClient.complete('sys', 'user');
     await vi.advanceTimersByTimeAsync(5000);
     const result = await promise;
 
     expect(result).toBeNull();
-    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    // R-183: 429 short-circuits retries (the limit will still apply on
+    // retry). With only one provider configured, the chain stops after a
+    // single attempt instead of the legacy 3-retry burn.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it('returns null when response.json() yields a shape pickFirstContentText cannot read', async () => {
