@@ -905,7 +905,7 @@
 
 #### R-040 [LOW] api-client 启动时校验 token 配置
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: R-010
 - **effort**: small
