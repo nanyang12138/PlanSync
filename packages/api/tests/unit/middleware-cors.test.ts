@@ -59,4 +59,74 @@ describe('middleware CORS — credentialed cross-origin requests (#134, #135)', 
     expect(res.headers.get('Access-Control-Allow-Credentials')).toBe('true');
     expect(res.headers.get('Access-Control-Allow-Methods')).toContain('OPTIONS');
   });
+
+  // ---- #244 / #248: ACAC must be set exactly once -------------------------
+
+  it('#244/#248: Access-Control-Allow-Credentials appears exactly once', () => {
+    const res = middleware(makeRequest({ origin: ALLOWED_ORIGIN }));
+    // `Headers.get()` joins duplicate values with ", "; if the previous code
+    // accidentally set ACAC twice, this would be "true, true". Splitting on
+    // ", " keeps the test resilient to fetch implementations that report
+    // duplicates either way.
+    const value = res.headers.get('Access-Control-Allow-Credentials') ?? '';
+    expect(value.split(',').map((v) => v.trim())).toEqual(['true']);
+  });
+
+  // ---- #247: SSE reconnect preflight (Last-Event-ID) ----------------------
+
+  it('#247: Last-Event-ID is in Access-Control-Allow-Headers (SSE reconnect preflight)', () => {
+    const res = middleware(makeRequest({ method: 'OPTIONS', origin: ALLOWED_ORIGIN }));
+    const allowed = (res.headers.get('Access-Control-Allow-Headers') ?? '').toLowerCase();
+    expect(allowed).toContain('last-event-id');
+  });
+
+  it('#249: preflight carrying Access-Control-Request-Headers: last-event-id is allowed', () => {
+    const headers = new Headers();
+    headers.set('origin', ALLOWED_ORIGIN);
+    headers.set('access-control-request-method', 'GET');
+    headers.set('access-control-request-headers', 'last-event-id');
+    const req = new NextRequest('http://localhost/api/user-events', {
+      method: 'OPTIONS',
+      headers,
+    });
+    const res = middleware(req);
+    expect(res.status).toBe(204);
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe(ALLOWED_ORIGIN);
+    expect((res.headers.get('Access-Control-Allow-Headers') ?? '').toLowerCase()).toContain(
+      'last-event-id',
+    );
+  });
+
+  // ---- #295: x-request-id surfaced via Expose-Headers ---------------------
+
+  it('#295: Access-Control-Expose-Headers includes x-request-id', () => {
+    const res = middleware(makeRequest({ origin: ALLOWED_ORIGIN }));
+    const exposed = (res.headers.get('Access-Control-Expose-Headers') ?? '').toLowerCase();
+    expect(exposed.split(',').map((s) => s.trim())).toContain('x-request-id');
+  });
+
+  // ---- #339: X-Request-Id allowed on the request side too ------------------
+
+  it('#339: Access-Control-Allow-Headers includes X-Request-Id (clients can forward correlation id)', () => {
+    const res = middleware(makeRequest({ method: 'OPTIONS', origin: ALLOWED_ORIGIN }));
+    const allowed = (res.headers.get('Access-Control-Allow-Headers') ?? '').toLowerCase();
+    expect(allowed).toContain('x-request-id');
+  });
+
+  it('#339: preflight carrying Access-Control-Request-Headers: x-request-id is allowed', () => {
+    const headers = new Headers();
+    headers.set('origin', ALLOWED_ORIGIN);
+    headers.set('access-control-request-method', 'GET');
+    headers.set('access-control-request-headers', 'x-request-id');
+    const req = new NextRequest('http://localhost/api/projects/p1/tasks', {
+      method: 'OPTIONS',
+      headers,
+    });
+    const res = middleware(req);
+    expect(res.status).toBe(204);
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe(ALLOWED_ORIGIN);
+    expect((res.headers.get('Access-Control-Allow-Headers') ?? '').toLowerCase()).toContain(
+      'x-request-id',
+    );
+  });
 });
