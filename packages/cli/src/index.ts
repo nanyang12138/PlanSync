@@ -14,7 +14,13 @@ import { runShellCommand } from './shell-cmd.js';
 import { c, banner, showSplash } from './ui.js';
 import { McpClient } from './mcp-client.js';
 import { ensureMcpBuild } from './mcp-bootstrap.js';
-import { buildSystemPrompt, runAgentLoop, pruneHistory, Message } from './ai-loop.js';
+import {
+  buildSystemPrompt,
+  runAgentLoop,
+  pruneHistory,
+  formatPruneNotice,
+  Message,
+} from './ai-loop.js';
 import { fetchStatus, handleSlashCommand, buildPrompt, selectProject } from './commands.js';
 import {
   scanInterruptedExecs,
@@ -403,7 +409,10 @@ async function main() {
       const assistantMsg: Message = { role: 'assistant', content: loopResult.text };
       history.push(...loopResult.newMessages);
       appendToSession(cfg.project, currentSessionId, userMsg, assistantMsg);
-      pruneHistory(history);
+      const pruneResult = pruneHistory(history, cfg.maxHistoryTokens);
+      if (pruneResult.dropped > 0) {
+        console.log(`\n${c.yellow}${formatPruneNotice(pruneResult)}${c.reset}`);
+      }
       currentStatus = await fetchStatus();
       currentSystem = buildSystemPrompt(currentStatus);
     }

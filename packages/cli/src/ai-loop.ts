@@ -347,6 +347,26 @@ function hasToolUseBlock(m: Message): boolean {
 }
 
 /**
+ * Outcome of a {@link pruneHistory} call.
+ *
+ * R-070 fix step 2: the caller (e.g. the CLI main loop) needs to know
+ * whether anything was actually dropped so it can surface a one-line
+ * notice to the user. Returning a structured result instead of the
+ * old `void` lets `index.ts` emit `formatPruneNotice` only when a
+ * trim happened, without re-estimating the history a second time.
+ */
+export interface PruneResult {
+  /** Number of original messages replaced by the summary stub. */
+  dropped: number;
+  /** Estimated token count before trimming. */
+  tokensBefore: number;
+  /** Estimated token count after trimming (includes the summary stub). */
+  tokensAfter: number;
+  /** Budget that was applied — echoed back for logging. */
+  budget: number;
+}
+
+/**
  * Trim history in-place so its total estimated token budget stays under
  * `maxTokens`. Drops oldest messages first but never splits an
  * `assistant{tool_use}` / `user{tool_result}` pair — leaving an orphan
@@ -354,14 +374,21 @@ function hasToolUseBlock(m: Message): boolean {
  * When messages are dropped, a single short user-role stub is left at the
  * head so the model knows the conversation was truncated.
  *
- * This is the lightweight implementation called for by R-063 fix step 2.
- * A richer LLM-driven summariser is tracked under R-070.
+ * R-063 introduced the lightweight chars/4 estimator. R-070 wires that
+ * estimator into an explicit token-budget knob (`cfg.maxHistoryTokens`,
+ * env: `PLANSYNC_MAX_HISTORY_TOKENS`) and surfaces a {@link PruneResult}
+ * so the caller can show a user-visible notice when the history is
+ * trimmed. A richer LLM-driven summariser is intentionally out of scope.
  */
-export function pruneHistory(history: Message[], maxTokens = 80000): void {
-  if (history.length === 0) return;
+export function pruneHistory(history: Message[], maxTokens = 80000): PruneResult {
+  const empty: PruneResult = { dropped: 0, tokensBefore: 0, tokensAfter: 0, budget: maxTokens };
+  if (history.length === 0) return empty;
   let totalTokens = 0;
   for (const m of history) totalTokens += estimateTokens(m.content);
-  if (totalTokens <= maxTokens) return;
+  const tokensBefore = totalTokens;
+  if (totalTokens <= maxTokens) {
+    return { ...empty, tokensBefore, tokensAfter: totalTokens };
+  }
 
   let dropEnd = 0;
   while (totalTokens > maxTokens && dropEnd < history.length - 1) {
@@ -377,12 +404,30 @@ export function pruneHistory(history: Message[], maxTokens = 80000): void {
     dropEnd--;
   }
 
-  if (dropEnd <= 0) return;
+  if (dropEnd <= 0) {
+    return { ...empty, tokensBefore, tokensAfter: tokensBefore };
+  }
   const summary: Message = {
     role: 'user',
     content: `[${dropEnd} earlier message(s) truncated for length]`,
   };
   history.splice(0, dropEnd, summary);
+  let tokensAfter = 0;
+  for (const m of history) tokensAfter += estimateTokens(m.content);
+  return { dropped: dropEnd, tokensBefore, tokensAfter, budget: maxTokens };
+}
+
+/**
+ * R-070: User-visible one-liner emitted by the CLI main loop after the
+ * in-memory history exceeded its token budget and was trimmed. Exposed
+ * separately from {@link pruneHistory} so it can be unit-tested without
+ * having to redirect stdout.
+ */
+export function formatPruneNotice(result: PruneResult): string {
+  return (
+    `⚠ 历史已裁剪 ${result.dropped} 条 (≈${result.tokensBefore} → ${result.tokensAfter} tokens, ` +
+    `预算 ${result.budget}; 通过 PLANSYNC_MAX_HISTORY_TOKENS 调整)`
+  );
 }
 
 export async function runAgentLoop(

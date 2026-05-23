@@ -21,6 +21,7 @@ import { describe, it, expect } from 'vitest';
 import {
   estimateTokens,
   formatMaxTurnsWarning,
+  formatPruneNotice,
   pruneHistory,
   type Message,
 } from '../src/ai-loop.js';
@@ -108,7 +109,8 @@ describe('pruneHistory (R-063)', () => {
         m.role === 'assistant' &&
         Array.isArray(m.content) &&
         m.content.some(
-          (b) => typeof b === 'object' && b !== null && (b as { type?: string }).type === 'tool_use',
+          (b) =>
+            typeof b === 'object' && b !== null && (b as { type?: string }).type === 'tool_use',
         ),
     );
     const idxToolResult = history.findIndex(
@@ -150,6 +152,68 @@ describe('pruneHistory (R-063)', () => {
       (m) => typeof m.content === 'string' && /truncated/.test(m.content as string),
     );
     expect(summaryMatches.length).toBe(1);
+  });
+});
+
+describe('pruneHistory token budget (R-070)', () => {
+  it('returns dropped=0 and tokensBefore=tokensAfter when under budget', () => {
+    const history: Message[] = [text('hi'), reply('hello')];
+    const result = pruneHistory(history, 1000);
+    expect(result.dropped).toBe(0);
+    expect(result.tokensBefore).toBeGreaterThan(0);
+    expect(result.tokensAfter).toBe(result.tokensBefore);
+    expect(result.budget).toBe(1000);
+    expect(history).toHaveLength(2);
+  });
+
+  it('returns a positive dropped count and shrinks tokensAfter when over budget', () => {
+    // Build a long history that comfortably exceeds the default 80k budget so
+    // we exercise the same code path the CLI main loop hits in production.
+    // Each entry is ~4000 chars (~1000 tokens); 200 entries ≈ 200k tokens.
+    const blob = 'x'.repeat(4000);
+    const history: Message[] = [];
+    for (let i = 0; i < 200; i++) {
+      history.push(text(`u${i}: ${blob}`));
+      history.push(reply(`a${i}: ${blob}`));
+    }
+    const result = pruneHistory(history, 80000);
+    expect(result.dropped).toBeGreaterThan(0);
+    expect(result.tokensBefore).toBeGreaterThan(80000);
+    // After trimming the estimate must be at or below the budget (the summary
+    // stub is tiny, so we should always land under it once anything was dropped).
+    expect(result.tokensAfter).toBeLessThanOrEqual(80000);
+    expect(result.tokensAfter).toBeLessThan(result.tokensBefore);
+    // Most-recent turn must always survive — otherwise the user just lost the
+    // message they sent moments ago.
+    expect(history[history.length - 1].content).toBe(`a199: ${blob}`);
+    // Head must be the truncation stub so the model knows context was dropped.
+    expect(history[0].content as string).toMatch(/truncated/);
+  });
+
+  it('honours a custom budget knob (mirrors PLANSYNC_MAX_HISTORY_TOKENS)', () => {
+    const blob = 'x'.repeat(4000);
+    const big: Message[] = [text(blob), reply(blob), text(blob), reply(blob), text('latest')];
+    const result = pruneHistory(big, 1500);
+    expect(result.budget).toBe(1500);
+    expect(result.dropped).toBeGreaterThan(0);
+    expect(big[big.length - 1].content).toBe('latest');
+  });
+});
+
+describe('formatPruneNotice (R-070)', () => {
+  it('mentions counts, before/after totals, and the env knob', () => {
+    const msg = formatPruneNotice({
+      dropped: 4,
+      tokensBefore: 100000,
+      tokensAfter: 70000,
+      budget: 80000,
+    });
+    expect(msg.startsWith('⚠')).toBe(true);
+    expect(msg).toContain('4');
+    expect(msg).toContain('100000');
+    expect(msg).toContain('70000');
+    expect(msg).toContain('80000');
+    expect(msg).toContain('PLANSYNC_MAX_HISTORY_TOKENS');
   });
 });
 

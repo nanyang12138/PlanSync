@@ -44,4 +44,11 @@ export const cfg = {
   nodeBin: process.env.PLANSYNC_NODE_BIN || process.execPath,
   maxOutputTokens: Number(process.env.PLANSYNC_MAX_OUTPUT_TOKENS) || 8192,
   maxTurns: Number(process.env.PLANSYNC_MAX_TURNS) || 12,
+  // R-070: token budget for in-memory chat history. When the estimated
+  // token count exceeds this threshold, `pruneHistory` drops the oldest
+  // message pairs (never splitting a `tool_use` / `tool_result` pair) and
+  // surfaces a one-line notice to the user. Defaults to 80k tokens, well
+  // under the 200k context window of current Claude models while leaving
+  // headroom for system prompt + tool schema + new turn output.
+  maxHistoryTokens: Number(process.env.PLANSYNC_MAX_HISTORY_TOKENS) || 80000,
 };
