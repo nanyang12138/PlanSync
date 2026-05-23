@@ -253,7 +253,7 @@
 
 #### R-004 [HIGH] rebind 行为升级为"显式重启"
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B1
 - **depends_on**: R-002, R-008
 - **effort**: small
