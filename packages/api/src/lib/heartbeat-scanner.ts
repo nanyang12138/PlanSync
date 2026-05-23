@@ -92,6 +92,35 @@ export async function scanStaleExecutions(): Promise<void> {
             where: { id: run.id },
             data: { status: 'failed', endedAt: now },
           });
+
+          // R-108: the 30-min sweep is the only place a run flips from
+          // `stale` to terminal `failed`. Without an activity row the
+          // owner-facing feed shows execution_started → execution_stale
+          // and then the run silently disappears from the active board,
+          // matching the audit gap R-104/R-105/R-106/R-107 closed for
+          // other terminal transitions. We route through `createActivity`
+          // (not tx.activity.create) to keep the zod type-validation
+          // R-033 enforces, mirroring the existing paused→superseded
+          // branch below — the activity write is technically a separate
+          // transaction, but the status flip is the authoritative source
+          // of truth and a missing audit row on a scanner crash is
+          // recoverable by re-emitting on the next sweep.
+          await createActivity({
+            projectId: run.task.projectId,
+            type: 'execution_failed',
+            actorName: 'system',
+            actorType: 'system',
+            summary: `Execution on "${run.task.title}" marked failed (heartbeat timeout 30min)`,
+            metadata: {
+              runId: run.id,
+              taskId: run.taskId,
+              executorName: run.executorName,
+              reason: 'heartbeat_timeout_failed',
+              thresholdMs: FAILED_THRESHOLD_MS,
+              lastHeartbeatAt: run.lastHeartbeatAt?.toISOString() ?? null,
+            },
+          });
+
           logger.warn(
             { runId: run.id, taskId: run.taskId },
             'Execution marked failed (heartbeat timeout 30min)',
@@ -164,6 +193,30 @@ export async function scanStaleExecutions(): Promise<void> {
             taskId: run.taskId,
             executorName: run.executorName,
             lastHeartbeatAt: run.lastHeartbeatAt?.toISOString(),
+          });
+
+          // R-108: matching record for the 5-min stale flip. Includes
+          // whether the task itself was demoted to `blocked` and how
+          // many exec-scoped keys were revoked, so an owner reading the
+          // audit feed can reconstruct R-057's side effects without
+          // cross-referencing the API key table. Same separate-tx
+          // tradeoff as the failed branch above.
+          await createActivity({
+            projectId: run.task.projectId,
+            type: 'execution_stale',
+            actorName: 'system',
+            actorType: 'system',
+            summary: `Execution on "${run.task.title}" marked stale (heartbeat timeout 5min)`,
+            metadata: {
+              runId: run.id,
+              taskId: run.taskId,
+              executorName: run.executorName,
+              reason: 'heartbeat_timeout_stale',
+              thresholdMs: STALE_THRESHOLD_MS,
+              lastHeartbeatAt: run.lastHeartbeatAt?.toISOString() ?? null,
+              taskBlocked: otherRunningCount === 0,
+              execKeysRevoked: keyDelete.count,
+            },
           });
 
           logger.warn(

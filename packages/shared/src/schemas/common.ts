@@ -39,6 +39,7 @@ export const activityTypeSchema = z.enum([
   'execution_started',
   'execution_completed',
   'execution_failed',
+  'execution_stale',
   'execution_superseded',
 ]);
 
