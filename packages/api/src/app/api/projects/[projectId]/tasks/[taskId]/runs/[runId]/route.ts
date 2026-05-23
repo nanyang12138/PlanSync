@@ -188,8 +188,49 @@ export async function POST(req: NextRequest, { params }: Params) {
           // a 422 short-circuits the finalize updateMany below, so we
           // can't fold these writes into that single UPDATE.
           const aiVerifyModel = aiClient.modelName;
+
+          // #184 (must): the previous version wrapped FOUR distinct things
+          // in a single try/catch — the AI call, JSON.parse of its reply,
+          // the audit DB write, and the 422 response construction. That
+          // was wrong: every catch path treated the failure as "AI infra
+          // exploded, soft-allow through to finalize", which means a real
+          // verification failure (score < 75) could be silently bypassed
+          // when the audit DB write happened to throw, breaking the
+          // "verification failed must always 422" contract.
+          //
+          // The fix is to split the four phases into separate failure
+          // domains:
+          //
+          //   Phase 1: AI call         → errors are infra failures: log,
+          //                              best-effort audit "AI error,
+          //                              allowed through", continue.
+          //   Phase 2: JSON.parse      → errors mean AI returned garbage
+          //                              (model bug / prompt drift): log,
+          //                              best-effort audit, allow through.
+          //   Phase 3: audit DB write  → errors are storage / connection
+          //                              failures: log, NEVER mask the
+          //                              verification result.
+          //   Phase 4: verification    → if score < 75 OR !verified, 422
+          //                              regardless of audit outcome.
+          //
+          // The "best-effort audit" pattern uses .catch(() => null) so
+          // a Prisma update failure never propagates to a Phase-4 decision.
+          async function bestEffortAudit(data: Prisma.ExecutionRunUpdateInput): Promise<void> {
+            try {
+              await prisma.executionRun.update({ where: { id: params.runId }, data });
+            } catch (auditErr) {
+              const auditMsg = auditErr instanceof Error ? auditErr.message : String(auditErr);
+              console.error(
+                `[completion-verify] audit write failed for task ${params.taskId}, run ${params.runId} — verification result is unaffected:`,
+                auditMsg,
+              );
+            }
+          }
+
+          // ---- Phase 1: AI call ----------------------------------------
+          let raw: string | null;
           try {
-            const raw = await aiClient.complete(
+            raw = await aiClient.complete(
               COMPLETION_VERIFY_SYSTEM,
               buildCompletionVerifyUser(body.deliverablesMet, {
                 taskTitle: task.title,
@@ -202,23 +243,71 @@ export async function POST(req: NextRequest, { params }: Params) {
               }),
               { purpose: 'completion_verify' },
             );
-            if (raw) {
-              const result = JSON.parse(raw) as {
-                verified: boolean;
-                score: number;
-                breakdown?: { specificity: number; coherence: number; coverage: number };
-                gaps: string[];
-                feedback: string;
-              };
-              await prisma.executionRun.update({
-                where: { id: params.runId },
-                data: {
-                  aiVerifyScore: result.score,
-                  aiVerifyBreakdown: result.breakdown ?? Prisma.DbNull,
-                  aiVerifyFeedback: result.feedback,
-                  aiVerifyModel,
-                },
+          } catch (err) {
+            const errMessage = err instanceof Error ? err.message : String(err);
+            console.warn(
+              `[completion-verify] AI call threw for task ${params.taskId}, run ${params.runId} — allowing through:`,
+              errMessage,
+            );
+            await bestEffortAudit({
+              aiVerifyScore: null,
+              aiVerifyBreakdown: Prisma.DbNull,
+              aiVerifyFeedback: `AI error, allowed through: ${errMessage}`,
+              aiVerifyModel,
+            });
+            raw = null;
+          }
+
+          if (raw === null) {
+            // AI unavailable (no provider configured, retries exhausted, or
+            // Phase 1 already audited the failure above). Mark explicitly
+            // so the owner sees the gate was a no-op rather than a pass.
+            await bestEffortAudit({
+              aiVerifyScore: null,
+              aiVerifyBreakdown: Prisma.DbNull,
+              aiVerifyFeedback: 'AI unavailable, allowed through',
+              aiVerifyModel,
+            });
+          } else {
+            // ---- Phase 2: JSON.parse ----------------------------------
+            let result: {
+              verified: boolean;
+              score: number;
+              breakdown?: { specificity: number; coherence: number; coverage: number };
+              gaps: string[];
+              feedback: string;
+            } | null;
+            try {
+              result = JSON.parse(raw) as typeof result;
+            } catch (parseErr) {
+              const parseMsg = parseErr instanceof Error ? parseErr.message : String(parseErr);
+              console.warn(
+                `[completion-verify] AI returned non-JSON for task ${params.taskId}, run ${params.runId} — allowing through:`,
+                parseMsg,
+              );
+              await bestEffortAudit({
+                aiVerifyScore: null,
+                aiVerifyBreakdown: Prisma.DbNull,
+                aiVerifyFeedback: `AI returned malformed JSON, allowed through: ${parseMsg}`,
+                aiVerifyModel,
               });
+              result = null;
+            }
+
+            if (result) {
+              // ---- Phase 3: audit DB write ----------------------------
+              // Best-effort: if Prisma fails here we do NOT swallow the
+              // verification result on the next line. #184's bug was that
+              // a thrown update() landed in the same catch as Phase 1
+              // and mutated control flow.
+              await bestEffortAudit({
+                aiVerifyScore: result.score,
+                aiVerifyBreakdown: result.breakdown ?? Prisma.DbNull,
+                aiVerifyFeedback: result.feedback,
+                aiVerifyModel,
+              });
+
+              // ---- Phase 4: verification result is authoritative ------
               if (!result.verified || result.score < 75) {
                 return NextResponse.json(
                   {
@@ -238,44 +327,7 @@ export async function POST(req: NextRequest, { params }: Params) {
                   { status: 422 },
                 );
               }
-            } else {
-              // raw === null: AI unavailable (no provider configured or
-              // the call returned no result after retries). Record the
-              // "allowed through" decision so the owner sees explicitly
-              // that the gate was a no-op, not a silent pass.
-              await prisma.executionRun.update({
-                where: { id: params.runId },
-                data: {
-                  aiVerifyScore: null,
-                  aiVerifyBreakdown: Prisma.DbNull,
-                  aiVerifyFeedback: 'AI unavailable, allowed through',
-                  aiVerifyModel,
-                },
-              });
             }
-          } catch (err) {
-            // AI error: allow through, don't block on infra failure. Still
-            // surface the failure on the run row so the owner can tell
-            // "AI said pass" apart from "AI exploded mid-call".
-            const errMessage = err instanceof Error ? err.message : String(err);
-            console.warn(
-              `[completion-verify] AI verification failed for task ${params.taskId}, run ${params.runId} — allowing through:`,
-              errMessage,
-            );
-            await prisma.executionRun
-              .update({
-                where: { id: params.runId },
-                data: {
-                  aiVerifyScore: null,
-                  aiVerifyBreakdown: Prisma.DbNull,
-                  aiVerifyFeedback: `AI error, allowed through: ${errMessage}`,
-                  aiVerifyModel,
-                },
-              })
-              .catch(() => {
-                // Best-effort audit write; never let the audit failure
-                // mask the original AI error or block the completion.
-              });
           }
         }
       }

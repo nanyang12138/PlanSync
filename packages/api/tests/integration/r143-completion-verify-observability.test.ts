@@ -206,6 +206,100 @@ describe('R-143: completion-verify observability', () => {
     expect(persisted?.status).toBe('completed');
   });
 
+  // ---- #184 / #185 — JSON.parse + audit catch isolation -------------------
+
+  it('#184/#185: AI returns malformed JSON → soft-allow (200), not 422', async () => {
+    // Phase 2 failure: AI returned text but it does not parse as JSON.
+    // Pre-fix this fell into the same catch as Phase 1 (AI infra error)
+    // and short-circuited the verification — but that's the same outcome
+    // we want, so the response code is still 200. The point of the test
+    // is to lock in the audit feedback so a future refactor cannot start
+    // returning 422 here (or return 500 from an unswallowed throw).
+    mockState.nextResult = 'this { is not } [ json ] at all';
+    mockState.modelName = 'mock-model-v1';
+
+    const runId = await startRun();
+    await testPrisma.task.update({ where: { id: taskId }, data: { status: 'in_progress' } });
+
+    const res = await runActionPost(
+      makeReq(`/api/projects/${projectId}/tasks/${taskId}/runs/${runId}?action=complete`, {
+        method: 'POST',
+        userName: owner,
+        body: {
+          status: 'completed',
+          outputSummary: 'done',
+          deliverablesMet: ['Deliverable A: implemented foo'],
+        },
+      }),
+      { params: { projectId, taskId, runId } },
+    );
+
+    expect(res.status).toBe(200);
+    const persisted = await testPrisma.executionRun.findUnique({ where: { id: runId } });
+    expect(persisted?.aiVerifyScore).toBeNull();
+    expect(persisted?.aiVerifyFeedback).toMatch(/malformed JSON, allowed through/);
+    expect(persisted?.aiVerifyModel).toBe('mock-model-v1');
+    expect(persisted?.status).toBe('completed');
+  });
+
+  it('#184: a thrown audit-write does NOT mask a real 422 (verification result is authoritative)', async () => {
+    // The original bug: prisma.executionRun.update was inside the same try
+    // as the AI call + JSON.parse + 422 NextResponse. If the audit update
+    // happened to throw (Prisma transient connection drop, accidental
+    // schema breakage, race with another writer), the catch logged "AI
+    // failed, allowed through" and the request fell through to finalize
+    // — silently bypassing a real verification failure (score < 75).
+    //
+    // Simulate by spying on prisma.executionRun.update so the FIRST call
+    // (the audit) throws, while subsequent calls work normally (the
+    // finalize path needs them).
+    const updateSpy = vi.spyOn(testPrisma.executionRun, 'update');
+    let throwOnce = true;
+    updateSpy.mockImplementationOnce(((args: unknown) => {
+      if (throwOnce) {
+        throwOnce = false;
+        return Promise.reject(new Error('simulated DB drop during audit write'));
+      }
+      // fall through to the real implementation for any subsequent call
+      return testPrisma.executionRun.update.call(testPrisma.executionRun, args as never);
+    }) as never);
+
+    mockState.nextResult = JSON.stringify({
+      verified: false,
+      score: 30,
+      breakdown: { specificity: 30, coherence: 30, coverage: 30 },
+      gaps: ['no evidence'],
+      feedback: 'Score too low.',
+    });
+    mockState.modelName = 'mock-model-v1';
+
+    const runId = await startRun();
+    await testPrisma.task.update({ where: { id: taskId }, data: { status: 'in_progress' } });
+
+    try {
+      const res = await runActionPost(
+        makeReq(`/api/projects/${projectId}/tasks/${taskId}/runs/${runId}?action=complete`, {
+          method: 'POST',
+          userName: owner,
+          body: {
+            status: 'completed',
+            outputSummary: 'done',
+            deliverablesMet: ['Deliverable A: implemented foo'],
+          },
+        }),
+        { params: { projectId, taskId, runId } },
+      );
+
+      // Verification result must win even though the audit write failed.
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body.error.code).toBe('COMPLETION_VERIFICATION_FAILED');
+      expect(body.error.details.score).toBe(30);
+    } finally {
+      updateSpy.mockRestore();
+    }
+  });
+
   it('AI unavailable (raw === null) records feedback="AI unavailable, allowed through"', async () => {
     mockState.nextResult = null;
     mockState.modelName = null;
