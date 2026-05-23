@@ -1429,7 +1429,7 @@
 
 #### R-070 [MEDIUM] AI loop 添加 token 预算估算
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: R-063
 - **effort**: medium
