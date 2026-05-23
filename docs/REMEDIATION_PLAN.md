@@ -76,7 +76,7 @@
 | ----------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
 | `superseded_by: R-YYY`  | 单个 R-ID（**机读，不带说明文本**） | **强语义**：cron **必须跳过**本条，无条件优先 pickup `R-YYY`。                                                      | 同目标的两条条目，新条目完全取代旧条目（如 R-144 → R-182）。  |
 | `interim_for: R-YYY`    | 单个 R-ID                           | **弱语义 / 过渡条目**：仅当 `R-YYY.status ∈ {in_progress, done, cancelled}` 时 cron 跳过本条；否则本条仍可 pickup。 | 终态方案未启动前的过渡补丁（如 R-138/R-139/R-088 → 等 B14）。 |
-| `supersedes: R-YYY[,…]` | 一个或多个 R-ID                     | cron pickup 本条时，**必须**把列出的每个 `R-YYY` 状态置为 `cancelled (superseded_by R-本条)`。                      | 终态方案对应的"宣告取代"链（如 R-182.supersedes: R-144）。    |
+| `supersedes: R-YYY[,…]` | 一个或多个 R-ID                     | cron pickup 本条时，**必须**把列出的每个 `R-YYY` 状态置为 `cancelled` 并加 `cancelled_by: R-本条` 字段。            | 终态方案对应的"宣告取代"链（如 R-182.supersedes: R-144）。    |
 
 > **机读约束**：以上三个字段的值**必须只包含 R-ID（与逗号分隔）**，不允许内嵌中文说明或括号注释；如需补充说明，写到 `note` 字段或正文段落，不要污染机读字段。
 >
@@ -198,7 +198,8 @@
 
 - **status**: pending
 - **batch**: B1
-- **depends_on**: R-008（先加 superseded 状态）
+- **depends_on**: R-008
+- **note**: R-008 introduces the `superseded` execution-run status that this entry uses; do not pickup R-002 until R-008 is done or cancelled.
 - **effort**: medium
 - **files**: `packages/api/src/lib/drift-engine.ts` (行 143-153), `packages/api/prisma/schema.prisma`
 - **symptom**: rebind 之后 agent 内进程不受影响，继续按旧 plan 工作，最后还能 complete
@@ -782,7 +783,7 @@
 
 - **status**: pending
 - **batch**: B4
-- **depends_on**: R-027..R-033
+- **depends_on**: R-027, R-028, R-029, R-030, R-031, R-032, R-033
 - **effort**: medium
 - **files**: 新增 `packages/mcp-server/tests/schema-drift.test.ts`
 - **symptom**: 字段在 shared 加了但 MCP 忘改
@@ -1513,7 +1514,8 @@
 - **status**: blocked
 - **blocked_reason**: B4 远未完成（R-027/028/030/031/032/033/034/036/037/038/039/040 仍在 in_progress/pending），且本条 rollback 显式建议"每个 enum 单独一批"与 autonomous run 的"1 PR 只实现 1 个 R-XXX"硬约束冲突；需先等 B4 收口并把本条拆成 12 个子条目（每个 enum 一条）再 unblock。
 - **batch**: B8
-- **depends_on**: B4 完成
+- **depends_on**: R-027, R-028, R-031
+- **note**: Logical dependency: every B4 schema-tightening entry (R-027..R-040). The three IDs above are the load-bearing ones that lock in the canonical task / drift status enums; the rest of B4 is taste / typing tightening that can land in either order.
 - **effort**: large
 - **files**: schema.prisma + 大迁移
 - **symptom**: typo 落库
@@ -2031,8 +2033,9 @@
 - **status**: blocked
 - **blocked_reason**: B1 batch not done (R-001..R-006/R-008 still pending/in_progress) and entry is a stub with no fix_steps / files / verification to follow
 - **batch**: B12
-- **depends_on**: B1 完成
+- **depends_on**: R-001, R-002, R-008
 - **effort**: small
+- **note**: Logical dependency on the B1 batch landing — the three IDs above are the load-bearing ones that ship the new drift-cancel and superseded-run paths these tests need to exercise.
 
 ---
 
@@ -2089,8 +2092,9 @@
 - **status**: blocked
 - **blocked_reason**: depends_on 字段写的是文本 "B1 完成" 而不是机读 R-ID 列表；实际核对 B1 批次：R-001/R-008 仍 in_progress，R-002/R-003/R-004/R-005/R-006/R-142 仍 pending（仅 R-007 done），整个 B1 端到端流程（plan v2 激活 → run superseded → SSE 触发 → ai-loop abort → user rebind → task todo → 新 run 可启动）所依赖的代码路径并未全部落地，无法在当前 master 上写出可通过的 e2e 测试；同时 fix_steps 仅给出一行场景描述，没有具体测试文件路径、断言或 fixture 设计，需在 B1 整批 done 后由人工补充再 unblock。
 - **batch**: B12
-- **depends_on**: B1 完成
+- **depends_on**: R-001, R-002, R-003, R-004, R-005, R-008
 - **effort**: medium
+- **note**: Logical dependency on the entire B1 batch landing — these six IDs together close the drift / superseded / abort / rebind loop that this end-to-end suite exercises.
 - **fix_steps**:
   - 场景：plan v2 激活 → run.status → superseded → SSE 触发 → ai-loop abort → user 调 rebind → task todo → 新 run 可启动
 - **verification**: e2e 通过
@@ -3078,106 +3082,113 @@
 ```bash
 #!/usr/bin/env bash
 # /opt/plansync-cron/dispatch.sh
-# Reference implementation. Production: use scripts/lint-remediation.mjs.
+# Production-quality dispatcher. Prefers the Node helper for correctness;
+# falls back to the in-script bash logic only when node is unavailable
+# (e.g. minimal cron host). Both paths implement the same spec from
+# §"给 cron job 的解析约定".
 set -euo pipefail
 cd /opt/plansync-repo
 git fetch origin && git checkout master && git pull
 
-# 抽 R-XXX 段落里的某个字段；找不到回 ""。
-# Bug fix: the previous version used `,/^#### R-/p` as the sed range end —
-# that regex matches the section's OWN header line (it starts with `^#### R-`),
-# so the range was empty and every field came back blank. Use awk to walk
-# from the section header to the next `^#### R-` header (exclusive).
-field_of() {
-  local id="$1" key="$2"
-  awk -v id="$id" -v key="$key" '
-    BEGIN { inside = 0 }
-    /^#### R-[0-9]+ / {
-      if (inside) exit
-      if ($2 == id) { inside = 1; next }
-    }
-    inside && $0 ~ "^- \\*\\*" key "\\*\\*:" {
-      sub("^- \\*\\*" key "\\*\\*:[[:space:]]*", "")
-      print
-      exit
-    }
-  ' docs/REMEDIATION_PLAN.md
-}
-
-status_of()        { field_of "$1" status        | awk '{print $1}'; }
-severity_of()      { field_of "$1" severity      ; }   # not currently used
-deps_of()          { field_of "$1" depends_on; }
-superseded_by_of() { field_of "$1" superseded_by; }
-interim_for_of()   { field_of "$1" interim_for; }
-supersedes_of()    { field_of "$1" supersedes; }
-
-# Severity to priority weight (highest first)
-sev_weight() {
-  case "$1" in
-    CRITICAL) echo 4 ;;
-    HIGH)     echo 3 ;;
-    MEDIUM)   echo 2 ;;
-    LOW)      echo 1 ;;
-    *)        echo 0 ;;
+# ---- Preferred path: scripts/lint-remediation.mjs --dispatch ---------------
+# Pure-Node parser, fully tested in CI; output is the chosen R-ID on stdout
+# (or empty if there is no pickable candidate). Lint errors abort the run.
+if command -v node >/dev/null 2>&1 && [ -f scripts/lint-remediation.mjs ]; then
+  PICK="$(node scripts/lint-remediation.mjs --dispatch || exit 99)"
+  case "${PICK:-}" in
+    R-[0-9][0-9][0-9]) ;;             # ok
+    "")    echo "No pickable entry"; exit 0 ;;
+    *)     echo "lint-remediation --dispatch returned unexpected: '$PICK'"; exit 1 ;;
   esac
-}
+else
+  # ---- Fallback: pure bash (POSIX awk only, no gawk extensions) ------------
+  field_of() {
+    local id="$1" key="$2"
+    # POSIX awk: no gawk-specific match($0, re, m) third arg. We walk from
+    # the section header to the next ^#### R- (exclusive) and capture the
+    # field value with sub().
+    awk -v id="$id" -v key="$key" '
+      BEGIN { inside = 0 }
+      /^#### R-[0-9]+ / {
+        if (inside) exit
+        if ($2 == id) { inside = 1; next }
+      }
+      inside && $0 ~ "^- \\*\\*" key "\\*\\*:" {
+        sub("^- \\*\\*" key "\\*\\*:[[:space:]]*", "")
+        print
+        exit
+      }
+    ' docs/REMEDIATION_PLAN.md
+  }
+  status_of()        { field_of "$1" status | awk '{print $1}'; }
+  deps_of()          { field_of "$1" depends_on; }
+  superseded_by_of() { field_of "$1" superseded_by; }
+  interim_for_of()   { field_of "$1" interim_for; }
 
-# 1) 抽 R-ID + 严重度（从 #### 标题里提取的 [SEVERITY]），过滤候选并按
-#    严重度降序排序。
-CANDIDATES=$(awk '
-  match($0, /^#### (R-[0-9]+) \[([A-Z]+)\] /, m) { print m[1] " " m[2] }
-' docs/REMEDIATION_PLAN.md)
-
-PICK=""
-PICK_WEIGHT=-1
-while IFS=' ' read -r ID SEV; do
-  [ -z "$ID" ] && continue
-  [ "$(status_of "$ID")" = "pending" ] || continue
-
-  # 强取代：superseded_by 非空 → 直接跳过。
-  SUP=$(superseded_by_of "$ID")
-  [ -n "$SUP" ] && [ "$SUP" != "—" ] && continue
-
-  # 过渡条目：interim_for 非空 + 目标条目已启动/完成/放弃 → 跳过。
-  INT=$(interim_for_of "$ID")
-  if [ -n "$INT" ] && [ "$INT" != "—" ]; then
-    TGT_STATUS=$(status_of "$INT")
-    case "$TGT_STATUS" in
-      in_progress|done|cancelled) continue ;;
+  sev_weight() {
+    case "$1" in
+      CRITICAL) echo 4 ;; HIGH) echo 3 ;; MEDIUM) echo 2 ;; LOW) echo 1 ;;
+      *)        echo 0 ;;
     esac
-  fi
+  }
 
-  # depends_on：每一项必须 done 或 cancelled（cancelled 是 supersedes 链
-  # 的等价 done）。
-  DEPS=$(deps_of "$ID")
-  if [ -n "$DEPS" ] && [ "$DEPS" != "—" ]; then
-    UNMET=0
-    for D in $(echo "$DEPS" | tr ',' ' '); do
-      D=$(echo "$D" | xargs)
-      [ -z "$D" ] && continue
-      DSTAT=$(status_of "$D")
-      case "$DSTAT" in
-        done|cancelled) ;;
-        *) UNMET=1; break ;;
+  # POSIX awk: extract R-ID + severity from headers. The previous draft of
+  # this loop used gawk's `match(...,m)` 3-arg form, which is not portable
+  # (#357). Use sub() instead.
+  CANDIDATES=$(awk '
+    /^#### R-[0-9]+ \[[A-Z]+\] / {
+      sev = $0
+      sub(/^.*\[/, "", sev); sub(/\].*$/, "", sev)
+      print $2 " " sev
+    }
+  ' docs/REMEDIATION_PLAN.md)
+
+  PICK=""
+  PICK_WEIGHT=-1
+  while IFS=' ' read -r ID SEV; do
+    [ -z "$ID" ] && continue
+    [ "$(status_of "$ID")" = "pending" ] || continue
+    SUP=$(superseded_by_of "$ID")
+    [ -n "$SUP" ] && [ "$SUP" != "—" ] && continue
+    INT=$(interim_for_of "$ID")
+    if [ -n "$INT" ] && [ "$INT" != "—" ]; then
+      case "$(status_of "$INT")" in
+        in_progress|done|cancelled) continue ;;
       esac
-    done
-    [ $UNMET -eq 1 ] && continue
-  fi
+    fi
+    DEPS=$(deps_of "$ID")
+    if [ -n "$DEPS" ] && [ "$DEPS" != "—" ]; then
+      UNMET=0
+      for D in $(echo "$DEPS" | tr ',' ' '); do
+        D=$(echo "$D" | xargs)
+        [ -z "$D" ] && continue
+        case "$(status_of "$D")" in
+          done|cancelled) ;;
+          *) UNMET=1; break ;;
+        esac
+      done
+      [ $UNMET -eq 1 ] && continue
+    fi
+    # Candidate. R-ID natural-order tie-break on equal severity (#328): we
+    # only update PICK when the new weight is STRICTLY greater, so the
+    # first R-ID at any given weight wins; since CANDIDATES is emitted in
+    # file order (R-001, R-002, ...) this matches the spec.
+    W=$(sev_weight "$SEV")
+    if [ "$W" -gt "$PICK_WEIGHT" ]; then
+      PICK="$ID"
+      PICK_WEIGHT="$W"
+    fi
+  done <<<"$CANDIDATES"
 
-  # 候选：保留权重最高的一个。
-  W=$(sev_weight "$SEV")
-  if [ "$W" -gt "$PICK_WEIGHT" ]; then
-    PICK="$ID"
-    PICK_WEIGHT="$W"
-  fi
-done <<<"$CANDIDATES"
+  [ -z "$PICK" ] && { echo "No pickable entry"; exit 0; }
+fi
 
-[ -z "$PICK" ] && { echo "No pickable entry"; exit 0; }
-
-# 2) 调 Cloud Agent；agent 自身负责处理 supersedes（pickup 本条时把列出
-#    的每个 R-YYY 改 status: cancelled + cancelled_by: $PICK 并 commit）。
+# ---- Dispatch ---------------------------------------------------------------
+# The agent prompt explicitly tells the agent to update supersedes targets
+# to status: cancelled and add cancelled_by: $PICK to each — without that
+# bookkeeping, the next cron tick would re-pickup the same R-YYY.
 cursor-agent dispatch \
-  --prompt "Implement task $PICK from docs/REMEDIATION_PLAN.md. Read the file, find the section for $PICK, follow fix_steps exactly, add verification tests, open a PR. If the entry has a 'supersedes:' field, set each listed R-YYY to status: cancelled (cancelled_by: $PICK) in the same PR. After PR is opened, update the entry to status: in_progress + closed_in: <PR URL>." \
+  --prompt "Implement task $PICK from docs/REMEDIATION_PLAN.md. Read the file, find the section for $PICK, follow fix_steps exactly, add verification tests, open a PR. If the entry has a 'supersedes:' field, for each listed R-YYY set status: cancelled and append cancelled_by: $PICK in the same PR. After PR is opened, update the entry to status: in_progress + closed_in: <PR URL>." \
   --base master \
   --branch "cursor/$PICK-auto"
 ```
