@@ -2189,7 +2189,7 @@
 
 #### R-127 [MEDIUM] 并发 claim 压力测试
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B12
 - **depends_on**: R-049
 - **effort**: small
