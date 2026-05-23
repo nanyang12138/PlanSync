@@ -50,6 +50,12 @@ export async function predictConflicts(
         // type/severity/recommendation, which downstream UI rendered as
         // 'undefined' strings and caused noisy alerts.
         if (!Array.isArray(obj.taskIds)) return false;
+        // #199/#216/#223: a "conflict" with fewer than 2 task ids is
+        // semantically nonsense (you cannot have a conflict between zero
+        // or one task). The original predicate accepted [] and [single]
+        // because every() returns true vacuously, which let the UI
+        // render conflict badges that pointed at a single (or no) task.
+        if (obj.taskIds.length < 2) return false;
         if (!obj.taskIds.every((t) => typeof t === 'string' && t.length > 0)) return false;
         if (typeof obj.type !== 'string' || obj.type.length === 0) return false;
         if (typeof obj.severity !== 'string' || obj.severity.length === 0) return false;
