@@ -2739,7 +2739,8 @@
 
 #### R-161 [CRITICAL] 全部 `eventBus.publish` 改写 `outbox.emit`
 
-- **status**: pending
+- **status**: blocked
+- **blocked_reason**: 当前 fix_steps 让 R-161 单独发版会让 SSE/webhook/email/activity 在 R-162（worker）落地之前全部静默丢失；同时该改动需要重写 `drift-engine-side-effects.test.ts`、`drift-engine-notifications.test.ts`、`r052-reactivate-tx.test.ts`、`activity.test.ts` 等约 30 处 spy 断言，与 verification 字段只列 1 条 vitest 不匹配。建议把 R-161 + R-162 合并为一次原子迁移，或先引入 dual-write 过渡条目（同时调旧 sink 与 outbox.emit），再补 R-161 的最终切换。
 - **batch**: B14
 - **depends_on**: R-160
 - **effort**: large
