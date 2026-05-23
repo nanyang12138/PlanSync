@@ -1,0 +1,28 @@
+model: gpt-5.5-extra-high
+language: zh-CN
+review_focus:
+  - correctness
+  - security
+  - performance
+  - tests
+  - edge-cases
+max_findings: 5
+max_diff_bytes: 120000
+max_files: 20
+max_hunks: 80
+timeout_seconds: 600
+filter_mode: added
+scope_mode: full
+persistent_comment: true
+skip_generated_files: true
+exclude_patterns:
+  - '*.lock'
+  - '.cursor/plans/**'
+  - 'artifacts/**'
+  - 'dist/**'
+  - 'build/**'
+enabled_commands:
+  - review
+  - ask
+  - improve
+  - describe
