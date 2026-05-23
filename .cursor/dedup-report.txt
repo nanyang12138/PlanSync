@@ -1,0 +1,96 @@
+# DUPLICATE / SUPERSEDED ISSUE INVENTORY
+
+Total open issues now: 252
+Clusters identified: 28
+
+Issues that should auto-close on PR merge OR can be closed now: 102
+Issues from clusters that are already closed: 3
+
+## Already addressed in merged PR #178 (PR-A: REMEDIATION_PLAN consistency)
+  STILL OPEN (17): #109, #110, #111, #112, #113, #114, #115, #116, #117, #118, #119, #120, #157, #158, #159, #160, #161
+
+## Already addressed in merged PR #186 (PR-B: drift-gate pagination)
+  STILL OPEN (3): #147, #148, #149
+
+## Already addressed in merged PR #190 (PR-D: CORS/SSE credentialed)
+  STILL OPEN (1): #135
+  already closed: #134
+
+## Already addressed in merged PR #197 (PR-G: conflict-prediction predicate)
+  STILL OPEN (1): #138
+  already closed: #137
+
+## Already addressed in merged PR #198 (PR-I: R-049 schema cleanup)
+  already closed: #123
+
+## Already addressed in merged PR #205 (PR-H: comments parentId)
+  STILL OPEN (1): #162
+
+## Already addressed in merged PR #264 (deps: SDK 1.29 — partial)
+  STILL OPEN (1): #142
+
+## Already addressed in merged PR #280 (PR-K: nightly e2e LOCAL_NODE — partial)
+  STILL OPEN (1): #143
+
+## Closed by open PR #326 (PR-A2: REMEDIATION_PLAN cancelled-state semantics)
+  STILL OPEN (20): #207, #208, #209, #210, #220, #221, #222, #225, #226, #227, #228, #229, #235, #236, #237, #238, #239, #241, #242, #243
+
+## Closed by open PR #331 (PR-B2: drift-gate exact-fill page boundary)
+  STILL OPEN (5): #187, #188, #189, #217, #218
+
+## Closed by open PR #336 (PR-D2: middleware CORS/SSE follow-up)
+  STILL OPEN (6): #200, #244, #247, #248, #249, #295
+
+## Closed by open PR #337 (PR-G2: conflict-prediction taskIds.length >= 2)
+  STILL OPEN (3): #199, #216, #223
+
+## Closed by open PR #353 (PR-J: next-cache BUILD_DIR + lockfile)
+  STILL OPEN (4): #286, #287, #288, #289
+
+## Closed by open PR #370 (PR-W: run-worker .env + DB validation + warn)
+  STILL OPEN (7): #230, #231, #258, #259, #262, #266, #274
+
+## Closed by open PR #375 (PR-Z: zod alignment to ~3.25)
+  STILL OPEN (2): #276, #279
+
+## Closed by open PR #422 (PR-X1: AI verify catch separation)
+  STILL OPEN (2): #184, #185
+
+## Closed by open PR #432 (PR-X2: R-135 audit on every task route)
+  STILL OPEN (4): #206, #255, #256, #257
+
+## Duplicate of #154 (covered by open PR-E #240)
+  STILL OPEN (2): #174, #213
+
+## Duplicate of #155 (covered by open PR-E #240)
+  STILL OPEN (1): #214
+
+## Duplicate of #140/#141 (covered by open PR-F #212)
+  STILL OPEN (2): #203, #204
+
+## Duplicate of #128 — same _truncated forwarding concern (covered by open PR-C #250)
+  STILL OPEN (3): #165, #166, #179
+
+## Duplicate of #130 — same bus_resync_required gap (covered by open PR-C #250)
+  STILL OPEN (3): #253, #254, #311
+
+## Duplicate of #131 — same UNLISTEN concern (covered by open PR-C #250)
+  STILL OPEN (1): #195
+
+## Same finding (cluster): notifyClient error event does not trigger reconnect
+  STILL OPEN (3): #164, #181, #193
+
+## Same finding (cluster): createEventBus try/catch only covers sync require
+  STILL OPEN (3): #167, #180, #192
+
+## Same finding (cluster): Web SSE consumer missing bus_resync_required listener
+  STILL OPEN (3): #251, #252, #309
+
+## Duplicate of #154 — review on in-flight PR #151 (different reviewer same finding)
+  STILL OPEN (2): #175, #215
+
+## Duplicate of #155 — review on in-flight PR #151
+  STILL OPEN (1): #177
+
+# Numbers ready for `gh issue close`:
+109 110 111 112 113 114 115 116 117 118 119 120 135 138 142 143 147 148 149 157 158 159 160 161 162 164 165 166 167 174 175 177 179 180 181 184 185 187 188 189 192 193 195 199 200 203 204 206 207 208 209 210 213 214 215 216 217 218 220 221 222 223 225 226 227 228 229 230 231 235 236 237 238 239 241 242 243 244 247 248 249 251 252 253 254 255 256 257 258 259 262 266 274 276 279 286 287 288 289 295 309 311

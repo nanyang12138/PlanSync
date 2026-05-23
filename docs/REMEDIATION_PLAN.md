@@ -2608,7 +2608,7 @@
 
 #### R-160 [CRITICAL] 新增 `domain_events` 表 + 事务内 Outbox writer API
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B14
 - **depends_on**: —
 - **effort**: medium
