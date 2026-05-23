@@ -1942,7 +1942,7 @@
 
 #### R-104 [HIGH] plan PATCH 写 activity
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B11
 - **depends_on**: R-033
 - **effort**: small
