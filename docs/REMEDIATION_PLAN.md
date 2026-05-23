@@ -2910,8 +2910,8 @@
 #### R-175 [HIGH] MCP tool surface 收敛到 ≤ 12 个
 
 - **status**: in_progress
-- **closed_in**: PR#TBD-r175-step1
-- **note**: Sliced into 3 PRs by fix*step number. step 1 (plan*_*append → plan_patch) is in flight in PR#TBD-r175-step1; steps 2 (execution*_ → run) and 3 (task\_\* → task) will each ship as separate follow-up PRs to keep merge-conflict surface bounded.
+- **closed_in**: PR#664
+- **note**: Sliced into 3 PRs by fix*step number. step 1 (plan*_*append → plan_patch) is in flight in PR#664; steps 2 (execution*_ → run) and 3 (task\_\* → task) will each ship as separate follow-up PRs to keep merge-conflict surface bounded.
 - **batch**: B15
 - **depends_on**: R-027, R-030
 - **effort**: large
