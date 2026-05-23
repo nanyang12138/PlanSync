@@ -451,7 +451,7 @@
 
 #### R-014 [MEDIUM] 密码 Bearer 模式仅在开发环境保留
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B2
 - **depends_on**: R-013
 - **effort**: small
