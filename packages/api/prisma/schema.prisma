@@ -444,8 +444,51 @@ model Webhook {
   createdAt DateTime @default(now()) @map("created_at")
 
   deliveries WebhookDelivery[]
+  jobs       WebhookJob[]
 
   @@map("webhooks")
+}
+
+// R-139: persistent webhook retry queue. Before R-139 the 0s/1s/5s/30s
+// backoff between attempts lived entirely in `setTimeout` chains inside
+// `deliverWithRetry`. An API restart mid-backoff dropped every in-flight
+// retry: the row was never written, the receiver never saw a 200, and
+// the user was told "delivered" because the foreground request had
+// already returned. With this table the dispatcher writes one durable
+// job per webhook subscription per event and a dedicated worker
+// (`webhook-worker.ts`) is the only thing that performs HTTP — so a
+// process restart loses at most the in-flight HTTP request, not the
+// retry schedule.
+//
+// Status values are intentionally narrow strings (not a Prisma enum) so
+// the migration stays additive and the worker can grow new states
+// (`paused`, `cancelled`, ...) without a schema migration.
+//   - pending   — visible to the worker once `nextAttemptAt <= now()`.
+//   - in_flight — worker has claimed the row for HTTP. Reset to
+//     `pending` (with a fresh `nextAttemptAt`) on retry, or finalised to
+//     `delivered` / `failed` once the attempt is done.
+//   - delivered — terminal success.
+//   - failed    — terminal failure after `MAX_ATTEMPTS` attempts (or a
+//     non-recoverable error such as the parent webhook being inactive).
+model WebhookJob {
+  id            String   @id @default(cuid())
+  webhookId     String   @map("webhook_id")
+  webhook       Webhook  @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+  event         String
+  body          Json
+  attempt       Int      @default(0)
+  status        String   @default("pending")
+  nextAttemptAt DateTime @default(now()) @map("next_attempt_at")
+  lastError     String?  @map("last_error")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  // The worker's hot query is "find the next pending job whose backoff has
+  // elapsed". A composite index on (status, next_attempt_at) keeps that
+  // query index-only even when the historical table grows large.
+  @@index([status, nextAttemptAt])
+  @@index([webhookId])
+  @@map("webhook_jobs")
 }
 
 model WebhookDelivery {

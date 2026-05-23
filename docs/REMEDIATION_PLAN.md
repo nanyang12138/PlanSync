@@ -2422,7 +2422,7 @@
 
 #### R-139 [HIGH] webhook 重试改为持久化队列
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B9
 - **depends_on**: R-138
 - **interim_for**: R-164
