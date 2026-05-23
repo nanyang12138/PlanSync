@@ -39,10 +39,22 @@ export async function POST(req: NextRequest, { params }: Params) {
     }
 
     const oldVersion = task.boundPlanVersion;
+    // R-004: rebind is "explicit restart" — reset non-terminal tasks to
+    // `todo` and mark stale runs as `superseded`. Terminal states (`done`,
+    // `cancelled`) preserve their status; only the version reference moves.
+    const TERMINAL_TASK_STATES = ['done', 'cancelled'] as const;
+    const isTerminal = (TERMINAL_TASK_STATES as readonly string[]).includes(task.status);
     const updated = await prisma.$transaction(async (tx) => {
       const t = await tx.task.update({
         where: { id: params.taskId },
-        data: { boundPlanVersion: activePlan.version },
+        data: {
+          boundPlanVersion: activePlan.version,
+          ...(isTerminal ? {} : { status: 'todo' }),
+        },
+      });
+      await tx.executionRun.updateMany({
+        where: { taskId: params.taskId, status: { in: ['paused', 'running'] } },
+        data: { status: 'superseded', endedAt: new Date() },
       });
       await tx.driftAlert.updateMany({
         where: { taskId: params.taskId, projectId: params.projectId, status: 'open' },

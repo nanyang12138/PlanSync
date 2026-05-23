@@ -334,7 +334,13 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
       expect(r?.endedAt).not.toBeNull();
       const task = await testPrisma.task.findUnique({ where: { id: phaseTaskId } });
       expect(task?.boundPlanVersion).toBe(phaseV2Version);
-      expect(task?.status).toBe('in_progress');
+      // R-004: rebind is "explicit restart" — non-terminal tasks reset to
+      // `todo` so a fresh execution_start must run against the new plan
+      // version. Previously this stayed at 'in_progress', but that left
+      // the task in a torn state (no live run, but status implied work
+      // was ongoing). See packages/api/tests/integration/
+      // r004-rebind-explicit-restart.test.ts for the full behavior.
+      expect(task?.status).toBe('todo');
     });
   });
 
