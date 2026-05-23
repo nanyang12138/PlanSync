@@ -228,6 +228,47 @@ describe('McpClient — callTool single retry on transport error (R-022)', () =>
     expect(client._getConsecutiveCrashesForTests()).toBe(0);
   });
 
+  it('stop() synchronously rejects pending requests with "MCP shutdown" (R-024)', async () => {
+    // R-024 fix: previously `stop()` only killed the subprocess and the
+    // async `exit` handler was responsible for rejecting pending requests.
+    // Because `stop()` nulled `this.proc` first, the exit handler's
+    // identity check (`this.proc !== proc`) skipped the cleanup branch and
+    // pending Promises hung until their per-request 30 s timeout fired.
+    //
+    // The fix rejects every pending request synchronously inside `stop()`
+    // and clears the map. This test inserts a sentinel entry into the
+    // private `pending` map (the same map `callTool` populates) and
+    // verifies that its rejection fires the moment `stop()` returns.
+    await client.start(FAKE_SERVER);
+    expect(client.isRunning()).toBe(true);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pendingMap = (client as any).pending as Map<
+      number,
+      { resolve: (v: unknown) => void; reject: (e: Error) => void }
+    >;
+
+    const inflight = new Promise<unknown>((resolve, reject) => {
+      pendingMap.set(424242, { resolve, reject });
+    });
+
+    expect(pendingMap.size).toBeGreaterThanOrEqual(1);
+
+    client.stop();
+
+    // The pending map must be drained synchronously by stop().
+    expect(pendingMap.size).toBe(0);
+
+    // And the captured promise must reject with the documented message,
+    // without waiting for the per-request 30 s timeout.
+    await expect(inflight).rejects.toThrow(/MCP shutdown/);
+
+    // Intentional shutdown — must not bump the crash counter even though
+    // we rejected an "in-flight" entry.
+    expect(client._getConsecutiveCrashesForTests()).toBe(0);
+    expect(client.isHealthy()).toBe(true);
+  });
+
   it('callTool surfaces JSON-RPC errors without retrying (no infinite loop on real failures)', async () => {
     // R-022 must NOT retry on non-transport errors — retrying a malformed
     // argument or a server-side rejection is never useful and can mask bugs.

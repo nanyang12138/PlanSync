@@ -635,7 +635,7 @@
 
 #### R-024 [MEDIUM] MCP stop() 清理 pending requests
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B3
 - **depends_on**: R-021
 - **effort**: small

@@ -306,6 +306,23 @@ export class McpClient {
         /* swallow kill errors — the process may already be dead */
       }
     }
+    // R-024: synchronously reject every pending request before nulling out
+    // `proc`. The async `exit` event from kill() above would land in
+    // handleExit() *after* `this.proc = null` flips its identity check, so
+    // the pending map would otherwise live until each request's 30 s
+    // timeout fires (the `stop 之后 pending Promise 永远不 resolve` bug).
+    // Rejecting here closes that gap deterministically.
+    if (this.pending.size > 0) {
+      const err = new Error('MCP shutdown');
+      for (const { reject } of this.pending.values()) {
+        try {
+          reject(err);
+        } catch {
+          /* swallow listener errors — pending must be cleared regardless */
+        }
+      }
+      this.pending.clear();
+    }
     this.proc = null;
   }
 
