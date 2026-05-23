@@ -44,7 +44,15 @@ import { sendMail } from '@/lib/email';
 import { prisma } from '@/lib/prisma';
 
 type Tx = {
-  driftAlert: { createManyAndReturn: ReturnType<typeof vi.fn> };
+  // R-051: persistDriftAlerts supersedes prior open alerts before creating
+  // new ones, so the in-tx surface now includes driftAlert.updateMany as
+  // well. Keeping both writes inside the same tx is part of the
+  // R-007 invariant this file guards — no SSE / email from inside the
+  // transaction.
+  driftAlert: {
+    createManyAndReturn: ReturnType<typeof vi.fn>;
+    updateMany: ReturnType<typeof vi.fn>;
+  };
   task: { updateMany: ReturnType<typeof vi.fn> };
   executionRun: { updateMany: ReturnType<typeof vi.fn> };
 };
@@ -55,6 +63,7 @@ function buildTx(overrides: Partial<Tx> = {}): Tx {
       createManyAndReturn:
         overrides.driftAlert?.createManyAndReturn ??
         vi.fn().mockResolvedValue([{ id: 'a1', taskId: 't1', severity: 'high' }]),
+      updateMany: overrides.driftAlert?.updateMany ?? vi.fn().mockResolvedValue({ count: 0 }),
     },
     task: {
       updateMany: overrides.task?.updateMany ?? vi.fn().mockResolvedValue({ count: 1 }),
@@ -100,6 +109,8 @@ describe('R-007 — persistDriftAlerts has no in-tx SSE/email side-effects', () 
     await persistDriftAlerts(tx as any, 'p1', sampleAlerts);
 
     expect(tx.driftAlert.createManyAndReturn).toHaveBeenCalledTimes(1);
+    // R-051: supersede pass runs inside the same tx before createMany.
+    expect(tx.driftAlert.updateMany).toHaveBeenCalledTimes(1);
     expect(tx.task.updateMany).toHaveBeenCalledTimes(1);
     expect(tx.executionRun.updateMany).toHaveBeenCalledTimes(1);
     // The global prisma.task.findMany used to be called inside the function;

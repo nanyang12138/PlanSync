@@ -233,6 +233,28 @@ export async function persistDriftAlerts(
 ) {
   if (alerts.length === 0) return [];
 
+  // R-051: at most one open DriftAlert per task. Before writing the freshly
+  // computed alerts, supersede every existing open alert on the affected
+  // tasks so the new ones become the single open row each. Without this
+  // step, the partial unique index `drift_alerts_one_open_per_task` (see
+  // migration 20260523100000) would reject the createMany when the task
+  // already has an open row from a prior activation.
+  //
+  // Marked as `resolvedAction='superseded'`, `resolvedBy='system'` so the
+  // history is preserved and clearly attributed to the engine rather than
+  // a human operator. Both writes live inside the caller's transaction so
+  // a rollback restores the prior open alerts untouched.
+  const supersedeTaskIds = Array.from(new Set(alerts.map((a) => a.taskId)));
+  await tx.driftAlert.updateMany({
+    where: { taskId: { in: supersedeTaskIds }, status: 'open' },
+    data: {
+      status: 'resolved',
+      resolvedAction: 'superseded',
+      resolvedBy: 'system',
+      resolvedAt: new Date(),
+    },
+  });
+
   const created = await tx.driftAlert.createManyAndReturn({
     data: alerts.map((a) => ({
       projectId,

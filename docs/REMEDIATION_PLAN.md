@@ -1116,7 +1116,7 @@
 
 #### R-051 [HIGH] drift_alert 触发用 upsert 避免重复
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B6
 - **depends_on**: R-008
 - **effort**: medium
@@ -2602,7 +2602,8 @@
 
 #### R-151 [CRITICAL] 历史 plan 数据双写迁移：String[] → 分表
 
-- **status**: pending
+- **status**: in_progress
+- **closed_in**: PR#691
 - **batch**: B13
 - **depends_on**: R-150
 - **effort**: large
