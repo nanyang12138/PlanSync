@@ -134,6 +134,36 @@ export async function POST(req: NextRequest, { params }: Params) {
       metadata: { driftId: drift.id, action: body.action, taskId: drift.taskId },
     });
 
+    // R-107: drift `cancel` is the only action whose side-effect terminates
+    // the task (status='cancelled'), but the `drift_resolved` activity above
+    // only records *how the drift was answered*, not *what happened to the
+    // task*. Without a paired `task_cancelled` row, an owner reading the
+    // activity feed sees the drift acknowledgement and a task that quietly
+    // disappeared from the active board — same audit gap R-105/R-106 closed
+    // for PATCH and DELETE. Emit a dedicated row so the task lifecycle is
+    // fully reconstructable from activities alone.
+    //
+    // Only write this for `cancel` — `no_impact` and `rebind` do not move
+    // the task to a terminal state, so a `task_cancelled` row there would
+    // be a lie. The drift_resolved row above remains the audit trail for
+    // those two paths.
+    if (body.action === 'cancel') {
+      await createActivity({
+        projectId: params.projectId,
+        type: 'task_cancelled',
+        actorName: auth.userName,
+        actorType: 'human',
+        summary: `Task "${drift.task.title}" cancelled via drift resolution`,
+        metadata: {
+          taskId: drift.taskId,
+          title: drift.task.title,
+          previousStatus: drift.task.status,
+          driftId: drift.id,
+          reason: 'drift_cancel',
+        },
+      });
+    }
+
     eventBus.publish(params.projectId, 'drift_resolved', {
       alertId: drift.id,
       action: body.action,
