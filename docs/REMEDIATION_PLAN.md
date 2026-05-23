@@ -2012,7 +2012,8 @@
 
 #### R-120 [HIGH] MCP drift_resolve / check_task_conflicts / delegation_clear 单测
 
-- **status**: pending
+- **status**: blocked
+- **blocked_reason**: B1 batch not done (R-001..R-006/R-008 still pending/in_progress) and entry is a stub with no fix_steps / files / verification to follow
 - **batch**: B12
 - **depends_on**: B1 完成
 - **effort**: small
