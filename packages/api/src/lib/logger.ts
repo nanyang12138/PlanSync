@@ -1,4 +1,5 @@
 import pino from 'pino';
+import { env } from './env';
 import { getRequestId } from './request-context';
 
 /**
@@ -11,10 +12,15 @@ export function requestIdMixin(): Record<string, string> {
   return reqId ? { reqId } : {};
 }
 
+// R-112: pull LOG_LEVEL / NODE_ENV from the validated `env` helper instead of
+// `process.env`. env.ts already enforces an enum for LOG_LEVEL (debug | info |
+// warn | error) and NODE_ENV (development | test | production), so a typo no
+// longer silently degrades to pino's default — it fails the boot guard in
+// env.ts's validateEnv() with a clear path/message.
 export const logger = pino({
-  level: process.env.LOG_LEVEL || 'info',
+  level: env.LOG_LEVEL,
   mixin: requestIdMixin,
-  ...(process.env.NODE_ENV === 'development'
+  ...(env.NODE_ENV === 'development'
     ? {
         transport: {
           target: 'pino-pretty',
