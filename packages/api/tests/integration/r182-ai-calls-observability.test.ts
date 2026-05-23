@@ -253,6 +253,12 @@ describe('R-182: /api/ai-usage is owner-gated', () => {
   });
 
   it('returns aggregated buckets for a project owner', async () => {
+    // Vitest forks share the same DB; other suites may write ai_calls in
+    // parallel. Scope the query to "since just before this test inserted"
+    // so totalCalls is robust to cross-suite writes.
+    const since = new Date();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
     await recordAiCall({
       purpose: 'plan_diff',
       provider: 'mock',
@@ -269,7 +275,10 @@ describe('R-182: /api/ai-usage is owner-gated', () => {
       cacheHit: false,
     });
 
-    const req = makeReq('/api/ai-usage', { userName: 'r182-owner' });
+    const req = makeReq('/api/ai-usage', {
+      userName: 'r182-owner',
+      searchParams: { since: since.toISOString() },
+    });
     const res = await aiUsageGet(req);
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
