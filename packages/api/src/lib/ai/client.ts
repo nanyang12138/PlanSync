@@ -28,6 +28,11 @@ interface ProviderConfig {
   parseResponse: (data: unknown) => string | null;
 }
 
+interface ConfiguredProvider {
+  config: ProviderConfig;
+  model: string;
+}
+
 // R-182: callers pass a `purpose` so /api/ai-usage can group by call site.
 // `promptVersion` is opaque and defaults to 'v1' until prompts start
 // versioning themselves.
@@ -145,13 +150,146 @@ function resolveOptions(arg: CompleteArg): AiCompleteOptions {
   return { purpose: 'unspecified' };
 }
 
+function envNumber(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+// R-183: token-bucket per `purpose`. The bucket keeps a runaway caller
+// (eg. a misbehaving drift-enrich loop) from burning the entire AMD
+// quota. Defaults are deliberately generous so test/dev workloads never
+// notice the throttle; tune via PLANSYNC_AI_RATE_LIMIT_* env vars.
+//
+// `capacity <= 0` disables the limiter entirely (tryConsume always
+// returns true) so existing tests that fire many calls per second do not
+// regress.
+export interface TokenBucketState {
+  tokens: number;
+  lastRefillMs: number;
+}
+
+export class TokenBucket {
+  private buckets = new Map<string, TokenBucketState>();
+
+  constructor(
+    private readonly capacity: number,
+    private readonly refillPerSec: number,
+  ) {}
+
+  tryConsume(key: string, now: number = Date.now()): boolean {
+    if (this.capacity <= 0 || this.refillPerSec <= 0) return true;
+    let b = this.buckets.get(key);
+    if (!b) {
+      b = { tokens: this.capacity, lastRefillMs: now };
+      this.buckets.set(key, b);
+    } else {
+      const elapsedSec = Math.max(0, (now - b.lastRefillMs) / 1000);
+      if (elapsedSec > 0) {
+        b.tokens = Math.min(this.capacity, b.tokens + elapsedSec * this.refillPerSec);
+        b.lastRefillMs = now;
+      }
+    }
+    if (b.tokens >= 1) {
+      b.tokens -= 1;
+      return true;
+    }
+    return false;
+  }
+
+  reset(): void {
+    this.buckets.clear();
+  }
+}
+
+// R-183: per (purpose, inputHash) result cache, TTL 5min. Only successful
+// responses are stored. Cache hits short-circuit before the rate limiter
+// AND the provider call, but still write an ai_calls row with
+// `cacheHit=true` so /api/ai-usage shows the saved round-trips.
+//
+// Simple FIFO eviction keeps the implementation dependency-free; a
+// runaway caller can fill the cache with unique hashes but they expire
+// within 5 minutes regardless.
+interface CacheEntry {
+  value: string;
+  provider: string;
+  model: string;
+  outputHash: string | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  expiresAt: number;
+}
+
+export class ResponseCache {
+  private entries = new Map<string, CacheEntry>();
+
+  constructor(
+    private readonly ttlMs: number,
+    private readonly maxEntries: number,
+  ) {}
+
+  key(purpose: string, inputHash: string): string {
+    return `${purpose}:${inputHash}`;
+  }
+
+  get(key: string, now: number = Date.now()): CacheEntry | null {
+    if (this.ttlMs <= 0) return null;
+    const e = this.entries.get(key);
+    if (!e) return null;
+    if (e.expiresAt <= now) {
+      this.entries.delete(key);
+      return null;
+    }
+    return e;
+  }
+
+  set(key: string, entry: Omit<CacheEntry, 'expiresAt'>, now: number = Date.now()): void {
+    if (this.ttlMs <= 0 || this.maxEntries <= 0) return;
+    if (this.entries.size >= this.maxEntries) {
+      const firstKey = this.entries.keys().next().value;
+      if (firstKey !== undefined) this.entries.delete(firstKey);
+    }
+    this.entries.set(key, { ...entry, expiresAt: now + this.ttlMs });
+  }
+
+  reset(): void {
+    this.entries.clear();
+  }
+}
+
+// Per-provider call result. `value=null` with `ok=true` means the
+// provider replied but the response was empty/unparseable — this is a
+// content failure, not a transport failure, so we do NOT fall back to
+// the next provider.
+interface ProviderCallResult {
+  ok: boolean;
+  value: string | null;
+  outputHash: string | null;
+  latencyMs: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  errorCode: string | null;
+}
+
 class AiClient {
-  private provider: ProviderConfig | null = null;
+  private providers: ConfiguredProvider[] = [];
   private model: string;
   private maxRetries = 2;
   private timeout = 60000;
+  private readonly cache: ResponseCache;
+  private readonly rateLimiter: TokenBucket;
 
   constructor() {
+    this.cache = new ResponseCache(
+      envNumber('PLANSYNC_AI_CACHE_TTL_MS', 5 * 60 * 1000),
+      envNumber('PLANSYNC_AI_CACHE_MAX_ENTRIES', 500),
+    );
+    this.rateLimiter = new TokenBucket(
+      envNumber('PLANSYNC_AI_RATE_LIMIT_CAPACITY', 60),
+      envNumber('PLANSYNC_AI_RATE_LIMIT_REFILL_PER_SEC', 1),
+    );
+
     // R-124: PLANSYNC_AI_MOCK=1 forces a deterministic mock provider so CI
     // can exercise AI code paths without real API keys. Mock takes precedence
     // over any real key so tests stay hermetic even when keys are present.
@@ -160,49 +298,90 @@ class AiClient {
     const anthropicKey = process.env.ANTHROPIC_API_KEY?.trim() || '';
 
     if (mockEnabled) {
-      this.provider = { ...MOCK_PROVIDER, apiKey: 'mock' };
-      this.model = process.env.PLANSYNC_AI_MOCK_MODEL || 'mock-model';
-      logger.info({ provider: 'mock', model: this.model }, 'AI client using mock provider');
-    } else if (amdKey) {
-      this.provider = { ...AMD_PROVIDER, apiKey: amdKey };
-      this.model = process.env.LLM_MODEL_NAME || 'Claude-Sonnet-4.5';
-      logger.info({ provider: 'amd', model: this.model }, 'AI client using AMD internal LLM API');
-    } else if (anthropicKey) {
-      this.provider = { ...ANTHROPIC_PROVIDER, apiKey: anthropicKey };
-      this.model = process.env.ANTHROPIC_DEFAULT_SONNET_MODEL || 'claude-sonnet-4-20250514';
-      logger.info({ provider: 'anthropic' }, 'AI client using Anthropic API');
-    } else {
+      const mockModel = process.env.PLANSYNC_AI_MOCK_MODEL || 'mock-model';
+      this.providers.push({
+        config: { ...MOCK_PROVIDER, apiKey: 'mock' },
+        model: mockModel,
+      });
+      this.model = mockModel;
+      logger.info({ provider: 'mock', model: mockModel }, 'AI client using mock provider');
+      return;
+    }
+
+    // R-183: build an ordered provider chain. AMD is preferred (cheaper,
+    // internal); Anthropic acts as a fallback when AMD returns an error
+    // or hits rate-limit. Either key alone yields a single-entry chain
+    // — semantically identical to the pre-R-183 behaviour.
+    if (amdKey) {
+      const amdModel = process.env.LLM_MODEL_NAME || 'Claude-Sonnet-4.5';
+      this.providers.push({
+        config: { ...AMD_PROVIDER, apiKey: amdKey },
+        model: amdModel,
+      });
+    }
+    if (anthropicKey) {
+      const anthropicModel =
+        process.env.ANTHROPIC_DEFAULT_SONNET_MODEL || 'claude-sonnet-4-20250514';
+      this.providers.push({
+        config: { ...ANTHROPIC_PROVIDER, apiKey: anthropicKey },
+        model: anthropicModel,
+      });
+    }
+
+    if (this.providers.length === 0) {
       this.model = '';
       logger.debug('No LLM_API_KEY or ANTHROPIC_API_KEY configured, AI features disabled');
+      return;
     }
+
+    this.model = this.providers[0].model;
+    logger.info(
+      {
+        chain: this.providers.map((p) => p.config.name),
+        primaryModel: this.model,
+      },
+      'AI client provider chain configured',
+    );
   }
 
   get isAvailable(): boolean {
-    return this.provider !== null;
+    return this.providers.length > 0;
   }
 
   get providerName(): string {
-    return this.provider?.name ?? 'none';
+    return this.providers[0]?.config.name ?? 'none';
   }
 
   // R-143: completion-verify writes the model name onto each run for audit.
   // Returns null when no provider is configured so callers can distinguish
   // "AI unavailable" from "AI returned no result".
   get modelName(): string | null {
-    return this.provider ? this.model : null;
+    return this.providers.length > 0 ? this.model : null;
+  }
+
+  // Test seam — production code should not touch internal state. Resets
+  // the cache + token buckets so per-test isolation is trivial.
+  resetForTests(): void {
+    this.cache.reset();
+    this.rateLimiter.reset();
   }
 
   // R-182: third argument accepts either an options bag (`{ purpose }`) or
-  // a bare purpose string for ergonomic call sites. When no provider is
-  // configured we still emit a 0-latency `ok=false` row with
-  // errorCode='unavailable' so /api/ai-usage shows attempted-but-skipped
-  // requests rather than silently dropping them.
+  // a bare purpose string for ergonomic call sites.
+  //
+  // R-183 control flow:
+  //   1. cache check (no rate-limit cost, no provider call)
+  //   2. token-bucket consume for `purpose`
+  //   3. provider chain — on transport failure / rate limit, fall back
+  //      to the next provider; on content-empty response, stop
+  //   4. populate cache on success
   async complete(system: string, user: string, opts?: CompleteArg): Promise<string | null> {
     const { purpose, promptVersion = 'v1' } = resolveOptions(opts);
     const inputHash = sha256(`${system}\n---\n${user}`);
     const promptHash = sha256(system);
+    const cacheKey = this.cache.key(purpose, inputHash);
 
-    if (!this.provider) {
+    if (this.providers.length === 0) {
       logger.debug('No AI provider configured, skipping AI call');
       await this.recordSafe({
         purpose,
@@ -222,45 +401,162 @@ class AiClient {
       return null;
     }
 
-    // R-124: mock provider returns canned responses without touching the
-    // network. `user` is intentionally unused — it is logged at debug level
-    // only — because mock responses are keyed off the system prompt.
-    if (this.provider.name === 'mock') {
-      logger.debug({ systemLen: system.length, userLen: user.length }, 'AI mock complete');
-      const start = Date.now();
-      const raw = getMockAiResponse(system);
-      const extracted = raw ? extractJson(raw) : null;
+    // R-183 step 1: cache lookup. Hit → emit cacheHit=true row with the
+    // ORIGINAL provider/model so per-purpose attribution is preserved.
+    const cached = this.cache.get(cacheKey);
+    if (cached) {
       await this.recordSafe({
         purpose,
-        provider: 'mock',
-        model: this.model,
+        provider: cached.provider,
+        model: cached.model,
         promptHash,
         inputHash,
-        outputHash: extracted ? sha256(extracted) : null,
+        outputHash: cached.outputHash,
         promptVersion,
-        latencyMs: Date.now() - start,
-        inputTokens: null,
-        outputTokens: null,
-        ok: extracted !== null,
-        errorCode: extracted === null ? 'empty_response' : null,
-        cacheHit: false,
+        latencyMs: 0,
+        inputTokens: cached.inputTokens,
+        outputTokens: cached.outputTokens,
+        ok: true,
+        errorCode: null,
+        cacheHit: true,
       });
-      return extracted;
+      return cached.value;
     }
 
-    const { apiKey, buildUrl, buildHeaders, buildBody, parseResponse, name } = this.provider;
+    // R-183 step 2: token bucket. Rejected requests record `rate_limited`
+    // against the primary provider so dashboards can see the drop.
+    const primary = this.providers[0];
+    if (!this.rateLimiter.tryConsume(purpose)) {
+      logger.warn({ purpose, provider: primary.config.name }, 'AI call rate-limited');
+      await this.recordSafe({
+        purpose,
+        provider: primary.config.name,
+        model: primary.model,
+        promptHash,
+        inputHash,
+        outputHash: null,
+        promptVersion,
+        latencyMs: 0,
+        inputTokens: null,
+        outputTokens: null,
+        ok: false,
+        errorCode: 'rate_limited',
+        cacheHit: false,
+      });
+      return null;
+    }
+
+    // R-183 step 3: provider chain. When the chain has >1 entry, each
+    // provider gets a single attempt — total work stays bounded. With a
+    // single provider we keep the legacy maxRetries behaviour so users
+    // who configured only AMD don't lose transient retry coverage.
+    const attemptsPerProvider = this.providers.length > 1 ? 1 : this.maxRetries + 1;
+    let lastResult: ProviderCallResult | null = null;
+
+    for (let p = 0; p < this.providers.length; p++) {
+      const { config, model } = this.providers[p];
+
+      if (config.name === 'mock') {
+        const start = Date.now();
+        const raw = getMockAiResponse(system);
+        const extracted = raw ? extractJson(raw) : null;
+        const outputHash = extracted ? sha256(extracted) : null;
+        await this.recordSafe({
+          purpose,
+          provider: 'mock',
+          model,
+          promptHash,
+          inputHash,
+          outputHash,
+          promptVersion,
+          latencyMs: Date.now() - start,
+          inputTokens: null,
+          outputTokens: null,
+          ok: extracted !== null,
+          errorCode: extracted === null ? 'empty_response' : null,
+          cacheHit: false,
+        });
+        if (extracted !== null) {
+          this.cache.set(cacheKey, {
+            value: extracted,
+            provider: 'mock',
+            model,
+            outputHash,
+            inputTokens: null,
+            outputTokens: null,
+          });
+        }
+        return extracted;
+      }
+
+      const result = await this.callProvider(config, model, system, user, attemptsPerProvider);
+      lastResult = result;
+
+      await this.recordSafe({
+        purpose,
+        provider: config.name,
+        model,
+        promptHash,
+        inputHash,
+        outputHash: result.outputHash,
+        promptVersion,
+        latencyMs: result.latencyMs,
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+        ok: result.ok && result.value !== null,
+        errorCode: result.errorCode,
+        cacheHit: false,
+      });
+
+      if (result.ok) {
+        if (result.value !== null) {
+          this.cache.set(cacheKey, {
+            value: result.value,
+            provider: config.name,
+            model,
+            outputHash: result.outputHash,
+            inputTokens: result.inputTokens,
+            outputTokens: result.outputTokens,
+          });
+        }
+        return result.value;
+      }
+
+      // Transport-layer failure (timeout/network/HTTP error). Fall back
+      // to the next configured provider.
+      logger.warn(
+        {
+          provider: config.name,
+          errorCode: result.errorCode,
+          remaining: this.providers.length - p - 1,
+        },
+        'AI provider failed, attempting fallback',
+      );
+    }
+
+    return lastResult?.value ?? null;
+  }
+
+  private async callProvider(
+    config: ProviderConfig,
+    model: string,
+    system: string,
+    user: string,
+    maxAttempts: number,
+  ): Promise<ProviderCallResult> {
+    const { apiKey, buildUrl, buildHeaders, buildBody, parseResponse, name } = config;
     const callStart = Date.now();
     let lastErrorCode: string = 'unknown';
 
-    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), this.timeout);
       try {
-        const url = buildUrl(this.model);
+        const url = buildUrl(model);
         const res = await fetch(url, {
           method: 'POST',
           headers: buildHeaders(apiKey),
-          body: JSON.stringify(buildBody(this.model, system, user)),
+          body: JSON.stringify(buildBody(model, system, user)),
           signal: controller.signal,
         });
 
@@ -269,6 +565,46 @@ class AiClient {
         if (!res.ok) {
           const errText = await res.text();
           lastErrorCode = `http_${res.status}`;
+          logger.warn(
+            { provider: name, status: res.status, attempt, body: errText.slice(0, 200) },
+            'AI call non-2xx response',
+          );
+          // 429 is a hard rate-limit signal — short-circuit retries and
+          // let the outer chain fall back to the next provider.
+          if (res.status === 429) {
+            return {
+              ok: false,
+              value: null,
+              outputHash: null,
+              latencyMs: Date.now() - callStart,
+              inputTokens: null,
+              outputTokens: null,
+              errorCode: 'rate_limited',
+            };
+          }
+          // 5xx → retry; 4xx (other than 429) → bail
+          if (res.status < 500 && attempt === maxAttempts - 1) {
+            return {
+              ok: false,
+              value: null,
+              outputHash: null,
+              latencyMs: Date.now() - callStart,
+              inputTokens: null,
+              outputTokens: null,
+              errorCode: lastErrorCode,
+            };
+          }
+          if (res.status < 500) {
+            return {
+              ok: false,
+              value: null,
+              outputHash: null,
+              latencyMs: Date.now() - callStart,
+              inputTokens: null,
+              outputTokens: null,
+              errorCode: lastErrorCode,
+            };
+          }
           throw new Error(`${name} API ${res.status}: ${errText}`);
         }
 
@@ -276,22 +612,15 @@ class AiClient {
         const raw = parseResponse(data);
         const tokens = pickTokenUsage(data);
         const extracted = raw ? extractJson(raw) : null;
-        await this.recordSafe({
-          purpose,
-          provider: name,
-          model: this.model,
-          promptHash,
-          inputHash,
+        return {
+          ok: true,
+          value: extracted,
           outputHash: extracted ? sha256(extracted) : null,
-          promptVersion,
           latencyMs: Date.now() - callStart,
           inputTokens: tokens.input ?? null,
           outputTokens: tokens.output ?? null,
-          ok: extracted !== null,
           errorCode: extracted === null ? 'empty_response' : null,
-          cacheHit: false,
-        });
-        return extracted;
+        };
       } catch (err: unknown) {
         clearTimeout(timer);
         const errName =
@@ -306,28 +635,30 @@ class AiClient {
           if (lastErrorCode === 'unknown') lastErrorCode = 'network';
           logger.warn({ err: errMessage, attempt, provider: name }, 'AI call failed');
         }
-        if (attempt === this.maxRetries) {
-          await this.recordSafe({
-            purpose,
-            provider: name,
-            model: this.model,
-            promptHash,
-            inputHash,
+        if (attempt === maxAttempts - 1) {
+          return {
+            ok: false,
+            value: null,
             outputHash: null,
-            promptVersion,
             latencyMs: Date.now() - callStart,
             inputTokens: null,
             outputTokens: null,
-            ok: false,
             errorCode: lastErrorCode,
-            cacheHit: false,
-          });
-          return null;
+          };
         }
         await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
       }
     }
-    return null;
+
+    return {
+      ok: false,
+      value: null,
+      outputHash: null,
+      latencyMs: Date.now() - callStart,
+      inputTokens: null,
+      outputTokens: null,
+      errorCode: lastErrorCode,
+    };
   }
 
   // R-182: ai_calls insert must never bubble back to callers. A logging
