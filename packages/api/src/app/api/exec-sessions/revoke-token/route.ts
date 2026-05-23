@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
-import { authenticate } from '@/lib/auth';
+import { authenticate, invalidateApiKeyCacheByExecRunId } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { validateBody } from '@/lib/validate';
 import { AppError, ErrorCode } from '@plansync/shared';
@@ -25,6 +25,10 @@ export async function POST(req: NextRequest) {
     const result = await prisma.apiKey.deleteMany({
       where: { execRunId: body.runId, createdBy: auth.userName },
     });
+
+    // R-141: drop any cached principal for this run so a heartbeat in
+    // flight after revocation can't ride the cache to a successful auth.
+    invalidateApiKeyCacheByExecRunId(body.runId);
 
     return NextResponse.json({ data: { revoked: result.count } });
   } catch (error) {
