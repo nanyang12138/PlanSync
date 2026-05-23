@@ -321,21 +321,113 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
     },
   );
 
-  // Incremental array-append tools — preferred over plansync_plan_update when adding many
-  // items to deliverables/constraints/standards/openQuestions, because each call stays small
-  // and avoids LLM token-budget truncation. Idempotent: items that exact-match an existing
-  // entry (after trim) are silently skipped.
-  const makeAppender = (
-    name: string,
-    field: 'deliverables' | 'constraints' | 'standards' | 'openQuestions',
-    label: string,
-  ) =>
+  // R-175 step 1 of 3 — collapse the four plansync_plan_*_append tools into a
+  // single plansync_plan_patch with a discriminated `op` field. The new tool is
+  // the canonical surface going forward; the four old tool names stay registered
+  // as deprecated aliases for one release so live agent prompts (CLAUDE.md /
+  // AGENTS.md / cli ai-loop) can be updated without an atomic flag day.
+  //
+  // The aliases forward to the same internal `applyPatches` helper so duplicate-
+  // skip semantics, the 50-items-per-op guard, and `asAgent` delegation routing
+  // are guaranteed to behave identically across the new and old surface.
+  //
+  // Future ops (e.g. `{op:'remove', field, items}`, `{op:'set', field, value}`)
+  // can be added without breaking the schema — they just join the discriminated
+  // union under the same tool name.
+
+  const APPENDABLE_FIELDS = ['deliverables', 'constraints', 'standards', 'openQuestions'] as const;
+  type AppendableField = (typeof APPENDABLE_FIELDS)[number];
+
+  // Single-op input shape, exported via this closure so the alias schemas
+  // below stay byte-identical to the corresponding patch entry.
+  const appendOpSchema = z.object({
+    op: z.literal('append'),
+    field: z.enum(APPENDABLE_FIELDS).describe('Which array field on the draft plan to append to.'),
+    items: z
+      .array(z.string().min(1).max(2000))
+      .min(1)
+      .max(50)
+      .describe(`Items to append (max 50 per op). Call again for more.`),
+  });
+
+  /**
+   * Apply a list of patches in order against the same draft plan. Each patch
+   * becomes one POST to the existing collapsed `/append` API endpoint (the
+   * server already accepts `{field, items}`), so this is purely an MCP-side
+   * fan-out — no API changes.
+   *
+   * If any individual patch fails the API call is allowed to throw; the
+   * wrapper layer turns it into a uniform error envelope (R-037), and prior
+   * patches in the batch that already succeeded stay committed. The agent
+   * gets enough information from the error to retry just the failed op.
+   */
+  async function applyPatches(
+    projectId: string,
+    planId: string,
+    patches: Array<z.infer<typeof appendOpSchema>>,
+    asAgent: string | undefined,
+  ): Promise<Array<unknown>> {
+    const effectiveApi = asAgent ? api.withUser(asAgent) : api;
+    const results: Array<unknown> = [];
+    for (const patch of patches) {
+      const result = await effectiveApi.post(`/api/projects/${projectId}/plans/${planId}/append`, {
+        field: patch.field,
+        items: patch.items,
+      });
+      results.push(result);
+    }
+    return results;
+  }
+
+  server.tool(
+    'plansync_plan_patch',
+    `Apply one or more patches to a draft plan in a single call. OWNER ONLY. ` +
+      `Replaces plansync_plan_{deliverables,constraints,standards,open_questions}_append ` +
+      `— the four old tool names still work as deprecated aliases for this release. ` +
+      `Each patch has shape {op:'append', field, items}; supply up to 20 patches and the ` +
+      `server applies them in order with the same dup-skip semantics as the legacy tools ` +
+      `(items that already exist on the field, after trim, are silently dropped). ` +
+      `Use this instead of plansync_plan_update for large array edits — each patch ` +
+      `stays small so the LLM response doesn't hit max_tokens. ` +
+      `Do NOT call this in "work as <agent>" delegation mode — use plansync_plan_suggest instead.`,
+    {
+      projectId: z.string(),
+      planId: z.string(),
+      patches: z
+        .array(appendOpSchema)
+        .min(1)
+        .max(20)
+        .describe(
+          'Ordered list of patches. Each patch targets one field; mixing fields in a single ' +
+            'call is supported. Up to 20 patches per call; each capped at 50 items.',
+        ),
+      asAgent: z.string().optional(),
+    },
+    async (args) => {
+      const { projectId, planId, patches, asAgent } = args;
+      const results = await applyPatches(projectId, planId, patches, asAgent);
+      // Return one entry per applied patch in input order so agents can
+      // diff against their patch list to learn which items were dropped
+      // as duplicates.
+      const payload = results.length === 1 ? results[0] : { applied: results.length, results };
+      return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
+    },
+  );
+
+  // ---- Deprecated aliases (kept for one release per R-175 fix_steps #5) ----
+  //
+  // Each old name forwards into `applyPatches` with a single-op patches array.
+  // Tool description includes a [DEPRECATED] tag so any future MCP client that
+  // surfaces tool descriptions to its user (Claude Desktop, Cursor agent
+  // inspector, etc.) shows the migration path. Schema is unchanged so existing
+  // callers don't break.
+  const makeDeprecatedAppendAlias = (name: string, field: AppendableField, label: string) =>
     server.tool(
       name,
-      `Append items to a draft plan's ${field} array (max 50 per call). OWNER ONLY. ` +
-        `Prefer this over plansync_plan_update when adding many ${label} items — each call ` +
-        `stays small enough to avoid token-budget truncation. Idempotent: duplicates skipped. ` +
-        `Do NOT call this when doing "work as <agent>" delegation — use plansync_plan_suggest instead.`,
+      `[DEPRECATED — use plansync_plan_patch] Append items to a draft plan's ${field} array ` +
+        `(max 50 per call). OWNER ONLY. Behaviour identical to ` +
+        `plansync_plan_patch({patches:[{op:'append', field:'${field}', items}]}); will be ` +
+        `removed in the next release. Idempotent: duplicate ${label} items skipped.`,
       {
         projectId: z.string(),
         planId: z.string(),
@@ -348,17 +440,22 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
       },
       async (args) => {
         const { projectId, planId, items, asAgent } = args;
-        const effectiveApi = asAgent ? api.withUser(asAgent) : api;
-        const result = await effectiveApi.post(
-          `/api/projects/${projectId}/plans/${planId}/append`,
-          { field, items },
+        const results = await applyPatches(
+          projectId,
+          planId,
+          [{ op: 'append', field, items }],
+          asAgent,
         );
-        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(results[0], null, 2) }] };
       },
     );
 
-  makeAppender('plansync_plan_deliverables_append', 'deliverables', 'deliverable');
-  makeAppender('plansync_plan_constraints_append', 'constraints', 'constraint');
-  makeAppender('plansync_plan_standards_append', 'standards', 'standard');
-  makeAppender('plansync_plan_open_questions_append', 'openQuestions', 'open question');
+  makeDeprecatedAppendAlias('plansync_plan_deliverables_append', 'deliverables', 'deliverable');
+  makeDeprecatedAppendAlias('plansync_plan_constraints_append', 'constraints', 'constraint');
+  makeDeprecatedAppendAlias('plansync_plan_standards_append', 'standards', 'standard');
+  makeDeprecatedAppendAlias(
+    'plansync_plan_open_questions_append',
+    'openQuestions',
+    'open question',
+  );
 }
