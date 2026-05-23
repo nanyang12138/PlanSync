@@ -67,20 +67,29 @@ export async function POST(req: NextRequest, { params }: Params) {
       } else if (body.action === 'rebind' && !activePlan) {
         throw new AppError(ErrorCode.STATE_CONFLICT, 'No active plan to rebind to');
       } else if (body.action === 'rebind' && activePlan) {
+        // R-004: rebind semantics upgraded to "explicit restart". The task
+        // is rebound to the new plan version AND reset to `todo` so that
+        // any prior partial work is discarded and a fresh execution must
+        // be started against the new plan. Terminal lifecycle states
+        // (`done`, `cancelled`) are preserved — rebinding a finished task
+        // only updates its version reference for audit. All other states
+        // (`todo`, `in_progress`, `blocked`) collapse to `todo`.
+        const TERMINAL_TASK_STATES = ['done', 'cancelled'] as const;
+        const isTerminal = (TERMINAL_TASK_STATES as readonly string[]).includes(drift.task.status);
         await tx.task.update({
           where: { id: drift.taskId },
           data: {
             boundPlanVersion: activePlan.version,
-            ...(drift.task.status === 'blocked' ? { status: 'in_progress' } : {}),
+            ...(isTerminal ? {} : { status: 'todo' }),
           },
         });
-        // R-002: rebind commits the task to the new plan version, which makes
-        // any paused run for this task irreversibly stale (run.bound=v1,
-        // task.bound=v2). Move them to 'superseded' so they read clearly in
-        // history and the run row's lifecycle is terminal. We also catch the
-        // unlikely case where a run somehow stayed 'running' through the
-        // pause step (e.g. drift was low-severity and engine didn't pause it,
-        // but owner manually rebinds anyway).
+        // R-002 + R-004: rebind commits the task to the new plan version,
+        // which makes any active run for this task irreversibly stale
+        // (run.bound=v1, task.bound=v2). Move every non-terminal run to
+        // 'superseded' so the run row's lifecycle is terminal and the
+        // history reads clearly. Covers paused runs (drift-engine paused
+        // them), running runs (low-severity drift that didn't pause), and
+        // any future intermediate state.
         await tx.executionRun.updateMany({
           where: { taskId: drift.taskId, status: { in: ['paused', 'running'] } },
           data: { status: 'superseded', endedAt: new Date() },
