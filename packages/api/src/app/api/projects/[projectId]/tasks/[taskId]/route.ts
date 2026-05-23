@@ -8,6 +8,7 @@ import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
 import { sendMail, userEmail } from '@/lib/email';
 import { logger } from '@/lib/logger';
+import { auditCrossProjectTaskIfNeeded } from '@/lib/task-scope';
 
 type Params = { params: { projectId: string; taskId: string } };
 
@@ -22,7 +23,11 @@ export async function GET(req: NextRequest, { params }: Params) {
       where: { id: params.taskId, projectId: params.projectId },
       include: { executionRuns: { orderBy: { startedAt: 'desc' }, take: 5 } },
     });
-    if (!task) throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+    if (!task) {
+      // #255: cross-project audit signal on every read path, not just /pack.
+      await auditCrossProjectTaskIfNeeded(params.taskId, params.projectId, 'GET /tasks/:id');
+      throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+    }
 
     return NextResponse.json({ data: task });
   } catch (error) {
@@ -58,7 +63,12 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     const task = await prisma.task.findFirst({
       where: { id: params.taskId, projectId: params.projectId },
     });
-    if (!task) throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+    if (!task) {
+      // #256: write-path audit signal — visible alongside the buildTaskPack
+      // / GET /pack signals so a probe sequence is fully traceable.
+      await auditCrossProjectTaskIfNeeded(params.taskId, params.projectId, 'PATCH /tasks/:id');
+      throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+    }
 
     if (body.status && body.status !== task.status) {
       const allowed = VALID_STATUS_TRANSITIONS[task.status];
@@ -178,7 +188,10 @@ export async function DELETE(req: NextRequest, { params }: Params) {
     const task = await prisma.task.findFirst({
       where: { id: params.taskId, projectId: params.projectId },
     });
-    if (!task) throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+    if (!task) {
+      await auditCrossProjectTaskIfNeeded(params.taskId, params.projectId, 'DELETE /tasks/:id');
+      throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+    }
 
     // R-047: A `DELETE task` while an ExecutionRun is `running` would silently
     // cascade-delete the run record, orphaning a live agent's heartbeats and

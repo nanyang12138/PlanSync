@@ -1,5 +1,5 @@
 import { prisma } from './prisma';
-import { logger } from './logger';
+import { auditCrossProjectTaskIfNeeded } from './task-scope';
 
 export async function buildTaskPack(taskId: string, projectId: string) {
   // R-135: Restrict the lookup to (id, projectId) so a caller authorized for
@@ -10,25 +10,7 @@ export async function buildTaskPack(taskId: string, projectId: string) {
   // task title / agentContext / expectedOutput / plan content across projects.
   const task = await prisma.task.findFirst({ where: { id: taskId, projectId } });
   if (!task) {
-    // Audit signal: tell whether the taskId genuinely doesn't exist or whether
-    // a caller is probing tasks from a project they shouldn't see. This stays
-    // a warn-level log (not an error response) so the caller still gets a
-    // generic 404 — we don't want to confirm task existence to outsiders.
-    const cross = await prisma.task.findUnique({
-      where: { id: taskId },
-      select: { id: true, projectId: true },
-    });
-    if (cross && cross.projectId !== projectId) {
-      logger.warn(
-        {
-          suspectCrossProject: true,
-          taskId,
-          requestedProjectId: projectId,
-          actualProjectId: cross.projectId,
-        },
-        'task_pack cross-project lookup rejected',
-      );
-    }
+    await auditCrossProjectTaskIfNeeded(taskId, projectId, 'task_pack');
     return null;
   }
 

@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { authenticate, requireProjectRole } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { AppError, ErrorCode } from '@plansync/shared';
+import { auditCrossProjectTaskIfNeeded } from '@/lib/task-scope';
 
 type Params = { params: { projectId: string; taskId: string } };
 
@@ -12,10 +13,15 @@ export async function GET(req: NextRequest, { params }: Params) {
     await requireProjectRole(auth, params.projectId);
 
     // R-135: scope by projectId to prevent cross-project task leakage.
+    // #255: emit cross-project audit signal so probes via this route are
+    // visible alongside the buildTaskPack signals.
     const task = await prisma.task.findFirst({
       where: { id: params.taskId, projectId: params.projectId },
     });
-    if (!task) throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+    if (!task) {
+      await auditCrossProjectTaskIfNeeded(params.taskId, params.projectId, 'GET /pack');
+      throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+    }
 
     const plan = await prisma.plan.findFirst({
       where: { projectId: params.projectId, version: task.boundPlanVersion },

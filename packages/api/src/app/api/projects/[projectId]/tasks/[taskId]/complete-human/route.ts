@@ -8,6 +8,7 @@ import { AppError, ErrorCode } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
 import { buildTaskPack } from '@/lib/task-pack';
 import { eventBus } from '@/lib/event-bus';
+import { auditCrossProjectTaskIfNeeded } from '@/lib/task-scope';
 
 const schema = z.object({
   completionNote: z.string().min(1).max(5000),
@@ -33,6 +34,11 @@ export async function POST(req: NextRequest, { params }: Params) {
       where: { id: params.taskId, projectId: params.projectId },
     });
     if (!task) {
+      await auditCrossProjectTaskIfNeeded(
+        params.taskId,
+        params.projectId,
+        'POST /tasks/:id/complete-human',
+      );
       throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
     }
     if (task.assigneeType === 'agent') {

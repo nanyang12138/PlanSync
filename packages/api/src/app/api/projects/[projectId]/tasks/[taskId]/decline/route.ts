@@ -6,6 +6,7 @@ import { AppError, ErrorCode } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
+import { auditCrossProjectTaskIfNeeded } from '@/lib/task-scope';
 
 type Params = { params: { projectId: string; taskId: string } };
 
@@ -18,7 +19,14 @@ export async function POST(req: NextRequest, { params }: Params) {
     const task = await prisma.task.findFirst({
       where: { id: params.taskId, projectId: params.projectId },
     });
-    if (!task) throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+    if (!task) {
+      await auditCrossProjectTaskIfNeeded(
+        params.taskId,
+        params.projectId,
+        'POST /tasks/:id/decline',
+      );
+      throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+    }
 
     if (task.assignee !== auth.userName) {
       throw new AppError(ErrorCode.FORBIDDEN, 'Only the current assignee can decline a task');
