@@ -890,7 +890,7 @@
 
 #### R-039 [LOW] execution tools 错误统一为 JSON envelope
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: R-037
 - **effort**: small
