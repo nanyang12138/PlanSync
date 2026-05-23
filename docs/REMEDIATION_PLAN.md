@@ -2094,7 +2094,7 @@
 
 #### R-118 [HIGH] exec-sessions issue/revoke token 直测
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B12
 - **depends_on**: R-011
 - **effort**: small
