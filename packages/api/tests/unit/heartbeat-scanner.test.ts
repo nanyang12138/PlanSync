@@ -20,6 +20,13 @@ const mocks = vi.hoisted(() => ({
   executionRunFindMany: vi.fn(),
   executionRunUpdate: vi.fn(),
   executionRunUpdateMany: vi.fn(),
+  // R-057: stale-release counts other-running runs via executionRun.count
+  // and then conditionally updates task.status + deletes exec-scoped api
+  // keys. Default to "no other running runs" so the default stale-release
+  // path activates cleanly.
+  executionRunCount: vi.fn().mockResolvedValue(0),
+  taskUpdateMany: vi.fn().mockResolvedValue({ count: 1 }),
+  apiKeyDeleteMany: vi.fn().mockResolvedValue({ count: 0 }),
   activityCreate: vi.fn(),
   eventBusPublish: vi.fn(),
   dispatchWebhooks: vi.fn(),
@@ -40,11 +47,18 @@ const txProxy = {
     findMany: mocks.executionRunFindMany,
     update: mocks.executionRunUpdate,
     updateMany: mocks.executionRunUpdateMany,
+    count: mocks.executionRunCount,
+  },
+  task: {
+    updateMany: mocks.taskUpdateMany,
+  },
+  apiKey: {
+    deleteMany: mocks.apiKeyDeleteMany,
   },
   $queryRaw: mocks.queryRaw,
 };
-mocks.transaction.mockImplementation(
-  async (cb: (tx: typeof txProxy) => Promise<void>) => cb(txProxy),
+mocks.transaction.mockImplementation(async (cb: (tx: typeof txProxy) => Promise<void>) =>
+  cb(txProxy),
 );
 
 vi.mock('@/lib/prisma', () => ({
@@ -53,7 +67,10 @@ vi.mock('@/lib/prisma', () => ({
       findMany: mocks.executionRunFindMany,
       update: mocks.executionRunUpdate,
       updateMany: mocks.executionRunUpdateMany,
+      count: mocks.executionRunCount,
     },
+    task: { updateMany: mocks.taskUpdateMany },
+    apiKey: { deleteMany: mocks.apiKeyDeleteMany },
     activity: { create: mocks.activityCreate },
     $transaction: mocks.transaction,
     $queryRaw: mocks.queryRaw,
@@ -76,10 +93,17 @@ beforeEach(() => {
   // R-056: the transaction wrapper and lock-granted default must be
   // re-installed on every `vi.clearAllMocks()` reset, otherwise downstream
   // assertions would see a no-op tx and never reach the scan body.
-  mocks.transaction.mockImplementation(
-    async (cb: (tx: typeof txProxy) => Promise<void>) => cb(txProxy),
+  mocks.transaction.mockImplementation(async (cb: (tx: typeof txProxy) => Promise<void>) =>
+    cb(txProxy),
   );
   mocks.queryRaw.mockResolvedValue([{ locked: true }]);
+
+  // R-057: re-prime the stale-release defaults that vi.clearAllMocks just
+  // wiped — "no other running run" + "task flip succeeded" + "no key rows
+  // matched" — so unrelated tests don't have to know the new mocks exist.
+  mocks.executionRunCount.mockResolvedValue(0);
+  mocks.taskUpdateMany.mockResolvedValue({ count: 1 });
+  mocks.apiKeyDeleteMany.mockResolvedValue({ count: 0 });
 
   // Three branches of findMany: failed (status=stale, lt 30min), stale
   // (status=running, lt 5min), and paused (status=paused, lt timeout).
@@ -304,6 +328,186 @@ describe('scanStaleExecutions — pause-ack-timeout sweep', () => {
       'proj-1',
       'execution_superseded',
       expect.objectContaining({ runId: 'run-locked-ok' }),
+    );
+  });
+
+  // ---- R-057: stale-release sweeps task + exec-scoped api keys --------------
+  // When a run goes stale, the task stays `in_progress` (phantom "someone is
+  // working on it") and the agent's exec-scoped api key remains valid until
+  // someone manually revokes it. R-057 ties both releases into the same tx
+  // the status flip happens in: the task is moved to `blocked` (unless a
+  // sibling run is still running) and every apiKey with `execRunId = run.id`
+  // is deleted.
+
+  it('R-057: on stale, blocks the task when no sibling run is still running', async () => {
+    mocks.executionRunFindMany.mockReset();
+    mocks.executionRunFindMany
+      .mockResolvedValueOnce([]) // failed
+      .mockResolvedValueOnce([
+        {
+          id: 'run-stale-1',
+          taskId: 'task-1',
+          executorName: 'genie',
+          lastHeartbeatAt: new Date(0),
+          task: { projectId: 'proj-1', title: 'do the thing' },
+        },
+      ])
+      .mockResolvedValueOnce([]); // paused
+
+    await scanStaleExecutions();
+
+    // Sibling-count and task flip must use the SAME tx that just set the
+    // run to stale — and the where filter must be { taskId, status: 'running',
+    // id: { not: run.id } } so a freshly-started parallel run is not
+    // clobbered into blocked.
+    expect(mocks.executionRunCount).toHaveBeenCalledWith({
+      where: { taskId: 'task-1', status: 'running', id: { not: 'run-stale-1' } },
+    });
+    expect(mocks.taskUpdateMany).toHaveBeenCalledWith({
+      where: { id: 'task-1', status: 'in_progress' },
+      data: { status: 'blocked' },
+    });
+  });
+
+  it('R-057: on stale, does NOT block the task when a sibling run is still running', async () => {
+    mocks.executionRunCount.mockResolvedValueOnce(1);
+    mocks.executionRunFindMany.mockReset();
+    mocks.executionRunFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: 'run-stale-2',
+          taskId: 'task-2',
+          executorName: 'genie',
+          lastHeartbeatAt: new Date(0),
+          task: { projectId: 'p2', title: 't2' },
+        },
+      ])
+      .mockResolvedValueOnce([]);
+
+    await scanStaleExecutions();
+
+    expect(mocks.executionRunCount).toHaveBeenCalledTimes(1);
+    // Sibling found → leave task alone so the parallel run keeps owning the
+    // status. Critical: a phantom-block here would 409 the live sibling's
+    // next heartbeat.
+    expect(mocks.taskUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it('R-057: on stale, the task flip filter is status="in_progress" so blocked/done/cancelled rows are not touched', async () => {
+    mocks.executionRunFindMany.mockReset();
+    mocks.executionRunFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: 'run-stale-3',
+          taskId: 'task-3',
+          executorName: 'genie',
+          lastHeartbeatAt: new Date(0),
+          task: { projectId: 'p3', title: 't3' },
+        },
+      ])
+      .mockResolvedValueOnce([]);
+
+    await scanStaleExecutions();
+
+    // The where filter must pin `status: 'in_progress'`. Without it, a task
+    // someone already cancelled while the run was alive (status='cancelled')
+    // would get yanked back to 'blocked' under the scanner, breaking the
+    // explicit cancel.
+    const updateCall = mocks.taskUpdateMany.mock.calls[0][0] as {
+      where: { status: string };
+    };
+    expect(updateCall.where.status).toBe('in_progress');
+  });
+
+  it('R-057: on stale, deletes every exec-scoped api key bound to this run', async () => {
+    mocks.apiKeyDeleteMany.mockResolvedValueOnce({ count: 2 });
+    mocks.executionRunFindMany.mockReset();
+    mocks.executionRunFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: 'run-stale-4',
+          taskId: 'task-4',
+          executorName: 'genie',
+          lastHeartbeatAt: new Date(0),
+          task: { projectId: 'p4', title: 't4' },
+        },
+      ])
+      .mockResolvedValueOnce([]);
+
+    await scanStaleExecutions();
+
+    expect(mocks.apiKeyDeleteMany).toHaveBeenCalledTimes(1);
+    expect(mocks.apiKeyDeleteMany).toHaveBeenCalledWith({
+      where: { execRunId: 'run-stale-4' },
+    });
+  });
+
+  it('R-057: stale-release is idempotent — re-running the scan on a row with no api keys does not throw', async () => {
+    // First scan: real release (count=2). Second scan: nothing left to release
+    // (count=0). The scanner must not treat the second pass as an error.
+    mocks.apiKeyDeleteMany.mockResolvedValueOnce({ count: 2 }).mockResolvedValueOnce({ count: 0 });
+    mocks.executionRunFindMany.mockReset();
+    // first scan
+    mocks.executionRunFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: 'run-stale-5',
+          taskId: 'task-5',
+          executorName: 'genie',
+          lastHeartbeatAt: new Date(0),
+          task: { projectId: 'p5', title: 't5' },
+        },
+      ])
+      .mockResolvedValueOnce([])
+      // second scan: same row surfaces again (e.g. before the status flip
+      // visibly propagates to the next findMany on a replica with stale read)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: 'run-stale-5',
+          taskId: 'task-5',
+          executorName: 'genie',
+          lastHeartbeatAt: new Date(0),
+          task: { projectId: 'p5', title: 't5' },
+        },
+      ])
+      .mockResolvedValueOnce([]);
+
+    await expect(scanStaleExecutions()).resolves.toBeUndefined();
+    await expect(scanStaleExecutions()).resolves.toBeUndefined();
+    expect(mocks.apiKeyDeleteMany).toHaveBeenCalledTimes(2);
+  });
+
+  it('R-057: stale release still publishes execution_stale + webhook (release does not swallow notifications)', async () => {
+    mocks.executionRunFindMany.mockReset();
+    mocks.executionRunFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: 'run-stale-6',
+          taskId: 'task-6',
+          executorName: 'genie',
+          lastHeartbeatAt: new Date(1700000000000),
+          task: { projectId: 'p6', title: 't6' },
+        },
+      ])
+      .mockResolvedValueOnce([]);
+
+    await scanStaleExecutions();
+
+    expect(mocks.eventBusPublish).toHaveBeenCalledWith(
+      'p6',
+      'execution_stale',
+      expect.objectContaining({ runId: 'run-stale-6', taskId: 'task-6' }),
+    );
+    expect(mocks.dispatchWebhooks).toHaveBeenCalledWith(
+      'p6',
+      'execution_stale',
+      expect.objectContaining({ runId: 'run-stale-6', taskId: 'task-6' }),
     );
   });
 
