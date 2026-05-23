@@ -42,6 +42,12 @@ export class McpClient {
   private intentionalShutdown = false;
   /** Override of the sleep used between restart attempts; tests inject a no-op. */
   private sleepFn: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms));
+  /**
+   * R-022: remember the path passed to start() so callTool can transparently
+   * call ensureRunning() on transport failures without pushing the path back
+   * up to every caller site.
+   */
+  private serverPath: string | null = null;
 
   setNotifyPrinter(fn: (text: string) => void): void {
     this.notifyPrinter = fn;
@@ -82,6 +88,7 @@ export class McpClient {
       PLANSYNC_MCP_DISABLE_SSE: '1',
     };
 
+    this.serverPath = serverPath;
     this.intentionalShutdown = false;
     this.proc = spawn(cfg.nodeBin, [serverPath], {
       stdio: ['pipe', 'pipe', 'inherit'],
@@ -244,11 +251,43 @@ export class McpClient {
   }
 
   async callTool(name: string, args: unknown): Promise<string> {
+    // R-022: transport-level glitches (subprocess crashed between requests,
+    // stdin closed, etc.) used to bubble straight to the LLM as a tool error.
+    // We now make one transparent recovery attempt: if the subprocess is
+    // already gone, restart it before sending; if the request fails with a
+    // transport error, restart and retry exactly once. Real protocol errors
+    // (validation, missing tool, server-side rejection) are NOT retried.
+    if (!this.isRunning() && this.serverPath) {
+      await this.ensureRunning(this.serverPath);
+    }
+    try {
+      return await this.callToolOnce(name, args);
+    } catch (err) {
+      if (!this.isTransportError(err) || !this.serverPath) throw err;
+      const ok = await this.ensureRunning(this.serverPath);
+      if (!ok) throw err;
+      return await this.callToolOnce(name, args);
+    }
+  }
+
+  private async callToolOnce(name: string, args: unknown): Promise<string> {
     const result = (await this.request('tools/call', { name, arguments: args })) as {
       content?: { type: string; text?: string }[];
     };
     const content = result.content || [];
     return content.map((c) => (c.type === 'text' ? c.text : JSON.stringify(c))).join('\n');
+  }
+
+  /**
+   * R-022: distinguish "the JSON-RPC pipe died" from real protocol errors.
+   * Only transport errors should trigger an automatic restart-and-retry —
+   * retrying a malformed argument or a permission denied is never useful,
+   * and retrying a `MCP timeout` could double-execute a tool that was simply
+   * slow on the server side.
+   */
+  private isTransportError(err: unknown): boolean {
+    if (!(err instanceof Error)) return false;
+    return /MCP_CRASHED/.test(err.message) || /MCP shutdown/.test(err.message);
   }
 
   updateProject(projectId: string): void {

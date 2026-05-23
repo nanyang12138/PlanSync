@@ -8,6 +8,8 @@
  * correctly end-to-end.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { McpClient } from '../src/mcp-client.js';
@@ -40,6 +42,7 @@ describe('McpClient — crash detection and auto-recovery (R-021)', () => {
     delete process.env.FAKE_MCP_CRASH_AFTER_MS;
     delete process.env.FAKE_MCP_CRASH_AFTER_REQUESTS;
     delete process.env.FAKE_MCP_CRASH_ON_TOOL_CALL;
+    delete process.env.FAKE_MCP_CRASH_ON_TOOL_CALL_ONCE_FILE;
     client = new McpClient();
     // Avoid real exponential-backoff sleeps slowing the suite down.
     client._setSleepFnForTests(async () => {});
@@ -134,4 +137,110 @@ describe('McpClient — crash detection and auto-recovery (R-021)', () => {
     expect(ok).toBe(false);
     expect(client.isRunning()).toBe(false);
   }, 20000);
+});
+
+describe('McpClient — callTool single retry on transport error (R-022)', () => {
+  let client: McpClient;
+  let markerFile: string | null = null;
+
+  beforeEach(() => {
+    configureCfg();
+    delete process.env.FAKE_MCP_CRASH_ON_START;
+    delete process.env.FAKE_MCP_CRASH_AFTER_INIT;
+    delete process.env.FAKE_MCP_CRASH_AFTER_MS;
+    delete process.env.FAKE_MCP_CRASH_AFTER_REQUESTS;
+    delete process.env.FAKE_MCP_CRASH_ON_TOOL_CALL;
+    delete process.env.FAKE_MCP_CRASH_ON_TOOL_CALL_ONCE_FILE;
+    client = new McpClient();
+    client._setSleepFnForTests(async () => {});
+  });
+
+  afterEach(() => {
+    client.stop();
+    if (markerFile) {
+      try {
+        fs.unlinkSync(markerFile);
+      } catch {
+        /* file may already be gone */
+      }
+      markerFile = null;
+    }
+    delete process.env.FAKE_MCP_CRASH_ON_TOOL_CALL_ONCE_FILE;
+  });
+
+  it('callTool transparently restarts when the first send finds the subprocess dead', async () => {
+    // Verification per R-022: "first stdin write fails, second succeeds → tool
+    // call returns success". Here we simulate the failure mode by killing the
+    // subprocess from outside (so isRunning() flips to false before the call
+    // is dispatched). The retry path inside callTool should call ensureRunning,
+    // spawn a fresh subprocess, and return the tool result without surfacing
+    // the transport error to the caller.
+    await client.start(FAKE_SERVER);
+    expect(client.isRunning()).toBe(true);
+
+    // Reach into the underlying handle the same way `stop()` does, but skip
+    // setting `intentionalShutdown` so the exit handler treats it as a crash —
+    // this exercises the same code path a real MCP subprocess crash would.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const proc = (client as any).proc as { kill: () => void } | null;
+    expect(proc).not.toBeNull();
+    proc!.kill();
+
+    // Wait for the exit handler to flip isRunning() to false.
+    for (let i = 0; i < 50 && client.isRunning(); i += 1) {
+      await wait(10);
+    }
+    expect(client.isRunning()).toBe(false);
+    const crashesBefore = client._getConsecutiveCrashesForTests();
+    expect(crashesBefore).toBeGreaterThanOrEqual(1);
+
+    // The first send would fail because proc is null; callTool must
+    // ensureRunning() and produce a real tool result instead of throwing.
+    const result = await client.callTool('fake_tool', {});
+    expect(result).toContain('fake-result');
+    expect(client.isRunning()).toBe(true);
+  });
+
+  it('callTool retries exactly once when the subprocess crashes mid-request, then succeeds', async () => {
+    // Verification per R-022: cover the in-flight failure path. The fake
+    // server arms a one-shot crash on its first tools/call (controlled by a
+    // marker file we create here) and replies normally on the second spawn.
+    // Internally:
+    //   1. callTool sends tools/call → subprocess crashes mid-request.
+    //   2. McpClient's exit handler rejects the pending request with
+    //      MCP_CRASHED.
+    //   3. callTool's catch sees it as a transport error, calls
+    //      ensureRunning() to spawn a fresh subprocess.
+    //   4. The fresh subprocess does NOT see the marker file (deleted) and
+    //      replies normally → callTool returns the tool result.
+    markerFile = path.join(os.tmpdir(), `plansync-r022-crash-${process.pid}-${Date.now()}`);
+    fs.writeFileSync(markerFile, '1');
+    process.env.FAKE_MCP_CRASH_ON_TOOL_CALL_ONCE_FILE = markerFile;
+
+    await client.start(FAKE_SERVER);
+    expect(client.isRunning()).toBe(true);
+
+    const result = await client.callTool('fake_tool', {});
+    expect(result).toContain('fake-result');
+    expect(client.isRunning()).toBe(true);
+    // Exactly one crash should have been recorded — the second spawn was
+    // healthy and reset the counter as part of start()'s success path.
+    expect(client._getConsecutiveCrashesForTests()).toBe(0);
+  });
+
+  it('callTool surfaces JSON-RPC errors without retrying (no infinite loop on real failures)', async () => {
+    // R-022 must NOT retry on non-transport errors — retrying a malformed
+    // argument or a server-side rejection is never useful and can mask bugs.
+    // The fake server returns a JSON-RPC error envelope for the "fake_error"
+    // tool name, which McpClient surfaces as a plain Error (not MCP_CRASHED).
+    // We assert that exactly one spawn happens (no auto-restart) by checking
+    // the crash counter stays at 0 throughout.
+    await client.start(FAKE_SERVER);
+    expect(client.isRunning()).toBe(true);
+
+    await expect(client.callTool('fake_error_tool', {})).rejects.toThrow(/fake-protocol-error/);
+    // Subprocess is still healthy and has not been restarted.
+    expect(client.isRunning()).toBe(true);
+    expect(client._getConsecutiveCrashesForTests()).toBe(0);
+  });
 });

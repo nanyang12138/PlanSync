@@ -29,6 +29,23 @@ const crashAfterRequests = process.env.FAKE_MCP_CRASH_AFTER_REQUESTS
   ? Number(process.env.FAKE_MCP_CRASH_AFTER_REQUESTS)
   : null;
 
+// R-022 one-shot crash file: when the test sets this env var to a path that
+// exists, this spawn arms a single crash-on-tool-call AND deletes the marker
+// so the next spawn (the auto-restart by McpClient.callTool) starts clean.
+let crashOnNextToolCall = false;
+if (process.env.FAKE_MCP_CRASH_ON_TOOL_CALL_ONCE_FILE) {
+  const fs = require('fs');
+  const file = process.env.FAKE_MCP_CRASH_ON_TOOL_CALL_ONCE_FILE;
+  try {
+    if (fs.existsSync(file)) {
+      crashOnNextToolCall = true;
+      fs.unlinkSync(file);
+    }
+  } catch {
+    // Best-effort; if the FS check fails we just won't crash this spawn.
+  }
+}
+
 let handled = 0;
 let buf = '';
 
@@ -70,6 +87,33 @@ process.stdin.on('data', (chunk) => {
       if (process.env.FAKE_MCP_CRASH_ON_TOOL_CALL === '1') {
         // Exit without replying so the in-flight call stays in `pending`
         // until McpClient's exit handler rejects it with MCP_CRASHED.
+        setImmediate(() => process.exit(1));
+        return;
+      }
+      // R-022: a tool call with name `fake_error_tool` returns a JSON-RPC
+      // error envelope. McpClient surfaces this as a plain Error (not
+      // MCP_CRASHED), and the test asserts callTool does NOT auto-retry
+      // because the failure is at the protocol layer, not the transport.
+      const callName = msg.params && msg.params.name;
+      if (callName === 'fake_error_tool') {
+        process.stdout.write(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: msg.id,
+            error: { code: -32000, message: 'fake-protocol-error' },
+          }) + '\n',
+        );
+        handled += 1;
+        return;
+      }
+      // R-022 one-shot crash mode: the test creates a marker file before the
+      // first callTool attempt. The subprocess deletes the file at startup
+      // (see top of this file); if it was present, this flag is armed for
+      // the current spawn only. The next spawn (after McpClient restarts us)
+      // will not see the file and will reply normally — letting the test
+      // assert that callTool transparently recovered and returned a result.
+      if (crashOnNextToolCall) {
+        crashOnNextToolCall = false;
         setImmediate(() => process.exit(1));
         return;
       }
