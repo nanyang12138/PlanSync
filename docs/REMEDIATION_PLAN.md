@@ -1873,7 +1873,7 @@
 
 #### R-099 [MEDIUM] `.env.example` 补 PLANSYNC*SECRET / AUTH_DISABLED / AI keys / EMAIL*\*
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B10
 - **depends_on**: R-035
 - **effort**: small
