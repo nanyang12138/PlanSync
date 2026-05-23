@@ -438,9 +438,10 @@ export async function runAgentLoop(
           `Your previous \`${truncatedTool.name}\` call was truncated because the response ` +
           `exceeded max_tokens (${cfg.maxOutputTokens}). Please retry, but split large array ` +
           `fields (deliverables, constraints, standards, openQuestions) into multiple smaller ` +
-          `tool calls — e.g. use plansync_plan_deliverables_append in batches of 20 instead of ` +
-          `passing the entire array to plansync_plan_update. If that helper is not available, ` +
-          `call plansync_plan_update once with the first chunk, then again with the next chunk ` +
+          `tool calls — e.g. use plansync_plan_patch with batches of 20 ` +
+          `({op:'append', field, items}) instead of passing the entire array to ` +
+          `plansync_plan_update. If plansync_plan_patch is unavailable, call ` +
+          `plansync_plan_update once with the first chunk, then again with the next chunk ` +
           `(use changeSummary to track progress).`,
       });
       continue;
