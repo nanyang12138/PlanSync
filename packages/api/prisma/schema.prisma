@@ -14,6 +14,14 @@ model Project {
   phase         String   @default("planning") // planning | active | completed
   repoUrl       String?  @map("repo_url")
   defaultBranch String?  @map("default_branch")
+  // R-190: GitHub webhook integration. `githubRepo` is the `owner/repo` slug
+  // used to scope incoming `push` / `pull_request` / `pull_request_review`
+  // events to this project, and `githubWebhookSecret` is the HMAC SHA-256
+  // shared secret configured in the GitHub webhook UI (sent as the
+  // `X-Hub-Signature-256` header). Both are nullable so projects without
+  // GitHub integration keep working unchanged.
+  githubRepo            String?  @map("github_repo")
+  githubWebhookSecret   String?  @map("github_webhook_secret")
   createdBy     String   @map("created_by")
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
