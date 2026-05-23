@@ -253,7 +253,8 @@
 
 #### R-004 [HIGH] rebind 行为升级为"显式重启"
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#643
 - **batch**: B1
 - **depends_on**: R-002, R-008
 - **effort**: small
@@ -769,7 +770,8 @@
 
 #### R-032 [MEDIUM] propose plan 接口建立 shared zod schema
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#42
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
@@ -967,7 +969,8 @@
 
 #### R-043 [HIGH] webhook URL 校验防 SSRF
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#68
 - **batch**: B5
 - **depends_on**: —
 - **effort**: small
@@ -1035,7 +1038,8 @@
 
 #### R-047 [MEDIUM] DELETE task 拒绝有 running run 的请求
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#72
 - **batch**: B5
 - **depends_on**: —
 - **effort**: small
@@ -1054,7 +1058,8 @@
 
 #### R-048 [CRITICAL] plans 表加 partial unique "每项目一个 active"
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#73
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small
@@ -1095,7 +1100,8 @@
 
 #### R-050 [MEDIUM] plan 版本号生成放进事务
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#75
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small
@@ -1127,7 +1133,8 @@
 
 #### R-052 [HIGH] reactivate 把 drift 扫描放回事务
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#76
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small
@@ -1142,7 +1149,8 @@
 
 #### R-053 [MEDIUM] suggestion accept 单事务 apply+update
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#77
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small
@@ -1173,7 +1181,8 @@
 
 #### R-055 [HIGH] activate 路由要求非 0 reviewer 或 owner 强制
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#79
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small
@@ -1241,7 +1250,8 @@
 
 #### R-059 [HIGH] CLI banner phase 改用 API 返回的 `project.phase`
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#82
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1256,7 +1266,8 @@
 
 #### R-060 [HIGH] `/exec` 允许 human assignee
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#83
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1271,7 +1282,8 @@
 
 #### R-061 [HIGH] worktree 失败时调用 failRun
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#84
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1303,7 +1315,8 @@
 
 #### R-063 [HIGH] AI loop 保留 tool_use/tool_result 历史
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#85
 - **batch**: B7
 - **depends_on**: —
 - **effort**: medium
@@ -1320,7 +1333,8 @@
 
 #### R-064 [HIGH] `!shell` 命令在 Ink 之前 pause/unmount
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#86
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1335,7 +1349,8 @@
 
 #### R-065 [MEDIUM] `/clear` `/verbose` 等无 unmount 的命令统一加入 unmount
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#87
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1350,7 +1365,8 @@
 
 #### R-066 [MEDIUM] Ink 监听 SIGWINCH 重渲染
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#88
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1381,7 +1397,8 @@
 
 #### R-068 [MEDIUM] Ink 非 TTY fallback
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#90
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1427,7 +1444,8 @@
 
 #### R-071 [LOW] `/worker` Ctrl+C 中断子进程
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#92
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1474,7 +1492,8 @@
 
 #### R-074 [MEDIUM] `/project <id>` 验证项目存在
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#95
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1493,7 +1512,8 @@
 
 #### R-075 [HIGH] tasks 表加复合索引
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#96
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
@@ -1512,7 +1532,8 @@
 
 #### R-076 [HIGH] drift_alerts 加复合索引
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#97
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
@@ -1524,7 +1545,8 @@
 
 #### R-077 [HIGH] api_keys.keyPrefix 加索引
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#98
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
@@ -1568,7 +1590,8 @@
 
 #### R-080 [MEDIUM] ApiKey.execRunId FK 到 execution_runs
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#103
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
@@ -1580,7 +1603,8 @@
 
 #### R-081 [MEDIUM] DriftAlert.planDiffId FK 到 plan_diffs
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#104
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
@@ -1590,7 +1614,8 @@
 
 #### R-082 [MEDIUM] PlanDiff.fromPlanId/toPlanId FK 到 plans
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#105
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
@@ -1600,7 +1625,8 @@
 
 #### R-083 [MEDIUM] Task.boundPlanVersion 加复合 FK
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#306
 - **batch**: B8
 - **depends_on**: —
 - **effort**: medium
@@ -1612,7 +1638,8 @@
 
 #### R-084 [MEDIUM] schema.prisma 标注 partial unique index
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#122
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
@@ -1626,7 +1653,8 @@
 
 #### R-085 [LOW] 统一所有 camelCase 列名为 snake_case `@map`
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#125
 - **batch**: B8
 - **depends_on**: —
 - **effort**: medium
@@ -1683,7 +1711,8 @@
 
 #### R-089 [MEDIUM] SSE 改用 cookie 鉴权，不再支持 `?token=`
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#133
 - **batch**: B9
 - **depends_on**: —
 - **effort**: small
@@ -1766,7 +1795,8 @@
 
 #### R-094 [HIGH] action drift gate 范围按 PR 任务过滤
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#145
 - **batch**: B10
 - **depends_on**: —
 - **effort**: medium
@@ -1781,7 +1811,8 @@
 
 #### R-095 [HIGH] PG_BIN / port_in_use 平台化
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#151
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
@@ -1798,7 +1829,8 @@
 
 #### R-096 [HIGH] 删除 README 中不存在的 demo 脚本引用
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#156
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
@@ -1827,7 +1859,8 @@
 
 #### R-098 [MEDIUM] CLAUDE.md "Three contexts produce comments" 文案修正
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#283
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
@@ -1853,7 +1886,8 @@
 
 #### R-100 [MEDIUM] bin/plansync 错误消息修正 `--format=cjs` → `--format=esm`
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#211
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
@@ -1865,7 +1899,8 @@
 
 #### R-101 [MEDIUM] start-mcp 自动构建逻辑也放到 CLI 启动路径
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#307
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
@@ -1877,7 +1912,8 @@
 
 #### R-102 [MEDIUM] 默认 Genie 路径可配置 / 平台化
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#284
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
@@ -1889,7 +1925,8 @@
 
 #### R-103 [LOW] dev.sh 不再每次清 .next
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#285
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
@@ -1977,7 +2014,8 @@
 
 #### R-111 [MEDIUM] logger 中间件加 correlation id
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#292
 - **batch**: B11
 - **depends_on**: —
 - **effort**: medium
@@ -2003,7 +2041,8 @@
 
 #### R-113 [LOW] sendMail 异步队列化
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#377
 - **batch**: B11
 - **depends_on**: —
 - **effort**: medium
@@ -2084,7 +2123,8 @@
 
 #### R-121 [HIGH] MCP plan*activate/reactivate/append/review*\* 单测
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#376
 - **batch**: B12
 - **depends_on**: —
 - **effort**: medium
@@ -2093,7 +2133,8 @@
 
 #### R-122 [MEDIUM] webhook delivery 单测（HMAC、retry、idempotency）
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#297
 - **batch**: B12
 - **depends_on**: —
 - **effort**: medium
@@ -2102,7 +2143,8 @@
 
 #### R-123 [MEDIUM] auth.ts 密码缓存边界单测
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#290
 - **batch**: B12
 - **depends_on**: —
 - **effort**: small
@@ -2174,7 +2216,8 @@
 
 #### R-130 [LOW] 文档示例代码可执行测试
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#380
 - **batch**: B12
 - **depends_on**: —
 - **effort**: medium
@@ -2356,7 +2399,8 @@
 
 #### R-138 [HIGH] heartbeat-scanner 从 instrumentation 解耦，改为显式 worker 入口
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#224
 - **batch**: B10
 - **depends_on**: —
 - **interim_for**: R-166
@@ -2791,7 +2835,8 @@
 
 #### R-170 [CRITICAL] 设计 ExecContextToken + nextRequired 状态机协议
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#393
 - **batch**: B15
 - **depends_on**: —
 - **effort**: medium
