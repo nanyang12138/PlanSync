@@ -1298,7 +1298,7 @@
 
 #### R-062 [HIGH] 统一 `bin/plansync --exec` 与 CLI `/exec`
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B7
 - **depends_on**: R-060, R-061
 - **effort**: medium
