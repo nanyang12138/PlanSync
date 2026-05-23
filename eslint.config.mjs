@@ -1,9 +1,21 @@
 import js from '@eslint/js';
 import tsPlugin from '@typescript-eslint/eslint-plugin';
 import tsParser from '@typescript-eslint/parser';
+import globals from 'globals';
 
 export default [
   js.configs.recommended,
+  {
+    // .mjs files under packages/*/src run on Node (e.g. exec-cli.mjs, the
+    // standalone shell entry for `bin/plansync --exec`) so they need node
+    // globals (process, Buffer, URL, …).
+    files: ['**/*.mjs'],
+    languageOptions: {
+      globals: { ...globals.node },
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+    },
+  },
   {
     files: ['**/*.ts', '**/*.tsx'],
     languageOptions: {

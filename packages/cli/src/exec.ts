@@ -7,6 +7,22 @@ import { execSync, spawn, spawnSync, ChildProcess } from 'child_process';
 import crypto from 'crypto';
 import { cfg, selfDir } from './config.js';
 import { c, createSpinner } from './ui.js';
+import {
+  resolveExecAssignee as _resolveExecAssignee,
+  buildExecPrompt as _buildExecPrompt,
+  buildExecMcpEnv as _buildExecMcpEnv,
+  openDriftAlerts as _openDriftAlerts,
+  type ExecAssigneeInput as _ExecAssigneeInput,
+  type ExecAssigneeDecision as _ExecAssigneeDecision,
+} from './exec-shared.mjs';
+
+// Re-export the shared assignee helper so existing imports
+// (`packages/cli/tests/exec-assignee.test.ts` and any future call sites)
+// continue to work from `./exec.js`. R-062: the implementation moved to
+// `exec-shared.mjs` so the shell entry point in `exec-cli.mjs` can reuse it.
+export type ExecAssigneeInput = _ExecAssigneeInput;
+export type ExecAssigneeDecision = _ExecAssigneeDecision;
+export const resolveExecAssignee = _resolveExecAssignee;
 
 // ─── MCP config builder ───────────────────────────────────────────────────────
 
@@ -21,22 +37,23 @@ export function buildMcpConfigArg(
   const localNodeBin = path.join(projectRoot, '.local-runtime', 'node', 'bin', 'node');
   const mcpServerDist = path.join(projectRoot, 'packages', 'mcp-server', 'dist', 'index.js');
 
+  // Delegated to `exec-shared.mjs` (R-062) so the shell entry point at
+  // `bin/plansync --exec` produces an identical MCP child env.
   return JSON.stringify({
     mcpServers: {
       plansync: {
         command: localNodeBin,
         args: [mcpServerDist],
-        env: {
-          PLANSYNC_API_URL: process.env.PLANSYNC_API_URL ?? 'http://localhost:3001',
-          PLANSYNC_API_KEY: apiKeyOverride ?? process.env.PLANSYNC_API_KEY ?? '',
-          PLANSYNC_USER: process.env.PLANSYNC_USER ?? process.env.USER ?? '',
-          PLANSYNC_SECRET: process.env.PLANSYNC_SECRET ?? '',
-          PLANSYNC_PROJECT: projectId,
-          PLANSYNC_EXEC_RUN_ID: runId,
-          PLANSYNC_EXEC_TASK_ID: taskId,
-          PLANSYNC_EXEC_SESSION_ID: sessionId,
-          LOG_LEVEL: 'warn',
-        },
+        env: _buildExecMcpEnv({
+          runId,
+          taskId,
+          projectId,
+          sessionId,
+          apiUrl: process.env.PLANSYNC_API_URL,
+          apiKey: apiKeyOverride ?? process.env.PLANSYNC_API_KEY,
+          user: process.env.PLANSYNC_USER ?? process.env.USER,
+          secret: process.env.PLANSYNC_SECRET,
+        }),
       },
     },
   });
@@ -351,60 +368,11 @@ export function launchCode(): ReturnType<typeof spawn> {
 
 // ─── /exec assignee resolution (R-060) ────────────────────────────────────────
 //
-// Decides whether `/exec` may be invoked on a given task and, if so, which
-// executor identity (executorType + executorName) to register the run as.
-//
-// Allowed cases:
-//   - task is assigned to an agent member  → executorType='agent', executorName=assignee
-//   - task is assigned to a human AND that human is the current CLI user
-//                                          → executorType='human', executorName=currentUser
-//
-// Anything else (unassigned, human-assigned to someone else, unknown type) is
-// rejected with a user-visible reason. The helper is pure (no I/O) so it can
-// be unit-tested in isolation.
-
-export type ExecAssigneeInput = {
-  assignee?: string | null;
-  assigneeType?: string | null;
-};
-
-export type ExecAssigneeDecision =
-  | { ok: true; executorType: 'agent' | 'human'; executorName: string }
-  | { ok: false; reason: string };
-
-export function resolveExecAssignee(
-  task: ExecAssigneeInput,
-  currentUser: string,
-): ExecAssigneeDecision {
-  const assignee = task.assignee ?? null;
-  const assigneeType = task.assigneeType ?? null;
-
-  if (!assignee) {
-    return {
-      ok: false,
-      reason: `/exec requires the task to have an assignee. Current assignee: none (${assigneeType ?? 'unassigned'}).`,
-    };
-  }
-
-  if (assigneeType === 'agent') {
-    return { ok: true, executorType: 'agent', executorName: assignee };
-  }
-
-  if (assigneeType === 'human') {
-    if (assignee === currentUser) {
-      return { ok: true, executorType: 'human', executorName: assignee };
-    }
-    return {
-      ok: false,
-      reason: `/exec on a human-assigned task requires you to be the assignee. Task is assigned to "${assignee}" but you are signed in as "${currentUser}".`,
-    };
-  }
-
-  return {
-    ok: false,
-    reason: `/exec requires the task to be assigned to an agent member or a human matching the current user. Current assignee: ${assignee} (${assigneeType ?? 'unassigned'}).`,
-  };
-}
+// Pure helper `resolveExecAssignee` decides whether `/exec` may run on a given
+// task. The implementation lives in `./exec-shared.mjs` so that the shell
+// entry point at `bin/plansync --exec` (via `exec-cli.mjs`) shares it; we just
+// re-export it at the top of this file for backward compatibility with the
+// existing `from './exec.js'` import paths.
 
 // ─── /exec command ────────────────────────────────────────────────────────────
 
@@ -423,10 +391,11 @@ export async function launchExec(
   }
 
   const pack = taskPack as {
-    driftAlerts?: Array<{ status: string; reason: string }>;
     task?: { assignee?: string | null; assigneeType?: string | null };
   };
-  const openDrifts = (pack.driftAlerts ?? []).filter((d) => d.status === 'open');
+  // R-062: open-drift filter lives in `exec-shared.mjs` so both entry points
+  // gate on the exact same predicate.
+  const openDrifts = _openDriftAlerts(taskPack);
   if (openDrifts.length > 0) {
     console.log(
       `\n${c.yellow}⚠ Task has ${openDrifts.length} unresolved drift alert(s). Resolve them first.${c.reset}\n`,
@@ -466,27 +435,9 @@ export async function launchExec(
     return;
   }
 
-  const execPrompt = [
-    `You are about to execute PlanSync task ${taskId}.`,
-    '',
-    'This session is launched in PlanSync exec mode. The execution run has ALREADY',
-    'been registered for you (runId in env PLANSYNC_EXEC_RUN_ID). Call',
-    'plansync_exec_context FIRST to retrieve runId and full task context.',
-    '',
-    'Do NOT call plansync_execution_start — only one running execution is allowed',
-    'per task and yours is already active.',
-    '',
-    'IMPORTANT: Do NOT write any code yet.',
-    'First, present your implementation approach for user approval.',
-    'After approval: implement using your tools, then call plansync_execution_complete',
-    'with the runId from plansync_exec_context.',
-    '',
-    'FORBIDDEN: Do NOT call plansync_plan_create, plansync_plan_propose, plansync_plan_activate, or plansync_plan_reactivate.',
-    'A plan already exists. You are here to EXECUTE a task within the existing plan, not to create a new one.',
-    '',
-    'Task Pack:',
-    JSON.stringify(taskPack, null, 2),
-  ].join('\n');
+  // R-062: prompt template lives in `exec-shared.mjs` so the shell entry
+  // (`bin/plansync --exec`) renders an identical prompt.
+  const execPrompt = _buildExecPrompt({ taskId, taskPack });
 
   const projectRoot = path.resolve(selfDir, '../../../');
   const original = patchProjectInSettings(cfg.project);
@@ -554,8 +505,8 @@ async function launchExecDirect(
   taskPack: unknown,
   options: { autonomous?: boolean },
 ): Promise<void> {
-  const pack = taskPack as { driftAlerts?: Array<{ status: string; reason: string }> };
-  const openDrifts = (pack.driftAlerts ?? []).filter((d) => d.status === 'open');
+  // R-062: drift filter shared with `bin/plansync --exec`.
+  const openDrifts = _openDriftAlerts(taskPack);
   if (openDrifts.length > 0) {
     console.log(
       `\n${c.yellow}⚠ Task has ${openDrifts.length} unresolved drift alert(s). Resolve them first.${c.reset}\n`,
