@@ -16,6 +16,7 @@ import { registerDriftTools } from './tools/drift';
 import { registerStatusTools, getDelegationAgent } from './tools/status';
 import { onRunAborted } from './abort-signal';
 import { patchServerToolRegistration } from './tool-wrapper';
+import { ExecStateManager, readEnforceMode } from './exec-state-manager';
 
 function pushNotification(
   server: McpServer,
