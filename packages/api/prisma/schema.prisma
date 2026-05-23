@@ -520,3 +520,28 @@ model AiCall {
   @@index([createdAt(sort: Desc)])
   @@map("ai_calls")
 }
+
+// R-160: transactional outbox. Every state-changing event is written to this
+// table inside the same DB transaction that produced the state change. A
+// separate worker (R-162) consumes rows where deliveredAt IS NULL and fans
+// them out to existing sinks (SSE, webhook, email, activity). The bigserial
+// id provides a monotonic sequence for SSE lastEventId replay (R-163).
+model DomainEvent {
+  id          BigInt    @id @default(autoincrement())
+  eventType   String    @map("event_type")
+  projectId   String?   @map("project_id")
+  userName    String?   @map("user_name")
+  payload     Json
+  createdAt   DateTime  @default(now()) @map("created_at")
+  deliveredAt DateTime? @map("delivered_at")
+  attempt     Int       @default(0)
+
+  // Backs the consumer's hot path:
+  //   SELECT ... WHERE delivered_at IS NULL ORDER BY id ASC FOR UPDATE SKIP LOCKED
+  // The migration creates this as a partial index (`WHERE delivered_at IS NULL`)
+  // so it only contains rows the worker actually needs to scan; prisma does not
+  // model partial indexes, so the @@index here is a no-op placeholder that the
+  // migration replaces with the real partial index.
+  @@index([deliveredAt, id])
+  @@map("domain_events")
+}
