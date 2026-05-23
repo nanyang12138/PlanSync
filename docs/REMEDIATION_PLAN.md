@@ -2031,7 +2031,7 @@
 
 #### R-112 [LOW] logger 用 env.LOG_LEVEL 而不是 process.env
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B11
 - **depends_on**: R-035
 - **effort**: small
