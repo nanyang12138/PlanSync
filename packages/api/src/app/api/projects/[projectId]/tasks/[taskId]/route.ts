@@ -255,6 +255,30 @@ export async function DELETE(req: NextRequest, { params }: Params) {
     }
 
     await prisma.task.delete({ where: { id: params.taskId } });
+
+    // R-106: audit-log task DELETE. DELETE is the most destructive mutation
+    // on the task surface — without an activity row, an owner removing a
+    // task leaves no trace in the audit feed, breaking accountability for
+    // scope shrinkage. We write `task_deleted` *after* the delete succeeds
+    // (so a failed delete does not produce a spurious row) and capture the
+    // pre-delete snapshot of the fields most useful for forensics: title,
+    // status, assignee, and the plan version the task was bound to.
+    await createActivity({
+      projectId: params.projectId,
+      type: 'task_deleted',
+      actorName: auth.userName,
+      actorType: 'human',
+      summary: `Task "${task.title}" deleted`,
+      metadata: {
+        taskId: params.taskId,
+        title: task.title,
+        status: task.status,
+        assignee: task.assignee,
+        assigneeType: task.assigneeType,
+        boundPlanVersion: task.boundPlanVersion,
+      },
+    });
+
     return NextResponse.json({ data: { deleted: true } });
   } catch (error) {
     return handleApiError(error);
