@@ -53,10 +53,20 @@ export async function POST(req: NextRequest, { params }: Params) {
         },
       });
 
-      if (body.action === 'no_impact' && drift.task.status === 'blocked') {
+      if (body.action === 'no_impact') {
+        // R-140: clear the system gate but never touch task.status. Pre-R-140
+        // history may have set status='blocked' from drift; we preserve a
+        // narrow backwards-compat path that promotes those rows back to
+        // 'in_progress' so existing dashboards don't see a stuck-blocked
+        // row, but the new contract is "executionGate is the system-gate
+        // signal; status is owner-meaningful". For tasks whose status was
+        // never touched (the post-R-140 path), only the gate clears.
         await tx.task.update({
           where: { id: drift.taskId },
-          data: { status: 'in_progress' },
+          data: {
+            executionGate: null,
+            ...(drift.task.status === 'blocked' ? { status: 'in_progress' } : {}),
+          },
         });
         // Intentionally do NOT auto-revive paused runs on no_impact: the agent's
         // mid-execution context is already gone (its tool stream was aborted on
@@ -74,12 +84,18 @@ export async function POST(req: NextRequest, { params }: Params) {
         // (`done`, `cancelled`) are preserved — rebinding a finished task
         // only updates its version reference for audit. All other states
         // (`todo`, `in_progress`, `blocked`) collapse to `todo`.
+        //
+        // R-140: rebind also clears executionGate so a subsequent
+        // execution_start against the new plan is not blocked by the
+        // system gate. The owner explicitly accepted the new plan; the
+        // gate has served its purpose.
         const TERMINAL_TASK_STATES = ['done', 'cancelled'] as const;
         const isTerminal = (TERMINAL_TASK_STATES as readonly string[]).includes(drift.task.status);
         await tx.task.update({
           where: { id: drift.taskId },
           data: {
             boundPlanVersion: activePlan.version,
+            executionGate: null,
             ...(isTerminal ? {} : { status: 'todo' }),
           },
         });
@@ -95,9 +111,12 @@ export async function POST(req: NextRequest, { params }: Params) {
           data: { status: 'superseded', endedAt: new Date() },
         });
       } else if (body.action === 'cancel') {
+        // R-140: cancel clears the gate as a side-effect of moving to a
+        // terminal state. status='cancelled' is the authoritative signal;
+        // leaving the gate set on a cancelled row would be confusing.
         await tx.task.update({
           where: { id: drift.taskId },
-          data: { status: 'cancelled' },
+          data: { status: 'cancelled', executionGate: null },
         });
         await tx.executionRun.updateMany({
           where: { taskId: drift.taskId, status: { in: ['running', 'paused'] } },

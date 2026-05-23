@@ -2445,7 +2445,7 @@
 
 #### R-140 [HIGH] 新增 `task.executionGate` 字段，区分 system block 与 owner block
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B6
 - **depends_on**: R-002, R-008
 - **effort**: medium

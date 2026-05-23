@@ -61,6 +61,21 @@ export async function POST(req: NextRequest, { params }: Params) {
       throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
     }
 
+    // R-140: system-gated tasks (drift_high / drift_medium / manual_block)
+    // cannot start a new execution until the gate is cleared by
+    // drift_resolve. This check runs before the status check below so the
+    // error message points the operator at the right recovery action
+    // (resolve the drift) rather than implying the task lifecycle is wrong.
+    if (task.executionGate) {
+      const gateMsg =
+        task.executionGate === 'drift_high' || task.executionGate === 'drift_medium'
+          ? `Cannot start execution: task is gated by drift (${task.executionGate}). Resolve open drift alerts (drift_resolve action=rebind|no_impact|cancel) before retrying.`
+          : `Cannot start execution: task is gated (${task.executionGate}). Clear the gate before retrying.`;
+      throw new AppError(ErrorCode.STATE_CONFLICT, gateMsg, {
+        executionGate: task.executionGate,
+      });
+    }
+
     // R-054: Only 'todo' or 'in_progress' tasks may start a new execution run.
     // Previously, a 'done', 'cancelled', or 'blocked' task would silently fall through
     // both status branches below and create a run with the task in a terminal/blocked

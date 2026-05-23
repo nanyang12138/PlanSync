@@ -268,15 +268,22 @@ export async function persistDriftAlerts(
     })),
   });
 
-  // R-002 drift v2 — two coordinated atomic writes, both inside the caller's
-  // transaction so a roll-back cleanly reverts everything:
+  // R-002 + R-140 drift v2 — two coordinated atomic writes, both inside the
+  // caller's transaction so a roll-back cleanly reverts everything:
   //
-  //   1. Block the task. Any task with severity at least 'medium' (i.e. the
+  //   1. Gate the task. Any task with severity at least 'medium' (i.e. the
   //      plan change touched something the task references, or referenced
-  //      scope/standards) is blocked so no new execution_start can race in
-  //      while the drift sits unresolved. Tasks with severity='low' are
-  //      intentionally NOT blocked — by definition the change does not
-  //      affect them, so blocking would be alert fatigue.
+  //      scope/standards) has its `executionGate` column set so no new
+  //      execution_start can race in while the drift sits unresolved. Tasks
+  //      with severity='low' are intentionally NOT gated — by definition
+  //      the change does not affect them, so gating would be alert fatigue.
+  //
+  //      Before R-140 the engine wrote `status='blocked'` here. That
+  //      conflated "system gated this because the plan drifted" with the
+  //      owner-meaningful blocked state used by heartbeat-scanner /
+  //      failed-run paths. The new column keeps the two distinct so the
+  //      banner/CLI can say "blocked by drift v2" while the underlying
+  //      task lifecycle (todo / in_progress) is untouched.
   //
   //   2. Pause running runs of those tasks. The set is `severity != 'low'
   //      AND hasRunningExecution`. The runs/[runId] route rejects any
@@ -285,18 +292,37 @@ export async function persistDriftAlerts(
   //      breaks out at the next tool call (defense in depth: SSE is
   //      best-effort, but the DB-side gate is authoritative).
   //
-  // The pause set is a subset of the block set: a run-less task can still
-  // get blocked because something it references changed, but there's nothing
+  // The pause set is a subset of the gated set: a run-less task can still
+  // get gated because something it references changed, but there's nothing
   // running to pause. The `status='running'` filter on the updateMany leaves
   // alone any run that the agent voluntarily completed in the millisecond
   // between drift scan and persist.
   const blockingAlerts = alerts.filter((a) => a.severity !== 'low');
   if (blockingAlerts.length > 0) {
-    const blockTaskIds = blockingAlerts.map((a) => a.taskId);
-    await tx.task.updateMany({
-      where: { id: { in: blockTaskIds } },
-      data: { status: 'blocked' },
-    });
+    // Per-task gate value tracks the alert's severity so the banner can
+    // pick a copy that matches: 'drift_high' (breaking — agent contract
+    // changed) vs 'drift_medium' (re-orient — referenced scope/standard
+    // changed but deliverables intact).
+    const highTaskIds = blockingAlerts.filter((a) => a.severity === 'high').map((a) => a.taskId);
+    const mediumTaskIds = blockingAlerts
+      .filter((a) => a.severity === 'medium')
+      .map((a) => a.taskId);
+    if (highTaskIds.length > 0) {
+      await tx.task.updateMany({
+        where: { id: { in: highTaskIds } },
+        data: { executionGate: 'drift_high' },
+      });
+    }
+    if (mediumTaskIds.length > 0) {
+      await tx.task.updateMany({
+        where: { id: { in: mediumTaskIds } },
+        // A task that already has 'drift_high' from a prior alert in the
+        // same persist call would otherwise be downgraded; since the same
+        // task only appears in one severity bucket per call (alerts is
+        // pre-grouped by taskId in runDriftScan) this updateMany is safe.
+        data: { executionGate: 'drift_medium' },
+      });
+    }
 
     const pauseTaskIds = blockingAlerts.filter((a) => a.hasRunningExecution).map((a) => a.taskId);
     if (pauseTaskIds.length > 0) {
