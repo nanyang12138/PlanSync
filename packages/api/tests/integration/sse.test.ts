@@ -144,6 +144,58 @@ describe('I: SSE (Server-Sent Events)', () => {
     await reader.cancel();
   });
 
+  it('I16 (R-091): SSE client cap is enforced per-project, not globally', async () => {
+    // Force the per-project cap down to 2 so we can saturate it without
+    // having to spin up 100 readers.
+    const prev = process.env.PLANSYNC_MAX_SSE_CLIENTS_PER_PROJECT;
+    process.env.PLANSYNC_MAX_SSE_CLIENTS_PER_PROJECT = '2';
+    const { projectId: projAId } = await createTestProject('sse-cap-a-owner');
+    const { projectId: projBId } = await createTestProject('sse-cap-b-owner');
+
+    const openA: ReadableStreamDefaultReader<Uint8Array>[] = [];
+
+    try {
+      // Open enough connections to project A to hit the cap.
+      for (let i = 0; i < 2; i++) {
+        const res = await eventsGet(
+          makeReq(`/api/projects/${projAId}/events`, { userName: 'sse-cap-a-owner' }),
+          { params: { projectId: projAId } },
+        );
+        expect(res.status).toBe(200);
+        const reader = res.body!.getReader();
+        // Drain the initial `: connected\n\n` chunk so the listener is
+        // actually wired up (subscribe runs inside `start`).
+        await reader.read();
+        openA.push(reader);
+      }
+
+      // The next connection to project A must be rejected with 503.
+      const overflow = await eventsGet(
+        makeReq(`/api/projects/${projAId}/events`, { userName: 'sse-cap-a-owner' }),
+        { params: { projectId: projAId } },
+      );
+      expect(overflow.status).toBe(503);
+      // Body should mention the per-project scope so operators can tell
+      // the new cap apart from the old global one.
+      const overflowText = await overflow.text();
+      expect(overflowText).toContain('project');
+
+      // Project B is independent — saturating A must not block B.
+      const bRes = await eventsGet(
+        makeReq(`/api/projects/${projBId}/events`, { userName: 'sse-cap-b-owner' }),
+        { params: { projectId: projBId } },
+      );
+      expect(bRes.status).toBe(200);
+      await bRes.body!.cancel();
+    } finally {
+      for (const reader of openA) await reader.cancel();
+      await cleanupProject(projAId);
+      await cleanupProject(projBId);
+      if (prev === undefined) delete process.env.PLANSYNC_MAX_SSE_CLIENTS_PER_PROJECT;
+      else process.env.PLANSYNC_MAX_SSE_CLIENTS_PER_PROJECT = prev;
+    }
+  });
+
   it('I15: project A SSE does not receive project B events', async () => {
     const { projectId: projBId } = await createTestProject('sse-b-owner');
     await createActivePlan(projBId, 'sse-b-owner');
