@@ -804,7 +804,7 @@
 
 #### R-034 [HIGH] 增加 schema-drift CI 守门测试
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: R-027, R-028, R-029, R-030, R-031, R-032, R-033
 - **effort**: medium
