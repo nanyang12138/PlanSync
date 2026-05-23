@@ -1,4 +1,5 @@
 import pino from 'pino';
+import { env } from './env';
 import { getRequestId } from './request-context';
 
 /**
@@ -11,10 +12,14 @@ export function requestIdMixin(): Record<string, string> {
   return reqId ? { reqId } : {};
 }
 
+// R-112: read LOG_LEVEL / NODE_ENV off the validated `env` singleton instead
+// of `process.env` so a typo (e.g. LOG_LEVEL=infoo) fails fast at boot via
+// the zod schema in env.ts rather than silently degrading to pino's "info"
+// default at runtime. Keeps env.ts the single inventory of runtime env vars.
 export const logger = pino({
-  level: process.env.LOG_LEVEL || 'info',
+  level: env.LOG_LEVEL,
   mixin: requestIdMixin,
-  ...(process.env.NODE_ENV === 'development'
+  ...(env.NODE_ENV === 'development'
     ? {
         transport: {
           target: 'pino-pretty',
