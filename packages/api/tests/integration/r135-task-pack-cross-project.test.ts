@@ -8,9 +8,31 @@ vi.mock('@/lib/email', () => ({
   userEmail: (name: string) => `${name}@example.com`,
 }));
 
+// #255/#256: spy on the audit logger so we can assert that every
+// cross-project rejection on read AND write paths emits the
+// suspectCrossProject signal. vi.hoisted so the spy is initialised
+// before vi.mock's hoisted factory runs.
+const { loggerWarn } = vi.hoisted(() => ({ loggerWarn: vi.fn() }));
+vi.mock('@/lib/logger', () => ({
+  logger: {
+    warn: loggerWarn,
+    info: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  },
+}));
+
 import { GET as packGet } from '@/app/api/projects/[projectId]/tasks/[taskId]/pack/route';
-import { GET as taskGet } from '@/app/api/projects/[projectId]/tasks/[taskId]/route';
+import {
+  GET as taskGet,
+  PATCH as taskPatch,
+  DELETE as taskDelete,
+} from '@/app/api/projects/[projectId]/tasks/[taskId]/route';
 import { POST as runsPost } from '@/app/api/projects/[projectId]/tasks/[taskId]/runs/route';
+import { POST as claimPost } from '@/app/api/projects/[projectId]/tasks/[taskId]/claim/route';
+import { POST as declinePost } from '@/app/api/projects/[projectId]/tasks/[taskId]/decline/route';
+import { POST as rebindPost } from '@/app/api/projects/[projectId]/tasks/[taskId]/rebind/route';
+import { POST as completeHumanPost } from '@/app/api/projects/[projectId]/tasks/[taskId]/complete-human/route';
 import { buildTaskPack } from '@/lib/task-pack';
 import {
   makeReq,
@@ -124,4 +146,146 @@ describe('R-135: task-pack cross-project isolation', () => {
     expect(body.data.task.id).toBe(taskBId);
     expect(body.data.task.title).toBe('Secret B task');
   });
+
+  // ---- #255 / #256: every cross-project route must emit the audit signal ----
+
+  function lastSuspectCrossProjectCall(): {
+    suspectCrossProject?: boolean;
+    callContext?: string;
+    requestedProjectId?: string;
+    actualProjectId?: string;
+    taskId?: string;
+  } | null {
+    for (let i = loggerWarn.mock.calls.length - 1; i >= 0; i -= 1) {
+      const arg = loggerWarn.mock.calls[i][0];
+      if (typeof arg === 'object' && arg !== null && 'suspectCrossProject' in arg) {
+        return arg as Record<string, unknown>;
+      }
+    }
+    return null;
+  }
+
+  function clearWarn() {
+    loggerWarn.mockClear();
+  }
+
+  it('#255: GET /pack cross-project miss emits suspectCrossProject audit', async () => {
+    clearWarn();
+    await packGet(
+      makeReq(`/api/projects/${projectAId}/tasks/${taskBId}/pack`, { userName: ownerA }),
+      { params: { projectId: projectAId, taskId: taskBId } },
+    );
+    const audit = lastSuspectCrossProjectCall();
+    expect(audit?.suspectCrossProject).toBe(true);
+    expect(audit?.callContext).toBe('GET /pack');
+    expect(audit?.actualProjectId).toBe(projectBId);
+    expect(audit?.requestedProjectId).toBe(projectAId);
+  });
+
+  // #256: every write path emits the same audit signal so a multi-route
+  // probe sequence (PATCH then DELETE then claim ...) is fully traceable.
+  const writeProbes: Array<{ name: string; run: () => Promise<unknown>; ctx: string }> = [
+    {
+      name: 'PATCH /tasks/:id',
+      ctx: 'PATCH /tasks/:id',
+      run: () =>
+        taskPatch(
+          makeReq(`/api/projects/${projectAId}/tasks/${taskBId}`, {
+            method: 'PATCH',
+            userName: ownerA,
+            body: { description: 'leak attempt' },
+          }),
+          { params: { projectId: projectAId, taskId: taskBId } },
+        ),
+    },
+    {
+      name: 'DELETE /tasks/:id',
+      ctx: 'DELETE /tasks/:id',
+      run: () =>
+        taskDelete(
+          makeReq(`/api/projects/${projectAId}/tasks/${taskBId}`, {
+            method: 'DELETE',
+            userName: ownerA,
+          }),
+          { params: { projectId: projectAId, taskId: taskBId } },
+        ),
+    },
+    {
+      name: 'POST /tasks/:id/claim',
+      ctx: 'POST /tasks/:id/claim',
+      run: () =>
+        claimPost(
+          makeReq(`/api/projects/${projectAId}/tasks/${taskBId}/claim`, {
+            method: 'POST',
+            userName: ownerA,
+            body: { assignee: ownerA },
+          }),
+          { params: { projectId: projectAId, taskId: taskBId } },
+        ),
+    },
+    {
+      name: 'POST /tasks/:id/decline',
+      ctx: 'POST /tasks/:id/decline',
+      run: () =>
+        declinePost(
+          makeReq(`/api/projects/${projectAId}/tasks/${taskBId}/decline`, {
+            method: 'POST',
+            userName: ownerA,
+          }),
+          { params: { projectId: projectAId, taskId: taskBId } },
+        ),
+    },
+    {
+      name: 'POST /tasks/:id/rebind',
+      ctx: 'POST /tasks/:id/rebind',
+      run: () =>
+        rebindPost(
+          makeReq(`/api/projects/${projectAId}/tasks/${taskBId}/rebind`, {
+            method: 'POST',
+            userName: ownerA,
+          }),
+          { params: { projectId: projectAId, taskId: taskBId } },
+        ),
+    },
+    {
+      name: 'POST /tasks/:id/complete-human',
+      ctx: 'POST /tasks/:id/complete-human',
+      run: () =>
+        completeHumanPost(
+          makeReq(`/api/projects/${projectAId}/tasks/${taskBId}/complete-human`, {
+            method: 'POST',
+            userName: ownerA,
+            body: { completionNote: 'try' },
+          }),
+          { params: { projectId: projectAId, taskId: taskBId } },
+        ),
+    },
+    {
+      name: 'POST /tasks/:id/runs',
+      ctx: 'POST /tasks/:id/runs',
+      run: () =>
+        runsPost(
+          makeReq(`/api/projects/${projectAId}/tasks/${taskBId}/runs`, {
+            method: 'POST',
+            userName: ownerA,
+            body: { executorType: 'human', executorName: ownerA },
+          }),
+          { params: { projectId: projectAId, taskId: taskBId } },
+        ),
+    },
+  ];
+
+  for (const probe of writeProbes) {
+    it(`#256: ${probe.name} cross-project miss emits suspectCrossProject audit`, async () => {
+      clearWarn();
+      const res = (await probe.run()) as Response;
+      // All probes must 4xx — never confirm task existence cross-project.
+      expect([403, 404]).toContain(res.status);
+      const audit = lastSuspectCrossProjectCall();
+      expect(audit?.suspectCrossProject).toBe(true);
+      expect(audit?.callContext).toBe(probe.ctx);
+      expect(audit?.actualProjectId).toBe(projectBId);
+      expect(audit?.requestedProjectId).toBe(projectAId);
+    });
+  }
 });

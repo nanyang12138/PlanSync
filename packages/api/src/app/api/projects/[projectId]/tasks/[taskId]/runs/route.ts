@@ -8,6 +8,7 @@ import { buildTaskPack } from '@/lib/task-pack';
 import { createActivity } from '@/lib/activity';
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
+import { auditCrossProjectTaskIfNeeded } from '@/lib/task-scope';
 
 type Params = { params: { projectId: string; taskId: string } };
 
@@ -21,7 +22,10 @@ export async function GET(req: NextRequest, { params }: Params) {
     const task = await prisma.task.findFirst({
       where: { id: params.taskId, projectId: params.projectId },
     });
-    if (!task) throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+    if (!task) {
+      await auditCrossProjectTaskIfNeeded(params.taskId, params.projectId, 'GET /tasks/:id/runs');
+      throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+    }
 
     const [runs, total] = await Promise.all([
       prisma.executionRun.findMany({
@@ -52,7 +56,10 @@ export async function POST(req: NextRequest, { params }: Params) {
     const task = await prisma.task.findFirst({
       where: { id: params.taskId, projectId: params.projectId },
     });
-    if (!task) throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+    if (!task) {
+      await auditCrossProjectTaskIfNeeded(params.taskId, params.projectId, 'POST /tasks/:id/runs');
+      throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+    }
 
     // R-054: Only 'todo' or 'in_progress' tasks may start a new execution run.
     // Previously, a 'done', 'cancelled', or 'blocked' task would silently fall through
