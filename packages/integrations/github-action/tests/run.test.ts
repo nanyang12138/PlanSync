@@ -219,9 +219,9 @@ describe('github-action run()', () => {
     expect(coreMock.setFailed).toHaveBeenCalledWith('High severity drift detected');
 
     const infos = coreMock.info.mock.calls.map((c) => String(c[0]));
-    expect(infos.some((m) => m.includes('Scoping drift check to 1 task(s) on branch "feat/foo"'))).toBe(
-      true,
-    );
+    expect(
+      infos.some((m) => m.includes('Scoping drift check to 1 task(s) on branch "feat/foo"')),
+    ).toBe(true);
   });
 
   it('R-094: scoped mode with no in-scope drifts passes the gate even when other open drifts exist', async () => {
@@ -356,7 +356,8 @@ describe('github-action run()', () => {
       project: 'proj-123',
       'branch-name': 'feat/big-project',
     });
-    // Always return a full page so the loop never naturally terminates.
+    // Always return a full page (without pagination metadata) so the loop
+    // exhausts the cap. Legacy server simulation.
     const fullPage = Array.from({ length: 100 }, (_, i) => ({
       id: `t-${i}`,
       branchName: 'feat/other',
@@ -370,11 +371,125 @@ describe('github-action run()', () => {
 
     // 50 task fetches happened, then the action bailed out — no /drifts call.
     expect(fetchSpy).toHaveBeenCalledTimes(50);
-    expect(
-      fetchSpy.mock.calls.every((c) => String(c[0]).includes('/tasks?page=')),
-    ).toBe(true);
+    expect(fetchSpy.mock.calls.every((c) => String(c[0]).includes('/tasks?page='))).toBe(true);
 
     const failed = String(coreMock.setFailed.mock.calls[0]?.[0] ?? '');
     expect(failed).toMatch(/scope would be incomplete/);
+  });
+
+  // ---- #187 / #217 — exact pageSize-multiple totals must NOT report truncated ----
+
+  it('#187/#217: branch task list of exactly TASK_PAGE_SIZE×N rows is not falsely truncated', async () => {
+    // Server is a real PlanSync API: returns pagination.totalPages so the
+    // action can trust it instead of relying on the partial-page heuristic.
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'branch-name': 'feat/exact',
+    });
+    const TOTAL_PAGES = 3;
+    const fullPage = Array.from({ length: 100 }, (_, i) => ({
+      id: `t-${i}`,
+      branchName: 'feat/other',
+    }));
+    // Pages 1..3, all exactly full, with totalPages: 3 → action must stop
+    // after page 3 and report scope complete (no setFailed).
+    for (let p = 1; p <= TOTAL_PAGES; p += 1) {
+      fetchSpy.mockResolvedValueOnce(
+        jsonResponse(200, {
+          data: fullPage,
+          pagination: { page: p, pageSize: 100, total: TOTAL_PAGES * 100, totalPages: TOTAL_PAGES },
+        }),
+      );
+    }
+    // /drifts call (irrelevant — branch matched 0 tasks → setFailed will
+    // come from the "no tasks found" branch, but we want to confirm we did
+    // NOT hit the truncation branch).
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(200, {
+        data: [],
+        pagination: { page: 1, pageSize: 100, total: 0, totalPages: 0 },
+      }),
+    );
+
+    const { run } = await import('../index');
+    await run();
+
+    // Only TOTAL_PAGES task fetches happened — no walk to the cap.
+    const taskCalls = fetchSpy.mock.calls.filter((c) => String(c[0]).includes('/tasks?page='));
+    expect(taskCalls).toHaveLength(TOTAL_PAGES);
+
+    const failed = String(coreMock.setFailed.mock.calls[0]?.[0] ?? '');
+    expect(failed).not.toMatch(/scope would be incomplete/);
+    // The "no tasks found" branch fires because no row matches `feat/exact`.
+    expect(failed).toMatch(/no tasks found with branchName="feat\/exact"/);
+  });
+
+  it('#187/#217: drift list of exactly DRIFT_PAGE_SIZE×N rows is not falsely truncated', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+    });
+    // No scoping → goes straight to /drifts. Two full pages with totalPages: 2.
+    const fullDriftPage = Array.from({ length: 100 }, (_, i) => ({
+      id: `d-${i}`,
+      taskId: `t-${i}`,
+      severity: 'low',
+      taskBoundVersion: 1,
+      currentPlanVersion: 2,
+    }));
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(200, {
+        data: fullDriftPage,
+        pagination: { page: 1, pageSize: 100, total: 200, totalPages: 2 },
+      }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(200, {
+        data: fullDriftPage,
+        pagination: { page: 2, pageSize: 100, total: 200, totalPages: 2 },
+      }),
+    );
+
+    const { run } = await import('../index');
+    await run();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const failed = String(coreMock.setFailed.mock.calls[0]?.[0] ?? '');
+    expect(failed).not.toMatch(/refusing to gate on a partial view/);
+    // 200 LOW drifts → no setFailed (only HIGH triggers fail).
+    expect(coreMock.setOutput).toHaveBeenCalledWith('drift-count', '200');
+  });
+
+  // ---- #189 — drift cap should fail the build instead of silently truncating ----
+
+  it('#189: drift list exceeding DRIFT_PAGE_CAP fails the build (covers the cap branch)', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+    });
+    // Legacy server simulation: every page is full, no pagination block.
+    // Exactly DRIFT_PAGE_CAP (50) responses queued — action must hit the
+    // truncation branch and setFailed.
+    const fullDriftPage = Array.from({ length: 100 }, (_, i) => ({
+      id: `d-${i}`,
+      taskId: `t-${i}`,
+      severity: 'low',
+      taskBoundVersion: 1,
+      currentPlanVersion: 2,
+    }));
+    for (let i = 0; i < 50; i += 1) {
+      fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: fullDriftPage }));
+    }
+
+    const { run } = await import('../index');
+    await run();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(50);
+    const failed = String(coreMock.setFailed.mock.calls[0]?.[0] ?? '');
+    expect(failed).toMatch(/refusing to gate on a partial view/);
   });
 });
