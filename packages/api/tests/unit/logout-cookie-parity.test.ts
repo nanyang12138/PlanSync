@@ -13,7 +13,7 @@ describe('POST /api/auth/logout — cookie clearing parity (#347)', () => {
   afterEach(() => {
     if (ORIG_COOKIE_CROSS_SITE === undefined) delete process.env.PLANSYNC_COOKIE_CROSS_SITE;
     else process.env.PLANSYNC_COOKIE_CROSS_SITE = ORIG_COOKIE_CROSS_SITE;
-    if (ORIG_NODE_ENV === undefined) delete process.env.NODE_ENV;
+    if (ORIG_NODE_ENV === undefined) Reflect.deleteProperty(process.env, 'NODE_ENV');
     else Reflect.set(process.env, 'NODE_ENV', ORIG_NODE_ENV);
   });
 
