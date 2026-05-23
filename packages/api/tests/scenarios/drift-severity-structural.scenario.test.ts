@@ -149,9 +149,13 @@ describe('Scenario: structural severity decides what gets paused', () => {
       expect(r?.status).toBe('paused');
     });
 
-    it('task is blocked', async () => {
+    it('task is system-gated (drift_high) and lifecycle status untouched (R-140)', async () => {
       const t = await testPrisma.task.findUnique({ where: { id: setup.taskId } });
-      expect(t?.status).toBe('blocked');
+      expect(t?.executionGate).toBe('drift_high');
+      // Pre-R-140 we asserted status='blocked' here; R-140 split system
+      // gates out of the task lifecycle. The setup creates the task as
+      // 'in_progress' (running execution); drift must NOT overwrite that.
+      expect(t?.status).toBe('in_progress');
     });
   });
 
@@ -182,9 +186,10 @@ describe('Scenario: structural severity decides what gets paused', () => {
       expect(r?.status).toBe('paused');
     });
 
-    it('task is blocked', async () => {
+    it('task is system-gated (drift_medium) and lifecycle status untouched (R-140)', async () => {
       const t = await testPrisma.task.findUnique({ where: { id: setup.taskId } });
-      expect(t?.status).toBe('blocked');
+      expect(t?.executionGate).toBe('drift_medium');
+      expect(t?.status).toBe('in_progress');
     });
   });
 
@@ -223,9 +228,12 @@ describe('Scenario: structural severity decides what gets paused', () => {
       expect(r?.status).toBe('running');
     });
 
-    it('task is NOT blocked — assignee can claim/continue normally', async () => {
+    it('task is NOT gated — assignee can claim/continue normally', async () => {
       const t = await testPrisma.task.findUnique({ where: { id: setup.taskId } });
       expect(t?.status).toBe('in_progress');
+      // R-140: low-severity drift is alert-fatigue territory; the engine
+      // must not set executionGate either.
+      expect(t?.executionGate).toBeNull();
     });
 
     it('heartbeat on the still-running run is accepted (no RUN_PAUSED, no RUN_STALE_VERSION)', async () => {

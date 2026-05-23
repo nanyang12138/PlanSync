@@ -177,6 +177,11 @@ describe('Scenario: planConstraintRefs narrows drift severity per task', () => {
     expect(run?.status).toBe('paused');
 
     const task = await testPrisma.task.findUnique({ where: { id: legacyTaskId } });
-    expect(task?.status).toBe('blocked');
+    // R-140: drift gate moved off task.status onto task.executionGate.
+    // The legacy task is mid-execution; its lifecycle status stays
+    // 'in_progress' and the system gate is what tells execution_start to
+    // refuse new runs until the drift is resolved.
+    expect(task?.executionGate).toBe('drift_high');
+    expect(task?.status).toBe('in_progress');
   });
 });

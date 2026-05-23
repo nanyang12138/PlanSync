@@ -254,6 +254,16 @@ model Task {
   type                String // code | research | design | bug | refactor
   priority            String    @default("p1") // p0 | p1 | p2
   status              String    @default("todo") // todo | in_progress | blocked | done | cancelled
+  // R-140: when non-null, system has gated execution on this task. The task
+  // status field stays untouched ('todo'/'in_progress') so the owner can
+  // distinguish "system-blocked because plan drifted" from "owner manually
+  // blocked / failed run" (the latter still uses status='blocked'). Values:
+  //   null              — no gate, execution_start may proceed.
+  //   drift_high        — high-severity drift; gate cleared by drift_resolve.
+  //   drift_medium      — medium-severity drift; gate cleared by drift_resolve.
+  //   manual_block      — reserved for owner-initiated blocks (not used yet,
+  //                       kept in the enum so future work need not migrate).
+  executionGate       String?   @map("execution_gate")
   assignee            String?
   assigneeType        String    @default("unassigned") @map("assignee_type") // human | agent | unassigned
   boundPlanVersion    Int       @map("bound_plan_version")

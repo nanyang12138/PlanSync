@@ -256,10 +256,14 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
       expect(after?.status).toBe('paused');
       expect(after?.endedAt).toBeNull();
 
-      // Task is blocked (the existing high-severity guarantee), and a drift
-      // alert exists open against this task.
+      // Task is system-gated (R-140: drift moved onto executionGate; the
+      // task lifecycle 'in_progress' is preserved so the owner can tell
+      // "system gated because plan drifted" from "owner blocked it
+      // manually / run failed"). A drift alert exists open against this
+      // task.
       const task = await testPrisma.task.findUnique({ where: { id: phaseTaskId } });
-      expect(task?.status).toBe('blocked');
+      expect(task?.executionGate).toBe('drift_high');
+      expect(task?.status).toBe('in_progress');
       const alerts = await testPrisma.driftAlert.findMany({
         where: { projectId: phaseProjectId, taskId: phaseTaskId, status: 'open' },
       });

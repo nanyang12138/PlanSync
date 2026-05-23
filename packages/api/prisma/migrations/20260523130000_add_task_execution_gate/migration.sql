@@ -1,0 +1,23 @@
+-- R-140: introduce Task.execution_gate so the drift engine can pause
+-- execution without overwriting the task's lifecycle status.
+--
+-- Before R-140, drift-engine set task.status='blocked' on every task whose
+-- bound plan version moved. That conflated two distinct things owners need
+-- to act on differently:
+--   1. "system blocked this because plan drifted" — clears as soon as the
+--      drift is resolved; the task's intended lifecycle (todo / in_progress)
+--      is unchanged.
+--   2. "owner manually blocked this" / "the run failed" — sticks until the
+--      owner explicitly moves the task back to todo or in_progress.
+--
+-- With this column, drift-engine writes execution_gate ∈ {drift_high,
+-- drift_medium}, leaves status alone, and the execution_start route
+-- rejects whenever execution_gate is non-null. drift_resolve clears the
+-- column without touching status. status='blocked' is preserved only for
+-- the heartbeat-scanner / failed-run paths (still meaningful to owners).
+--
+-- Nullable with no default — every existing row reads null = "no gate",
+-- which matches the prior behavior for tasks that were never drifted, and
+-- the drift-engine will re-evaluate on the next plan activate for tasks
+-- that *were* in flight. Backfill is not needed.
+ALTER TABLE "tasks" ADD COLUMN "execution_gate" TEXT;

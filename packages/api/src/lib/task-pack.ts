@@ -32,6 +32,9 @@ export async function buildTaskPack(taskId: string, projectId: string) {
       type: task.type,
       priority: task.priority,
       status: task.status,
+      // R-140: surface the system gate to MCP/CLI so the banner can say
+      // "blocked by drift v2" instead of inferring it from status alone.
+      executionGate: task.executionGate,
       assignee: task.assignee,
       assigneeType: task.assigneeType,
       boundPlanVersion: task.boundPlanVersion,

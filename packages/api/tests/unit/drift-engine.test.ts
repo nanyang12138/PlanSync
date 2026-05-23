@@ -320,18 +320,37 @@ describe('persistDriftAlerts — pause rule keys off (severity >= medium) AND ha
     driftUpdateMany.mockClear();
   });
 
-  it('blocks every task with severity >= medium; leaves low-severity tasks alone', async () => {
+  it('gates every task with severity >= medium via executionGate; leaves low-severity tasks alone (R-140)', async () => {
     setupCreate();
     await persistDriftAlerts(persistTx as unknown as never, 'p1', buildAlerts());
 
-    expect(persistTx.task.updateMany).toHaveBeenCalledTimes(1);
-    const blockCall = persistTx.task.updateMany.mock.calls[0][0] as {
-      where: { id: { in: string[] } };
-      data: { status: string };
-    };
-    expect(blockCall.data.status).toBe('blocked');
-    expect(blockCall.where.id.in.sort()).toEqual(['t-breaking-running', 't-medium-idle']);
-    expect(blockCall.where.id.in).not.toContain('t-low-running');
+    // R-140: per-severity gate value, so the engine calls updateMany once
+    // per non-empty severity bucket (here both 'high' and 'medium' have at
+    // least one alert). Neither call writes to task.status — that column
+    // is reserved for owner-meaningful state.
+    expect(persistTx.task.updateMany).toHaveBeenCalledTimes(2);
+    const calls = persistTx.task.updateMany.mock.calls.map(
+      (c) =>
+        c[0] as {
+          where: { id: { in: string[] } };
+          data: { executionGate?: string; status?: string };
+        },
+    );
+    const highCall = calls.find((c) => c.data.executionGate === 'drift_high');
+    const mediumCall = calls.find((c) => c.data.executionGate === 'drift_medium');
+    expect(highCall, 'expected one updateMany with executionGate=drift_high').toBeDefined();
+    expect(mediumCall, 'expected one updateMany with executionGate=drift_medium').toBeDefined();
+    expect(highCall!.where.id.in).toEqual(['t-breaking-running']);
+    expect(mediumCall!.where.id.in).toEqual(['t-medium-idle']);
+    // Crucially: no call sets status='blocked' anymore. The system gate is
+    // executionGate; status stays at whatever the lifecycle was before.
+    for (const call of calls) {
+      expect(call.data.status).toBeUndefined();
+    }
+    // And low-severity tasks are never touched.
+    for (const call of calls) {
+      expect(call.where.id.in).not.toContain('t-low-running');
+    }
   });
 
   it('pauses only the subset of blocked tasks that have a running execution', async () => {
