@@ -2070,7 +2070,8 @@
 
 #### R-126 [MEDIUM] B1 集成端到端测试
 
-- **status**: pending
+- **status**: blocked
+- **blocked_reason**: depends_on 字段写的是文本 "B1 完成" 而不是机读 R-ID 列表；实际核对 B1 批次：R-001/R-008 仍 in_progress，R-002/R-003/R-004/R-005/R-006/R-142 仍 pending（仅 R-007 done），整个 B1 端到端流程（plan v2 激活 → run superseded → SSE 触发 → ai-loop abort → user rebind → task todo → 新 run 可启动）所依赖的代码路径并未全部落地，无法在当前 master 上写出可通过的 e2e 测试；同时 fix_steps 仅给出一行场景描述，没有具体测试文件路径、断言或 fixture 设计，需在 B1 整批 done 后由人工补充再 unblock。
 - **batch**: B12
 - **depends_on**: B1 完成
 - **effort**: medium
