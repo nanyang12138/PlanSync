@@ -218,7 +218,15 @@ export async function authenticate(req: NextRequest): Promise<AuthContext> {
 
   // Allow login password as Bearer token (each user sets PLANSYNC_API_KEY = their password).
   // Identity comes from X-User-Name header (set by bin/plansync from $USER).
-  if (token && !token.startsWith('ps_key_')) {
+  //
+  // R-014: Password-as-Bearer is a development/test convenience only. In
+  // production it would cache the plaintext password in memory for 5 minutes
+  // on every node that serves a request, and force every CLI to ship the
+  // user's login password as a long-lived API token. Production deployments
+  // must mint scoped `ps_key_*` keys instead, so we gate the entire branch
+  // (cache lookup included) on `NODE_ENV !== 'production'`.
+  const passwordBearerAllowed = process.env.NODE_ENV !== 'production';
+  if (passwordBearerAllowed && token && !token.startsWith('ps_key_')) {
     const userName = req.headers.get('x-user-name');
     if (userName) {
       const cacheKey = `${userName}:${token}`;

@@ -451,7 +451,7 @@
 
 #### R-014 [MEDIUM] 密码 Bearer 模式仅在开发环境保留
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B2
 - **depends_on**: R-013
 - **effort**: small
@@ -510,7 +510,7 @@
 
 #### R-017 [HIGH] `withUser` 在普通 API key 下抛错或退化警告
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B2
 - **depends_on**: R-010
 - **effort**: small
