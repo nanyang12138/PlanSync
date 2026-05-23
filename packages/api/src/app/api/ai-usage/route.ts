@@ -25,14 +25,8 @@ import { AppError, ErrorCode } from '@plansync/shared';
 export const dynamic = 'force-dynamic';
 
 const querySchema = z.object({
-  since: z
-    .string()
-    .datetime({ offset: true })
-    .optional(),
-  until: z
-    .string()
-    .datetime({ offset: true })
-    .optional(),
+  since: z.string().datetime({ offset: true }).optional(),
+  until: z.string().datetime({ offset: true }).optional(),
 });
 
 export async function GET(req: NextRequest) {
@@ -55,10 +49,7 @@ export async function GET(req: NextRequest) {
       where: { name: auth.userName, role: 'owner' },
     });
     if (ownerCount === 0) {
-      throw new AppError(
-        ErrorCode.FORBIDDEN,
-        'AI usage stats are restricted to project owners',
-      );
+      throw new AppError(ErrorCode.FORBIDDEN, 'AI usage stats are restricted to project owners');
     }
 
     const usage = await aggregateAiUsage({

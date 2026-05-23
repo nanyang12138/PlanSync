@@ -169,6 +169,16 @@ describe('R-182: aggregateAiUsage groups by purpose', () => {
   });
 
   it('returns per-purpose buckets with count / latency / token totals / cache ratio', async () => {
+    // Vitest runs test files in parallel forks against a shared DB, and any
+    // other test that exercises aiClient.complete writes to ai_calls. Scope
+    // the aggregation window to "after we started inserting fixtures" so the
+    // assertion is robust to concurrent inserts from other suites.
+    const since = new Date();
+    // Make sure `since` is strictly less than every fixture's createdAt
+    // (Postgres timestamp resolution can match wall-clock at millisecond
+    // boundaries).
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
     const fixtures = [
       { purpose: 'plan_diff', latencyMs: 100, ok: true, cacheHit: false, in: 10, out: 5 },
       { purpose: 'plan_diff', latencyMs: 200, ok: true, cacheHit: true, in: 0, out: 0 },
@@ -193,7 +203,7 @@ describe('R-182: aggregateAiUsage groups by purpose', () => {
       });
     }
 
-    const usage = await aggregateAiUsage({});
+    const usage = await aggregateAiUsage({ since });
     expect(usage.totalCalls).toBe(4);
 
     const plan = usage.buckets.find((b) => b.purpose === 'plan_diff')!;

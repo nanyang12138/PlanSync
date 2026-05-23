@@ -82,10 +82,12 @@ function percentile(sorted: number[], p: number): number {
 // (count / p50 latency / total token / cache hit ratio). We do the math in
 // the Node process rather than SQL so unit tests can call this directly
 // without dragging in window functions.
-export async function aggregateAiUsage(opts: {
-  since?: Date;
-  until?: Date;
-}): Promise<{ buckets: AiUsageBucket[]; totalCalls: number; rangeFrom: Date | null; rangeTo: Date | null }> {
+export async function aggregateAiUsage(opts: { since?: Date; until?: Date }): Promise<{
+  buckets: AiUsageBucket[];
+  totalCalls: number;
+  rangeFrom: Date | null;
+  rangeTo: Date | null;
+}> {
   const where: Prisma.AiCallWhereInput = {};
   if (opts.since || opts.until) {
     where.createdAt = {};
