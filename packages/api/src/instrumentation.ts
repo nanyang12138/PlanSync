@@ -45,6 +45,28 @@ export async function register() {
     if (shouldRunWorkerInApi()) {
       const { startHeartbeatScanner } = await import('./lib/heartbeat-scanner');
       startHeartbeatScanner();
+    } else {
+      // #258 / #262 / #266 / #274: a default `next start` no longer runs
+      // the heartbeat scanner. Operators upgrading past R-138 who deploy
+      // the API but forget to deploy the worker get NO heartbeat detection
+      // — runs that miss their heartbeat just sit in 'running' forever.
+      // Log a one-time warning at boot so the regression is visible in
+      // logs / `kubectl logs api`. Skip in test (vitest sets NODE_ENV=test)
+      // and in build phases so we don't pollute every test / build run.
+      const isProductionLike =
+        process.env.NODE_ENV === 'production' ||
+        process.env.NEXT_PHASE === 'phase-production-runtime';
+      if (isProductionLike) {
+        const { logger } = await import('./lib/logger');
+        logger.warn(
+          {
+            flag: 'PLANSYNC_RUN_WORKER_IN_API',
+          },
+          'PlanSync API is running WITHOUT the heartbeat scanner. ' +
+            'Either deploy a separate worker process (npm run --workspace=@plansync/api worker) ' +
+            'or set PLANSYNC_RUN_WORKER_IN_API=true. Otherwise stale ExecutionRuns will not be detected.',
+        );
+      }
     }
   }
 }
