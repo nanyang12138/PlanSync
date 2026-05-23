@@ -1996,7 +1996,7 @@
 
 #### R-109 [HIGH] comment edit/delete 写 activity
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B11
 - **depends_on**: R-033
 - **effort**: small

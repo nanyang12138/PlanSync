@@ -32,6 +32,8 @@ export const activityTypeSchema = z.enum([
   'task_reassigned',
   'task_deleted',
   'comment_added',
+  'comment_updated',
+  'comment_deleted',
   'drift_detected',
   'drift_resolved',
   'member_added',
