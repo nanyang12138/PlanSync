@@ -2207,7 +2207,8 @@
 
 #### R-129 [MEDIUM] SSE 多实例端到端
 
-- **status**: pending
+- **status**: blocked
+- **blocked_reason**: 条目缺少 fix_steps / verification / files —— 多实例 SSE 端到端测试涉及如何 spawn 多个 Next.js 实例、如何驱动 Postgres LISTEN/NOTIFY fan-out、断言哪些事件流，全部未定义；需作者补充测试设计与最小可观测断言后再 unblock。
 - **batch**: B12
 - **depends_on**: R-088
 - **effort**: medium
