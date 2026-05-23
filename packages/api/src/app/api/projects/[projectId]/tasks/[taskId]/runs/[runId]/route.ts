@@ -154,6 +154,32 @@ export async function POST(req: NextRequest, { params }: Params) {
         where: { taskId: params.taskId, status: 'open' },
         select: { id: true, severity: true, reason: true },
       });
+      // R-006: defensive redundancy on top of the R-003 version check above.
+      // If a drift alert was externally resolved as `no_impact` (which clears
+      // the open-drift status but does NOT realign the run's boundPlanVersion
+      // with the task's current boundPlanVersion), the open-drift check alone
+      // would let a v1-bound run complete in the v2 era. The R-003 gate at the
+      // top of POST already catches this, but we re-assert it here because:
+      //   (1) the contract of *this* gate is "every state that makes the
+      //       run un-completable", not just "open drift rows"; future edits
+      //       must not silently degrade that contract by removing R-003;
+      //   (2) a parallel rebind/activate between the R-003 SELECT and this
+      //       point can desync versions without flipping status — a fresh
+      //       check here narrows that window.
+      // We surface the version-mismatch case with the same RUN_STALE_VERSION
+      // shape the R-003 gate emits so MCP clients can use one error-code
+      // branch for both.
+      if (openDrifts.length === 0 && run.boundPlanVersion !== run.task.boundPlanVersion) {
+        throw new AppError(
+          ErrorCode.STATE_CONFLICT,
+          `Run bound to plan v${run.boundPlanVersion}, task now v${run.task.boundPlanVersion}. Run is stale; cannot complete.`,
+          {
+            code: 'RUN_STALE_VERSION',
+            runBoundPlanVersion: run.boundPlanVersion,
+            taskBoundPlanVersion: run.task.boundPlanVersion,
+          },
+        );
+      }
       if (openDrifts.length > 0) {
         return NextResponse.json(
           {
