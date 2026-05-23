@@ -274,7 +274,7 @@
 
 #### R-005 [HIGH] MCP heartbeat 把 superseded / RUN_STALE_VERSION 转为 agent abort
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B1
 - **depends_on**: R-003
 - **effort**: medium

@@ -73,6 +73,29 @@ process.stdin.on('data', (chunk) => {
         setImmediate(() => process.exit(1));
         return;
       }
+      // R-005: when armed, push an `execution_aborted` notification BEFORE
+      // replying to the tool call. McpClient's `setAbortHandler` should fire
+      // even though the tool call itself succeeds, so callers can verify the
+      // notification path is plumbed correctly without depending on a crash.
+      if (process.env.FAKE_MCP_SEND_ABORT_ON_TOOL_CALL === '1') {
+        process.stdout.write(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'notifications/message',
+            params: {
+              level: 'error',
+              logger: 'plansync',
+              data: {
+                type: 'execution_aborted',
+                code: 'RUN_STALE_VERSION',
+                message: 'Run is stale: bound to plan v1, task now v2.',
+                runId: 'fake-run-id',
+                taskId: 'fake-task-id',
+              },
+            },
+          }) + '\n',
+        );
+      }
       reply(msg.id, {
         content: [{ type: 'text', text: 'fake-result' }],
       });
