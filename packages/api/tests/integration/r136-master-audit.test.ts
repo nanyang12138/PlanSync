@@ -59,9 +59,10 @@ function snapshotEnv(): SavedEnv {
 }
 
 function restoreEnv(snap: SavedEnv) {
+  const env = process.env as Record<string, string | undefined>;
   for (const [k, v] of Object.entries(snap)) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
+    if (v === undefined) delete env[k];
+    else env[k] = v;
   }
 }
 
@@ -308,7 +309,7 @@ describe('R-136: end-to-end via authenticate()', () => {
   });
 
   it('VR1: in production without ALLOWED_TARGETS set → 403 MASTER_TARGET_DENIED', async () => {
-    process.env.NODE_ENV = 'production';
+    (process.env as Record<string, string | undefined>).NODE_ENV = 'production';
     const req = makeMasterReq({ targetUser: 'alice' });
     await expect(authenticate(req)).rejects.toMatchObject({
       code: 'FORBIDDEN',
@@ -317,7 +318,7 @@ describe('R-136: end-to-end via authenticate()', () => {
   });
 
   it('VR2: target on DENY list → 403 MASTER_TARGET_DENIED', async () => {
-    process.env.NODE_ENV = 'production';
+    (process.env as Record<string, string | undefined>).NODE_ENV = 'production';
     process.env.PLANSYNC_MASTER_ALLOWED_TARGETS = 'alice,bob';
     process.env.PLANSYNC_MASTER_DENY_TARGETS = 'bob';
     const req = makeMasterReq({ targetUser: 'bob' });
@@ -402,7 +403,7 @@ describe('R-136: end-to-end via authenticate()', () => {
   });
 
   it('VR6: PLANSYNC_MASTER_LEGACY=true bypasses everything (dev escape hatch)', async () => {
-    process.env.NODE_ENV = 'development';
+    (process.env as Record<string, string | undefined>).NODE_ENV = 'development';
     process.env.PLANSYNC_MASTER_LEGACY = 'true';
     process.env.PLANSYNC_MASTER_DENY_TARGETS = 'alice'; // would normally reject
 

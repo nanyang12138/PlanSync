@@ -92,7 +92,7 @@ function parseCsvSet(value: string | undefined): Set<string> | null {
  */
 export function isMasterTargetAllowed(
   targetUser: string,
-  env: NodeJS.ProcessEnv = process.env,
+  env: Record<string, string | undefined> = process.env,
 ): boolean {
   if (env.PLANSYNC_MASTER_LEGACY === 'true') return true;
 
