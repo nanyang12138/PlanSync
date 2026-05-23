@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 // Cross-reference docs/REMEDIATION_PLAN.md status against merged GitHub PRs.
 // Reads /tmp/merged_full.json (output of `gh pr list --state merged --json ...`).
+//
+// Evidence rules — MUST stay in lockstep with scripts/backfill-remediation-done.mjs.
+// See that file's header for the full rule set.
 
 import fs from "fs";
 
 const DOC = "/workspace/docs/REMEDIATION_PLAN.md";
 const PRS = "/tmp/merged_full.json";
 
-// --- 1. Parse doc ---
 const docText = fs.readFileSync(DOC, "utf8");
 const entries = new Map();
 {
@@ -31,7 +33,6 @@ const entries = new Map();
 }
 console.error(`Parsed ${entries.size} R-IDs from doc`);
 
-// --- 2. Parse merged PRs ---
 const prs = JSON.parse(fs.readFileSync(PRS, "utf8"));
 const META_DOC_PR_RE = /^(docs\(remediation\)|chore\(R-\d+\): mark as |chore\(triage\)|chore\(remediation\))/i;
 const metaPrs = new Set(prs.filter(p => META_DOC_PR_RE.test(p.title || "")).map(p => p.number));
@@ -42,11 +43,15 @@ function ev(rid){ if(!evidence.has(rid)) evidence.set(rid,{strong:new Set(),weak
 const R_RE = /\bR-\d+[a-z]?(?:\.[a-z0-9]+)?\b/g;
 const STRONG_RE = /(?:close[sd]?|fix(?:e[sd])?|implement[sd]?|resolve[sd]?|address(?:e[sd])?|finish(?:e[sd])?|complete[sd]?)\b[^\n.]{0,200}?(R-\d+[a-z]?(?:\.[a-z0-9]+)?)/gi;
 const REVERSE_STRONG_RE = /(R-\d+[a-z]?(?:\.[a-z0-9]+)?)\b[^\n.]{0,80}?(?:done|implemented|fixed|closed|resolved|completed?)/gi;
+// Conventional commit with R-ID as scope — this repo's actual convention for
+// implementation PRs (e.g. `feat(R-170): add exec-mode protocol FSM`).
+const CONVENTIONAL_COMMIT_RE = /^(?:feat|fix|chore|refactor|perf|test|docs|ci|build|style)\((R-\d+[a-z]?(?:\.[a-z0-9]+)?)\)\s*[:!]/i;
 
 for (const pr of prs) {
   if (metaPrs.has(pr.number)) continue;
   const num = pr.number;
-  const blob = [pr.title || "", pr.body || "", pr.headRefName || ""].join("\n");
+  const title = pr.title || "";
+  const blob = [title, pr.body || "", pr.headRefName || ""].join("\n");
   const mentions = new Set(blob.match(R_RE) || []);
   if (!mentions.size) continue;
   const strong = new Set();
@@ -58,6 +63,8 @@ for (const pr of prs) {
     const re = new RegExp(`(?:^|[/_-])r-?${n}(?:[/_-]|$)`);
     if (re.test(branch)) strong.add(rid);
   }
+  const cc = CONVENTIONAL_COMMIT_RE.exec(title);
+  if (cc) strong.add(cc[1]);
   for (const rid of mentions) {
     if (strong.has(rid)) ev(rid).strong.add(num);
     else ev(rid).weak.add(num);

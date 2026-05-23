@@ -3,10 +3,18 @@
 // but has a STRONG implementation PR merged on GitHub, flip the status to
 // "done" and add a `closed_in: PR#xxx[, PR#yyy,...]` line.
 //
-// "Strong" evidence rules (same as scripts/analyze-remediation-prs.mjs):
-//   - merged PR's title/body/branch has a strong verb (close/fix/implement/
-//     resolve/address/finish/complete) referring to the R-ID, OR
-//   - branch is named after the R-ID (e.g. cursor/r182-...).
+// "Strong" evidence rules (kept in sync with scripts/analyze-remediation-prs.mjs):
+//   1. merged PR's title/body/branch has a strong verb (close/fix/implement/
+//      resolve/address/finish/complete) referring to the R-ID, OR
+//   2. branch is named after the R-ID (e.g. cursor/r182-...), OR
+//   3. PR title is a conventional commit with the R-ID as the scope, i.e.
+//      `^(feat|fix|chore|refactor|perf|test|docs|ci|build|style)\(R-XXX\)`
+//      — this is the convention this repo actually uses for implementation
+//      PRs (e.g. `feat(R-170): add exec-mode protocol FSM`). The v1
+//      heuristic only caught verb-form titles ("implement R-XXX",
+//      "close R-XXX") and missed this whole class, leaving ~45 already-
+//      implemented entries stuck at status: in_progress.
+//
 // Pure-doc meta PRs (docs(remediation): ..., chore(R-xxx): mark as blocked,
 // chore(triage)..., chore(remediation): ...) are EXCLUDED.
 //
@@ -52,8 +60,11 @@ const entries = [];
 }
 console.error(`Parsed ${entries.length} R-entries (including template).`);
 
-// --- 2. Build evidence from merged PRs (same logic as analyze-remediation-prs.mjs) ---
+// --- 2. Build evidence from merged PRs. ---
 const prs = JSON.parse(fs.readFileSync(PRS_PATH, "utf8"));
+
+// Doc-only meta PRs — exclude from evidence so they cannot falsely satisfy
+// implementation.
 const META_DOC_PR_RE = /^(docs\(remediation\)|chore\(R-\d+\): mark as |chore\(triage\)|chore\(remediation\))/i;
 const metaPrs = new Set(prs.filter(p => META_DOC_PR_RE.test(p.title || "")).map(p => p.number));
 console.error(`Excluded ${metaPrs.size} meta-doc PRs: ${[...metaPrs].sort((a,b)=>a-b).join(",")}`);
@@ -61,8 +72,11 @@ console.error(`Excluded ${metaPrs.size} meta-doc PRs: ${[...metaPrs].sort((a,b)=
 const R_RE = /\bR-\d+[a-z]?(?:\.[a-z0-9]+)?\b/g;
 const STRONG_RE = /(?:close[sd]?|fix(?:e[sd])?|implement[sd]?|resolve[sd]?|address(?:e[sd])?|finish(?:e[sd])?|complete[sd]?)\b[^\n.]{0,200}?(R-\d+[a-z]?(?:\.[a-z0-9]+)?)/gi;
 const REVERSE_STRONG_RE = /(R-\d+[a-z]?(?:\.[a-z0-9]+)?)\b[^\n.]{0,80}?(?:done|implemented|fixed|closed|resolved|completed?)/gi;
+// Rule 3 — conventional commit scope. Matches at start of title only, after
+// the meta-PR exclusion above (so `chore(R-xxx): mark as blocked` is gone).
+const CONVENTIONAL_COMMIT_RE = /^(?:feat|fix|chore|refactor|perf|test|docs|ci|build|style)\((R-\d+[a-z]?(?:\.[a-z0-9]+)?)\)\s*[:!]/i;
 
-const strongEvidence = new Map(); // rid -> sorted list of PR numbers (asc)
+const strongEvidence = new Map(); // rid -> Set<prNumber>
 function addStrong(rid, num) {
   if (!strongEvidence.has(rid)) strongEvidence.set(rid, new Set());
   strongEvidence.get(rid).add(num);
@@ -70,18 +84,24 @@ function addStrong(rid, num) {
 
 for (const pr of prs) {
   if (metaPrs.has(pr.number)) continue;
-  const blob = [pr.title || "", pr.body || "", pr.headRefName || ""].join("\n");
+  const title = pr.title || "";
+  const blob = [title, pr.body || "", pr.headRefName || ""].join("\n");
   const mentions = new Set(blob.match(R_RE) || []);
   if (!mentions.size) continue;
   const strong = new Set();
+  // Rule 1 — strong verb adjacent to R-ID anywhere in title/body/branch.
   for (const m of blob.matchAll(STRONG_RE)) strong.add(m[1]);
   for (const m of blob.matchAll(REVERSE_STRONG_RE)) strong.add(m[1]);
+  // Rule 2 — branch named after the R-ID.
   const branch = (pr.headRefName || "").toLowerCase();
   for (const rid of mentions) {
     const n = rid.toLowerCase().replace("r-", "");
     const re = new RegExp(`(?:^|[/_-])r-?${n}(?:[/_-]|$)`);
     if (re.test(branch)) strong.add(rid);
   }
+  // Rule 3 — conventional commit scope at start of title.
+  const cc = CONVENTIONAL_COMMIT_RE.exec(title);
+  if (cc) strong.add(cc[1]);
   for (const rid of strong) addStrong(rid, pr.number);
 }
 
@@ -102,27 +122,21 @@ for (const u of toUpdate) {
 }
 
 // --- 4. Apply edits to lines[] from the BOTTOM UP so indices stay valid ---
-// Sort entries by statusLine desc.
 toUpdate.sort((a, b) => b.entry.statusLine - a.entry.statusLine);
 
 for (const u of toUpdate) {
   const e = u.entry;
-  // Flip status line.
   const orig = lines[e.statusLine];
   const m = STATUS_RE.exec(orig);
   if (!m) {
     console.error(`!! ${e.id}: status line not recognised, skipping`);
     continue;
   }
-  // Preserve any trailing text after status word (rare, but safe).
   lines[e.statusLine] = `- **status**: done${m[2]}`;
-
-  // Insert / update closed_in.
   const closedLine = `- **closed_in**: ${u.prs.map(p => `PR#${p}`).join(", ")}`;
   if (e.closedInLine >= 0) {
     lines[e.closedInLine] = closedLine;
   } else {
-    // Insert immediately after status line.
     lines.splice(e.statusLine + 1, 0, closedLine);
   }
 }
