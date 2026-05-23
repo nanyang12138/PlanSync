@@ -175,7 +175,8 @@
 
 #### R-001 [CRITICAL] 禁用 AI 后台自动解决 drift
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#10
 - **batch**: B1
 - **depends_on**: —
 - **effort**: small
@@ -196,7 +197,8 @@
 
 #### R-002 [CRITICAL] drift 触发时取消正在跑的 ExecutionRun
 
-- **status**: pending
+- **status**: done
+- **closed_in**: PR#13
 - **batch**: B1
 - **depends_on**: R-008
 - **note**: R-008 introduces the `superseded` execution-run status that this entry uses; do not pickup R-002 until R-008 is done or cancelled.
@@ -217,7 +219,8 @@
 
 #### R-003 [CRITICAL] heartbeat / complete 加 run-task 版本对齐校验
 
-- **status**: pending
+- **status**: done
+- **closed_in**: PR#13
 - **batch**: B1
 - **depends_on**: R-002
 - **effort**: small
@@ -323,7 +326,8 @@
 
 #### R-008 [HIGH] 新增 `superseded` execution run 状态
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#13
 - **batch**: B1
 - **depends_on**: —
 - **effort**: small
@@ -345,7 +349,8 @@
 
 #### R-009 [CRITICAL] heartbeat/complete 接口加 executor 身份校验
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#14, PR#44
 - **batch**: B2
 - **depends_on**: —
 - **effort**: small
@@ -371,7 +376,8 @@
 
 #### R-010 [CRITICAL] 生产环境拒绝 PLANSYNC_SECRET 默认值
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#16
 - **batch**: B2
 - **depends_on**: —
 - **effort**: small
@@ -389,7 +395,8 @@
 
 #### R-011 [HIGH] exec-scoped API key 绑定到 projectId
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#17
 - **batch**: B2
 - **depends_on**: —
 - **effort**: medium
@@ -406,7 +413,8 @@
 
 #### R-012 [HIGH] execution_start 不再自动注册 agent 成员
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#18
 - **batch**: B2
 - **depends_on**: —
 - **effort**: small
@@ -423,7 +431,8 @@
 
 #### R-013 [HIGH] 首次登录的开放注册改为受控
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#45
 - **batch**: B2
 - **depends_on**: —
 - **effort**: medium
@@ -458,7 +467,8 @@
 
 #### R-015 [HIGH] 给所有 owner-only 写路由加 `requireNotExecScoped`
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#65
 - **batch**: B2
 - **depends_on**: —
 - **effort**: medium
@@ -480,7 +490,8 @@
 
 #### R-016 [HIGH] 委托模式 task tools 使用 `withUser`
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#20
 - **batch**: B2
 - **depends_on**: —
 - **effort**: small
@@ -513,7 +524,8 @@
 
 #### R-018 [HIGH] `my_work` 跨项目模式尊重 `agentName`
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#32
 - **batch**: B2
 - **depends_on**: —
 - **effort**: small
@@ -530,7 +542,8 @@
 
 #### R-019 [MEDIUM] exec_context 区分 fatal/transient 错误
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#25
 - **batch**: B2
 - **depends_on**: —
 - **effort**: small
@@ -564,7 +577,8 @@
 
 #### R-021 [CRITICAL] MCP 子进程崩溃可检测可自动恢复
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#33, PR#48
 - **batch**: B3
 - **depends_on**: —
 - **effort**: medium
@@ -602,7 +616,8 @@
 
 #### R-023 [HIGH] SSE listener 对 401/403 立刻提示用户
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#34, PR#51
 - **batch**: B3
 - **depends_on**: —
 - **effort**: small
@@ -653,7 +668,8 @@
 
 #### R-026 [MEDIUM] CLI auth 用 URL 协议选择 http vs https
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#36, PR#56
 - **batch**: B3
 - **depends_on**: —
 - **effort**: small
@@ -674,7 +690,8 @@
 
 #### R-027 [HIGH] MCP `task_update` schema 复用 shared
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#57
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
@@ -689,7 +706,8 @@
 
 #### R-028 [HIGH] MCP `task_create` 复用 shared
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#57
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
@@ -719,7 +737,8 @@
 
 #### R-030 [HIGH] shared `planReviewSchema` 补 `focusNotes`
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#55
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
@@ -734,7 +753,8 @@
 
 #### R-031 [HIGH] shared `driftAlertSchema` 补 `affectedAreas` 与 `planDiffId`
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#41
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
@@ -766,7 +786,8 @@
 
 #### R-033 [MEDIUM] `createActivity` 强制 zod 校验 type
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#62
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
@@ -799,7 +820,8 @@
 
 #### R-035 [HIGH] env.ts 验证所有运行时使用的 env 变量
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#60
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
@@ -816,7 +838,8 @@
 
 #### R-036 [MEDIUM] 删除 MCP `plan_create` 客户端 draft guard 或在 API 实施
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#43
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
@@ -831,7 +854,8 @@
 
 #### R-037 [MEDIUM] MCP tool 统一错误格式（isError + 结构化）
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#46
 - **batch**: B4
 - **depends_on**: —
 - **effort**: medium
@@ -848,7 +872,8 @@
 
 #### R-038 [MEDIUM] `review_reject` schema 强制 comment 非空
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#66
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
@@ -897,7 +922,8 @@
 
 #### R-041 [HIGH] 所有 `/plans/[planId]/...` 路由验证 plan ∈ project
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#99
 - **batch**: B5
 - **depends_on**: —
 - **effort**: medium
@@ -923,7 +949,8 @@
 
 #### R-042 [HIGH] task 状态 / drift 状态 query 参数加 zod 校验
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#100
 - **batch**: B5
 - **depends_on**: —
 - **effort**: small
@@ -958,7 +985,8 @@
 
 #### R-044 [MEDIUM] notify 路由限流 + owner-only
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#69
 - **batch**: B5
 - **depends_on**: —
 - **effort**: small
@@ -975,7 +1003,8 @@
 
 #### R-045 [HIGH] human task PATCH `done` 需要 execution 或 owner
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#70
 - **batch**: B5
 - **depends_on**: —
 - **effort**: small
@@ -990,7 +1019,8 @@
 
 #### R-046 [MEDIUM] complete-human 加 open drift gate
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#71
 - **batch**: B5
 - **depends_on**: —
 - **effort**: small
@@ -1042,7 +1072,8 @@
 
 #### R-049 [HIGH] task_claim 用 conditional `updateMany` 原子化
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#74, PR#198
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small
@@ -1126,7 +1157,8 @@
 
 #### R-054 [HIGH] execution_start 拒绝 cancelled/blocked/done 任务
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#78
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small
@@ -1156,7 +1188,8 @@
 
 #### R-056 [MEDIUM] heartbeat scanner 改为 DB advisory lock
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#80
 - **batch**: B6
 - **depends_on**: —
 - **effort**: medium
@@ -1332,7 +1365,8 @@
 
 #### R-067 [MEDIUM] Ink 支持 bracketed paste 多行提交
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#89
 - **batch**: B7
 - **depends_on**: —
 - **effort**: medium
@@ -1362,7 +1396,8 @@
 
 #### R-069 [MEDIUM] AI loop maxTurns 用户可见警告
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#91
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1407,7 +1442,8 @@
 
 #### R-072 [LOW] suggestion ↓ 从未选状态进入
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#93
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1422,7 +1458,8 @@
 
 #### R-073 [LOW] `/code` 退出不清屏
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#94
 - **batch**: B7
 - **depends_on**: —
 - **effort**: small
@@ -1499,7 +1536,8 @@
 
 #### R-078 [MEDIUM] webhook_deliveries 加分页索引
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#101
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
@@ -1600,7 +1638,8 @@
 
 #### R-086 [LOW] PlanComment.parent 关系 onDelete 显式
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#205
 - **batch**: B8
 - **depends_on**: —
 - **effort**: small
@@ -1623,7 +1662,8 @@
 
 #### R-088 [CRITICAL] EventBus 替换为 Postgres LISTEN/NOTIFY 或 Redis
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#126
 - **batch**: B9
 - **depends_on**: —
 - **interim_for**: R-163
@@ -1710,7 +1750,8 @@
 
 #### R-093 [HIGH] action 输入 api-key 加 `core.setSecret`
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#144
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
@@ -1771,7 +1812,8 @@
 
 #### R-097 [HIGH] CLAUDE.md 删除"exec mode 下 task_update 允许"虚假承诺
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#163
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
@@ -1985,7 +2027,8 @@
 
 #### R-115 [HIGH] tasks/conflicts 集成测试
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#212
 - **batch**: B12
 - **depends_on**: —
 - **effort**: small
@@ -2068,7 +2111,8 @@
 
 #### R-124 [MEDIUM] AI 完成验证 - 提供 AI mock 让默认 CI 也跑
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#355
 - **batch**: B12
 - **depends_on**: —
 - **effort**: medium
@@ -2187,7 +2231,8 @@
 
 #### R-133 [MEDIUM] 逐步消除 `any`，重新启用 `no-explicit-any` 警告
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#136
 - **batch**: B4
 - **depends_on**: —
 - **effort**: medium（可拆 sub-tasks）
@@ -2243,7 +2288,8 @@
 
 #### R-135 [CRITICAL] task-pack 加 task↔project 归属校验，关闭跨项目读取
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#432
 - **batch**: B5
 - **depends_on**: —
 - **effort**: small
@@ -2409,7 +2455,8 @@
 
 #### R-143 [HIGH] completion-verify 可观测：score / breakdown / model 写库
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#176
 - **batch**: B4
 - **depends_on**: —
 - **effort**: small
@@ -2488,7 +2535,8 @@
 
 #### R-150 [CRITICAL] 设计并落地 Deliverable / Constraint / Standard 分表 schema
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#420
 - **batch**: B13
 - **depends_on**: —
 - **effort**: large
@@ -2628,7 +2676,8 @@
 
 #### R-160 [CRITICAL] 新增 `domain_events` 表 + 事务内 Outbox writer API
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#250, PR#388
 - **batch**: B14
 - **depends_on**: —
 - **effort**: medium
@@ -2880,7 +2929,8 @@
 
 #### R-182 [HIGH] ai_calls 表 + provider observability（合并/取代 R-144）
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#398, PR#508
 - **batch**: B16
 - **depends_on**: —
 - **supersedes**: R-144
