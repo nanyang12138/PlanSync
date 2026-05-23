@@ -65,10 +65,10 @@ model Plan {
   createdAt         DateTime  @default(now()) @map("created_at")
   updatedAt         DateTime  @updatedAt @map("updated_at")
 
-  project     Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  reviews     PlanReview[]
-  suggestions PlanSuggestion[]
-  comments    PlanComment[]
+  project          Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  reviews          PlanReview[]
+  suggestions      PlanSuggestion[]
+  comments         PlanComment[]
   // R-150: structured back-references to the new per-item tables that
   // supplement (without replacing) the legacy String[] columns above. The
   // arrays remain the canonical read path for current code; the structured
@@ -82,8 +82,8 @@ model Plan {
   // R-082: back-references for PlanDiff FK constraints; if a plan is deleted
   // (only drafts can be deleted today), any cached diffs referencing it are
   // cascaded away because they are meaningless without the underlying plan.
-  diffsFrom   PlanDiff[]       @relation("PlanDiffFromPlan")
-  diffsTo     PlanDiff[]       @relation("PlanDiffToPlan")
+  diffsFrom        PlanDiff[]        @relation("PlanDiffFromPlan")
+  diffsTo          PlanDiff[]        @relation("PlanDiffToPlan")
   // R-083: back-reference for the composite FK from Task.(projectId, boundPlanVersion)
   // to Plan.(projectId, version). Tasks are bound to a specific plan version,
   // and this FK gives Postgres a way to enforce that the bound version actually
@@ -91,7 +91,7 @@ model Plan {
   // deleted as part of a project cascade (which already deletes tasks via the
   // existing project FK), so adding the cascade here just makes the behaviour
   // explicit and prevents orphaned tasks if a plan is ever hard-deleted.
-  boundTasks  Task[]           @relation("TaskBoundPlan")
+  boundTasks       Task[]            @relation("TaskBoundPlan")
 
   @@unique([projectId, version])
   @@index([projectId, status])
