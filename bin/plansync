@@ -495,6 +495,23 @@ Output a summary when all work is done, then exit."
     EXEC_BIN="$GENIE_BIN"
     [[ "$EXEC_HOST" = "claude" ]] && EXEC_BIN="$CLAUDE_BIN"
 
+    # R-062: shell `--exec` delegates to the same orchestrator the CLI's
+    # `/exec` slash command runs through, ensuring both entry points
+    # validate the assignee, pre-register the execution run, issue an
+    # exec-scoped key, and feed the engine an identical prompt.
+    EXEC_CLI="$PROJECT_DIR/packages/cli/src/exec-cli.mjs"
+    if [ -f "$EXEC_CLI" ]; then
+      inject_instructions "$WORK_DIR_ABS"
+      cd "$WORK_DIR_ABS"
+      export _PS_EXEC_TASK_ID="$EXEC_TASK_ID"
+      export _PS_EXEC_BIN="$EXEC_BIN"
+      export _PS_EXEC_HOST="$EXEC_HOST"
+      exec "$LOCAL_NODE_BIN" "$EXEC_CLI"
+    fi
+
+    # Legacy path (kept for environments where the unified orchestrator
+    # is missing — e.g. partial checkouts). Should be unreachable in a
+    # normal install.
     echo "" >&2
     echo "📋 Fetching task pack for $EXEC_TASK_ID..." >&2
 
