@@ -2057,7 +2057,7 @@
 
 #### R-114 [HIGH] complete-human 集成测试
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B12
 - **depends_on**: R-046
 - **effort**: small
