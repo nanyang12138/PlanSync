@@ -52,19 +52,181 @@ async function verifyPassword(password: string, stored: string): Promise<boolean
   });
 }
 
-// Cache successful password verifications for 5 min to avoid scrypt on every API call
-const _pwCache = new Map<string, { user: string; exp: number }>();
+// R-141: unified in-process cache for successful auth verifications.
+//
+// Both password-Bearer and `ps_key_*` API keys land here so neither path
+// has to re-run scrypt on every request — heartbeats fire every 30 s per
+// agent and scrypt is the dominant CPU cost on the API hot path.
+//
+// Key shape: `sha256(rawToken)` (hex). Hashing the token before caching
+// means we never keep the plaintext password / API key in memory longer
+// than the single request that produced it. The cache value carries the
+// scope (`password` | `apikey`) so `invalidatePasswordCache` can selectively
+// evict only the password entries for a given user without touching API
+// key entries (which carry their own revocation path).
+//
+// LRU eviction: insertion order via Map; on hit we delete + re-set so the
+// most recently used entries sit at the back and the oldest at the front.
+// We cap the cache at AUTH_CACHE_MAX_ENTRIES to bound memory in pathological
+// scenarios (one entry per unique key seen in any 5-minute window).
+type AuthCacheEntry =
+  | {
+      scope: 'password';
+      userName: string;
+      expiresAt: number;
+    }
+  | {
+      scope: 'apikey';
+      userName: string;
+      apiKeyId: string;
+      projectId: string | null;
+      execRunId: string | null;
+      /**
+       * Cache TTL — when this entry should be evicted regardless of the
+       * underlying ApiKey row. Capped at 5 min so a revoked key can't keep
+       * authenticating forever; also gives a fresh DB read enough time to
+       * reflect any flips in `expiresAt` / row deletion.
+       */
+      expiresAt: number;
+      /**
+       * Mirrors the ApiKey row's own `expiresAt` (epoch ms; null = no
+       * row-level expiry). We carry it in the cache so a key that was
+       * still valid when first verified but has since been forcibly
+       * expired (admin revocation, exec session ending early) is rejected
+       * on the very next call instead of riding out the cache TTL. Without
+       * this, exec-scoped-keys.test.ts > "expired scoped key is rejected
+       * as invalid" would observe a stale 200/403 because a previous test
+       * in the same file already populated the cache.
+       */
+      apiKeyExpiresAt: number | null;
+    };
+
+const AUTH_CACHE_TTL_MS = 5 * 60_000;
+const AUTH_CACHE_MAX_ENTRIES = 10_000;
+const _authCache = new Map<string, AuthCacheEntry>();
+
+function authCacheKey(rawToken: string): string {
+  return crypto.createHash('sha256').update(rawToken).digest('hex');
+}
+
+function authCacheGet(rawToken: string): AuthCacheEntry | null {
+  const key = authCacheKey(rawToken);
+  const hit = _authCache.get(key);
+  if (!hit) return null;
+  if (hit.expiresAt <= Date.now()) {
+    _authCache.delete(key);
+    return null;
+  }
+  // Bump LRU recency without resetting TTL — entries still expire 5 min
+  // after they were verified, so a stolen token can't keep itself alive
+  // by being constantly used.
+  _authCache.delete(key);
+  _authCache.set(key, hit);
+  return hit;
+}
+
+function authCacheSet(rawToken: string, entry: AuthCacheEntry): void {
+  const key = authCacheKey(rawToken);
+  // Refresh the entry first so it lands at the back of the insertion
+  // order, then enforce the cap by evicting from the front if needed.
+  _authCache.delete(key);
+  _authCache.set(key, entry);
+  while (_authCache.size > AUTH_CACHE_MAX_ENTRIES) {
+    const oldest = _authCache.keys().next().value;
+    if (!oldest) break;
+    _authCache.delete(oldest);
+  }
+}
 
 /** Remove all cached entries for a user. Call after a successful password change. */
 export function invalidatePasswordCache(userName: string): void {
-  for (const key of _pwCache.keys()) {
-    if (key.startsWith(`${userName}:`)) _pwCache.delete(key);
+  for (const [key, entry] of _authCache) {
+    if (entry.scope === 'password' && entry.userName === userName) {
+      _authCache.delete(key);
+    }
   }
+}
+
+/**
+ * R-141: drop every cached API-key principal that points at the given
+ * ApiKey row. Call after revoking / rotating / forcibly expiring a row so
+ * the next authenticate() goes back to the DB and observes the new state
+ * instead of riding out the cache TTL.
+ */
+export function invalidateApiKeyCacheByApiKeyId(apiKeyId: string): void {
+  for (const [key, entry] of _authCache) {
+    if (entry.scope === 'apikey' && entry.apiKeyId === apiKeyId) {
+      _authCache.delete(key);
+    }
+  }
+}
+
+/**
+ * R-141: drop every cached API-key principal scoped to the given execution
+ * run. Used by /exec-sessions/revoke-token (and tests that simulate the
+ * revoke path via direct DB writes) so the next call after a revoke
+ * doesn't keep authenticating off the cache.
+ */
+export function invalidateApiKeyCacheByExecRunId(execRunId: string): void {
+  for (const [key, entry] of _authCache) {
+    if (entry.scope === 'apikey' && entry.execRunId === execRunId) {
+      _authCache.delete(key);
+    }
+  }
+}
+
+/**
+ * Test-only: blow away every cached auth verification so individual test
+ * cases start with a known-empty cache. Production code never calls this —
+ * eviction is driven by TTL + LRU instead.
+ */
+export function _resetAuthCacheForTests(): void {
+  _authCache.clear();
+}
+
+/** Test-only: number of live entries in the unified auth cache. */
+export function _authCacheSizeForTests(): number {
+  return _authCache.size;
+}
+
+// R-141: kicks off a background `lastUsedAt` write without making the
+// request wait on it. We swallow errors because failure here just means
+// we miss one freshness tick on the apiKey row — the caller should never
+// be punished for it.
+function bumpLastUsedAtAsync(apiKeyId: string): void {
+  void prisma.apiKey
+    .update({ where: { id: apiKeyId }, data: { lastUsedAt: new Date() } })
+    .catch(() => {
+      /* best-effort */
+    });
 }
 
 async function verifyApiKey(
   rawKey: string,
 ): Promise<{ userName: string; projectId: string | null; execRunId: string | null } | null> {
+  // R-141: hot path. A repeated auth with the same key — e.g. heartbeat
+  // every 30 s, MCP polling, web UI fanning out parallel requests — should
+  // never re-run scrypt. We hash the raw key with sha256 to look it up in
+  // the unified auth cache and return the cached principal directly. The
+  // `lastUsedAt` bump still happens, but asynchronously so the request
+  // doesn't wait on a row write.
+  const cached = authCacheGet(rawKey);
+  if (cached && cached.scope === 'apikey') {
+    if (cached.apiKeyExpiresAt !== null && cached.apiKeyExpiresAt < Date.now()) {
+      // Row-level expiry overrides the cache. Drop the entry and fall
+      // through to a fresh verify, which will re-check `expiresAt` against
+      // the DB row and return null (→ 401 from the caller).
+      _authCache.delete(authCacheKey(rawKey));
+    } else {
+      bumpLastUsedAtAsync(cached.apiKeyId);
+      return {
+        userName: cached.userName,
+        projectId: cached.projectId,
+        execRunId: cached.execRunId,
+      };
+    }
+  }
+
   const prefix = rawKey.slice(0, 15);
   const keys = await prisma.apiKey.findMany({ where: { keyPrefix: prefix } });
 
@@ -88,7 +250,16 @@ async function verifyApiKey(
       if (key.expiresAt && key.expiresAt.getTime() < Date.now()) {
         return null;
       }
-      await prisma.apiKey.update({ where: { id: key.id }, data: { lastUsedAt: new Date() } });
+      authCacheSet(rawKey, {
+        scope: 'apikey',
+        userName: key.createdBy,
+        apiKeyId: key.id,
+        projectId: key.projectId,
+        execRunId: key.execRunId,
+        expiresAt: Date.now() + AUTH_CACHE_TTL_MS,
+        apiKeyExpiresAt: key.expiresAt ? key.expiresAt.getTime() : null,
+      });
+      bumpLastUsedAtAsync(key.id);
       // R-137: an exec-scoped key without a projectId is dirty data. Exec-scoped
       // keys are minted via /exec-sessions/issue-token which always sets both
       // execRunId and projectId. Encountering execRunId-without-projectId
@@ -245,14 +416,22 @@ export async function authenticate(req: NextRequest): Promise<AuthContext> {
   if (passwordBearerAllowed && token && !token.startsWith('ps_key_')) {
     const userName = req.headers.get('x-user-name');
     if (userName) {
-      const cacheKey = `${userName}:${token}`;
-      const hit = _pwCache.get(cacheKey);
-      if (hit && hit.exp > Date.now()) {
-        return { userName: hit.user };
+      // R-141: unified auth cache. We still bind the cache hit to the
+      // userName from the request header so a stolen token presented under
+      // a different `x-user-name` doesn't sneak past on a sibling user's
+      // cache entry — same guard the previous keyed-by-userName cache
+      // provided.
+      const cached = authCacheGet(token);
+      if (cached && cached.scope === 'password' && cached.userName === userName) {
+        return { userName: cached.userName };
       }
       const account = await prisma.userAccount.findUnique({ where: { userName } });
       if (account && (await verifyPassword(token, account.passwordHash))) {
-        _pwCache.set(cacheKey, { user: userName, exp: Date.now() + 5 * 60_000 });
+        authCacheSet(token, {
+          scope: 'password',
+          userName,
+          expiresAt: Date.now() + AUTH_CACHE_TTL_MS,
+        });
         return { userName };
       }
     }

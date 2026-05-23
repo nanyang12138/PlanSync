@@ -3,6 +3,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { POST as issuePost } from '@/app/api/exec-sessions/issue-token/route';
 import { POST as revokePost } from '@/app/api/exec-sessions/revoke-token/route';
+import { invalidateApiKeyCacheByExecRunId } from '@/lib/auth';
 import { GET as tasksGet, POST as tasksPost } from '@/app/api/projects/[projectId]/tasks/route';
 import { POST as plansPost } from '@/app/api/projects/[projectId]/plans/route';
 import { POST as proposePost } from '@/app/api/projects/[projectId]/plans/[planId]/propose/route';
@@ -231,6 +232,11 @@ describe('Exec-scoped API key', () => {
       where: { execRunId: runId },
       data: { expiresAt: new Date(Date.now() - 1000) },
     });
+    // R-141: this test bypasses the revoke API by mutating expiresAt
+    // directly; the auth cache populated by earlier tests in this file
+    // still holds the original (future) expiresAt, so we have to nudge
+    // it the same way revoke-token does in production.
+    invalidateApiKeyCacheByExecRunId(runId);
     const res = await tasksPost(
       makeReq(`/api/projects/${projectId}/tasks`, {
         method: 'POST',
