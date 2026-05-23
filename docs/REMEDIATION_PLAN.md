@@ -2722,7 +2722,7 @@
 
 #### R-170 [CRITICAL] 设计 ExecContextToken + nextRequired 状态机协议
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B15
 - **depends_on**: —
 - **effort**: medium

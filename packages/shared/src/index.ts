@@ -13,6 +13,11 @@ export * from './schemas/domain-event';
 // (consumed by API drift engine + CLI explanation rendering).
 export * from './drift';
 
+// Exec-mode protocol state machine (R-170). Defines the canonical FSM that
+// gates MCP tool calls so out-of-order execution returns OUT_OF_SEQUENCE
+// instead of silently corrupting the run.
+export * from './protocol/exec-state';
+
 // Types
 export * from './types';
 
