@@ -2352,7 +2352,8 @@
 
 #### R-136 [CRITICAL] PLANSYNC_SECRET 增加 audit / 范围限制 / 强制 TTL
 
-- **status**: pending
+- **status**: in_progress
+- **closed_in**: PR#TBD-r136
 - **batch**: B2
 - **depends_on**: R-010
 - **effort**: medium
