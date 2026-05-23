@@ -51,6 +51,13 @@ if (!process.env.DATABASE_URL) {
 const heartbeatModule =
   require('../src/lib/heartbeat-scanner') as typeof import('../src/lib/heartbeat-scanner');
 const { startHeartbeatScanner, stopHeartbeatScanner } = heartbeatModule;
+// R-139: the same dedicated worker process owns the persistent webhook
+// retry queue. The worker is a no-op until `PLANSYNC_WEBHOOK_QUEUE=true`
+// (it logs why on startup), so wiring it in unconditionally here is
+// safe for deployments that haven't opted into the queue yet.
+const webhookWorkerModule =
+  require('../src/lib/webhook-worker') as typeof import('../src/lib/webhook-worker');
+const { startWebhookWorker, stopWebhookWorker } = webhookWorkerModule;
 const loggerModule = require('../src/lib/logger') as typeof import('../src/lib/logger');
 const { logger } = loggerModule;
 /* eslint-enable @typescript-eslint/no-require-imports */
@@ -58,6 +65,7 @@ const { logger } = loggerModule;
 function shutdown(signal: NodeJS.Signals): void {
   logger.info({ signal }, 'PlanSync worker: shutting down');
   stopHeartbeatScanner();
+  stopWebhookWorker();
   // Give in-flight scan a beat to settle; the scanner itself does not hold
   // long-lived connections (each scan is a single short transaction), so
   // 200ms is more than enough for a clean exit on any healthy system.
@@ -69,3 +77,5 @@ process.on('SIGINT', shutdown);
 
 logger.info('PlanSync worker: starting heartbeat scanner');
 startHeartbeatScanner();
+logger.info('PlanSync worker: starting webhook queue worker (R-139)');
+startWebhookWorker();

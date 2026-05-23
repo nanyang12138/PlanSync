@@ -43,6 +43,17 @@ const baseEnvSchema = z.object({
   // production unless you need to point a webhook at an internal host.
   PLANSYNC_WEBHOOK_ALLOWLIST: z.string().optional(),
 
+  // R-139: opt into the persistent webhook retry queue. When 'true',
+  //   - `dispatchWebhooks` writes one durable `webhook_jobs` row per
+  //     matched subscription instead of running the 0/1/5/30s retry
+  //     chain inline (which previously evaporated on API restart);
+  //   - `scripts/run-worker.ts` starts a 1s tick that drains the queue.
+  // When unset / 'false', the legacy in-memory retry path is used so
+  // existing deployments behave exactly as they did before R-139.
+  // Validated as enum so a typo ('1', 'yes', 'on') fails fast at boot
+  // instead of silently leaving the queue dormant.
+  PLANSYNC_WEBHOOK_QUEUE: z.enum(['true', 'false']).optional(),
+
   // R-088: Event-bus backend selection.
   //   memory   — in-process fan-out only (single API instance).
   //   postgres — Postgres LISTEN/NOTIFY (required for multi-instance prod).
