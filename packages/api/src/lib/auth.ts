@@ -3,6 +3,14 @@ import { NextRequest } from 'next/server';
 import { AppError, ErrorCode } from '@plansync/shared';
 import { prisma } from './prisma';
 import { enterRequestContextFromHeaders } from './request-context';
+import {
+  MASTER_ERROR_CODES,
+  callerIpFromRequest,
+  isMasterRouteAllowed,
+  isMasterTargetAllowed,
+  recordMasterDelegation,
+} from './master-audit';
+import { logger } from './logger';
 
 export interface AuthContext {
   userName: string;
@@ -15,6 +23,19 @@ export interface AuthContext {
    * Undefined for password Bearer / master delegation / non-scoped keys.
    */
   keyProjectId?: string;
+  /**
+   * R-136: set on every successful master-delegation auth (i.e. the caller
+   * presented PLANSYNC_SECRET as Bearer + X-User-Name). Carries the
+   * audit-row id and the episode's TTL boundary so downstream route layers
+   * can render the master mode in their logs / responses without re-deriving
+   * it from header inspection.
+   *
+   * Undefined for password / API-key / AUTH_DISABLED flows.
+   */
+  masterDelegation?: {
+    id: string;
+    expiresAt: Date;
+  };
 }
 
 // Password verification (same scrypt scheme as login/route.ts)
@@ -89,9 +110,11 @@ export async function authenticate(req: NextRequest): Promise<AuthContext> {
   const cookieKey = req.cookies.get('plansync-apikey')?.value ?? null;
   const token = tokenFromHeader ?? qpToken ?? cookieKey;
 
-  // Master delegation: PLANSYNC_SECRET lets the server owner act as any registered user.
-  // Used for multi-user simulation in dev/testing. Requires a non-default, non-empty
-  // secret value (validated at boot in production via env.ts).
+  // Master delegation: PLANSYNC_SECRET lets the server owner act as any
+  // registered user. R-136 wraps this path with four abuse controls:
+  // allow / deny lists, per-route allowlist, TTL, audit trail. The escape
+  // hatch PLANSYNC_MASTER_LEGACY=true skips all four (dev-only — env.ts
+  // refuses that flag in production).
   const masterSecret = process.env.PLANSYNC_SECRET;
   const masterSecretUsable =
     !!masterSecret && masterSecret !== 'dev-secret' && masterSecret.length >= 8;
@@ -103,14 +126,94 @@ export async function authenticate(req: NextRequest): Promise<AuthContext> {
         'X-User-Name header required with delegation token',
       );
     }
-    // Skip DB check when AUTH_DISABLED=true (test environments don't register accounts)
+
+    // Skip DB check when AUTH_DISABLED=true (test environments don't register accounts).
     if (!authDisabled) {
       const exists = await prisma.userAccount.findFirst({ where: { userName } });
       if (!exists) {
         throw new AppError(ErrorCode.UNAUTHORIZED, `Delegation target "${userName}" not found`);
       }
     }
-    return { userName };
+
+    // R-136 escape hatch — explicit opt-out of all abuse controls.
+    if (process.env.PLANSYNC_MASTER_LEGACY === 'true') {
+      logger.warn(
+        { targetUser: userName, route: `${req.method} ${req.nextUrl.pathname}` },
+        'R-136: PLANSYNC_MASTER_LEGACY active — bypassing audit / allow / deny / TTL',
+      );
+      return { userName };
+    }
+
+    // R-136 (1) — target allow / deny list.
+    if (!isMasterTargetAllowed(userName)) {
+      logger.warn(
+        {
+          targetUser: userName,
+          callerIp: callerIpFromRequest(req),
+          route: `${req.method} ${req.nextUrl.pathname}`,
+        },
+        'R-136: master delegation refused (target not allowed)',
+      );
+      throw new AppError(
+        ErrorCode.FORBIDDEN,
+        `Master delegation to "${userName}" is not permitted on this deployment. ` +
+          `Set PLANSYNC_MASTER_ALLOWED_TARGETS to include the target user, or remove it ` +
+          `from PLANSYNC_MASTER_DENY_TARGETS.`,
+        { code: MASTER_ERROR_CODES.MASTER_TARGET_DENIED },
+      );
+    }
+
+    // R-136 (3) — per-route allowlist (default-deny). Block dangerous writes
+    // before recording the episode so a denied call doesn't pollute the audit
+    // table with a row it never used.
+    if (!isMasterRouteAllowed(req.method, req.nextUrl.pathname)) {
+      logger.warn(
+        {
+          targetUser: userName,
+          callerIp: callerIpFromRequest(req),
+          route: `${req.method} ${req.nextUrl.pathname}`,
+        },
+        'R-136: master delegation refused (route not on master allowlist)',
+      );
+      throw new AppError(
+        ErrorCode.FORBIDDEN,
+        `Master delegation cannot drive ${req.method} ${req.nextUrl.pathname}. ` +
+          `Master is limited to reads + safe writes (comments, suggestions, drift resolve). ` +
+          `Use a real user session for plan / task / member / project / key mutations.`,
+        { code: MASTER_ERROR_CODES.FORBIDDEN_MASTER_ROUTE },
+      );
+    }
+
+    // R-136 (2) + (4) — TTL + audit. Reuse the most recent unexpired row
+    // for (callerIp, targetUser) so a chatty agent doesn't generate one
+    // audit row per request.
+    const ttlMin = Number(process.env.PLANSYNC_MASTER_DELEGATION_TTL_MIN ?? '60');
+    const ttlMs = ttlMin * 60 * 1000;
+    const callerIp = callerIpFromRequest(req);
+    const callerUa = req.headers.get('user-agent') ?? 'unknown';
+    const delegation = await recordMasterDelegation({
+      callerIp,
+      callerUa,
+      targetUser: userName,
+      routeMethod: req.method,
+      routePath: req.nextUrl.pathname,
+      ttlMs,
+    });
+
+    if (delegation.expiresAt.getTime() <= Date.now()) {
+      // Should be impossible because recordMasterDelegation always returns
+      // a future expiresAt, but the explicit guard makes the contract clear.
+      throw new AppError(
+        ErrorCode.UNAUTHORIZED,
+        'Master delegation expired — drive a fresh episode by presenting the secret again.',
+        { code: MASTER_ERROR_CODES.MASTER_DELEGATION_EXPIRED },
+      );
+    }
+
+    return {
+      userName,
+      masterDelegation: { id: delegation.id, expiresAt: delegation.expiresAt },
+    };
   }
 
   // Allow login password as Bearer token (each user sets PLANSYNC_API_KEY = their password).

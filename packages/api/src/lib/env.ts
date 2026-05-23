@@ -61,6 +61,38 @@ const baseEnvSchema = z.object({
   // the API env schema only so env.ts stays the single inventory of
   // PlanSync-* env vars.
   PLANSYNC_EXEC_STATE_ENFORCE: z.enum(['off', 'shadow', 'enforce']).optional(),
+
+  // R-136: master-delegation (PLANSYNC_SECRET) abuse controls.
+  //
+  // Until R-136, anyone with PLANSYNC_SECRET could impersonate any user
+  // for any action with no audit trail. The variables below add:
+  //   - explicit allow / deny lists for impersonation targets
+  //   - a per-episode TTL after which the delegation expires
+  //   - a hard production fail-closed: if ALLOWED_TARGETS is unset in
+  //     production, master delegation is REJECTED entirely (handled in
+  //     master-audit.ts isMasterTargetAllowed)
+  //
+  // PLANSYNC_MASTER_ALLOWED_TARGETS — CSV of allowed target user names.
+  //   Production: REQUIRED for master delegation to work at all. Unset
+  //     means master path is disabled (fail-closed).
+  //   Dev / test: optional. When unset, all targets pass the allow check.
+  // PLANSYNC_MASTER_DENY_TARGETS — CSV of denied target user names.
+  //   Evaluated AFTER the allow check; deny wins over allow.
+  // PLANSYNC_MASTER_DELEGATION_TTL_MIN — integer minutes (default 60,
+  //   clamped to [1, 1440]). Each delegation episode (one row in the
+  //   master_delegations audit table) expires at insert-time + this many
+  //   minutes; subsequent master calls after expiry are rejected with
+  //   `MASTER_DELEGATION_EXPIRED` and must trigger a fresh episode.
+  // PLANSYNC_MASTER_LEGACY — escape hatch for dev. Set to "true" to
+  //   bypass ALL R-136 checks (no audit, no allow / deny, no TTL).
+  //   REFUSED in production via the superRefine guard below.
+  PLANSYNC_MASTER_ALLOWED_TARGETS: z.string().optional(),
+  PLANSYNC_MASTER_DENY_TARGETS: z.string().optional(),
+  PLANSYNC_MASTER_DELEGATION_TTL_MIN: z.coerce.number().int().min(1).max(1440).default(60),
+  PLANSYNC_MASTER_LEGACY: z
+    .string()
+    .transform((v) => v === 'true')
+    .default('false'),
 });
 
 export const envSchema = baseEnvSchema.superRefine((data, ctx) => {
@@ -94,6 +126,20 @@ export const envSchema = baseEnvSchema.superRefine((data, ctx) => {
       message:
         'PLANSYNC_SECRET must be at least 32 characters in production. ' +
         'Generate a strong value with: openssl rand -hex 32',
+    });
+  }
+
+  // R-136: PLANSYNC_MASTER_LEGACY is a dev-only bypass that skips audit,
+  // allow / deny lists, and TTL. Refuse it in production so a forgotten
+  // dev override can never reach a live deployment.
+  if (data.PLANSYNC_MASTER_LEGACY === true) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['PLANSYNC_MASTER_LEGACY'],
+      message:
+        'PLANSYNC_MASTER_LEGACY=true is refused in production — it disables ' +
+        'all R-136 master-delegation abuse controls (audit, allow / deny, TTL). ' +
+        'Unset it for production deploys.',
     });
   }
 });

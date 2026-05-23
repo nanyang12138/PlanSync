@@ -545,3 +545,29 @@ model DomainEvent {
   @@index([deliveredAt, id])
   @@map("domain_events")
 }
+
+// R-136: audit trail + TTL store for master-delegation (PLANSYNC_SECRET)
+// usage. One row per delegation episode (not per request — the
+// recordMasterDelegation helper reuses the most recent unexpired row for
+// the same (callerIp, targetUser) pair if it's < 5 min old, so a chatty
+// agent doesn't fill the table). expiresAt is computed at INSERT time as
+// `now() + PLANSYNC_MASTER_DELEGATION_TTL_MIN`. The 10-min heartbeat
+// scanner garbage-collects rows where expiresAt < now() - interval '7 days'.
+model MasterDelegation {
+  id          String   @id @default(cuid())
+  callerIp    String   @map("caller_ip")
+  callerUa    String   @map("caller_ua")
+  targetUser  String   @map("target_user")
+  routeMethod String   @map("route_method")
+  routePath   String   @map("route_path")
+  occurredAt  DateTime @default(now()) @map("occurred_at")
+  expiresAt   DateTime @map("expires_at")
+
+  // Audit query path — owner-facing "what happened to <user>".
+  @@index([targetUser, occurredAt(sort: Desc)])
+  // GC scanner path — range-scan by retention boundary.
+  @@index([expiresAt])
+  // 5-min reuse window lookup.
+  @@index([callerIp, targetUser, occurredAt(sort: Desc)], map: "master_delegations_caller_target_occurred_idx")
+  @@map("master_delegations")
+}

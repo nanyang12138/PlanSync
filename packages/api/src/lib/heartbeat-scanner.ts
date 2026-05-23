@@ -3,6 +3,7 @@ import { logger } from './logger';
 import { eventBus } from './event-bus';
 import { dispatchWebhooks } from './webhook';
 import { createActivity } from './activity';
+import { gcExpiredMasterDelegations } from './master-audit';
 
 const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
 const FAILED_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
@@ -209,10 +210,37 @@ export async function scanStaleExecutions(): Promise<void> {
   }
 }
 
+/**
+ * R-136: garbage-collect master-delegation audit rows older than the
+ * retention window (default 7 days past expiry). Gated by a 10-min cadence
+ * so it piggybacks on the existing 60s heartbeat tick without re-deriving
+ * its own timer.
+ */
+const MASTER_GC_INTERVAL_MS = 10 * 60 * 1000;
+let lastMasterGcAt = 0;
+
+async function maybeGcMasterDelegations(now: number): Promise<void> {
+  if (now - lastMasterGcAt < MASTER_GC_INTERVAL_MS) return;
+  lastMasterGcAt = now;
+  try {
+    const deleted = await gcExpiredMasterDelegations(now);
+    if (deleted > 0) {
+      logger.info({ deleted }, 'R-136: master_delegations GC swept expired audit rows');
+    }
+  } catch (err) {
+    // GC failure is non-fatal — the rows still exist and will be picked
+    // up on the next 10-min tick. Log so it's visible in prod.
+    logger.error({ err }, 'R-136: master_delegations GC failed');
+  }
+}
+
 export function startHeartbeatScanner(): void {
   if (timer) return;
-  timer = setInterval(scanStaleExecutions, SCAN_INTERVAL_MS);
-  logger.info('Heartbeat scanner started (interval: 60s)');
+  timer = setInterval(async () => {
+    await scanStaleExecutions();
+    await maybeGcMasterDelegations(Date.now());
+  }, SCAN_INTERVAL_MS);
+  logger.info('Heartbeat scanner started (interval: 60s, master GC: 10min)');
 }
 
 export function stopHeartbeatScanner(): void {
