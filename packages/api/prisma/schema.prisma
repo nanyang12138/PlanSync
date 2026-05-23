@@ -65,15 +65,25 @@ model Plan {
   createdAt         DateTime  @default(now()) @map("created_at")
   updatedAt         DateTime  @updatedAt @map("updated_at")
 
-  project     Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  reviews     PlanReview[]
-  suggestions PlanSuggestion[]
-  comments    PlanComment[]
+  project          Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  reviews          PlanReview[]
+  suggestions      PlanSuggestion[]
+  comments         PlanComment[]
+  // R-150: structured back-references to the new per-item tables that
+  // supplement (without replacing) the legacy String[] columns above. The
+  // arrays remain the canonical read path for current code; the structured
+  // rows live alongside them as an additive, slug-addressable representation
+  // for drift-engine v3, completion verification rules, and per-item
+  // comments. See migration `20260523000000_add_plan_items_split` and the
+  // R-150 entry in docs/REMEDIATION_PLAN.md for the rollout plan.
+  planDeliverables PlanDeliverable[]
+  planConstraints  PlanConstraint[]
+  planStandards    PlanStandard[]
   // R-082: back-references for PlanDiff FK constraints; if a plan is deleted
   // (only drafts can be deleted today), any cached diffs referencing it are
   // cascaded away because they are meaningless without the underlying plan.
-  diffsFrom   PlanDiff[]       @relation("PlanDiffFromPlan")
-  diffsTo     PlanDiff[]       @relation("PlanDiffToPlan")
+  diffsFrom        PlanDiff[]        @relation("PlanDiffFromPlan")
+  diffsTo          PlanDiff[]        @relation("PlanDiffToPlan")
   // R-083: back-reference for the composite FK from Task.(projectId, boundPlanVersion)
   // to Plan.(projectId, version). Tasks are bound to a specific plan version,
   // and this FK gives Postgres a way to enforce that the bound version actually
@@ -81,7 +91,7 @@ model Plan {
   // deleted as part of a project cascade (which already deletes tasks via the
   // existing project FK), so adding the cascade here just makes the behaviour
   // explicit and prevents orphaned tasks if a plan is ever hard-deleted.
-  boundTasks  Task[]           @relation("TaskBoundPlan")
+  boundTasks       Task[]            @relation("TaskBoundPlan")
 
   @@unique([projectId, version])
   @@index([projectId, status])
@@ -128,6 +138,87 @@ model PlanSuggestion {
   plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
 
   @@map("plan_suggestions")
+}
+
+// R-150: structured plan item tables (additive layer next to Plan.deliverables /
+// .constraints / .standards String[] columns). These tables are populated by
+// future backfill / dual-write work (R-151+); B13 only lands the schema and
+// the relations so downstream features can start being designed against the
+// real shape. Until backfill runs the rows are expected to be sparse and the
+// String[] columns on `plans` remain the source of truth for plan_show.
+//
+// All three tables share the same shape (id, planId, slug, body, kind/status,
+// timestamps) and a (planId, slug) uniqueness invariant so a stable, human-
+// readable slug like `auth/oidc-callback` can be referenced from Task rows,
+// drift diffs, and verification rules without leaking row IDs into UI/CLI.
+//
+// `PlanDeliverable` carries extra fields the deliverable use-case needs:
+//   - `title` separate from `body` so list views can be compact
+//   - `refType` / `refUri` so a deliverable can point at a file glob, an API
+//     spec, a Figma frame, or a Notion page (free-text remains the default)
+//   - `status` (`draft|active|done|deprecated`) is independent of plan.status
+//     so per-item lifecycle is tracked alongside the surrounding plan version
+//   - `supersededById` lets the activate path link the new row to the row it
+//     replaces in the previous plan version (self-FK with SetNull on delete
+//     so deleting an old plan version does not blow up the new pointer).
+model PlanDeliverable {
+  id             String   @id @default(cuid())
+  planId         String   @map("plan_id")
+  slug           String
+  title          String
+  body           String
+  // refType ∈ ('file_glob' | 'api_spec' | 'figma_frame' | 'notion_page' | 'free').
+  // Enforced by a CHECK constraint in the migration; kept as String here so
+  // adding a new ref kind is a one-migration change without a Prisma enum.
+  refType        String?  @map("ref_type")
+  refUri         String?  @map("ref_uri")
+  // status ∈ ('draft' | 'active' | 'done' | 'deprecated'). CHECK constraint
+  // enforced in the migration. Independent of `Plan.status` so a deliverable
+  // can be marked `done` while the plan is still being iterated.
+  status         String   @default("active")
+  supersededById String?  @map("superseded_by_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  plan         Plan              @relation(fields: [planId], references: [id], onDelete: Cascade)
+  supersededBy PlanDeliverable?  @relation("PlanDeliverableSupersedes", fields: [supersededById], references: [id], onDelete: SetNull)
+  supersedes   PlanDeliverable[] @relation("PlanDeliverableSupersedes")
+
+  @@unique([planId, slug])
+  @@index([planId, status])
+  @@map("plan_deliverables")
+}
+
+model PlanConstraint {
+  id        String   @id @default(cuid())
+  planId    String   @map("plan_id")
+  slug      String
+  body      String
+  // Free-form bucket (e.g. `security`, `performance`, `coding-standards`).
+  // Keeping it as String avoids a Prisma enum migration whenever a new
+  // category is needed; the API layer is responsible for normalising input.
+  kind      String   @default("free")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, slug])
+  @@index([planId, kind])
+  @@map("plan_constraints")
+}
+
+model PlanStandard {
+  id        String   @id @default(cuid())
+  planId    String   @map("plan_id")
+  slug      String
+  body      String
+  kind      String   @default("free")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, slug])
+  @@index([planId, kind])
+  @@map("plan_standards")
 }
 
 model PlanComment {

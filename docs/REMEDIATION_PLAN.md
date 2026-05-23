@@ -2468,7 +2468,7 @@
 
 #### R-150 [CRITICAL] 设计并落地 Deliverable / Constraint / Standard 分表 schema
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B13
 - **depends_on**: —
 - **effort**: large
