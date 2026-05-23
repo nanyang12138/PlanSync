@@ -21,3 +21,7 @@ run_local_node "$PROJECT_DIR/scripts/lint-remediation.mjs"
 # Self-tests for the linter itself (#332 / #346): catches regressions in
 # the parser, dedup-field semantics, cycle detection, dispatch ordering.
 run_local_node --test "$PROJECT_DIR/scripts/lint-remediation.test.mjs"
+
+# #366 / #540 / #567: dev.sh must export USER so next.config.js sees
+# the same value used to compute BUILD_DIR.
+run_local_node --test "$PROJECT_DIR/scripts/dev-user-export.test.mjs"

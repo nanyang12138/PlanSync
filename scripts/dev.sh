@@ -49,15 +49,19 @@ fi
 # differs from the one stored alongside the cache directory.
 # shellcheck source=scripts/next-cache-helper.sh
 . "$SCRIPT_DIR/next-cache-helper.sh"
-# #287/#289: BUILD_DIR must use the same identity that next.config.js uses
-# (process.env.USER). Falling back to whoami silently created a different
-# directory than Next was emitting into when USER was unset (some systemd
-# units, some bin/sh fallbacks), so the marker / clear logic operated on
-# an empty directory and Next kept its real cache untouched. Honour USER
-# first; whoami is the last-resort fallback so the script still works on
-# minimal containers where USER is not in the env.
-PLANSYNC_BUILD_USER="${USER:-$(whoami)}"
-BUILD_DIR="$PROJECT_DIR/packages/api/tmp/ps-next-build-$PLANSYNC_BUILD_USER"
+# #287/#289 + #366/#540/#567: BUILD_DIR must use the same identity that
+# next.config.js sees in `process.env.USER`. Two earlier fixes only got
+# us halfway:
+#   1. PR-J #353 made dev.sh fall back to whoami when USER was unset, but
+#      next.config.js still falls back to the literal 'dev'. Different
+#      values → dev.sh's marker / clear logic operated on a directory
+#      Next was not actually using.
+#   2. The reviewer-pinned fix is to EXPORT the resolved value so the
+#      child Node process (next start) reads the same string we used to
+#      compute BUILD_DIR. `${USER:-$(whoami)}` resolves once into the
+#      shell variable; `export USER=...` propagates it to next.config.js.
+export USER="${USER:-$(whoami)}"
+BUILD_DIR="$PROJECT_DIR/packages/api/tmp/ps-next-build-$USER"
 # #286/#288: package-lock.json drives every transitive dep version Next
 # bakes into the build (and SDK upgrades like @modelcontextprotocol/sdk
 # change the bundle). Without including it, `npm install` of a new
