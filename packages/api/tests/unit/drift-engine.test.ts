@@ -300,8 +300,15 @@ describe('persistDriftAlerts — pause rule keys off (severity >= medium) AND ha
   }
 
   // Prisma-shaped tx; we expose enough of the API for persistDriftAlerts.
+  const driftUpdateMany = vi.fn().mockResolvedValue({ count: 0 });
   const persistTx = {
-    driftAlert: { createManyAndReturn: tx.driftAlert.createManyAndReturn },
+    driftAlert: {
+      createManyAndReturn: tx.driftAlert.createManyAndReturn,
+      // R-051: persistDriftAlerts supersedes prior open alerts before
+      // creating new ones. Provide updateMany so the supersede step has
+      // somewhere to go.
+      updateMany: driftUpdateMany,
+    },
     task: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
     executionRun: { updateMany: tx.executionRun.updateMany },
   };
@@ -310,6 +317,7 @@ describe('persistDriftAlerts — pause rule keys off (severity >= medium) AND ha
     persistTx.task.updateMany.mockClear();
     tx.executionRun.updateMany.mockClear();
     tx.driftAlert.createManyAndReturn.mockClear();
+    driftUpdateMany.mockClear();
   });
 
   it('blocks every task with severity >= medium; leaves low-severity tasks alone', async () => {
@@ -363,5 +371,73 @@ describe('persistDriftAlerts — pause rule keys off (severity >= medium) AND ha
     expect(tx.driftAlert.createManyAndReturn).not.toHaveBeenCalled();
     expect(persistTx.task.updateMany).not.toHaveBeenCalled();
     expect(tx.executionRun.updateMany).not.toHaveBeenCalled();
+    expect(driftUpdateMany).not.toHaveBeenCalled();
+  });
+
+  // R-051: at most one open DriftAlert per task. Before writing the new
+  // alerts, persistDriftAlerts must mark every prior open alert on the
+  // affected tasks as resolved/superseded so the partial unique index
+  // `drift_alerts_one_open_per_task` is satisfied. The supersede step has to
+  // run BEFORE createManyAndReturn — otherwise the createMany would race the
+  // index. We verify both the call ordering and the supersede shape here.
+  describe('R-051: supersedes prior open alerts before creating new ones', () => {
+    it('updates prior open alerts on the affected tasks to resolved/superseded before createMany', async () => {
+      setupCreate();
+      const alerts = buildAlerts();
+      await persistDriftAlerts(persistTx as unknown as never, 'p1', alerts);
+
+      expect(driftUpdateMany).toHaveBeenCalledTimes(1);
+      const supersedeCall = driftUpdateMany.mock.calls[0][0] as {
+        where: { taskId: { in: string[] }; status: string };
+        data: {
+          status: string;
+          resolvedAction: string;
+          resolvedBy: string;
+          resolvedAt: Date;
+        };
+      };
+      expect(supersedeCall.where.status).toBe('open');
+      expect(supersedeCall.where.taskId.in.sort()).toEqual(alerts.map((a) => a.taskId).sort());
+      expect(supersedeCall.data.status).toBe('resolved');
+      expect(supersedeCall.data.resolvedAction).toBe('superseded');
+      expect(supersedeCall.data.resolvedBy).toBe('system');
+      expect(supersedeCall.data.resolvedAt).toBeInstanceOf(Date);
+
+      const supersedeOrder = driftUpdateMany.mock.invocationCallOrder[0];
+      const createOrder = tx.driftAlert.createManyAndReturn.mock.invocationCallOrder[0];
+      expect(supersedeOrder).toBeLessThan(createOrder);
+    });
+
+    it('dedupes task ids in the supersede WHERE clause so duplicate alerts on the same task only filter once', async () => {
+      tx.driftAlert.createManyAndReturn.mockResolvedValueOnce([{ id: 'a1' }, { id: 'a2' }]);
+      // Two alerts for the same task can happen if the diff yields one per
+      // changed dimension; the supersede WHERE clause must still address
+      // the task exactly once.
+      const dupAlerts = [
+        {
+          taskId: 't-same',
+          severity: 'high' as const,
+          reason: 'changeA',
+          currentPlanVersion: 2,
+          taskBoundVersion: 1,
+          hasRunningExecution: false,
+        },
+        {
+          taskId: 't-same',
+          severity: 'medium' as const,
+          reason: 'changeB',
+          currentPlanVersion: 2,
+          taskBoundVersion: 1,
+          hasRunningExecution: false,
+        },
+      ];
+
+      await persistDriftAlerts(persistTx as unknown as never, 'p1', dupAlerts);
+
+      const supersedeCall = driftUpdateMany.mock.calls[0][0] as {
+        where: { taskId: { in: string[] } };
+      };
+      expect(supersedeCall.where.taskId.in).toEqual(['t-same']);
+    });
   });
 });

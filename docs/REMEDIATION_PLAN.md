@@ -1116,7 +1116,7 @@
 
 #### R-051 [HIGH] drift_alert 触发用 upsert 避免重复
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B6
 - **depends_on**: R-008
 - **effort**: medium
