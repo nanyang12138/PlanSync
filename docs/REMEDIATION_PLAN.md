@@ -2076,7 +2076,7 @@
 
 #### R-116 [HIGH] chat / notify / ai-draft / ai-field 集成测试
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B12
 - **depends_on**: R-044
 - **effort**: medium
