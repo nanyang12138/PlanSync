@@ -74,10 +74,7 @@ export async function emit(
  * handlers — those should always emit inside the same tx as the state
  * change they describe.
  */
-export async function emitOutOfTx(
-  type: DomainEventType,
-  input: EmitInput = {},
-): Promise<void> {
+export async function emitOutOfTx(type: DomainEventType, input: EmitInput = {}): Promise<void> {
   try {
     await prisma.$transaction(async (tx) => {
       await emit(tx, type, input);
