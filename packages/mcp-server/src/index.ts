@@ -143,10 +143,35 @@ async function main() {
   //   2. delegation check (DELEGATION_ALLOWED)
   //   3. try/catch around the handler → `{ isError: true, content: [...] }`
   //      envelope on any thrown error (ApiError or otherwise).
+  // R-171: per-session FSM tracker. Only attached when an enforce mode is
+  // configured AND a secret is available — without either, the manager
+  // would be dead weight, so we omit it entirely to keep behaviour
+  // identical to pre-R-171 for unconfigured deploys.
+  const enforceMode = readEnforceMode();
+  const execStateManager =
+    enforceMode !== 'off' && config.delegationSecret
+      ? new ExecStateManager({
+          secret: config.delegationSecret,
+          enforceMode,
+          // runId / projectId / taskId get bound at exec_context /
+          // execution_start time via execStateManager.bindRun(...).
+        })
+      : undefined;
+  if (enforceMode !== 'off' && !config.delegationSecret) {
+    logger.warn(
+      { enforceMode },
+      'R-171: PLANSYNC_EXEC_STATE_ENFORCE is set but PLANSYNC_SECRET is missing — FSM disabled',
+    );
+  }
+  if (execStateManager) {
+    logger.info({ enforceMode }, 'R-171: exec-state FSM enabled (rollout flag honored)');
+  }
+
   patchServerToolRegistration(server as unknown as { tool: (...a: unknown[]) => unknown }, {
     execAllowed: execMode ? EXEC_ALLOWED : undefined,
     delegationAllowed: DELEGATION_ALLOWED,
     getDelegationAgent: () => getDelegationAgent() ?? undefined,
+    execStateManager,
   });
 
   if (execMode) {

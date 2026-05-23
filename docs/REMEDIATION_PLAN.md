@@ -2853,7 +2853,8 @@
 
 #### R-171 [HIGH] MCP server 实施 stateToken 校验 + OUT_OF_SEQUENCE error
 
-- **status**: pending
+- **status**: in_progress
+- **closed_in**: PR#651
 - **batch**: B15
 - **depends_on**: R-170
 - **effort**: large
