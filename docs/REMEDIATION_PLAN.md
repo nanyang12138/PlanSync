@@ -1727,7 +1727,7 @@
 
 #### R-090 [MEDIUM] SSE 加 backpressure / slow client 处理
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B9
 - **depends_on**: R-088
 - **effort**: medium
