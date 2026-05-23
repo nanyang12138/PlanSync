@@ -112,6 +112,120 @@ class HeartbeatManager {
 export const heartbeatManager = new HeartbeatManager();
 
 /**
+ * R-039 — uniform error envelope for execution tool failure paths.
+ *
+ * R-037 introduced `{ isError: true, content: [{ type: 'text', text:
+ * JSON.stringify({ error: { code, message, ... } }) }] }` as the canonical
+ * shape for thrown-error translation in `tool-wrapper.ts`. The execution
+ * tools, however, *catch* a few `ApiError` codes (DRIFT_UNRESOLVED,
+ * COMPLETION_VERIFICATION_FAILED) so they can also bring the heartbeat
+ * back online before responding. Those caught branches historically
+ * returned plain-text messages or a slightly different JSON shape, which
+ * meant MCP clients couldn't reliably switch on `isError` / `error.code`.
+ *
+ * `buildExecutionErrorEnvelope` makes every caught branch produce the
+ * same shape as `buildErrorEnvelope` (R-037) so callers can parse one
+ * format regardless of which tool failed.
+ */
+export interface ExecutionErrorEnvelope {
+  isError: true;
+  content: Array<{ type: 'text'; text: string }>;
+}
+
+interface ExecutionErrorPayload {
+  code: string;
+  message: string;
+  status?: number;
+  details?: unknown;
+  guidance?: string;
+  tool?: string;
+}
+
+export function buildExecutionErrorEnvelope(
+  payload: ExecutionErrorPayload,
+): ExecutionErrorEnvelope {
+  return {
+    isError: true,
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify({ error: payload }),
+      },
+    ],
+  };
+}
+
+function buildDriftUnresolvedEnvelope(
+  err: ApiError,
+  toolName: string,
+  opts: { extraMessage?: string } = {},
+): ExecutionErrorEnvelope {
+  const drifts = (err.details as { drifts?: DriftAlert[] })?.drifts ?? [];
+  const driftLines = drifts
+    .map(
+      (d) =>
+        `  [${d.severity.toUpperCase()}] ${d.reason}  →  plansync_drift_resolve ${d.id} action=rebind`,
+    )
+    .join('\n');
+  const guidance = [
+    '⚠ Execution blocked — unresolved drifts on this task',
+    '',
+    opts.extraMessage ?? 'Resolve each alert before starting execution:',
+    '',
+    'Drift alerts:',
+    driftLines || '  (see plansync_drift_list for details)',
+    '',
+    '  plansync_drift_resolve <driftId> action=rebind     → accept new plan, continue',
+    '  plansync_drift_resolve <driftId> action=no_impact  → change does not affect this task',
+    '  plansync_drift_resolve <driftId> action=cancel     → release the task',
+  ].join('\n');
+  return buildExecutionErrorEnvelope({
+    code: 'DRIFT_UNRESOLVED',
+    message: err.message,
+    status: err.status,
+    details: { drifts },
+    guidance,
+    tool: toolName,
+  });
+}
+
+function buildCompletionVerificationFailedEnvelope(err: ApiError): ExecutionErrorEnvelope {
+  const d = err.details as
+    | {
+        score?: number;
+        breakdown?: { specificity: number; coherence: number; coverage: number };
+        gaps?: string[];
+        feedback?: string;
+      }
+    | undefined;
+  const lines = [
+    '⚠ COMPLETION_VERIFICATION_FAILED',
+    '',
+    `Score: ${d?.score ?? '?'}/100 (threshold: 75)`,
+    `  Specificity: ${d?.breakdown?.specificity ?? '?'}/35`,
+    `  Coherence:   ${d?.breakdown?.coherence ?? '?'}/35`,
+    `  Coverage:    ${d?.breakdown?.coverage ?? '?'}/30`,
+    '',
+    'Gaps:',
+    ...(d?.gaps?.map((g) => `  - ${g}`) ?? ['  (none returned)']),
+    '',
+    `Feedback: ${d?.feedback ?? err.message}`,
+    '',
+    'To fix: update your deliverablesMet with SPECIFIC claims that describe',
+    'HOW the work was done (endpoints, files, test results), then retry.',
+    'Vague claims like "all done" or "completed" will be rejected.',
+  ];
+  return buildExecutionErrorEnvelope({
+    code: 'COMPLETION_VERIFICATION_FAILED',
+    message: err.message,
+    status: err.status,
+    details: d,
+    guidance: lines.join('\n'),
+    tool: 'plansync_execution_complete',
+  });
+}
+
+/**
  * Classify an error from `task_pack` as transient (worth retrying) or fatal.
  *
  * Transient: network-level failures (ECONNRESET, ECONNREFUSED, ETIMEDOUT,
@@ -237,45 +351,7 @@ export function registerExecutionTools(server: McpServer, api: ApiClient) {
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       } catch (err) {
         if (err instanceof ApiError && err.code === 'DRIFT_UNRESOLVED') {
-          const drifts =
-            (err.details as { drifts?: Array<{ id: string; severity: string; reason: string }> })
-              ?.drifts ?? [];
-          const driftLines = drifts
-            .map(
-              (d) =>
-                `  [${d.severity.toUpperCase()}] ${d.reason}  →  plansync_drift_resolve ${d.id} action=rebind`,
-            )
-            .join('\n');
-          const guidance = [
-            '⚠ Execution blocked — unresolved drifts on this task',
-            '',
-            'Drift alerts:',
-            driftLines || '  (see plansync_drift_list for details)',
-            '',
-            'Resolve each alert before starting execution:',
-            '  plansync_drift_resolve <driftId> action=rebind     → accept new plan, continue',
-            '  plansync_drift_resolve <driftId> action=no_impact  → change does not affect this task',
-            '  plansync_drift_resolve <driftId> action=cancel     → release the task',
-          ].join('\n');
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify(
-                  {
-                    error: {
-                      code: 'DRIFT_UNRESOLVED',
-                      message: err.message,
-                      details: { drifts },
-                      guidance,
-                    },
-                  },
-                  null,
-                  2,
-                ),
-              },
-            ],
-          };
+          return buildDriftUnresolvedEnvelope(err, 'plansync_execution_start');
         }
         throw err;
       }
@@ -330,60 +406,21 @@ export function registerExecutionTools(server: McpServer, api: ApiClient) {
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       } catch (err) {
         if (err instanceof ApiError && err.code === 'DRIFT_UNRESOLVED') {
-          const drifts = (err.details as { drifts?: DriftAlert[] })?.drifts ?? [];
-          const driftLines = drifts
-            .map(
-              (d) =>
-                `  [${d.severity.toUpperCase()}] ${d.reason}  →  plansync_drift_resolve ${d.id} action=rebind`,
-            )
-            .join('\n');
-          const guidance = [
-            '⚠ Execution blocked — unresolved drifts on this task',
-            '',
-            'The plan changed while you were executing. Resolve each drift alert before completing:',
-            driftLines || '  (see plansync_drift_list for details)',
-            '',
-            '  plansync_drift_resolve <driftId> action=rebind     → accept new plan, continue',
-            '  plansync_drift_resolve <driftId> action=no_impact  → change does not affect this task',
-            '  plansync_drift_resolve <driftId> action=cancel     → release the task',
-          ].join('\n');
-          // Restart heartbeat while agent resolves drift
+          // Restart heartbeat while agent resolves drift.
           heartbeatManager.start(runId, projectId, taskId, api, makeDriftCallback(server));
-          return { content: [{ type: 'text', text: guidance }] };
+          return buildDriftUnresolvedEnvelope(err, 'plansync_execution_complete', {
+            extraMessage:
+              'The plan changed while you were executing. Resolve each drift alert before completing:',
+          });
         }
         if (
           err instanceof ApiError &&
           err.status === 422 &&
           err.code === 'COMPLETION_VERIFICATION_FAILED'
         ) {
-          const d = err.details as
-            | {
-                score?: number;
-                breakdown?: { specificity: number; coherence: number; coverage: number };
-                gaps?: string[];
-                feedback?: string;
-              }
-            | undefined;
-          const lines = [
-            '⚠ COMPLETION_VERIFICATION_FAILED',
-            '',
-            `Score: ${d?.score ?? '?'}/100 (threshold: 75)`,
-            `  Specificity: ${d?.breakdown?.specificity ?? '?'}/35`,
-            `  Coherence:   ${d?.breakdown?.coherence ?? '?'}/35`,
-            `  Coverage:    ${d?.breakdown?.coverage ?? '?'}/30`,
-            '',
-            'Gaps:',
-            ...(d?.gaps?.map((g) => `  - ${g}`) ?? ['  (none returned)']),
-            '',
-            `Feedback: ${d?.feedback ?? err.message}`,
-            '',
-            'To fix: update your deliverablesMet with SPECIFIC claims that describe',
-            'HOW the work was done (endpoints, files, test results), then retry.',
-            'Vague claims like "all done" or "completed" will be rejected.',
-          ];
-          // Run is still active — restart heartbeat while agent retries
+          // Run is still active — restart heartbeat while agent retries.
           heartbeatManager.start(runId, projectId, taskId, api);
-          return { content: [{ type: 'text', text: lines.join('\n') }] };
+          return buildCompletionVerificationFailedEnvelope(err);
         }
         throw err;
       }
