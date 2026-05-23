@@ -1,4 +1,5 @@
 import { spawnSync } from 'child_process';
+import { logger } from './logger';
 
 const SENDMAIL = process.env.EMAIL_SENDMAIL ?? '/usr/sbin/sendmail';
 const FROM = process.env.EMAIL_FROM ?? 'plansync@amd.com';
@@ -6,14 +7,24 @@ const DOMAIN = process.env.EMAIL_DOMAIN ?? 'amd.com';
 
 const MAX_ATTEMPTS = 3;
 const RETRY_BASE_DELAY_MS = 500;
+/**
+ * #318 / #352: synchronous backpressure cap. Without this the in-process
+ * queue is unbounded — a sendmail outage during a high-traffic event
+ * (drift storm, plan re-activate fanout) grows the queue without limit
+ * until the API process OOMs. 1000 is a generous ceiling for a single
+ * Node process; deployments that legitimately exceed it should switch to
+ * the durable webhook_jobs / outbox table tracked by R-164 / R-165.
+ */
+const QUEUE_LIMIT = Number(process.env.PLANSYNC_EMAIL_QUEUE_LIMIT ?? 1000);
 
 export function userEmail(userName: string): string {
   return `${userName}@${DOMAIN}`;
 }
 
-// Demo/test accounts are auto-generated with a long numeric suffix (e.g. bob-demo-1776932148306).
-// Real AMD usernames follow the pattern firstname+short-digits (nanyang2, tzhang5).
-// Sending to generated addresses causes Exchange bounces, so we drop them silently.
+// Demo/test accounts are auto-generated with a long numeric suffix (e.g.
+// bob-demo-1776932148306). Real AMD usernames follow firstname+short-digits
+// (nanyang2, tzhang5). Sending to generated addresses causes Exchange
+// bounces, so we drop them silently.
 function isDeliverable(email: string): boolean {
   const local = email.split('@')[0] ?? '';
   return !/\d{10,}$/.test(local);
@@ -82,10 +93,20 @@ async function processQueue(): Promise<void> {
         continue;
       }
 
-      console.warn(
-        '[email] sendmail giving up after %d attempts: %s',
-        item.attempts,
-        result.err ?? 'unknown',
+      // #316 / #350: structured logger.error so downstream observability
+      // (correlated logs, monitoring sinks subscribed to error-level
+      // events, dashboards) sees this. console.warn was bypassing the
+      // pino logger and made it impossible for drift-engine et al. to
+      // surface persistent delivery failures via their normal error
+      // budget.
+      logger.error(
+        {
+          to: item.to,
+          subject: item.subject,
+          attempts: item.attempts,
+          err: result.err ?? 'unknown',
+        },
+        '[email] sendmail giving up after retries',
       );
     }
   } finally {
@@ -94,11 +115,11 @@ async function processQueue(): Promise<void> {
 }
 
 function scheduleProcess(): void {
-  // Use setImmediate so the caller's request handler is not blocked by sendmail.
-  // Tests can await flushSendMailQueueForTests() to drain.
+  // Use setImmediate so the caller's request handler is not blocked by
+  // sendmail. Tests can await flushSendMailQueueForTests() to drain.
   const p = (async () => {
-    // Yield once before draining so multiple sendMail() calls in a request
-    // handler get coalesced into the same processQueue cycle.
+    // Yield once before draining so multiple sendMail() calls in a
+    // request handler get coalesced into the same processQueue cycle.
     await new Promise<void>((r) => setImmediate(r));
     await processQueue();
   })();
@@ -107,16 +128,34 @@ function scheduleProcess(): void {
 }
 
 /**
- * Enqueue an email for asynchronous delivery. Returns true if the message was
- * accepted into the queue, or false if it was dropped because no recipients
- * were deliverable.
+ * Enqueue an email for asynchronous delivery.
  *
- * Delivery happens via setImmediate; failures are retried with exponential
- * backoff (default 3 attempts).
+ * Returns:
+ *   - `true`  — message accepted into the in-process queue. Delivery is
+ *               attempted asynchronously; final failures (after MAX_ATTEMPTS
+ *               retries) are surfaced via `logger.error` (#316 / #350).
+ *               Callers that need to know about eventual success must
+ *               subscribe to the logger or migrate to the future
+ *               webhook_jobs / outbox infrastructure (R-164 / R-165).
+ *   - `false` — synchronously rejected. Two reasons collapse into a
+ *               single boolean for backwards compatibility:
+ *                 1. all recipients were filtered as undeliverable (e.g.
+ *                    auto-generated demo addresses).
+ *                 2. the in-process queue is at or above
+ *                    `PLANSYNC_EMAIL_QUEUE_LIMIT` (#318 / #352).
+ *               The two cases can be distinguished from the logs:
+ *               case 2 emits `logger.warn('[email] sendmail queue full ...')`.
  */
 export function sendMail(to: string[], subject: string, body: string): boolean {
   const deliverable = to.filter(isDeliverable);
   if (deliverable.length === 0) return false;
+  if (queue.length >= QUEUE_LIMIT) {
+    logger.warn(
+      { to: deliverable, subject, queueLength: queue.length, limit: QUEUE_LIMIT },
+      '[email] sendmail queue full; dropping message',
+    );
+    return false;
+  }
   const message = buildMessage(deliverable, subject, body);
   queue.push({ to: deliverable, subject, message, attempts: 0 });
   scheduleProcess();
@@ -124,10 +163,15 @@ export function sendMail(to: string[], subject: string, body: string): boolean {
 }
 
 /**
- * Test-only helper: wait for all currently in-flight email deliveries to
- * finish so assertions can observe their side effects.
+ * Drain the in-memory queue. Returns a promise that resolves when every
+ * queued + in-flight delivery has settled (success or final failure).
+ * Used by:
+ *   - the SIGTERM / SIGINT shutdown path in instrumentation.ts so a
+ *     redeploy does not silently lose pending notification emails (#317
+ *     / #351), and
+ *   - the test helper below.
  */
-export async function flushSendMailQueueForTests(): Promise<void> {
+export async function flushSendMailQueue(): Promise<void> {
   while (inFlight.size > 0 || queue.length > 0 || processing) {
     if (inFlight.size > 0) {
       await Promise.allSettled(Array.from(inFlight));
@@ -138,7 +182,14 @@ export async function flushSendMailQueueForTests(): Promise<void> {
 }
 
 /**
- * Test-only helper: read the current pending queue length.
+ * Test-only alias for {@link flushSendMailQueue}, kept under the historic
+ * name so existing test files do not have to change. New code should call
+ * `flushSendMailQueue()` directly.
+ */
+export const flushSendMailQueueForTests = flushSendMailQueue;
+
+/**
+ * Test-only: read the current pending queue length.
  */
 export function _sendMailQueueLengthForTests(): number {
   return queue.length;

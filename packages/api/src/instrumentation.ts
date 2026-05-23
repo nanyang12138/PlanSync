@@ -68,5 +68,31 @@ export async function register() {
         );
       }
     }
+
+    // R-113 follow-up (#317 / #351): the sendMail queue lives in this
+    // process's memory. A SIGTERM during a redeploy must drain it before
+    // exit, otherwise pending notification emails are silently lost.
+    // Hook idempotently — Next.js may load instrumentation.ts more than
+    // once during dev (HMR), so guard with a process-level flag so we do
+    // not register duplicate listeners.
+    const procWithFlag = process as NodeJS.Process & { __plansyncMailFlush?: boolean };
+    if (!procWithFlag.__plansyncMailFlush) {
+      procWithFlag.__plansyncMailFlush = true;
+      const { flushSendMailQueue } = await import('./lib/email');
+      const drainOnExit = (signal: NodeJS.Signals) => {
+        // Best-effort: 5s budget so a stuck sendmail does not block
+        // shutdown indefinitely. We log + exit rather than awaiting
+        // forever.
+        const DRAIN_TIMEOUT_MS = 5000;
+        Promise.race([
+          flushSendMailQueue(),
+          new Promise<void>((resolve) => setTimeout(resolve, DRAIN_TIMEOUT_MS)),
+        ]).finally(() => {
+          console.warn(`[instrumentation] mail queue drained on ${signal}`);
+        });
+      };
+      process.on('SIGTERM', () => drainOnExit('SIGTERM'));
+      process.on('SIGINT', () => drainOnExit('SIGINT'));
+    }
   }
 }
