@@ -345,6 +345,11 @@ model ExecutionRun {
 
   task    Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
   apiKeys ApiKey[]
+  // R-180: advisory verification reviews. Each row records the outcome of a
+  // completion verification gate (today only `kind = 'ai_verification'`, but
+  // R-181 will add rule-based gates that also write here). Multiple rows per
+  // run are allowed so retries / re-verifications can stack chronologically.
+  reviews RunReview[]
 
   // R-084: a partial unique index `execution_runs_one_running_per_task` is
   // created by a raw-SQL migration to enforce at most one running run per
@@ -357,6 +362,40 @@ model ExecutionRun {
   //  belongs to the unrelated B6 work item "task_claim conditional
   //  updateMany atomicity" and was attached to this index in error.)
   @@map("execution_runs")
+}
+
+// R-180: advisory verification record. Before R-180, completion-verify
+// returned HTTP 422 when the AI scored a run < 75 — which blocked the run
+// from being marked `completed` even when the human owner disagreed with the
+// model. The new contract is: complete always succeeds, and the AI score /
+// feedback are persisted here as an *advisory* review so the owner UI can
+// surface them and (per R-181) optional rule-based gates can layer on top
+// without changing this contract.
+//
+// `kind` is intentionally a String (not a Prisma enum) so R-181's rule
+// evaluator can add new advisory kinds (`require_files_changed`,
+// `min_output_summary_chars`, …) without a schema migration.
+//
+// `metadata` carries kind-specific structured data (for `ai_verification`:
+// breakdown sub-scores + provider model name). The route also continues to
+// write the AI score / breakdown / feedback / model onto the ExecutionRun
+// columns from R-143 so existing dashboards / queries keep working — this
+// table is the new authoritative source going forward.
+model RunReview {
+  id        String   @id @default(cuid())
+  runId     String   @map("run_id")
+  // ai_verification — score+feedback came from `aiClient.complete`.
+  // Future R-181 kinds: rule_files_changed, rule_min_output_chars, etc.
+  kind      String
+  score     Float?
+  feedback  String?
+  metadata  Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  run ExecutionRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, createdAt(sort: Desc)])
+  @@map("run_reviews")
 }
 
 model DriftAlert {
