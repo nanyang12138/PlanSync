@@ -30,9 +30,7 @@ describe('exec-state FSM table', () => {
   it('declares COMPLETED and ABORTED as the only terminal states', () => {
     expect([...TERMINAL_STATES].sort()).toEqual(['ABORTED', 'COMPLETED']);
     for (const s of EXEC_STATES) {
-      expect(isTerminalState(s)).toBe(
-        s === 'COMPLETED' || s === 'ABORTED',
-      );
+      expect(isTerminalState(s)).toBe(s === 'COMPLETED' || s === 'ABORTED');
     }
   });
 
@@ -196,18 +194,14 @@ describe('checkTransition', () => {
 
 describe('nextStateForTool', () => {
   it('returns the next state on a valid transition', () => {
-    expect(nextStateForTool('UNINITIALIZED', 'plansync_exec_context')).toBe(
-      'CONTEXT_LOADED',
-    );
-    expect(nextStateForTool('RUN_STARTED', 'plansync_execution_heartbeat')).toBe(
-      'RUN_STARTED',
-    );
+    expect(nextStateForTool('UNINITIALIZED', 'plansync_exec_context')).toBe('CONTEXT_LOADED');
+    expect(nextStateForTool('RUN_STARTED', 'plansync_execution_heartbeat')).toBe('RUN_STARTED');
   });
 
   it('throws on illegal transitions with a hint in the message', () => {
-    expect(() =>
-      nextStateForTool('UNINITIALIZED', 'plansync_execution_complete'),
-    ).toThrow(/UNINITIALIZED/);
+    expect(() => nextStateForTool('UNINITIALIZED', 'plansync_execution_complete')).toThrow(
+      /UNINITIALIZED/,
+    );
   });
 });
 

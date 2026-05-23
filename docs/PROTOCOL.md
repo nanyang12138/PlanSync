@@ -7,7 +7,7 @@
 ## Why this exists
 
 Until now the contract between an LLM agent and the PlanSync MCP server was
-*prose-encoded* — `CLAUDE.md` told the agent what order to call tools, and the
+_prose-encoded_ — `CLAUDE.md` told the agent what order to call tools, and the
 server trusted it. In practice:
 
 - generic MCP clients (Claude Desktop / Cursor / Continue) never read
@@ -20,7 +20,7 @@ The drift engine and the heartbeat scanner both had to learn to "tolerate"
 these cases, which made the failure modes (race-lost runs, ghost completions)
 indistinguishable from genuine bugs.
 
-R-170 makes the protocol *mechanism* instead of *prose*: every exec-mode tool
+R-170 makes the protocol _mechanism_ instead of _prose_: every exec-mode tool
 call is checked against a finite state machine on the server, and illegal
 transitions return a structured `OUT_OF_SEQUENCE` error with a `nextRequired`
 hint so the agent self-corrects without re-reading `CLAUDE.md`.
@@ -75,14 +75,14 @@ stateDiagram-v2
 
 ## State reference
 
-| State | Allowed gated tools | requiredNextOneOf |
-| --- | --- | --- |
-| `UNINITIALIZED` | `plansync_exec_context` | `plansync_exec_context` |
-| `CONTEXT_LOADED` | `plansync_task_pack`, `plansync_exec_context` | `plansync_task_pack` |
-| `PACK_FETCHED` | `plansync_task_pack`, `plansync_execution_start`, `plansync_drift_resolve`, `plansync_task_rebind`, `plansync_comment_create`, `plansync_plan_suggest` | `plansync_execution_start` |
-| `RUN_STARTED` | `plansync_execution_heartbeat`, `plansync_execution_complete`, `plansync_execution_abort`, `plansync_drift_resolve`, `plansync_task_rebind`, `plansync_comment_create`, `plansync_plan_suggest` | `plansync_execution_heartbeat`, `plansync_execution_complete` |
-| `COMPLETED` | — | — |
-| `ABORTED` | — | — |
+| State            | Allowed gated tools                                                                                                                                                                             | requiredNextOneOf                                             |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `UNINITIALIZED`  | `plansync_exec_context`                                                                                                                                                                         | `plansync_exec_context`                                       |
+| `CONTEXT_LOADED` | `plansync_task_pack`, `plansync_exec_context`                                                                                                                                                   | `plansync_task_pack`                                          |
+| `PACK_FETCHED`   | `plansync_task_pack`, `plansync_execution_start`, `plansync_drift_resolve`, `plansync_task_rebind`, `plansync_comment_create`, `plansync_plan_suggest`                                          | `plansync_execution_start`                                    |
+| `RUN_STARTED`    | `plansync_execution_heartbeat`, `plansync_execution_complete`, `plansync_execution_abort`, `plansync_drift_resolve`, `plansync_task_rebind`, `plansync_comment_create`, `plansync_plan_suggest` | `plansync_execution_heartbeat`, `plansync_execution_complete` |
+| `COMPLETED`      | —                                                                                                                                                                                               | —                                                             |
+| `ABORTED`        | —                                                                                                                                                                                               | —                                                             |
 
 Read-only tools (`plansync_status`, `plansync_who`, `plansync_*_list`,
 `plansync_*_show`, `plansync_plan_active`, `plansync_plan_diff`,

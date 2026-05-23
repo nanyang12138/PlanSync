@@ -145,8 +145,7 @@ export const EXEC_STATE_MACHINE: Readonly<Record<ExecState, ExecStateNode>> = {
     },
   },
   CONTEXT_LOADED: {
-    description:
-      'Exec context loaded — call plansync_task_pack to receive the task brief.',
+    description: 'Exec context loaded — call plansync_task_pack to receive the task brief.',
     allowedTools: ['plansync_task_pack', 'plansync_exec_context'],
     requiredNextOneOf: ['plansync_task_pack'],
     transitions: {
@@ -181,10 +180,7 @@ export const EXEC_STATE_MACHINE: Readonly<Record<ExecState, ExecStateNode>> = {
       'plansync_comment_create',
       'plansync_plan_suggest',
     ],
-    requiredNextOneOf: [
-      'plansync_execution_heartbeat',
-      'plansync_execution_complete',
-    ],
+    requiredNextOneOf: ['plansync_execution_heartbeat', 'plansync_execution_complete'],
     transitions: {
       plansync_execution_complete: 'COMPLETED',
       plansync_execution_abort: 'ABORTED',
@@ -232,10 +228,7 @@ export const OUT_OF_SEQUENCE = 'OUT_OF_SEQUENCE' as const;
  * unchanged. Calls from terminal states (COMPLETED / ABORTED) are always
  * rejected unless they're read-only.
  */
-export function checkTransition(
-  currentState: ExecState,
-  toolName: string,
-): TransitionResult {
+export function checkTransition(currentState: ExecState, toolName: string): TransitionResult {
   if (READ_ONLY_TOOLS.includes(toolName)) {
     return { ok: true, nextState: currentState, readOnly: true };
   }
@@ -245,8 +238,7 @@ export function checkTransition(
       ok: false,
       error: OUT_OF_SEQUENCE,
       message:
-        `Tool '${toolName}' is not allowed from state '${currentState}'. ` +
-        node.description,
+        `Tool '${toolName}' is not allowed from state '${currentState}'. ` + node.description,
       currentState,
       allowedTools: node.allowedTools,
       requiredNextOneOf: node.requiredNextOneOf,
@@ -261,10 +253,7 @@ export function checkTransition(
  * throw if the transition is illegal. The server-side wrapper uses
  * `checkTransition` directly so it can return a structured error.
  */
-export function nextStateForTool(
-  currentState: ExecState,
-  toolName: string,
-): ExecState {
+export function nextStateForTool(currentState: ExecState, toolName: string): ExecState {
   const result = checkTransition(currentState, toolName);
   if (!result.ok) {
     throw new Error(result.message);
