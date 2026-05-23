@@ -104,4 +104,29 @@ describe('middleware CORS — credentialed cross-origin requests (#134, #135)', 
     const exposed = (res.headers.get('Access-Control-Expose-Headers') ?? '').toLowerCase();
     expect(exposed.split(',').map((s) => s.trim())).toContain('x-request-id');
   });
+
+  // ---- #339: X-Request-Id allowed on the request side too ------------------
+
+  it('#339: Access-Control-Allow-Headers includes X-Request-Id (clients can forward correlation id)', () => {
+    const res = middleware(makeRequest({ method: 'OPTIONS', origin: ALLOWED_ORIGIN }));
+    const allowed = (res.headers.get('Access-Control-Allow-Headers') ?? '').toLowerCase();
+    expect(allowed).toContain('x-request-id');
+  });
+
+  it('#339: preflight carrying Access-Control-Request-Headers: x-request-id is allowed', () => {
+    const headers = new Headers();
+    headers.set('origin', ALLOWED_ORIGIN);
+    headers.set('access-control-request-method', 'GET');
+    headers.set('access-control-request-headers', 'x-request-id');
+    const req = new NextRequest('http://localhost/api/projects/p1/tasks', {
+      method: 'OPTIONS',
+      headers,
+    });
+    const res = middleware(req);
+    expect(res.status).toBe(204);
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe(ALLOWED_ORIGIN);
+    expect((res.headers.get('Access-Control-Allow-Headers') ?? '').toLowerCase()).toContain(
+      'x-request-id',
+    );
+  });
 });

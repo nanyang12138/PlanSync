@@ -78,8 +78,12 @@ export function middleware(request: NextRequest) {
       // Last-Event-ID: SSE clients automatically send this header when the
       // browser reconnects after a network blip; #247 — without it the
       // cross-origin reconnect preflight is rejected and the EventSource
-      // gives up. Authorization / X-User-Name carry the session.
-      'Content-Type, Authorization, X-User-Name, Last-Event-ID',
+      // gives up.
+      // X-Request-Id: clients can forward an inbound correlation id so
+      // the server reuses it instead of minting a fresh one (#339). Also
+      // already exposed via Access-Control-Expose-Headers below for the
+      // response side.
+      'Content-Type, Authorization, X-User-Name, Last-Event-ID, X-Request-Id',
     );
     // ACAC must be set exactly once — see #244, #248. Browsers reject
     // credentialed requests (cookie-based session, EventSource with
