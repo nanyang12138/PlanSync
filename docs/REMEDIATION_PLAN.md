@@ -2602,7 +2602,8 @@
 
 #### R-151 [CRITICAL] 历史 plan 数据双写迁移：String[] → 分表
 
-- **status**: pending
+- **status**: in_progress
+- **closed_in**: PR#TBD-r151
 - **batch**: B13
 - **depends_on**: R-150
 - **effort**: large
