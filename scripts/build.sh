@@ -10,6 +10,7 @@ require_local_node_runtime
 use_local_node_runtime
 
 run_local_npm run --workspace=@plansync/shared build
+run_local_npm run --workspace=@plansync/client-core build
 run_local_npm run --workspace=@plansync/mcp-server build
 run_local_npm run --workspace=@plansync/cli build
 run_local_npm run --workspace=@plansync/api build
