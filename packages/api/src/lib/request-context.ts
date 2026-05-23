@@ -1,6 +1,17 @@
+/**
+ * Server-side request-context module.
+ *
+ * This file pulls in `node:async_hooks` to provide the AsyncLocalStorage
+ * that lets `logger.warn(...)` etc. attach a per-request reqId without
+ * threading it through every function signature. It is NOT safe to import
+ * from `middleware.ts` (Edge Runtime); the middleware imports the
+ * runtime-agnostic constants/helpers from `./request-context-edge.ts`
+ * instead — see #294 / #333 / #338.
+ */
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { REQUEST_ID_HEADER, resolveRequestId } from './request-context-edge';
 
-export const REQUEST_ID_HEADER = 'x-request-id';
+export { REQUEST_ID_HEADER, resolveRequestId };
 
 export interface RequestContext {
   reqId: string;
@@ -8,6 +19,13 @@ export interface RequestContext {
 
 const storage = new AsyncLocalStorage<RequestContext>();
 
+/**
+ * Wrap a callback so every async operation it kicks off observes the
+ * given context. Preferred over `enterRequestContext` whenever the
+ * caller has a clean function boundary — `storage.run` automatically
+ * restores the previous context on return, which is the only safe
+ * primitive when concurrent requests interleave.
+ */
 export function runWithRequestContext<T>(ctx: RequestContext, fn: () => T): T {
   return storage.run(ctx, fn);
 }
@@ -27,6 +45,14 @@ export function getRequestId(): string | undefined {
  * downstream awaited operation will see the same reqId.
  *
  * Safe to call multiple times: if a context already matches, this is a noop.
+ *
+ * Reviewer note (#305 / #334): `storage.enterWith` does NOT pop the
+ * context on return — once entered, every await/microtask in the same
+ * async resource keeps seeing it. Concurrent in-flight requests can
+ * still each observe their own context because every Next.js handler
+ * starts in a fresh async resource. The danger is intentionally caching
+ * the storage chain across resources (e.g. a top-level Promise that
+ * outlives the request), so callers MUST avoid stashing references.
  */
 export function enterRequestContext(ctx: RequestContext): void {
   const existing = storage.getStore();
@@ -44,36 +70,4 @@ export function enterRequestContextFromHeaders(headers: {
   const reqId = resolveRequestId(headers.get(REQUEST_ID_HEADER));
   enterRequestContext({ reqId });
   return reqId;
-}
-
-/**
- * Reuse an inbound x-request-id from upstream proxies when it looks safe,
- * otherwise mint a new uuid v4. Limiting length + character set prevents log
- * injection from clients spoofing the header.
- */
-const SAFE_REQ_ID = /^[A-Za-z0-9._-]{8,128}$/;
-
-export function resolveRequestId(inbound: string | null | undefined): string {
-  if (inbound && SAFE_REQ_ID.test(inbound)) {
-    return inbound;
-  }
-  return cryptoRandomUUID();
-}
-
-function cryptoRandomUUID(): string {
-  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
-  if (c && typeof c.randomUUID === 'function') {
-    return c.randomUUID();
-  }
-  // Pure-JS UUIDv4 fallback. The request id is a non-secret correlation id,
-  // so Math.random() is sufficient — and crucially this path stays free of
-  // `node:crypto`, which Next.js middleware (Edge Runtime) cannot bundle.
-  // globalThis.crypto.randomUUID is available in every supported runtime
-  // (Edge Runtime, browsers, Node ≥19, Node 18 with --experimental-global-
-  // webcrypto), so this fallback only fires on an exotic JS host.
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (ch) => {
-    const r = (Math.random() * 16) | 0;
-    const v = ch === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
 }

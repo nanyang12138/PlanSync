@@ -1,6 +1,11 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { REQUEST_ID_HEADER, resolveRequestId } from './lib/request-context';
+// #294 / #333 / #338: middleware runs in Next.js Edge Runtime which CANNOT
+// bundle `node:async_hooks`. The full request-context.ts pulls AsyncLocalStorage
+// in for server-side reqId tracking; we only need the header constant + the
+// pure resolveRequestId() validator here, both of which live in the
+// runtime-agnostic edge module.
+import { REQUEST_ID_HEADER, resolveRequestId } from './lib/request-context-edge';
 
 const ALLOWED_ORIGINS = [
   'http://localhost:3000',
