@@ -2198,7 +2198,7 @@
 
 #### R-128 [MEDIUM] 并发 plan activate 压力测试
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B12
 - **depends_on**: R-048
 - **effort**: small
