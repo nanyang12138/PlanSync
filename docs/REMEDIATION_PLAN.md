@@ -2383,7 +2383,7 @@
 
 #### R-137 [HIGH] exec-scoped key 在缺 execRunId 时也强制 keyProjectId 校验
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B2
 - **depends_on**: R-011
 - **effort**: small
