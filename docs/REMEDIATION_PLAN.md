@@ -2465,7 +2465,7 @@
 
 #### R-141 [MEDIUM] ApiKey scrypt 热路径优化（内存缓存）
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
 - **depends_on**: R-077
 - **effort**: small
