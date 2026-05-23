@@ -15,8 +15,7 @@ describe('R-076: drift_alerts composite indexes', () => {
     );
     const match = rows.find(
       (r) =>
-        /\(\s*project_id\s*,\s*status\s*\)/i.test(r.indexdef) &&
-        !/\bWHERE\b/i.test(r.indexdef),
+        /\(\s*project_id\s*,\s*status\s*\)/i.test(r.indexdef) && !/\bWHERE\b/i.test(r.indexdef),
     );
     expect(
       match,
@@ -29,9 +28,7 @@ describe('R-076: drift_alerts composite indexes', () => {
       `SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'drift_alerts'`,
     );
     const match = rows.find(
-      (r) =>
-        /\(\s*task_id\s*,\s*status\s*\)/i.test(r.indexdef) &&
-        !/\bWHERE\b/i.test(r.indexdef),
+      (r) => /\(\s*task_id\s*,\s*status\s*\)/i.test(r.indexdef) && !/\bWHERE\b/i.test(r.indexdef),
     );
     expect(
       match,
@@ -78,13 +75,19 @@ describe('R-076: drift_alerts composite indexes', () => {
           }),
         ),
       );
+      // R-051: the partial unique index `drift_alerts_one_open_per_task`
+      // allows at most one open alert per task. Generate one open + four
+      // resolved per task so this fixture remains representative of real
+      // drift history (still 50 rows total) without tripping the index.
       const driftRows = tasks.flatMap((t, i) =>
         Array.from({ length: 5 }).map((_, j) => ({
           projectId: project.id,
           taskId: t.id,
           severity: 'medium',
           reason: `drift-${i}-${j}`,
-          status: j % 2 === 0 ? 'open' : 'resolved',
+          status: j === 0 ? 'open' : 'resolved',
+          resolvedAction: j === 0 ? null : 'no_impact',
+          resolvedAt: j === 0 ? null : new Date(),
           currentPlanVersion: 2,
           taskBoundVersion: 1,
         })),

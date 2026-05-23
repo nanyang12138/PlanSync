@@ -89,6 +89,22 @@ async function verifyApiKey(
         return null;
       }
       await prisma.apiKey.update({ where: { id: key.id }, data: { lastUsedAt: new Date() } });
+      // R-137: an exec-scoped key without a projectId is dirty data. Exec-scoped
+      // keys are minted via /exec-sessions/issue-token which always sets both
+      // execRunId and projectId. Encountering execRunId-without-projectId
+      // means either: a hand-crafted row in the DB, a legacy seed predating
+      // R-011, or a migration bug. Surface it loudly so ops can audit; the
+      // call still proceeds (requireProjectRole rejects on the same condition).
+      if (key.execRunId && !key.projectId) {
+        logger.warn(
+          {
+            apiKeyId: key.id,
+            execRunId: key.execRunId,
+            createdBy: key.createdBy,
+          },
+          'R-137: exec-scoped API key has execRunId without projectId — dirty data, will be rejected by requireProjectRole',
+        );
+      }
       return { userName: key.createdBy, projectId: key.projectId, execRunId: key.execRunId };
     }
   }
@@ -267,13 +283,35 @@ export async function requireProjectRole(
   projectId: string,
   requiredRole?: 'owner',
 ): Promise<AuthContext> {
-  // Reject cross-project use of an exec-scoped API key. The key was minted
-  // for one specific run inside one specific project; it must never grant
-  // access to a different project regardless of the caller's membership
-  // elsewhere. Non-exec keys keep their previous (looser) behaviour to
-  // avoid breaking unscoped owner keys that span a single workspace.
-  if (auth.execRunId && auth.keyProjectId && auth.keyProjectId !== projectId) {
-    throw new AppError(ErrorCode.FORBIDDEN, 'Exec-scoped API key is bound to a different project');
+  // R-011 + R-137: cross-project enforcement for project-scoped API keys.
+  //
+  // Two independent guards, both must trip 403:
+  //   1. The key carries a projectId that doesn't match the request target.
+  //      This covers exec-scoped keys (R-011 original scenario) AND any
+  //      non-exec project-scoped key that gets pointed at a sibling project.
+  //      Previously this only fired when execRunId was ALSO set, which
+  //      meant a legacy ApiKey row with projectId-but-no-execRunId silently
+  //      bypassed the scope check (R-137 root cause).
+  //
+  //   2. The key carries an execRunId but no projectId. Every exec-scoped
+  //      key minted via /exec-sessions/issue-token sets both fields; seeing
+  //      execRunId-without-projectId means tampered or migrated-broken data
+  //      and must not be trusted to authorise anything beyond a single
+  //      project. We refuse the request and let ops investigate (the
+  //      warning is emitted in verifyApiKey).
+  if (auth.keyProjectId && auth.keyProjectId !== projectId) {
+    throw new AppError(
+      ErrorCode.FORBIDDEN,
+      auth.execRunId
+        ? 'Exec-scoped API key is bound to a different project'
+        : 'Project-scoped API key is bound to a different project',
+    );
+  }
+  if (auth.execRunId && !auth.keyProjectId) {
+    throw new AppError(
+      ErrorCode.FORBIDDEN,
+      'Exec-scoped API key is missing its project binding (dirty data)',
+    );
   }
 
   const member = await prisma.projectMember.findUnique({

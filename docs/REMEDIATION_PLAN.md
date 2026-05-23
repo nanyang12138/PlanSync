@@ -602,7 +602,7 @@
 
 #### R-022 [HIGH] MCP callTool 加单次重试
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B3
 - **depends_on**: R-021
 - **effort**: small
@@ -635,7 +635,7 @@
 
 #### R-024 [MEDIUM] MCP stop() 清理 pending requests
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B3
 - **depends_on**: R-021
 - **effort**: small
@@ -804,7 +804,7 @@
 
 #### R-034 [HIGH] 增加 schema-drift CI 守门测试
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: R-027, R-028, R-029, R-030, R-031, R-032, R-033
 - **effort**: medium
@@ -890,7 +890,7 @@
 
 #### R-039 [LOW] execution tools 错误统一为 JSON envelope
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: R-037
 - **effort**: small
@@ -1116,7 +1116,7 @@
 
 #### R-051 [HIGH] drift_alert 触发用 upsert 避免重复
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B6
 - **depends_on**: R-008
 - **effort**: medium
@@ -2383,7 +2383,7 @@
 
 #### R-137 [HIGH] exec-scoped key 在缺 execRunId 时也强制 keyProjectId 校验
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B2
 - **depends_on**: R-011
 - **effort**: small

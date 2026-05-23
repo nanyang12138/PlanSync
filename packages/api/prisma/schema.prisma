@@ -349,7 +349,12 @@ model DriftAlert {
   severity           String // high | medium | low
   reason             String
   status             String    @default("open") // open | resolved
-  resolvedAction     String?   @map("resolved_action") // rebind | cancel | no_impact
+  // R-051: enforced by partial unique index `drift_alerts_one_open_per_task`
+  // (migration 20260523100000) — at most one row per task_id may have
+  // status='open'. `persistDriftAlerts` supersedes prior open rows with
+  // resolvedAction='superseded' before creating new ones, so repeated plan
+  // activations no longer accumulate duplicate alerts on the same task.
+  resolvedAction     String?   @map("resolved_action") // rebind | cancel | no_impact | superseded
   currentPlanVersion Int       @map("current_plan_version")
   taskBoundVersion   Int       @map("task_bound_version")
   compatibilityScore Float?    @map("compatibility_score")
