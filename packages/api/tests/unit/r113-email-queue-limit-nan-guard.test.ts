@@ -59,7 +59,7 @@ function probeQueueLimit(envValue: string | undefined): {
     HOME: process.env.HOME ?? '',
     NODE_PATH: process.env.NODE_PATH ?? '',
     DATABASE_URL: 'postgresql://noop@localhost:1/noop',
-  } as NodeJS.ProcessEnv;
+  } as unknown as NodeJS.ProcessEnv;
   const r = spawnSync(
     TS_NODE,
     ['--compiler-options', '{"module":"commonjs","esModuleInterop":true}', '-e', code],
