@@ -112,6 +112,42 @@ export async function scanStaleExecutions(): Promise<void> {
             data: { status: 'stale' },
           });
 
+          // R-057: a stale run is no longer making progress, but the task
+          // record still reads `in_progress` and any exec-scoped API keys
+          // tied to this run remain valid — that double-misrepresents the
+          // state of the world (next agent can't claim the task; abandoned
+          // keys keep working). Two correctives, both bounded by the
+          // surrounding tx so they commit atomically with the status flip:
+          //   1. if no OTHER live (`running`/`paused`) run still exists for
+          //      the same task, push the task back to `blocked` so it's
+          //      visibly available for re-dispatch. The conditional
+          //      `updateMany` (status in [in_progress, todo]) is on purpose:
+          //      we never clobber `done`/`cancelled` and we never re-block
+          //      a task that an owner has explicitly resolved.
+          //   2. revoke every exec-scoped API key whose `execRunId` points
+          //      at this run. The keyset is exec-mode-only (FK to the run);
+          //      the row's `execRun` relation uses `onDelete: SetNull`, so
+          //      hard-deleting the key is safe and audit-clean.
+          const liveRuns = await tx.executionRun.count({
+            where: {
+              taskId: run.taskId,
+              status: { in: ['running', 'paused'] },
+              NOT: { id: run.id },
+            },
+          });
+          if (liveRuns === 0) {
+            await tx.task.updateMany({
+              where: {
+                id: run.taskId,
+                status: { in: ['in_progress', 'todo'] },
+              },
+              data: { status: 'blocked' },
+            });
+          }
+          const keyRevoke = await tx.apiKey.deleteMany({
+            where: { execRunId: run.id },
+          });
+
           eventBus.publish(run.task.projectId, 'execution_stale', {
             runId: run.id,
             taskId: run.taskId,
@@ -126,7 +162,12 @@ export async function scanStaleExecutions(): Promise<void> {
           });
 
           logger.warn(
-            { runId: run.id, taskId: run.taskId },
+            {
+              runId: run.id,
+              taskId: run.taskId,
+              taskBlocked: liveRuns === 0,
+              revokedExecKeys: keyRevoke.count,
+            },
             'Execution marked stale (heartbeat timeout 5min)',
           );
         }
