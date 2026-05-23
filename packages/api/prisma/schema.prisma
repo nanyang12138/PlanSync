@@ -402,3 +402,30 @@ model UserState {
 
   @@map("user_state")
 }
+
+// R-182 (supersedes R-144): one row per LLM call (success or failure).
+// Backs `/api/ai-usage` aggregation and R-183 caching keyed off `inputHash`.
+// All token-count columns are nullable because providers may omit them and
+// failed calls have nothing to report.
+model AiCall {
+  id            String   @id @default(cuid())
+  purpose       String
+  provider      String
+  model         String
+  promptHash    String   @map("prompt_hash")
+  inputHash     String   @map("input_hash")
+  outputHash    String?  @map("output_hash")
+  promptVersion String   @default("v1") @map("prompt_version")
+  latencyMs     Int      @map("latency_ms")
+  inputTokens   Int?     @map("input_tokens")
+  outputTokens  Int?     @map("output_tokens")
+  ok            Boolean
+  errorCode     String?  @map("error_code")
+  cacheHit      Boolean  @default(false) @map("cache_hit")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([purpose, createdAt(sort: Desc)])
+  @@index([inputHash, purpose])
+  @@index([createdAt(sort: Desc)])
+  @@map("ai_calls")
+}

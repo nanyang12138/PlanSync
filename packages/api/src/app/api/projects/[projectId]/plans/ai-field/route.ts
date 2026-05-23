@@ -58,7 +58,7 @@ export async function POST(req: NextRequest, { params }: Params) {
 
     const userMsg = `${context}\n\nImprove or generate this field. Return only the content, nothing else.`;
 
-    const suggestion = await aiClient.complete(system, userMsg);
+    const suggestion = await aiClient.complete(system, userMsg, { purpose: 'plan_ai_field' });
     if (!suggestion) {
       return NextResponse.json({ error: 'AI returned no response' }, { status: 502 });
     }

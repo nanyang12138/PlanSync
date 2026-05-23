@@ -200,6 +200,7 @@ export async function POST(req: NextRequest, { params }: Params) {
                 filesChanged: body.filesChanged,
                 outputSummary: body.outputSummary,
               }),
+              { purpose: 'completion_verify' },
             );
             if (raw) {
               const result = JSON.parse(raw) as {

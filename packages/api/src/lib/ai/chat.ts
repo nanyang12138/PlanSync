@@ -74,7 +74,7 @@ export async function chat(
 
   const context = await buildChatContext(projectId);
   const userMessage = buildChatUserMessage(message, history, context);
-  const reply = await aiClient.complete(CHAT_SYSTEM, userMessage);
+  const reply = await aiClient.complete(CHAT_SYSTEM, userMessage, { purpose: 'chat' });
 
   return { reply, aiAvailable: true };
 }
