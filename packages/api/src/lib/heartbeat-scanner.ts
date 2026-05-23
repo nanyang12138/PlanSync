@@ -112,6 +112,47 @@ export async function scanStaleExecutions(): Promise<void> {
             data: { status: 'stale' },
           });
 
+          // R-057: a stale run leaves the task in `in_progress` and its
+          // exec-scoped API key still active — owner sees a phantom "this
+          // task is being worked on" forever, and a crashed agent's key
+          // remains a usable foothold until the 30-min `failed` sweep
+          // happens (and even then, the key was never being cleaned up at
+          // all). Both pieces of state are owned by this run and become
+          // meaningless the moment it goes stale, so release them in the
+          // same transaction the status flip happens in.
+          //
+          // The task flip is guarded by "no other running run for the same
+          // task" — mirroring the same guard the /complete failed path uses
+          // (route runs/[runId]/route.ts) — so a parallel re-execution that
+          // started after this scan's findMany doesn't get clobbered into
+          // blocked. We count `status='running'` excluding this row; this
+          // run itself was just moved to `stale` inside the same tx so
+          // it's already excluded by the where clause, but the explicit
+          // `id: { not: run.id }` keeps the intent obvious for readers and
+          // is robust to a future refactor that moves the status flip.
+          const otherRunningCount = await tx.executionRun.count({
+            where: {
+              taskId: run.taskId,
+              status: 'running',
+              id: { not: run.id },
+            },
+          });
+          if (otherRunningCount === 0) {
+            await tx.task.updateMany({
+              where: { id: run.taskId, status: 'in_progress' },
+              data: { status: 'blocked' },
+            });
+          }
+
+          // R-057: the matching exec-scoped API key is identified by
+          // `execRunId`. deleteMany is idempotent (a re-scan of a row that
+          // already had its key cleaned up no-ops at count=0) and covers
+          // the case where issue-token created multiple sibling keys for
+          // the same run.
+          const keyDelete = await tx.apiKey.deleteMany({
+            where: { execRunId: run.id },
+          });
+
           eventBus.publish(run.task.projectId, 'execution_stale', {
             runId: run.id,
             taskId: run.taskId,
@@ -126,8 +167,13 @@ export async function scanStaleExecutions(): Promise<void> {
           });
 
           logger.warn(
-            { runId: run.id, taskId: run.taskId },
-            'Execution marked stale (heartbeat timeout 5min)',
+            {
+              runId: run.id,
+              taskId: run.taskId,
+              taskBlocked: otherRunningCount === 0,
+              execKeysRevoked: keyDelete.count,
+            },
+            'Execution marked stale (heartbeat timeout 5min); task + exec key released',
           );
         }
 
