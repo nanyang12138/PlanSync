@@ -7,6 +7,7 @@ import { updatePlanSchema, AppError, ErrorCode } from '@plansync/shared';
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
 import { requirePlanInProject } from '@/lib/plan-scope';
+import { createActivity } from '@/lib/activity';
 
 type Params = { params: { projectId: string; planId: string } };
 
@@ -86,6 +87,29 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       version: updated.version,
       updatedBy: auth.userName,
       fields: Object.keys(body),
+    });
+
+    // R-104: audit trail for owner-driven plan edits. We always emit
+    // `plan_updated` here (the existing `plan_draft_updated` event name is
+    // kept for compatibility with the SSE/webhook surface). Surfacing the
+    // changed fields in the metadata lets the activity log explain *what*
+    // changed without having to diff plan revisions after the fact.
+    const fields = Object.keys(body);
+    await createActivity({
+      projectId: params.projectId,
+      type: 'plan_updated',
+      actorName: auth.userName,
+      actorType: 'human',
+      summary:
+        fields.length > 0
+          ? `Plan v${updated.version} "${updated.title}" updated (${fields.join(', ')})`
+          : `Plan v${updated.version} "${updated.title}" updated`,
+      metadata: {
+        planId: updated.id,
+        version: updated.version,
+        fields,
+        planStatus: plan.status,
+      },
     });
 
     return NextResponse.json({ data: updated });
