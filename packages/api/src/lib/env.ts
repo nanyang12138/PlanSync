@@ -48,6 +48,19 @@ const baseEnvSchema = z.object({
   //   postgres — Postgres LISTEN/NOTIFY (required for multi-instance prod).
   // Default: postgres in production, memory elsewhere.
   PLANSYNC_EVENT_BUS: z.enum(['memory', 'postgres']).optional(),
+
+  // R-171: Exec-state FSM enforcement mode for the MCP server.
+  //   off      — manager not attached. Tool calls proceed as pre-R-171.
+  //              Default; safe for the initial rollout.
+  //   shadow   — illegal transitions logged as WARN; tool call proceeds.
+  //              Use this for ~1 week to surface false positives before
+  //              flipping to enforce.
+  //   enforce  — illegal transitions short-circuit with OUT_OF_SEQUENCE
+  //              (see docs/PROTOCOL.md). Handler is never invoked.
+  // The flag is read by the MCP server at startup; this entry exists in
+  // the API env schema only so env.ts stays the single inventory of
+  // PlanSync-* env vars.
+  PLANSYNC_EXEC_STATE_ENFORCE: z.enum(['off', 'shadow', 'enforce']).optional(),
 });
 
 export const envSchema = baseEnvSchema.superRefine((data, ctx) => {
