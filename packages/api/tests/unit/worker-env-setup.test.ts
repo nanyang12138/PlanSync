@@ -39,7 +39,7 @@ function runSetup(env: Record<string, string | undefined>): {
   const fullEnv = { ...baseEnv, ...env };
   // Use ts-node directly so the .ts file is transpiled on the fly.
   const r = spawnSync(TS_NODE, ['--compiler-options', '{"module":"commonjs"}', '-e', code], {
-    env: fullEnv as NodeJS.ProcessEnv,
+    env: fullEnv as unknown as NodeJS.ProcessEnv,
     encoding: 'utf-8',
   });
   return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status };
@@ -75,7 +75,7 @@ describe('scripts/worker-env-setup.ts (#232 / #265 / #273)', () => {
         HOME: process.env.HOME ?? '',
         SENTINEL_A: 'x',
         SENTINEL_B: 'y',
-      } as NodeJS.ProcessEnv,
+      } as unknown as NodeJS.ProcessEnv,
       encoding: 'utf-8',
     });
     expect(r.status).toBe(0);
