@@ -2166,7 +2166,7 @@
 
 #### R-125 [MEDIUM] activity.ts 单测覆盖
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B12
 - **depends_on**: R-033
 - **effort**: small
