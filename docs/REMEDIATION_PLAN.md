@@ -1742,7 +1742,7 @@
 
 #### R-091 [LOW] MAX_SSE_CLIENTS 改为按 project 计
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B9
 - **depends_on**: R-088
 - **effort**: small
