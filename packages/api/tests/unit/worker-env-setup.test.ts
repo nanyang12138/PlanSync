@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { resolve, dirname } from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
+import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -65,6 +67,72 @@ describe('scripts/worker-env-setup.ts (#232 / #265 / #273)', () => {
     expect(status).toBe(0);
     const parsed = JSON.parse(stdout.trim().split('\n').pop()!);
     expect(parsed.bus).toBe('postgres');
+  });
+
+  // ---- #571 / #572 / #605 / #608: dotenv-before-default ordering ---------
+
+  function buildTempRepoWithEnv(envFileBody: string): { tmp: string; tempSetup: string } {
+    // Build a temp repo-shaped layout so worker-env-setup.ts's
+    // load-dotenv.ts finds the .env at ../../../.env relative to the
+    // SETUP file path. We can't easily mock that path inside a sub-
+    // process, so we mirror packages/api/scripts/* and copy the two
+    // source files in. Tradeoff vs a real mock library: zero new deps,
+    // exercises the real path resolution.
+    const tmp = fs.mkdtempSync(join(os.tmpdir(), 'plansync-worker-env-'));
+    const scriptsDir = join(tmp, 'packages/api/scripts');
+    fs.mkdirSync(scriptsDir, { recursive: true });
+    fs.copyFileSync(SETUP, join(scriptsDir, 'worker-env-setup.ts'));
+    fs.copyFileSync(
+      resolve(__dirname, '../../scripts/load-dotenv.ts'),
+      join(scriptsDir, 'load-dotenv.ts'),
+    );
+    fs.writeFileSync(join(tmp, '.env'), envFileBody);
+    return { tmp, tempSetup: join(scriptsDir, 'worker-env-setup.ts') };
+  }
+
+  it('#571/#605/#608: a .env file PLANSYNC_EVENT_BUS=memory is honoured (loaded before the default fires)', () => {
+    const { tmp, tempSetup } = buildTempRepoWithEnv(
+      '# operator override\nPLANSYNC_EVENT_BUS=memory\n',
+    );
+    try {
+      const code = `require('${tempSetup.replace(/\\/g, '\\\\')}'); console.log(JSON.stringify({ bus: process.env.PLANSYNC_EVENT_BUS ?? null }));`;
+      const r = spawnSync(TS_NODE, ['--compiler-options', '{"module":"commonjs"}', '-e', code], {
+        env: {
+          PATH: process.env.PATH ?? '',
+          HOME: process.env.HOME ?? '',
+          NODE_PATH: process.env.NODE_PATH ?? '',
+        } as unknown as NodeJS.ProcessEnv,
+        encoding: 'utf-8',
+      });
+      expect(r.status, `stderr: ${r.stderr}`).toBe(0);
+      const parsed = JSON.parse((r.stdout ?? '').trim().split('\n').pop()!);
+      // Pre-fix value: 'postgres' (default ran before .env was loaded).
+      expect(parsed.bus).toBe('memory');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('shell env beats .env (env > .env)', () => {
+    const { tmp, tempSetup } = buildTempRepoWithEnv('PLANSYNC_EVENT_BUS=memory\n');
+    try {
+      const code = `require('${tempSetup.replace(/\\/g, '\\\\')}'); console.log(JSON.stringify({ bus: process.env.PLANSYNC_EVENT_BUS ?? null }));`;
+      const r = spawnSync(TS_NODE, ['--compiler-options', '{"module":"commonjs"}', '-e', code], {
+        env: {
+          PATH: process.env.PATH ?? '',
+          HOME: process.env.HOME ?? '',
+          NODE_PATH: process.env.NODE_PATH ?? '',
+          // Explicit shell env value MUST win over the .env file value.
+          PLANSYNC_EVENT_BUS: 'postgres',
+        } as unknown as NodeJS.ProcessEnv,
+        encoding: 'utf-8',
+      });
+      expect(r.status).toBe(0);
+      const parsed = JSON.parse((r.stdout ?? '').trim().split('\n').pop()!);
+      expect(parsed.bus).toBe('postgres');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it('does NOT touch other env vars', () => {
