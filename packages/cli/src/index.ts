@@ -229,6 +229,26 @@ async function main() {
   // ─── AbortController for in-flight AI requests ───────────────────────────
   let currentAbort: AbortController | null = null;
 
+  // R-005: when the MCP server reports the run was forcibly aborted (paused,
+  // stale-version, race-lost) flip the in-flight AbortController so the
+  // ai-loop exits at the next turn boundary. Without this wire-up the
+  // mcp-client's `abortHandler` slot stays unset and the agent keeps looping
+  // until SIGINT or until the model decides to stop — defeating the
+  // defense-in-depth latch wired up in tools/execution.ts + onRunAborted.
+  // The red banner gives the user a clear `EXECUTION_SUPERSEDED`-style
+  // signal that the loop ended for a structured reason, not by accident.
+  mcp.setAbortHandler((reason) => {
+    if (currentAbort) {
+      currentAbort.abort();
+      currentAbort = null;
+    }
+    process.stdout.write(
+      `\n${c.red}⚠ EXECUTION_SUPERSEDED (${reason.code}): ${reason.message}${c.reset}\n` +
+        `${c.dim}Run aborted by PlanSync API; AI loop terminated. ` +
+        `Resolve the underlying drift / pause and start a fresh execution.${c.reset}\n`,
+    );
+  });
+
   // ─── Exit hook ────────────────────────────────────────────────────────────
   rawInput.onSigint = () => {
     rawInput.stop();

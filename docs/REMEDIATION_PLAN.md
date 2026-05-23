@@ -274,7 +274,7 @@
 
 #### R-005 [HIGH] MCP heartbeat 把 superseded / RUN_STALE_VERSION 转为 agent abort
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B1
 - **depends_on**: R-003
 - **effort**: medium
@@ -296,7 +296,7 @@
 
 #### R-006 [HIGH] drift complete-gate 同时检查 run 版本
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B1
 - **depends_on**: R-003
 - **effort**: small
