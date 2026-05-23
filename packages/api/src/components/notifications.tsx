@@ -202,6 +202,12 @@ const ALL_EVENT_TYPES = [
   'comment_added',
   'member_added',
   'member_removed',
+  // #323 / #310: synthetic resync event from the EventBusPG. Without it
+  // in the addEventListener whitelist the named SSE event is dropped
+  // entirely (it does NOT fall back to onmessage), so the toast / banner
+  // surface never sees that the back-end's listenClient just reconnected
+  // and clients should refetch.
+  'bus_resync_required',
 ];
 
 // ── Provider ──────────────────────────────────────────────────────────────────

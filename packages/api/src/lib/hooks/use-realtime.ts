@@ -55,6 +55,14 @@ export function useRealtime(
       'comment_added',
       'member_added',
       'member_removed',
+      // #323 / #310: synthetic resync event the EventBusPG dispatches to
+      // every local subscriber after a Postgres reconnect. NOTIFY messages
+      // emitted while the listenClient was offline are dropped by Postgres,
+      // so the bus tells consumers to refetch canonical state. Without
+      // this listener, named-event browsers never see it (it does NOT
+      // fall back to onmessage) and the UI keeps showing stale data after
+      // every database reconnect.
+      'bus_resync_required',
     ];
 
     for (const type of eventTypes) {
@@ -65,6 +73,9 @@ export function useRealtime(
         } catch {
           // Ignore malformed SSE payloads
         }
+        // bus_resync_required deliberately falls through to router.refresh()
+        // — that's literally the point of the event. Other event types
+        // already trigger a refresh below.
         router.refresh();
       });
     }

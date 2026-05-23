@@ -114,6 +114,12 @@ export function NotificationBell() {
       'comment_added',
       'member_added',
       'member_removed',
+      // #323 / #310: subscribe to the post-reconnect resync event so the
+      // unread-count badge bumps once and the user opens the dropdown,
+      // which re-fetches the canonical feed. Without this, named SSE
+      // events do not fall back to onmessage and the bell silently
+      // drifts out of sync after every Postgres reconnect.
+      'bus_resync_required',
     ];
     for (const t of types) es.addEventListener(t, bump);
     es.onerror = () => {
