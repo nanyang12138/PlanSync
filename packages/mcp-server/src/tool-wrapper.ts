@@ -21,6 +21,7 @@
 import { ApiError } from './api-client';
 import { isRunAborted, RunAbortReason } from './abort-signal';
 import { logger } from './logger';
+import type { OutOfSequenceEnvelope } from './exec-state-manager';
 
 export interface ToolErrorEnvelope {
   isError: true;
