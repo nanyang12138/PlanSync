@@ -1213,7 +1213,7 @@
 
 #### R-057 [MEDIUM] stale 状态同步释放 task 与 exec-scoped key
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B6
 - **depends_on**: R-008
 - **effort**: small
