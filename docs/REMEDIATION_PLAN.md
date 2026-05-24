@@ -2662,7 +2662,7 @@
 
 #### R-152 [HIGH] plan_update / propose / activate / append 全部改写新表
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B13
 - **depends_on**: R-151
 - **effort**: large
