@@ -9,6 +9,9 @@ import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
 import { createActivity } from '@/lib/activity';
 import { requirePlanInProject } from '@/lib/plan-scope';
+import { writeBoth, type SplitField } from '@/lib/plan-items';
+
+const SPLIT_FIELDS = new Set<SplitField>(['constraints', 'standards', 'deliverables']);
 
 const APPENDABLE_FIELDS = ['constraints', 'standards', 'deliverables', 'openQuestions'] as const;
 type AppendableField = (typeof APPENDABLE_FIELDS)[number];
@@ -38,10 +41,24 @@ export async function POST(req: NextRequest, { params }: Params) {
     const newItems = body.items.map((s) => s.trim()).filter((s) => !existingTrimmed.has(s));
     const merged = existing.concat(newItems);
 
-    const updated = await prisma.plan.update({
-      where: { id: params.planId },
-      data: { [field]: merged },
-    });
+    // R-152: append must hit the split table for fields that have one.
+    // openQuestions does not (it remains an opaque String[] today, no per-
+    // item identity needed yet — see the writeBoth doc-comment). Both code
+    // paths produce the same legacy String[] result, so plan_show is stable
+    // either way; the difference is whether new PlanDeliverable / Constraint
+    // / Standard rows materialise alongside.
+    let updated;
+    if (SPLIT_FIELDS.has(field as SplitField)) {
+      updated = await prisma.$transaction(async (tx) => {
+        await writeBoth(params.planId, { [field as SplitField]: merged }, tx);
+        return tx.plan.findUniqueOrThrow({ where: { id: params.planId } });
+      });
+    } else {
+      updated = await prisma.plan.update({
+        where: { id: params.planId },
+        data: { [field]: merged },
+      });
+    }
 
     await createActivity({
       projectId: params.projectId,
