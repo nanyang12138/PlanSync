@@ -175,6 +175,12 @@ export async function applyCompletionVerifyConsistency(
     scores,
     metadataPatch: {
       consistencyScores: scores,
+      // Issue #836: keep the per-sample feedback texts in metadata so
+      // the owner UI can surface "what did each judgement say" beside
+      // the lowConfidence flag. Without this the `feedbacks` array was
+      // populated but never read, which both wastes the data and fails
+      // eslint's no-unused-vars under --max-warnings 0.
+      consistencyFeedbacks: feedbacks,
       consistencyMedian: med,
       consistencySpread: spread,
       consistencyLowConfidence: lowConfidence,
