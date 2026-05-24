@@ -10,9 +10,12 @@ import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
 import { aiClient } from '@/lib/ai/client';
 import {
+  COMPLETION_VERIFY_PROMPT_VERSION,
   COMPLETION_VERIFY_SYSTEM,
   buildCompletionVerifyUser,
 } from '@/lib/ai/prompts/completion-verify.prompt';
+import { COMPLETION_VERIFY_TOOL } from '@/lib/ai/schemas';
+import { applyCompletionVerifyConsistency } from '@/lib/ai/completion-verify-consistency';
 
 type Params = { params: { projectId: string; taskId: string; runId: string } };
 
@@ -262,20 +265,27 @@ export async function POST(req: NextRequest, { params }: Params) {
           // through". Without this flag, Phase 1's error context was
           // silently lost on every thrown AI call.
           let phase1Audited = false;
+          // R-189: capture the exact user message so the consistency
+          // sampler can re-use it for follow-up samples in the boundary
+          // score zone.
+          const completionVerifyUserMessage = buildCompletionVerifyUser(body.deliverablesMet, {
+            taskTitle: task.title,
+            taskType: task.type,
+            taskDescription: task.description,
+            expectedOutput: task.expectedOutput,
+            planDeliverableRefs: task.planDeliverableRefs,
+            filesChanged: body.filesChanged,
+            outputSummary: body.outputSummary,
+          });
           try {
-            raw = await aiClient.complete(
-              COMPLETION_VERIFY_SYSTEM,
-              buildCompletionVerifyUser(body.deliverablesMet, {
-                taskTitle: task.title,
-                taskType: task.type,
-                taskDescription: task.description,
-                expectedOutput: task.expectedOutput,
-                planDeliverableRefs: task.planDeliverableRefs,
-                filesChanged: body.filesChanged,
-                outputSummary: body.outputSummary,
-              }),
-              { purpose: 'completion_verify' },
-            );
+            // R-185: tool_use strict mode forces { verified, score 0-100,
+            // gaps, feedback } at the decoding layer. Phase-2 JSON.parse
+            // continues to act as a defense for the text-fallback path.
+            raw = await aiClient.complete(COMPLETION_VERIFY_SYSTEM, completionVerifyUserMessage, {
+              purpose: 'completion_verify',
+              promptVersion: COMPLETION_VERIFY_PROMPT_VERSION,
+              tool: COMPLETION_VERIFY_TOOL,
+            });
           } catch (err) {
             const errMessage = err instanceof Error ? err.message : String(err);
             console.warn(
@@ -331,6 +341,30 @@ export async function POST(req: NextRequest, { params }: Params) {
             }
 
             if (result) {
+              // ---- Phase 2.5: R-189 self-consistency on boundary scores ----
+              // The boundary zone (60-80) is where a single sample is most
+              // unreliable. We run up to 2 extra samples and median-correct
+              // the score; if the spread is wide (> 15) we mark
+              // lowConfidence so the owner sees "needs review". Failures
+              // here never block — the original result is the fallback.
+              let consistencyMetadataPatch: Prisma.JsonObject = {};
+              let consistencyLowConfidence = false;
+              try {
+                const outcome = await applyCompletionVerifyConsistency(
+                  result,
+                  COMPLETION_VERIFY_SYSTEM,
+                  completionVerifyUserMessage,
+                );
+                result = outcome.result;
+                consistencyMetadataPatch = outcome.metadataPatch;
+                consistencyLowConfidence = outcome.lowConfidence;
+              } catch (consistencyErr) {
+                console.warn(
+                  `[completion-verify] consistency sampling failed for run ${params.runId} — using original result:`,
+                  consistencyErr instanceof Error ? consistencyErr.message : String(consistencyErr),
+                );
+              }
+
               // ---- Phase 3: audit DB write ----------------------------
               // Best-effort: if Prisma fails here we do NOT swallow the
               // verification result on the next line. #184's bug was that
@@ -370,7 +404,7 @@ export async function POST(req: NextRequest, { params }: Params) {
               // We only emit the advisory row when the verification
               // actually flagged something (score < 75 OR !verified) —
               // a passing run does not need an advisory.
-              if (!result.verified || result.score < 75) {
+              if (!result.verified || result.score < 75 || consistencyLowConfidence) {
                 try {
                   await prisma.runReview.create({
                     data: {
@@ -383,6 +417,11 @@ export async function POST(req: NextRequest, { params }: Params) {
                         breakdown: result.breakdown ?? null,
                         gaps: result.gaps,
                         model: aiVerifyModel,
+                        // R-189: persist consistency telemetry whenever
+                        // the sampler ran so the owner UI can render
+                        // "AI verification unstable" without re-running
+                        // the samples.
+                        ...consistencyMetadataPatch,
                       } as Prisma.InputJsonValue,
                     },
                   });

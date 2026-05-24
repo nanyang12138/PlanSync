@@ -60,8 +60,15 @@ const COMPLETION_VERIFY_MOCK = {
 
 const CHAT_MOCK = 'Mock chat reply from PLANSYNC_AI_MOCK=1.';
 
-// System-prompt prefixes that identify each capability. These are intentionally
-// short and stable so editing the prompt body does not break the dispatcher.
+// System-prompt substrings that identify each capability. These are
+// intentionally short and stable so editing the prompt body does not
+// break the dispatcher.
+//
+// R-188 note: we previously matched with `startsWith()` because the
+// capability sentence was the first line of every system prompt. After
+// R-188 prepended UNTRUSTED_INPUT_PREAMBLE to every system prompt, the
+// capability sentence is no longer the first line; we now match with
+// `includes()` to stay robust against any future prepended preamble.
 const PROMPT_SIGNATURES = {
   planDiff: 'You are an expert project analyst.',
   impact: 'You are an expert at analyzing how plan changes',
@@ -71,19 +78,19 @@ const PROMPT_SIGNATURES = {
 } as const;
 
 export function getMockAiResponse(system: string): string {
-  if (system.startsWith(PROMPT_SIGNATURES.planDiff)) {
+  if (system.includes(PROMPT_SIGNATURES.planDiff)) {
     return JSON.stringify(PLAN_DIFF_MOCK);
   }
-  if (system.startsWith(PROMPT_SIGNATURES.impact)) {
+  if (system.includes(PROMPT_SIGNATURES.impact)) {
     return JSON.stringify(IMPACT_MOCK);
   }
-  if (system.startsWith(PROMPT_SIGNATURES.conflict)) {
+  if (system.includes(PROMPT_SIGNATURES.conflict)) {
     return JSON.stringify(CONFLICT_MOCK);
   }
-  if (system.startsWith(PROMPT_SIGNATURES.completionVerify)) {
+  if (system.includes(PROMPT_SIGNATURES.completionVerify)) {
     return JSON.stringify(COMPLETION_VERIFY_MOCK);
   }
-  if (system.startsWith(PROMPT_SIGNATURES.chat)) {
+  if (system.includes(PROMPT_SIGNATURES.chat)) {
     return CHAT_MOCK;
   }
   // Unknown capability — return an empty JSON object. Callers that JSON.parse

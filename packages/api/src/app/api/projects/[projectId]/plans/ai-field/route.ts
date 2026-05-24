@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { authenticate, requireProjectRole } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { aiClient } from '@/lib/ai/client';
+import { normalizeAiList, normalizeAiText } from '@/lib/ai/validate';
 import { z } from 'zod';
 
 type Params = { params: { projectId: string } };
@@ -63,7 +64,19 @@ export async function POST(req: NextRequest, { params }: Params) {
       return NextResponse.json({ error: 'AI returned no response' }, { status: 502 });
     }
 
-    return NextResponse.json({ suggestion });
+    // R-186: this is the one AI endpoint that doesn't switch to tool_use
+    // (each request emits a single text field, not a structured object).
+    // Apply the validate-layer post-processors so the model can't slip in
+    // markdown bullets / numbered lists / overflowing text that confuses
+    // the downstream UI list editor.
+    let normalized: string;
+    if (field === 'goal' || field === 'scope') {
+      normalized = normalizeAiText(suggestion, 2000);
+    } else {
+      normalized = normalizeAiList(suggestion, 20).join('\n');
+    }
+
+    return NextResponse.json({ suggestion: normalized });
   } catch (error) {
     return handleApiError(error);
   }

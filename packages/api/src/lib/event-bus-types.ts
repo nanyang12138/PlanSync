@@ -32,6 +32,11 @@ export type PlanSyncEventType =
   | 'member_updated'
   | 'comment_updated'
   | 'comment_deleted'
+  // R-191a: AI surfaced a low-confidence result (impact-analysis score
+  // < 30, AI returned null, drift-enrich systematically failing, etc.)
+  // — owner UI / CLI should flash this so a human pre-empts the
+  // would-be silent-fail. Payload: { kind, projectId, payload }.
+  | 'ai_low_confidence'
   // #130: synthetic event the Postgres LISTEN client emits to local
   // subscribers after a reconnect so SSE consumers know to refetch the
   // canonical state (NOTIFY messages emitted during the disconnect window
