@@ -2958,7 +2958,7 @@
 
 - **status**: in_progress
 - **closed_in**: PR#664 (step 1 only)
-- **note**: Sliced into 3 PRs by fix_step number. **Step 1 only** (`plan_*_append` → `plan_patch`) shipped in PR#664. Steps 2 (`execution_*` → `run`) and 3 (`task_*` → `task`) are still pending and tracked as follow-up entries R-175a / R-175b. Setting `status: done` prematurely (PR#839 backfill) caused issue #840 — downstream entries with `depends_on: R-175` (e.g. R-176) became schedulable before the surface was actually collapsed. Revert to `in_progress` until R-175a + R-175b both close.
+- **note**: Sliced into 3 PRs by fix*step number. **Step 1 only** (`plan*_*append`→`plan_patch`) shipped in PR#664. Steps 2 (`execution*_`→`run`) and 3 (`task\_\*`→`task`) are still pending and tracked as follow-up entries R-175a / R-175b. Setting `status: done`prematurely (PR#839 backfill) caused issue #840 — downstream entries with`depends_on: R-175`(e.g. R-176) became schedulable before the surface was actually collapsed. Revert to`in_progress` until R-175a + R-175b both close.
 - **batch**: B15
 - **depends_on**: R-027, R-030
 - **effort**: large
