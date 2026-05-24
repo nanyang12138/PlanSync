@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { Users, AlertTriangle, CheckCircle2, Circle, ChevronRight } from 'lucide-react';
-import { prisma } from '@/lib/prisma';
+import { prisma, PROJECT_PUBLIC_SELECT } from '@/lib/prisma';
 import { MemberInvite } from '@/components/member/member-invite';
 import { MemberList } from '@/components/member/member-list';
 import { RealtimeWrapper } from '@/components/realtime-wrapper';
@@ -9,9 +9,11 @@ import { PageHeader } from '@/components/shared/page-header';
 import { SectionShell } from '@/components/shared/section-shell';
 
 export default async function ProjectMembersPage({ params }: { params: { id: string } }) {
+  // R-190 / closes #780 #796: omit githubWebhookSecret from SSR payload.
   const project = await prisma.project.findUnique({
     where: { id: params.id },
-    include: {
+    select: {
+      ...PROJECT_PUBLIC_SELECT,
       tasks: true,
       driftAlerts: { where: { status: 'open' } },
       plans: { where: { status: 'active' }, take: 1 },

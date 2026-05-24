@@ -143,7 +143,25 @@ const MASTER_ROUTE_ALLOWLIST: Array<{ method: string | '*'; path: RegExp }> = [
   { method: 'POST', path: /^\/api\/projects\/[^/]+\/plans\/[^/]+\/suggestions\b/ },
 
   // Drift alert resolution — operational write; agent-grade.
-  { method: 'POST', path: /^\/api\/projects\/[^/]+\/drift-alerts\/[^/]+\/resolve$/ },
+  // The actual route is `POST /api/projects/{projectId}/drifts/{driftId}`
+  // (see packages/api/src/app/api/projects/[projectId]/drifts/[driftId]/route.ts);
+  // the previous regex looked for a non-existent `/drift-alerts/.../resolve`
+  // path, so master-driven drift resolution silently 403'd. (closes #765-class)
+  { method: 'POST', path: /^\/api\/projects\/[^/]+\/drifts\/[^/]+$/ },
+
+  // Execution lifecycle — these are the calls a delegated agent makes
+  // mid-run (execution_start, heartbeat, execution_complete) and the
+  // owner-initiated task rebind. They are agent-grade safe writes
+  // already attributable via the executor name + run id, and rejecting
+  // them here breaks the entire delegated-execution flow. (closes
+  // #765-class — MASTER_ROUTE_ALLOWLIST 缺少 execution_start /
+  // heartbeat / complete / task_rebind).
+  // execution_start / list runs:
+  { method: 'POST', path: /^\/api\/projects\/[^/]+\/tasks\/[^/]+\/runs$/ },
+  // heartbeat / execution_complete:
+  { method: 'PATCH', path: /^\/api\/projects\/[^/]+\/tasks\/[^/]+\/runs\/[^/]+$/ },
+  // task_rebind:
+  { method: 'POST', path: /^\/api\/projects\/[^/]+\/tasks\/[^/]+\/rebind$/ },
 
   // Master-audit self-query — owner reads its own audit trail.
   { method: 'GET', path: /^\/api\/auth\/master-audit(?:\?.*)?$/ },
@@ -225,10 +243,18 @@ export async function recordMasterDelegation(opts: {
     orderBy: { occurredAt: 'desc' },
   });
 
-  if (existing && existing.expiresAt.getTime() > now) {
-    // Mid-flight episode — reuse. We deliberately don't update the row;
-    // the audit story is "one row per episode", not "row gets touched on
-    // every request".
+  // Closes #770s (recordMasterDelegation reuse window):
+  // The constant MASTER_DELEGATION_REUSE_WINDOW_MS is the spec'd reuse
+  // boundary (5 min). The previous impl reused any row whose expiresAt
+  // was still in the future — which, with the default 60-min TTL,
+  // collapsed an entire hour of activity into one audit row. The R-136
+  // contract is "one row per session burst (≤ 5 min)" so distinct
+  // attacker bursts from the same IP still produce distinct audit rows.
+  if (
+    existing &&
+    existing.expiresAt.getTime() > now &&
+    now - existing.occurredAt.getTime() < MASTER_DELEGATION_REUSE_WINDOW_MS
+  ) {
     return { id: existing.id, expiresAt: existing.expiresAt, reused: true };
   }
 
