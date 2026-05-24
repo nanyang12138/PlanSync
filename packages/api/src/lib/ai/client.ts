@@ -581,7 +581,7 @@ class AiClient {
         return extracted;
       }
 
-      const result = await this.callProvider(
+      let result = await this.callProvider(
         config,
         model,
         system,
@@ -589,6 +589,41 @@ class AiClient {
         attemptsPerProvider,
         tool,
       );
+
+      // R-185 + closes #819 / #823 / #828: when this call asked for tool_use
+      // and the provider rejected the request with a 4xx (typically 400),
+      // it almost always means the gateway does not support
+      // `tools`/`tool_choice` (older AMD-internal Anthropic-compatible
+      // endpoints, or third-party shims). Retry the SAME provider once
+      // in legacy text mode before falling through to the next provider —
+      // otherwise a deployment that has only AMD configured returns null
+      // on every AI route, even though the legacy text path would have
+      // worked. The retry is bounded (single attempt, no tool) so we do
+      // not amplify load on real 4xx errors.
+      if (
+        tool &&
+        !result.ok &&
+        result.errorCode &&
+        /^http_4\d\d$/.test(result.errorCode) &&
+        result.errorCode !== 'http_429'
+      ) {
+        logger.warn(
+          { provider: config.name, errorCode: result.errorCode, tool: tool.name },
+          'AI tool_use rejected with 4xx; retrying provider in text mode',
+        );
+        const textResult = await this.callProvider(
+          config,
+          model,
+          system,
+          user,
+          1,
+          undefined,
+        );
+        if (textResult.ok) {
+          result = { ...textResult, errorCode: textResult.errorCode };
+        }
+      }
+
       lastResult = result;
 
       await this.recordSafe({

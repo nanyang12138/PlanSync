@@ -390,4 +390,92 @@ describe('R-185 tool_use strict structured output', () => {
       expect(r.success).toBe(false);
     });
   });
+
+  // Closes #819 #823 #828: AMD-style endpoints that don't yet support
+  // tools/tool_choice reject the request with HTTP 400. Without a
+  // text-mode retry, an AMD-only deployment would return null on every
+  // AI route. The retry must (a) hit the SAME provider once, (b) drop
+  // the tool argument, (c) succeed via pickFirstContentText. We must
+  // NOT retry on 429 (real rate-limit) or 5xx (real server failure).
+  describe('tool_use 4xx fallback to text mode (#819 #823 #828)', () => {
+    function fourHundredResponse(): Response {
+      return new Response(
+        JSON.stringify({
+          error: { type: 'invalid_request_error', message: 'tools is not supported' },
+        }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    it('on 400 with tool, retries same provider once in text mode and returns the text payload', async () => {
+      process.env.ANTHROPIC_API_KEY = 'sk-test';
+      const fetchSpy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(fourHundredResponse())
+        .mockResolvedValueOnce(makeTextResponse('{"ok":true,"score":80}'));
+
+      const { aiClient } = await import('../../src/lib/ai/client');
+      const out = await aiClient.complete('SYS', 'USER', {
+        purpose: 'unit-test-toolfallback',
+        tool: {
+          name: 'emit_x',
+          description: 'desc',
+          jsonSchema: {
+            type: 'object',
+            required: ['ok'],
+            properties: { ok: { type: 'boolean' } },
+            additionalProperties: false,
+          },
+        },
+      });
+
+      expect(out).toBe('{"ok":true,"score":80}');
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+      const firstBody = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+      const secondBody = JSON.parse((fetchSpy.mock.calls[1][1] as RequestInit).body as string);
+      expect(firstBody.tools).toBeDefined();
+      expect(firstBody.tool_choice).toBeDefined();
+      expect(secondBody.tools).toBeUndefined();
+      expect(secondBody.tool_choice).toBeUndefined();
+    });
+
+    it('does NOT retry on 429 — real rate-limit must propagate', async () => {
+      process.env.ANTHROPIC_API_KEY = 'sk-test';
+      const fetchSpy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValue(
+          new Response(JSON.stringify({ error: 'rate' }), {
+            status: 429,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+
+      const { aiClient } = await import('../../src/lib/ai/client');
+      const out = await aiClient.complete('SYS', 'USER', {
+        purpose: 'unit-test-429',
+        tool: {
+          name: 'emit_x',
+          description: 'd',
+          jsonSchema: { type: 'object', additionalProperties: false, properties: {} },
+        },
+      });
+
+      expect(out).toBeNull();
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT retry without-tool when tool was never set', async () => {
+      process.env.ANTHROPIC_API_KEY = 'sk-test';
+      const fetchSpy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValue(fourHundredResponse());
+
+      const { aiClient } = await import('../../src/lib/ai/client');
+      const out = await aiClient.complete('SYS', 'USER', { purpose: 'unit-test-no-tool' });
+
+      expect(out).toBeNull();
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+  });
 });
