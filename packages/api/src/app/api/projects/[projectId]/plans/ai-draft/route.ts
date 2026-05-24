@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { authenticate, requireProjectRole } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { aiClient } from '@/lib/ai/client';
+import { PLAN_DRAFT_TOOL, planDraftResultZ } from '@/lib/ai/schemas';
 import { z } from 'zod';
 
 type Params = { params: { projectId: string } };
@@ -38,7 +39,13 @@ export async function POST(req: NextRequest, { params }: Params) {
     const body = bodySchema.parse(await req.json());
     const userMsg = `Project plan title: "${body.title}"${body.description ? `\nContext: ${body.description}` : ''}\n\nGenerate a complete plan draft as JSON.`;
 
-    const raw = await aiClient.complete(SYSTEM, userMsg, { purpose: 'plan_ai_draft' });
+    // R-185: tool_use strict mode forces the 6 required fields at the
+    // decoding layer. zod.safeParse below is the application-level safety
+    // net (covers mock provider + text-mode fallback + future schema drift).
+    const raw = await aiClient.complete(SYSTEM, userMsg, {
+      purpose: 'plan_ai_draft',
+      tool: PLAN_DRAFT_TOOL,
+    });
     if (!raw) {
       return NextResponse.json({ error: 'AI returned no response' }, { status: 502 });
     }
@@ -50,7 +57,18 @@ export async function POST(req: NextRequest, { params }: Params) {
       return NextResponse.json({ error: 'AI response was not valid JSON', raw }, { status: 502 });
     }
 
-    return NextResponse.json({ draft });
+    const safe = planDraftResultZ.safeParse(draft);
+    if (!safe.success) {
+      return NextResponse.json(
+        {
+          error: 'AI response did not match the required plan-draft schema',
+          issues: safe.error.flatten(),
+        },
+        { status: 502 },
+      );
+    }
+
+    return NextResponse.json({ draft: safe.data });
   } catch (error) {
     return handleApiError(error);
   }

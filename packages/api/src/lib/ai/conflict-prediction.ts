@@ -4,6 +4,7 @@ import {
   buildConflictPredictionUser,
 } from './prompts/conflict-prediction.prompt';
 import { logger } from '../logger';
+import { CONFLICT_PREDICTION_TOOL } from './schemas';
 
 export interface ConflictResult {
   conflicts: Array<{
@@ -27,10 +28,15 @@ export async function predictConflicts(
   if (!aiClient.isAvailable) return null;
   if (tasks.length < 2) return { conflicts: [] };
 
+  // R-185: tool_use strict mode hard-fails on conflicts.taskIds < 2 at the
+  // decoding layer (jsonSchema minItems: 2), removing the most common
+  // historical hallucination ("conflict between one task"). The manual
+  // checks below still run as defense-in-depth for the text-mode fallback
+  // path and for non-tool-use providers.
   const response = await aiClient.complete(
     CONFLICT_PREDICTION_SYSTEM,
     buildConflictPredictionUser(tasks),
-    { purpose: 'conflict_prediction' },
+    { purpose: 'conflict_prediction', tool: CONFLICT_PREDICTION_TOOL },
   );
   if (!response) return null;
 

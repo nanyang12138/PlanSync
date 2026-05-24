@@ -19,12 +19,24 @@ function sha256(input: string): string {
 
 type Provider = 'amd' | 'anthropic' | 'mock';
 
+// R-185: when `tool` is set on a complete() call the provider switches from
+// free-text generation to tool_use strict mode. The model is forced to call
+// the named tool exactly once and its `input` must conform to `jsonSchema`
+// at the token-decoding layer. parseResponse then extracts that input as a
+// JSON string so the rest of the pipeline (cache, ai_calls record, callers)
+// keeps treating the result as "a JSON string the caller will parse".
+export interface ToolDescriptor {
+  name: string;
+  description: string;
+  jsonSchema: Record<string, unknown>;
+}
+
 interface ProviderConfig {
   name: Provider;
   apiKey: string;
   buildUrl: (model: string) => string;
   buildHeaders: (apiKey: string) => Record<string, string>;
-  buildBody: (model: string, system: string, user: string) => object;
+  buildBody: (model: string, system: string, user: string, tool?: ToolDescriptor) => object;
   parseResponse: (data: unknown) => string | null;
 }
 
@@ -36,9 +48,14 @@ interface ConfiguredProvider {
 // R-182: callers pass a `purpose` so /api/ai-usage can group by call site.
 // `promptVersion` is opaque and defaults to 'v1' until prompts start
 // versioning themselves.
+//
+// R-185: callers can also pass a `tool` to switch on strict structured output
+// (Anthropic tool_use forced-call). The mock provider ignores `tool` and
+// keeps returning canned JSON via getMockAiResponse().
 export interface AiCompleteOptions {
   purpose: string;
   promptVersion?: string;
+  tool?: ToolDescriptor;
 }
 
 export function pickFirstContentText(data: unknown): string | null {
@@ -51,6 +68,36 @@ export function pickFirstContentText(data: unknown): string | null {
   return typeof text === 'string' && text.length > 0 ? text : null;
 }
 
+// R-185: extract the `input` payload from the first `tool_use` block in an
+// Anthropic-style response and return it serialized as JSON. This is the
+// canonical happy path when `tool_choice: { type: 'tool' }` is set — the
+// model is constrained to emit exactly one tool_use block whose input
+// already satisfies our jsonSchema, so the caller can JSON.parse it without
+// the brittle markdown-fence / regex extraction the text path needs.
+//
+// Returns null when the response has no tool_use block (e.g. the provider
+// is misconfigured or returned a refusal); the caller falls back to the
+// text path automatically so we don't break AMD installs that don't yet
+// support tool_use.
+export function pickFirstToolUseInput(data: unknown): string | null {
+  if (typeof data !== 'object' || data === null) return null;
+  const content = (data as { content?: unknown }).content;
+  if (!Array.isArray(content) || content.length === 0) return null;
+  for (const block of content) {
+    if (typeof block !== 'object' || block === null) continue;
+    const type = (block as { type?: unknown }).type;
+    if (type !== 'tool_use') continue;
+    const input = (block as { input?: unknown }).input;
+    if (input === undefined) continue;
+    try {
+      return JSON.stringify(input);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 // AMD internal LLM uses the same Anthropic messages API format,
 // just with a different base URL and Ocp-Apim-Subscription-Key header.
 // LLM_API_BASE should point to the Anthropic-compatible endpoint,
@@ -59,6 +106,45 @@ const AMD_BASE = (process.env.LLM_API_BASE || 'https://llm-api.amd.com/Anthropic
   /\/$/,
   '',
 );
+
+// R-185: buildBody factory shared by AMD + Anthropic providers. When `tool`
+// is set we attach Anthropic's `tools` array + `tool_choice` so the decoder
+// is constrained to emit a single tool_use block. AMD's Anthropic-compatible
+// endpoint accepts the same shape; if a deployment doesn't, the response
+// will lack a tool_use block and pickFirstToolUseInput returns null, which
+// triggers the text-path fallback in complete().
+function buildAnthropicBody(
+  model: string,
+  system: string,
+  user: string,
+  tool?: ToolDescriptor,
+): object {
+  const base: Record<string, unknown> = {
+    model,
+    max_tokens: 4096,
+    system,
+    messages: [{ role: 'user', content: user }],
+  };
+  if (tool) {
+    base.tools = [
+      {
+        name: tool.name,
+        description: tool.description,
+        input_schema: tool.jsonSchema,
+      },
+    ];
+    base.tool_choice = { type: 'tool', name: tool.name };
+  }
+  return base;
+}
+
+// R-185: when a tool was requested, prefer the tool_use payload; fall back
+// to the text content (and the existing extractJson) only when tool_use is
+// absent — that way an AMD installation without strict tool support still
+// produces a usable result via the legacy path.
+function buildParseResponse(): (data: unknown) => string | null {
+  return (data) => pickFirstToolUseInput(data) ?? pickFirstContentText(data);
+}
 
 const AMD_PROVIDER: Omit<ProviderConfig, 'apiKey'> = {
   name: 'amd',
@@ -69,13 +155,8 @@ const AMD_PROVIDER: Omit<ProviderConfig, 'apiKey'> = {
     'anthropic-version': '2023-06-01',
     'Ocp-Apim-Subscription-Key': apiKey,
   }),
-  buildBody: (model, system, user) => ({
-    model,
-    max_tokens: 4096,
-    system,
-    messages: [{ role: 'user', content: user }],
-  }),
-  parseResponse: pickFirstContentText,
+  buildBody: buildAnthropicBody,
+  parseResponse: buildParseResponse(),
 };
 
 function parseCustomHeaders(raw: string): Record<string, string> {
@@ -101,6 +182,9 @@ const MOCK_PROVIDER: Omit<ProviderConfig, 'apiKey'> = {
   name: 'mock',
   buildUrl: () => 'mock://ai',
   buildHeaders: () => ({}),
+  // R-185: mock provider does not implement tool_use; the `tool` arg is
+  // ignored. complete() short-circuits before buildBody runs anyway, so
+  // this is purely about keeping the ProviderConfig shape uniform.
   buildBody: (model, system, user) => ({ model, system, user }),
   parseResponse: pickFirstContentText,
 };
@@ -114,13 +198,8 @@ const ANTHROPIC_PROVIDER: Omit<ProviderConfig, 'apiKey'> = {
     'anthropic-version': '2023-06-01',
     ...ANTHROPIC_CUSTOM_HEADERS,
   }),
-  buildBody: (model, system, user) => ({
-    model,
-    max_tokens: 4096,
-    system,
-    messages: [{ role: 'user', content: user }],
-  }),
-  parseResponse: pickFirstContentText,
+  buildBody: buildAnthropicBody,
+  parseResponse: buildParseResponse(),
 };
 
 // R-182: parse `{ usage: { input_tokens, output_tokens } }` (Anthropic
@@ -376,8 +455,21 @@ class AiClient {
   //      to the next provider; on content-empty response, stop
   //   4. populate cache on success
   async complete(system: string, user: string, opts?: CompleteArg): Promise<string | null> {
-    const { purpose, promptVersion = 'v1' } = resolveOptions(opts);
-    const inputHash = sha256(`${system}\n---\n${user}`);
+    const { purpose, promptVersion: rawPromptVersion, tool } = resolveOptions(opts);
+    // R-185: when the caller requests strict tool_use, tag the recorded
+    // promptVersion with `-toolv1` so the R-182 dashboard can split metrics
+    // by tool-mode vs legacy-text-mode without changing the schema.
+    const promptVersion =
+      tool && rawPromptVersion === undefined
+        ? 'v1-toolv1'
+        : tool && rawPromptVersion !== undefined
+          ? `${rawPromptVersion}-toolv1`
+          : (rawPromptVersion ?? 'v1');
+    // R-185: include the tool's jsonSchema in the inputHash so the cache
+    // doesn't return a text-mode cached answer to a tool-mode caller (or
+    // vice versa), and so a schema change invalidates the cache.
+    const toolHashSegment = tool ? `\n---tool:${tool.name}:${JSON.stringify(tool.jsonSchema)}` : '';
+    const inputHash = sha256(`${system}\n---\n${user}${toolHashSegment}`);
     const promptHash = sha256(system);
     const cacheKey = this.cache.key(purpose, inputHash);
 
@@ -489,7 +581,14 @@ class AiClient {
         return extracted;
       }
 
-      const result = await this.callProvider(config, model, system, user, attemptsPerProvider);
+      const result = await this.callProvider(
+        config,
+        model,
+        system,
+        user,
+        attemptsPerProvider,
+        tool,
+      );
       lastResult = result;
 
       await this.recordSafe({
@@ -543,6 +642,7 @@ class AiClient {
     system: string,
     user: string,
     maxAttempts: number,
+    tool?: ToolDescriptor,
   ): Promise<ProviderCallResult> {
     const { apiKey, buildUrl, buildHeaders, buildBody, parseResponse, name } = config;
     const callStart = Date.now();
@@ -556,7 +656,7 @@ class AiClient {
         const res = await fetch(url, {
           method: 'POST',
           headers: buildHeaders(apiKey),
-          body: JSON.stringify(buildBody(model, system, user)),
+          body: JSON.stringify(buildBody(model, system, user, tool)),
           signal: controller.signal,
         });
 

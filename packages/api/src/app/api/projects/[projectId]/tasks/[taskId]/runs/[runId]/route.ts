@@ -13,6 +13,7 @@ import {
   COMPLETION_VERIFY_SYSTEM,
   buildCompletionVerifyUser,
 } from '@/lib/ai/prompts/completion-verify.prompt';
+import { COMPLETION_VERIFY_TOOL } from '@/lib/ai/schemas';
 
 type Params = { params: { projectId: string; taskId: string; runId: string } };
 
@@ -263,6 +264,9 @@ export async function POST(req: NextRequest, { params }: Params) {
           // silently lost on every thrown AI call.
           let phase1Audited = false;
           try {
+            // R-185: tool_use strict mode forces { verified, score 0-100,
+            // gaps, feedback } at the decoding layer. Phase-2 JSON.parse
+            // continues to act as a defense for the text-fallback path.
             raw = await aiClient.complete(
               COMPLETION_VERIFY_SYSTEM,
               buildCompletionVerifyUser(body.deliverablesMet, {
@@ -274,7 +278,7 @@ export async function POST(req: NextRequest, { params }: Params) {
                 filesChanged: body.filesChanged,
                 outputSummary: body.outputSummary,
               }),
-              { purpose: 'completion_verify' },
+              { purpose: 'completion_verify', tool: COMPLETION_VERIFY_TOOL },
             );
           } catch (err) {
             const errMessage = err instanceof Error ? err.message : String(err);
