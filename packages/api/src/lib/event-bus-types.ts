@@ -6,6 +6,7 @@
 export type PlanSyncEventType =
   | 'plan_created'
   | 'plan_proposed'
+  | 'plan_withdrawn'
   | 'plan_activated'
   | 'plan_draft_updated'
   | 'drift_detected'

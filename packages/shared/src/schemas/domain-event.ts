@@ -37,6 +37,7 @@ export const domainEventTypeSchema = z.enum([
   // Plan lifecycle
   'plan_created',
   'plan_proposed',
+  'plan_withdrawn',
   'plan_activated',
   'plan_reactivated',
   'plan_updated',
@@ -108,6 +109,7 @@ function eventVariant<T extends DomainEventType>(type: T) {
 export const domainEventPayloadSchema = z.discriminatedUnion('type', [
   eventVariant('plan_created'),
   eventVariant('plan_proposed'),
+  eventVariant('plan_withdrawn'),
   eventVariant('plan_activated'),
   eventVariant('plan_reactivated'),
   eventVariant('plan_updated'),
