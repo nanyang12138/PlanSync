@@ -2253,23 +2253,28 @@
 #### R-132 [HIGH] 升级 MCP SDK 并恢复 mcp-server typecheck
 
 - **status**: blocked
-- **blocked_reason**: fix_step 5 要求修改 `.github/workflows/validate.yml`（恢复 mcp-server typecheck），autonomous Cloud Agent 硬约束禁止改动 `.github/workflows/*`；同时 fix_step 2 "处理 SDK 1.3 → 1.29 之间的 breaking API" 范围开放（`server.tool` 签名 / transport 接口的具体变化未在条目中给出），需人工调研后再分发。
+- **blocked_reason**: 2026-05-24 调研后确认：blocker 比原条目描述更深。fix_step 1（SDK 升 1.29）已完成（见 #375 PR-Z），但 step 4「tsc 60s 内完成 exit 0」依然 OOM——根因不是 SDK 版本，而是 SDK 1.29 引入的 `AnySchema = ZodTypeAny | ZodTypeV4Any` Zod3↔4 兼容联合类型，TS 5.7 在 union narrowing 时类型递归爆炸。即使把 `server.tool` 全部迁移到新的 `server.registerTool(name, { inputSchema: z.object(...) }, cb)` API，`AnySchema | ZodRawShapeCompat` 这条 union 仍然会被 walk，依旧 TS2589 + 4 GB OOM。真正完整修复需要全仓 Zod 3→4 迁移（packages/api/cli/shared/mcp-server 所有 `z.*` 调用 + Schema 行为变化逐项验证），范围远超 single-PR autonomous run；且 fix_step 5 改 `.github/workflows/*` 仍受 autonomous Cloud Agent 硬约束限制。
 - **batch**: B4
 - **depends_on**: —
-- **effort**: medium
-- **files**: `packages/mcp-server/package.json`, `packages/mcp-server/src/**`, `.github/workflows/validate.yml`
-- **symptom**: `tsc --noEmit --project packages/mcp-server` 在 8 GB heap 下 OOM
-- **root_cause**: `@modelcontextprotocol/sdk@1.3.0` 的 `server.tool<Args extends ZodRawShape>(...)`
-  泛型 + Zod 3.x 推断在 TS 5.7 触发 TS2589 / 类型递归爆炸
+- **effort**: large（原标 medium 不准；Zod 4 跨包迁移属 large）
+- **files**: `packages/mcp-server/package.json`, `packages/mcp-server/src/**`, `packages/api/src/**` (z.\*)，`packages/cli/src/**` (z.\*)，`packages/shared/src/**` (z.\*)，`.github/workflows/validate.yml`
+- **symptom**: `tsc --noEmit --project packages/mcp-server` 在 8 GB heap 下 OOM（4 GB 也 OOM）
+- **root_cause**:
+  - 历史: `@modelcontextprotocol/sdk@1.3.0` 的 `server.tool<Args extends ZodRawShape>(...)` 6+ 路 overload 在 TS 5.7 触发 TS2589
+  - 当前 (1.29): legacy `server.tool` overloads 标 `@deprecated`，新 `server.registerTool` 走单 overload，但 `inputSchema?: AnySchema | ZodRawShapeCompat` 的 union 包含 SDK 自带 `node_modules/@modelcontextprotocol/sdk/node_modules/zod/v4/...` 的 ZodTypeV4Any，与本仓 Zod 3.25 的 ZodTypeAny 互不兼容；TS 5.7 在 union resolution 时仍然 TS2589
+  - 已验证: 类型擦除 wrapper（把 `server.tool` cast 成 `(...args: unknown[]) => unknown`）也不解决，因为 SDK 自身 `.d.ts` 里 `AnySchema` 联合在被任意 reference 时就会被 walk
 - **fix_steps**:
-  1. `npm install @modelcontextprotocol/sdk@^1.29.0 --workspace=@plansync/mcp-server`
-  2. 处理 SDK 1.3 → 1.29 之间的 breaking API（重点：`server.tool` 签名、transport 接口）
-  3. 重跑 mcp-server tests 验证 runtime 不变
-  4. 本地 `npx tsc --noEmit --project packages/mcp-server/tsconfig.json` 必须在 60s 内完成且 exit 0
+  1. ✅ ~~`npm install @modelcontextprotocol/sdk@^1.29.0 --workspace=@plansync/mcp-server`~~（已由 #375 完成）
+  2. 调研并确认本仓需走 Zod 3→4 迁移（范围: 所有 `z.*` 用法 + Schema parse/safeParse 行为差异 + 内置 Zod default-error-map 重写）；建议拆为 sub-tasks: R-132a `packages/shared` Zod 4, R-132b `packages/cli`, R-132c `packages/api`, R-132d `packages/mcp-server` + 新 SDK API 全面迁移
+  3. 全仓 `npm test` 通过 + mcp-server runtime smoke (`./bin/plansync` 启动) 通过
+  4. 本地 `npx tsc --noEmit --project packages/mcp-server/tsconfig.json` 必须在 60s 内 + 4 GB heap 内 exit 0
   5. 在 `validate.yml` 的 `typecheck` job 恢复 mcp-server 那一行（删除 NOTE 注释）
 - **verification**: 本地和 CI typecheck 通过
-- **rollback**: 单文件 revert package.json + workflow + 任何 API 适配
-- **temporary_mitigation**: validate.yml 已注释跳过 mcp-server 的 typecheck，仅依赖 esbuild bundle 时的 syntax 检查
+- **rollback**: 单文件 revert package.json + workflow + 任何 API 适配（注意 Zod 4 迁移本身不可平滑 revert，需要在每个 sub-task PR 内自带 rollback 计划）
+- **temporary_mitigation**:
+  - validate.yml 已注释跳过 mcp-server 的 typecheck，仅依赖 esbuild bundle 时的 syntax 检查
+  - 2026-05-24 加固: `packages/mcp-server/tests/startup-smoke.test.ts`（PR #788）— 每次 CI test job 实际 spawn `dist/index.js` 验证 startup 不崩溃；这覆盖了 typecheck 本应拦住的所有运行时失败路径（缺 import、缺 env、syntax error、transport.connect throw 等），比恢复 typecheck 更宽泛，性价比更高
+  - 2026-05-24 加固: `packages/cli/src/mcp-client.ts` 现在捕获 MCP 子进程 stderr + 非 JSON-RPC stdout 行（PR #790），子进程崩溃时 dump 到用户终端，pino 结构化错误 (R-040 / R-171 类) 一眼可见，避免再出现「`MCP_CRASHED: subprocess exited (code 1)`」黑盒症状
 
 ---
 
