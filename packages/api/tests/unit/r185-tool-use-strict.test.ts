@@ -328,6 +328,22 @@ describe('R-185 tool_use strict structured output', () => {
       expect(r.success).toBe(false);
     });
 
+    it('conflict-prediction zod rejects empty type string (preserves contract)', async () => {
+      const { conflictPredictionResultZ } = await import('../../src/lib/ai/schemas');
+      const r = conflictPredictionResultZ.safeParse({
+        conflicts: [
+          {
+            taskIds: ['a', 'b'],
+            type: '',
+            severity: 'medium',
+            description: 'x',
+            recommendation: 'y',
+          },
+        ],
+      });
+      expect(r.success).toBe(false);
+    });
+
     it('impact-analysis zod rejects unknown suggestedAction', async () => {
       const { impactAnalysisResultZ } = await import('../../src/lib/ai/schemas');
       const r = impactAnalysisResultZ.safeParse({

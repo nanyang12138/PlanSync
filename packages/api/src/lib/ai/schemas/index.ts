@@ -155,11 +155,17 @@ export const IMPACT_ANALYSIS_TOOL = {
 // conflict-prediction  (cross-task conflicts)
 // ---------------------------------------------------------------------------
 
+// `type` is intentionally an open non-empty string instead of a 3-value
+// enum: the legacy contract (and several existing test fixtures) accept
+// model-chosen labels like "overlap" / "race" that are useful but don't
+// fit a tight enum. The jsonSchema below also lists `type: string` (no
+// enum) so tool_use stays compatible — anti-hallucination here is "non
+// empty string" + downstream UI normalises freely.
 export const conflictPredictionResultZ = z.object({
   conflicts: z.array(
     z.object({
       taskIds: z.array(z.string()).min(2),
-      type: z.enum(['resource', 'dependency', 'scope_overlap']),
+      type: z.string().min(1),
       severity: z.enum(['high', 'medium', 'low']),
       description: z.string().min(1),
       recommendation: z.string().min(1),
@@ -190,7 +196,12 @@ export const CONFLICT_PREDICTION_TOOL = {
               minItems: 2,
               items: { type: 'string', minLength: 1 },
             },
-            type: { type: 'string', enum: ['resource', 'dependency', 'scope_overlap'] },
+            type: {
+              type: 'string',
+              minLength: 1,
+              description:
+                'Conflict category. Recommended values: "resource", "dependency", "scope_overlap"; any non-empty string is accepted.',
+            },
             severity: { type: 'string', enum: ['high', 'medium', 'low'] },
             description: { type: 'string', minLength: 1 },
             recommendation: { type: 'string', minLength: 1 },

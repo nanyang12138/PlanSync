@@ -3189,7 +3189,7 @@
 
 #### R-185 [CRITICAL] AI 调用切换到 Anthropic tool_use 严格结构化输出
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B19
 - **depends_on**: —
 - **effort**: medium
@@ -3215,7 +3215,7 @@
 
 #### R-186 [HIGH] 抽 `lib/ai/validate/` 公共层 + literal grounding 启发式
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B19
 - **depends_on**: R-185
 - **effort**: medium
