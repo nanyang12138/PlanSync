@@ -190,10 +190,47 @@ model PlanDeliverable {
   plan         Plan              @relation(fields: [planId], references: [id], onDelete: Cascade)
   supersededBy PlanDeliverable?  @relation("PlanDeliverableSupersedes", fields: [supersededById], references: [id], onDelete: SetNull)
   supersedes   PlanDeliverable[] @relation("PlanDeliverableSupersedes")
+  // R-153: tasks that explicitly reference this deliverable. Linked by row id
+  // (not slug) so renaming `slug` in a future plan version does not silently
+  // break drift attribution — the join survives the rename because it is
+  // anchored on `id`. The old `Task.planDeliverableRefs` slug array is kept
+  // as a derived/legacy column for backwards compatibility; the link rows
+  // are the source of truth from now on.
+  taskLinks    TaskDeliverableLink[]
 
   @@unique([planId, slug])
   @@index([planId, status])
   @@map("plan_deliverables")
+}
+
+// R-153: Task → PlanDeliverable many-to-many link.
+//
+// Why a middle table instead of the existing `Task.planDeliverableRefs:
+// String[]` slug list?
+//   1. **Rename survives.** PlanDeliverable.slug can be renamed by the owner
+//      (or migrated to a new plan version). Linking on `deliverableId` keeps
+//      the relationship stable across slug renames, which is exactly the
+//      semantics drift-engine needs.
+//   2. **Drift severity precision.** R-154 will compute drift severity as
+//      "is the linked deliverable present in the new plan version?" — that
+//      requires a row-id link, not a free-text slug.
+//   3. **Cascade on delete.** Hard-deleting a deliverable should evict the
+//      stale link without manual cleanup.
+//
+// The legacy `Task.planDeliverableRefs` slug array stays around as a
+// human-friendly mirror; task_pack derives it from the link rows on read,
+// and the write paths sync the link rows whenever the slug list changes.
+model TaskDeliverableLink {
+  taskId        String   @map("task_id")
+  deliverableId String   @map("deliverable_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  task        Task            @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  deliverable PlanDeliverable @relation(fields: [deliverableId], references: [id], onDelete: Cascade)
+
+  @@id([taskId, deliverableId])
+  @@index([deliverableId])
+  @@map("task_deliverable_links")
 }
 
 model PlanConstraint {
@@ -304,6 +341,11 @@ model Task {
   boundPlan     Plan           @relation("TaskBoundPlan", fields: [projectId, boundPlanVersion], references: [projectId, version], onDelete: Cascade, onUpdate: Cascade)
   executionRuns ExecutionRun[]
   driftAlerts   DriftAlert[]
+  // R-153: many-to-many link to PlanDeliverable. The legacy
+  // `planDeliverableRefs: String[]` column above is kept as a derived
+  // (denormalised) projection for backwards compatibility — read paths now
+  // join through this relation and write paths sync both sides atomically.
+  deliverableLinks TaskDeliverableLink[]
 
   // R-075: composite indexes to back hot task-list queries
   // (listing tasks by status, my-work / assignee lookups).

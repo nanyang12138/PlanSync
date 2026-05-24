@@ -10,6 +10,7 @@ import { sendMail, userEmail } from '@/lib/email';
 import { logger } from '@/lib/logger';
 import { auditCrossProjectTaskIfNeeded } from '@/lib/task-scope';
 import { createActivity } from '@/lib/activity';
+import { syncTaskDeliverableLinks } from '@/lib/task-deliverable-links';
 
 type Params = { params: { projectId: string; taskId: string } };
 
@@ -131,6 +132,19 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       where: { id: params.taskId },
       data: body,
     });
+
+    // R-153: when the legacy slug array is rewritten by the owner, keep the
+    // `task_deliverable_links` middle table in sync. The link rows are the
+    // source of truth that survives slug renames; the slug array is the
+    // human-friendly mirror that drives this resolve step.
+    if (body.planDeliverableRefs !== undefined) {
+      await syncTaskDeliverableLinks(undefined, {
+        taskId: updated.id,
+        projectId: updated.projectId,
+        boundPlanVersion: updated.boundPlanVersion,
+        slugs: body.planDeliverableRefs,
+      });
+    }
 
     // R-105: audit-log task PATCH effects. PATCH is the canonical mutation
     // surface for status flips and assignee changes, but until now only the
