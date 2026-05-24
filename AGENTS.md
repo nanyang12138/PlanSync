@@ -58,6 +58,30 @@ If `plansync_task_pack` shows drift alerts:
 - Use structured suggestions (`plansync_plan_suggest`) instead of ad-hoc comments for plan changes
 - Record all significant decisions as comments for the team
 
+## Plan State Machine Invariants (R-205) — read before any plan\_\* call
+
+Hard invariants. Verify them in your head before calling a plan-lifecycle tool;
+violating them is the most common dead-end source.
+
+1. `plansync_plan_propose` reviewer policy:
+   - If you pass an explicit `reviewers` list, those are the reviewers.
+   - Else if `plan.requiredReviewers` is non-empty, those are the reviewers.
+   - Else the API auto-adds the **owner as the sole reviewer** (owner-self-review fallback).
+   - For multi-reviewer plans you MUST list every reviewer in the propose call;
+     **reviewers cannot be added after the plan moves to `proposed`.**
+2. A `proposed` plan has exactly three exits:
+   - All reviewers approve → `plansync_plan_activate`.
+   - Owner emergency override → `plansync_plan_activate` with `force: true`
+     (recorded in the audit trail; only valid when zero reviewers exist).
+   - Roll back to draft → `plansync_plan_withdraw`, then edit and re-propose.
+3. There is **no** `plansync plan ...` shell subcommand. `bin/plansync` is the
+   Terminal launcher; it does not parse `plan`, `task`, `activate`, `--force`,
+   etc. If you find yourself wanting "the CLI flag for force", that is a
+   hallucination — use the MCP tool `force: true` parameter instead.
+4. `plansync_plan_activate` `force` is only meaningful when the plan is
+   `proposed` AND has zero reviewers. With reviewers present, `force` is
+   ignored and the route still requires every reviewer to have approved.
+
 ## Cursor Cloud specific instructions
 
 ### Pre-installed by update script
