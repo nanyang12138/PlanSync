@@ -8,6 +8,7 @@ import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
 import { requirePlanInProject } from '@/lib/plan-scope';
 import { createActivity } from '@/lib/activity';
+import { writeBoth } from '@/lib/plan-items';
 
 type Params = { params: { projectId: string; planId: string } };
 
@@ -49,10 +50,23 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     }
 
     const updated = await prisma.$transaction(async (tx) => {
-      const p = await tx.plan.update({
+      // R-152: split off the array fields that have a sibling table so we
+      // can route them through writeBoth (legacy String[] + split rows
+      // updated atomically). The remaining scalar / openQuestions fields
+      // still go through plan.update directly. Both happen inside the same
+      // transaction, so a failure on either side rolls the whole patch back.
+      const { deliverables, constraints, standards, ...rest } = body;
+      await tx.plan.update({
         where: { id: params.planId },
-        data: body,
+        data: rest,
       });
+      if (deliverables !== undefined || constraints !== undefined || standards !== undefined) {
+        await writeBoth(params.planId, { deliverables, constraints, standards }, tx);
+      }
+      // Re-read so the response reflects whatever writeBoth wrote to the
+      // legacy columns (and the bumped `updatedAt`). Both updates are inside
+      // this transaction, so the returned snapshot is internally consistent.
+      const p = await tx.plan.findUniqueOrThrow({ where: { id: params.planId } });
 
       // For proposed plans: create review records for newly added reviewers
       if (plan.status === 'proposed' && body.requiredReviewers) {

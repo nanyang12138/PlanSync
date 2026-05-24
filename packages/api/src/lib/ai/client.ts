@@ -581,15 +581,7 @@ class AiClient {
         return extracted;
       }
 
-      const result = await this.callProvider(
-        config,
-        model,
-        system,
-        user,
-        attemptsPerProvider,
-        tool,
-      );
-      lastResult = result;
+      let result = await this.callProvider(config, model, system, user, attemptsPerProvider, tool);
 
       await this.recordSafe({
         purpose,
@@ -606,6 +598,71 @@ class AiClient {
         errorCode: result.errorCode,
         cacheHit: false,
       });
+
+      // Issue #819 / #828 / #823: when the caller asked for strict
+      // tool_use and the provider rejected with 4xx (a strong signal
+      // that this gateway doesn't honour `tools`/`tool_choice`, e.g.
+      // some AMD-compatible deployments still on older Anthropic
+      // shapes), retry ONCE in plain text mode against the same
+      // provider before falling through to the next chain entry. The
+      // original PR claimed this fallback existed but it only fired
+      // for the 200-without-tool_use case — 4xx returned null directly.
+      const isClient4xx =
+        !result.ok &&
+        typeof result.errorCode === 'string' &&
+        result.errorCode.startsWith('http_4') &&
+        result.errorCode !== 'http_429';
+      if (tool && isClient4xx) {
+        logger.warn(
+          {
+            provider: config.name,
+            errorCode: result.errorCode,
+          },
+          'tool_use rejected with 4xx — retrying same provider in text mode',
+        );
+        const textResult = await this.callProvider(
+          config,
+          model,
+          system,
+          user,
+          attemptsPerProvider,
+          undefined,
+        );
+        // Record the text retry as its own ai_calls row with a tagged
+        // errorCode so dashboards can spot how often the fallback
+        // fires (and which providers force it).
+        await this.recordSafe({
+          purpose,
+          provider: config.name,
+          model,
+          promptHash,
+          inputHash,
+          outputHash: textResult.outputHash,
+          promptVersion,
+          latencyMs: textResult.latencyMs,
+          inputTokens: textResult.inputTokens,
+          outputTokens: textResult.outputTokens,
+          ok: textResult.ok && textResult.value !== null,
+          errorCode: textResult.ok ? 'tool_use_rejected_text_fallback_ok' : textResult.errorCode,
+          cacheHit: false,
+        });
+        if (textResult.ok && textResult.value !== null) {
+          this.cache.set(cacheKey, {
+            value: textResult.value,
+            provider: config.name,
+            model,
+            outputHash: textResult.outputHash,
+            inputTokens: textResult.inputTokens,
+            outputTokens: textResult.outputTokens,
+          });
+          return textResult.value;
+        }
+        // Text fallback also failed — let the existing chain-fallback
+        // logic below take over (next provider, or null).
+        result = textResult;
+      }
+
+      lastResult = result;
 
       if (result.ok) {
         if (result.value !== null) {

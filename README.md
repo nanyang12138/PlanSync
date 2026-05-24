@@ -280,6 +280,43 @@ A single **`.env`** at the repo root drives everything. `./bin/ps-admin` and `./
 | `EMAIL_DOMAIN`                                    | `amd.com`                                         | Appended to `$USER` for drift notifications          |
 | `LLM_API_KEY` / `LLM_API_BASE` / `LLM_MODEL_NAME` | —                                                 | AMD internal LLM (Anthropic-compatible)              |
 | `ANTHROPIC_API_KEY`                               | —                                                 | Anthropic official API (alternative)                 |
+| `PLANSYNC_MCP_LEGACY_ABORT`                       | `false`                                           | R-142 rollback: skip RUN_ABORTED tool-call gating    |
+
+---
+
+## 🛑 MCP `RUN_ABORTED` envelope (drift v2, R-142)
+
+When the API forcibly takes a run out of `running` (e.g. drift detected, plan
+superseded, race lost), the MCP server flips a process-wide abort latch. From
+that moment on, **every subsequent tool call returns a structured error
+envelope**:
+
+```json
+{
+  "isError": true,
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"error\":{\"code\":\"RUN_ABORTED\",\"abortCode\":\"RUN_STALE_VERSION\",\"message\":\"...\",\"runId\":\"...\",\"guidance\":\"...\"}}"
+    }
+  ]
+}
+```
+
+**Agent contract:** when a tool returns `error.code === "RUN_ABORTED"`, stop
+the current turn immediately. Do **not** call another PlanSync tool — they
+will all short-circuit identically until the agent process is restarted.
+Report the abort to the user and let them decide next steps (rebind the task
+to the new plan version, cancel, or start a fresh execution).
+
+A soft `notifications/message` (`data.type === "execution_aborted"`) is also
+pushed at abort time so MCP-aware clients (the PlanSync CLI) can surface it
+in the UI. Generic clients that only render chat logs would otherwise miss
+the signal — the `isError` envelope above is the protocol-level guarantee.
+
+**Rollback:** set `PLANSYNC_MCP_LEGACY_ABORT=true` to revert to pre-R-142
+behaviour (soft logging only, tool calls keep dispatching). This is for
+emergency triage only; default is OFF.
 
 ---
 

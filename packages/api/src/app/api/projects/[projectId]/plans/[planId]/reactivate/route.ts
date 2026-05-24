@@ -14,6 +14,7 @@ import {
   dispatchDriftNotifications,
 } from '@/lib/drift-engine';
 import { requirePlanInProject } from '@/lib/plan-scope';
+import { supersedeDeliverables } from '@/lib/plan-items';
 
 type Params = { params: { projectId: string; planId: string } };
 
@@ -47,6 +48,12 @@ export async function POST(req: NextRequest, { params }: Params) {
           activatedBy: auth.userName,
         },
       });
+
+      // R-152: same wiring the activate route does — link any older
+      // (now-superseded) version's deliverables to this rollback target so
+      // the chain is internally consistent regardless of which path
+      // brought a plan back to `active`.
+      await supersedeDeliverables(params.projectId, params.planId, tx);
 
       const scanResult = await runDriftScan(tx, params.projectId, r.version);
       const alerts = await persistDriftAlerts(tx, params.projectId, scanResult.alerts);
