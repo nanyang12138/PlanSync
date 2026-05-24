@@ -34,15 +34,34 @@ export async function POST(req: NextRequest, { params }: Params) {
       throw new AppError(ErrorCode.STATE_CONFLICT, 'Only draft plans can be proposed');
     }
 
-    // Normalize reviewer specs to {name, focusNotes} objects
-    const reviewerSpecs: Array<{ name: string; focusNotes?: string; type?: 'human' | 'agent' }> =
-      body.reviewers && body.reviewers.length > 0
-        ? body.reviewers.map((r) =>
-            typeof r === 'string'
-              ? { name: r }
-              : { name: r.name, focusNotes: r.focusNotes, type: r.type },
-          )
-        : plan.requiredReviewers.map((r) => ({ name: r }));
+    // Normalize reviewer specs to {name, focusNotes} objects.
+    //
+    // R-205: precedence is (1) explicit body.reviewers, (2) plan.requiredReviewers
+    // baseline, (3) owner self-review fallback. The owner-self fallback closes
+    // the dead-end where a `proposed` plan with zero reviewers cannot be
+    // activated through the normal path nor force-activated through MCP — see
+    // packages/api/src/app/api/projects/[projectId]/plans/[planId]/activate/route.ts
+    // R-055 gate. With this fallback the activate gate's "0 reviewers" branch
+    // becomes unreachable for new plans and the state machine has no trap.
+    let reviewerSpecs: Array<{ name: string; focusNotes?: string; type?: 'human' | 'agent' }>;
+    let ownerSelfReviewFallback = false;
+    if (body.reviewers && body.reviewers.length > 0) {
+      reviewerSpecs = body.reviewers.map((r) =>
+        typeof r === 'string'
+          ? { name: r }
+          : { name: r.name, focusNotes: r.focusNotes, type: r.type },
+      );
+    } else if (plan.requiredReviewers.length > 0) {
+      reviewerSpecs = plan.requiredReviewers.map((r) => ({ name: r }));
+    } else {
+      reviewerSpecs = [
+        {
+          name: auth.userName,
+          focusNotes: 'Owner self-review (auto-added — no reviewers were specified)',
+        },
+      ];
+      ownerSelfReviewFallback = true;
+    }
 
     const reviewerNames = reviewerSpecs.map((r) => r.name);
 
@@ -83,8 +102,15 @@ export async function POST(req: NextRequest, { params }: Params) {
       type: 'plan_proposed',
       actorName: auth.userName,
       actorType: 'human',
-      summary: `Plan v${plan.version} proposed for review`,
-      metadata: { planId: plan.id, version: plan.version },
+      summary: ownerSelfReviewFallback
+        ? `Plan v${plan.version} proposed for review (owner self-review — no reviewers specified)`
+        : `Plan v${plan.version} proposed for review`,
+      metadata: {
+        planId: plan.id,
+        version: plan.version,
+        reviewerCount: reviewerNames.length,
+        ownerSelfReviewFallback,
+      },
     });
 
     eventBus.publish(params.projectId, 'plan_proposed', {
