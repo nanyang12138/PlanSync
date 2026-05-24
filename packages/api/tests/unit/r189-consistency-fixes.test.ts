@@ -124,6 +124,30 @@ describe('Issue #829: consistency median re-derives `verified` field', () => {
     expect(outcome.result.verified).toBe(false); // 70 < 75
   });
 
+  it('issue #836: per-sample feedbacks are surfaced in metadataPatch.consistencyFeedbacks', async () => {
+    completeMock
+      .mockResolvedValueOnce(
+        JSON.stringify({ verified: true, score: 78, gaps: [], feedback: 'sample 2 feedback' }),
+      )
+      .mockResolvedValueOnce(
+        JSON.stringify({ verified: true, score: 80, gaps: [], feedback: 'sample 3 feedback' }),
+      );
+
+    const { applyCompletionVerifyConsistency } = await import(
+      '../../src/lib/ai/completion-verify-consistency'
+    );
+    const outcome = await applyCompletionVerifyConsistency(
+      { verified: false, score: 72, gaps: [], feedback: 'original feedback' },
+      'sys',
+      'user',
+    );
+    expect(outcome.metadataPatch.consistencyFeedbacks).toEqual([
+      'original feedback',
+      'sample 2 feedback',
+      'sample 3 feedback',
+    ]);
+  });
+
   it('boundary value: median exactly 75 keeps verified=true', async () => {
     completeMock
       .mockResolvedValueOnce(
