@@ -595,10 +595,20 @@ export const openApiSpec = {
       post: {
         tags: ['Plans'],
         summary: 'Activate plan',
-        description: 'Sets plan active and may create drift alerts for mismatched tasks',
+        description:
+          'Sets plan active and may create drift alerts for mismatched tasks. ' +
+          'A proposed plan with zero reviewers is rejected unless ?force=true is supplied (R-055 owner override).',
         parameters: [
           { $ref: '#/components/parameters/ProjectId' },
           { $ref: '#/components/parameters/PlanId' },
+          {
+            in: 'query',
+            name: 'force',
+            required: false,
+            schema: { type: 'boolean' },
+            description:
+              'Owner override. When true, activates a "proposed" plan even with zero reviewers; recorded in the audit trail.',
+          },
         ],
         responses: {
           '200': {
@@ -621,6 +631,26 @@ export const openApiSpec = {
         responses: {
           '200': {
             description: 'Proposed',
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/ApiSuccess' } },
+            },
+          },
+        },
+      },
+    },
+    '/projects/{projectId}/plans/{planId}/withdraw': {
+      post: {
+        tags: ['Plans'],
+        summary: 'Withdraw a proposed plan back to draft (R-205)',
+        description:
+          'Owner-only. Returns a `proposed` plan to `draft` and deletes pending reviews so reviewers can be edited and the plan re-proposed. Errors with STATE_CONFLICT if the plan is not in `proposed`.',
+        parameters: [
+          { $ref: '#/components/parameters/ProjectId' },
+          { $ref: '#/components/parameters/PlanId' },
+        ],
+        responses: {
+          '200': {
+            description: 'Withdrawn',
             content: {
               'application/json': { schema: { $ref: '#/components/schemas/ApiSuccess' } },
             },
