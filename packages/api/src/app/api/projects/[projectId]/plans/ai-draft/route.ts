@@ -3,6 +3,7 @@ import { authenticate, requireProjectRole } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { aiClient } from '@/lib/ai/client';
 import { PLAN_DRAFT_TOOL, planDraftResultZ } from '@/lib/ai/schemas';
+import { UNTRUSTED_INPUT_PREAMBLE, tagUntrusted } from '@/lib/ai/sanitize';
 import { z } from 'zod';
 
 type Params = { params: { projectId: string } };
@@ -12,7 +13,14 @@ const bodySchema = z.object({
   description: z.string().max(1000).optional(),
 });
 
-const SYSTEM = `You are PlanSync AI. Generate a structured software project plan draft.
+// Issue #821: R-188 untrusted-input contract on every system prompt so
+// the model is consistent across capabilities about how to treat
+// <untrusted> spans. The body's "Return ONLY valid JSON" hint is
+// redundant under R-185 tool_use but kept for the text-mode fallback
+// path.
+const SYSTEM = `${UNTRUSTED_INPUT_PREAMBLE}
+
+You are PlanSync AI. Generate a structured software project plan draft.
 Return ONLY valid JSON — no explanation, no markdown fences. Use this exact shape:
 {
   "goal": "string — what this plan version is trying to achieve (2-4 sentences)",
@@ -37,7 +45,13 @@ export async function POST(req: NextRequest, { params }: Params) {
     }
 
     const body = bodySchema.parse(await req.json());
-    const userMsg = `Project plan title: "${body.title}"${body.description ? `\nContext: ${body.description}` : ''}\n\nGenerate a complete plan draft as JSON.`;
+    // Issue #821 / #825: title + description are user-controlled. Wrap
+    // both so an attacker can't inject prompt-override instructions via
+    // the plan title or the optional context field.
+    const userMsg =
+      `Project plan title: ${tagUntrusted(body.title, 'user')}` +
+      (body.description ? `\nContext: ${tagUntrusted(body.description, 'user')}` : '') +
+      '\n\nGenerate a complete plan draft as JSON.';
 
     // R-185: tool_use strict mode forces the 6 required fields at the
     // decoding layer. zod.safeParse below is the application-level safety
