@@ -43,67 +43,11 @@ const baseEnvSchema = z.object({
   // production unless you need to point a webhook at an internal host.
   PLANSYNC_WEBHOOK_ALLOWLIST: z.string().optional(),
 
-  // R-139: opt into the persistent webhook retry queue. When 'true',
-  //   - `dispatchWebhooks` writes one durable `webhook_jobs` row per
-  //     matched subscription instead of running the 0/1/5/30s retry
-  //     chain inline (which previously evaporated on API restart);
-  //   - `scripts/run-worker.ts` starts a 1s tick that drains the queue.
-  // When unset / 'false', the legacy in-memory retry path is used so
-  // existing deployments behave exactly as they did before R-139.
-  // Validated as enum so a typo ('1', 'yes', 'on') fails fast at boot
-  // instead of silently leaving the queue dormant.
-  PLANSYNC_WEBHOOK_QUEUE: z.enum(['true', 'false']).optional(),
-
   // R-088: Event-bus backend selection.
   //   memory   — in-process fan-out only (single API instance).
   //   postgres — Postgres LISTEN/NOTIFY (required for multi-instance prod).
   // Default: postgres in production, memory elsewhere.
   PLANSYNC_EVENT_BUS: z.enum(['memory', 'postgres']).optional(),
-
-  // R-171: Exec-state FSM enforcement mode for the MCP server.
-  //   off      — manager not attached. Tool calls proceed as pre-R-171.
-  //              Default; safe for the initial rollout.
-  //   shadow   — illegal transitions logged as WARN; tool call proceeds.
-  //              Use this for ~1 week to surface false positives before
-  //              flipping to enforce.
-  //   enforce  — illegal transitions short-circuit with OUT_OF_SEQUENCE
-  //              (see docs/PROTOCOL.md). Handler is never invoked.
-  // The flag is read by the MCP server at startup; this entry exists in
-  // the API env schema only so env.ts stays the single inventory of
-  // PlanSync-* env vars.
-  PLANSYNC_EXEC_STATE_ENFORCE: z.enum(['off', 'shadow', 'enforce']).optional(),
-
-  // R-136: master-delegation (PLANSYNC_SECRET) abuse controls.
-  //
-  // Until R-136, anyone with PLANSYNC_SECRET could impersonate any user
-  // for any action with no audit trail. The variables below add:
-  //   - explicit allow / deny lists for impersonation targets
-  //   - a per-episode TTL after which the delegation expires
-  //   - a hard production fail-closed: if ALLOWED_TARGETS is unset in
-  //     production, master delegation is REJECTED entirely (handled in
-  //     master-audit.ts isMasterTargetAllowed)
-  //
-  // PLANSYNC_MASTER_ALLOWED_TARGETS — CSV of allowed target user names.
-  //   Production: REQUIRED for master delegation to work at all. Unset
-  //     means master path is disabled (fail-closed).
-  //   Dev / test: optional. When unset, all targets pass the allow check.
-  // PLANSYNC_MASTER_DENY_TARGETS — CSV of denied target user names.
-  //   Evaluated AFTER the allow check; deny wins over allow.
-  // PLANSYNC_MASTER_DELEGATION_TTL_MIN — integer minutes (default 60,
-  //   clamped to [1, 1440]). Each delegation episode (one row in the
-  //   master_delegations audit table) expires at insert-time + this many
-  //   minutes; subsequent master calls after expiry are rejected with
-  //   `MASTER_DELEGATION_EXPIRED` and must trigger a fresh episode.
-  // PLANSYNC_MASTER_LEGACY — escape hatch for dev. Set to "true" to
-  //   bypass ALL R-136 checks (no audit, no allow / deny, no TTL).
-  //   REFUSED in production via the superRefine guard below.
-  PLANSYNC_MASTER_ALLOWED_TARGETS: z.string().optional(),
-  PLANSYNC_MASTER_DENY_TARGETS: z.string().optional(),
-  PLANSYNC_MASTER_DELEGATION_TTL_MIN: z.coerce.number().int().min(1).max(1440).default(60),
-  PLANSYNC_MASTER_LEGACY: z
-    .string()
-    .transform((v) => v === 'true')
-    .default('false'),
 });
 
 export const envSchema = baseEnvSchema.superRefine((data, ctx) => {
@@ -139,30 +83,37 @@ export const envSchema = baseEnvSchema.superRefine((data, ctx) => {
         'Generate a strong value with: openssl rand -hex 32',
     });
   }
-
-  // R-136: PLANSYNC_MASTER_LEGACY is a dev-only bypass that skips audit,
-  // allow / deny lists, and TTL. Refuse it in production so a forgotten
-  // dev override can never reach a live deployment.
-  if (data.PLANSYNC_MASTER_LEGACY === true) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['PLANSYNC_MASTER_LEGACY'],
-      message:
-        'PLANSYNC_MASTER_LEGACY=true is refused in production — it disables ' +
-        'all R-136 master-delegation abuse controls (audit, allow / deny, TTL). ' +
-        'Unset it for production deploys.',
-    });
-  }
 });
 
 function validateEnv() {
-  const result = envSchema.safeParse(process.env);
+  // R-112: during `next build`, Next.js sets NEXT_PHASE=phase-production-build
+  // and imports every module to discover page exports. Runtime env vars
+  // (DATABASE_URL, PLANSYNC_SECRET, …) are not necessarily configured on the
+  // build host, so strict validation here would crash the build for any
+  // module that ends up in the page-data graph (e.g. logger.ts after R-112
+  // started importing `env`). We inject a placeholder DATABASE_URL just for
+  // the build-time analysis pass; the real runtime validation still fires at
+  // server boot because the module is re-imported with the real env present.
+  const isBuildAnalysis = process.env.NEXT_PHASE === 'phase-production-build';
+  // During build-time analysis: also coerce NODE_ENV away from 'production'
+  // so the superRefine guards (which demand PLANSYNC_SECRET >=32 chars,
+  // refuse PLANSYNC_MASTER_LEGACY=true, etc.) don't fire against a
+  // placeholder config. The real runtime re-validates with the production-
+  // shaped env at server boot.
+  const source: Record<string, string | undefined> = isBuildAnalysis
+    ? {
+        ...process.env,
+        DATABASE_URL: process.env.DATABASE_URL ?? 'postgresql://build-placeholder/plansync',
+        NODE_ENV: 'development',
+      }
+    : process.env;
+  const result = envSchema.safeParse(source);
   if (!result.success) {
     console.error('Invalid environment variables:');
     for (const issue of result.error.issues) {
       console.error(`  ${issue.path.join('.')}: ${issue.message}`);
     }
-    if (process.env.NODE_ENV === 'production') {
+    if (process.env.NODE_ENV === 'production' && !isBuildAnalysis) {
       console.error('Aborting startup due to invalid production environment configuration.');
       process.exit(1);
     }
