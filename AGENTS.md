@@ -58,6 +58,32 @@ If `plansync_task_pack` shows drift alerts:
 - Use structured suggestions (`plansync_plan_suggest`) instead of ad-hoc comments for plan changes
 - Record all significant decisions as comments for the team
 
+## If a Tool Returns `RUN_ABORTED` (drift v2, R-142)
+
+When a PlanSync tool call comes back as:
+
+```json
+{ "isError": true, "content": [{ "type": "text", "text": "{...\"code\":\"RUN_ABORTED\"...}" }] }
+```
+
+the API has forcibly terminated the current execution run (typical reasons:
+plan superseded mid-run, heartbeat told the run is paused, or the run lost
+a race). **Stop this turn immediately.** Do not retry, do not call another
+PlanSync tool — every subsequent call will return the same `RUN_ABORTED`
+envelope until the agent process restarts. Report the abort to the user
+(include the `abortCode` and `message` fields) and let them decide whether
+to rebind the task, cancel it, or start a fresh execution after the drift
+has been resolved.
+
+A `notifications/message` log entry with `data.type === "execution_aborted"`
+is also pushed at abort time as a soft hint, but the protocol-level signal
+is the `isError` envelope above — that is what guarantees a generic MCP
+client cannot accidentally keep dispatching tool calls.
+
+> Rollback: operators can set `PLANSYNC_MCP_LEGACY_ABORT=true` to disable
+> the gate (legacy behaviour: log-only). This is for emergency triage; the
+> default is OFF.
+
 ## Plan State Machine Invariants (R-205) — read before any plan\_\* call
 
 Hard invariants. Verify them in your head before calling a plan-lifecycle tool;

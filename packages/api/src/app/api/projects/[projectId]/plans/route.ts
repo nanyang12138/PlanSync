@@ -7,6 +7,7 @@ import { validateBody, validateSearchParams } from '@/lib/validate';
 import { AppError, ErrorCode, createPlanSchema, paginationSchema } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
 import { eventBus } from '@/lib/event-bus';
+import { writeBoth } from '@/lib/plan-items';
 
 function isUniqueViolation(err: unknown): boolean {
   return !!(
@@ -87,7 +88,7 @@ export async function POST(req: NextRequest, { params }: Params) {
           select: { version: true },
         });
 
-        return tx.plan.create({
+        const created = await tx.plan.create({
           data: {
             ...body,
             projectId: params.projectId,
@@ -96,6 +97,24 @@ export async function POST(req: NextRequest, { params }: Params) {
             createdBy: auth.userName,
           },
         });
+
+        // R-152: every plan write must populate the split tables so the
+        // String[] columns and PlanDeliverable/PlanConstraint/PlanStandard
+        // rows stay 1:1. Drift-engine v3 (R-154) and per-deliverable
+        // features depend on the split rows being canonical for any plan
+        // touched by current code, including brand-new drafts that haven't
+        // been edited yet.
+        await writeBoth(
+          created.id,
+          {
+            deliverables: body.deliverables,
+            constraints: body.constraints,
+            standards: body.standards,
+          },
+          tx,
+        );
+
+        return created;
       });
 
     let plan: Plan;
