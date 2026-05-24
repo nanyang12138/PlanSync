@@ -343,25 +343,60 @@ export async function POST(req: NextRequest, { params }: Params) {
                 aiVerifyModel,
               });
 
-              // ---- Phase 4: verification result is authoritative ------
+              // ---- Phase 4: advisory-only (R-180) ---------------------
+              //
+              // R-180 changes the contract: a low / unverified score is
+              // *advisory*, not a hard 422. The motivation:
+              //   - Pre-R-180, an agent that the AI scored 74/100 was stuck
+              //     in a complete→retry loop because the gate was binary
+              //     and the agent had no way to override the model.
+              //   - The owner has full context the AI does not (chat
+              //     history, team norms, business priority) and was
+              //     already the de-facto override path via "edit
+              //     deliverables and retry".
+              //   - The hard gate is moving to R-181 (declarative
+              //     verification rules) which the owner can configure per
+              //     project / scope and which carries a clearer error
+              //     payload than "AI gave you a B-".
+              //
+              // We still want the score visible: it is written to
+              // ExecutionRun.aiVerify* (Phase 3 above, so existing R-143
+              // dashboards keep working) AND to a new `run_reviews` row
+              // that the owner UI surfaces inline next to the run. The
+              // RunReview row is the new authoritative source going
+              // forward; the ExecutionRun columns are kept dual-written
+              // to preserve backwards compat for the duration of B16.
+              //
+              // We only emit the advisory row when the verification
+              // actually flagged something (score < 75 OR !verified) —
+              // a passing run does not need an advisory.
               if (!result.verified || result.score < 75) {
-                return NextResponse.json(
-                  {
-                    error: {
-                      code: 'COMPLETION_VERIFICATION_FAILED',
-                      message: result.feedback,
-                      details: {
-                        runId: params.runId,
-                        score: result.score,
-                        breakdown: result.breakdown,
+                try {
+                  await prisma.runReview.create({
+                    data: {
+                      runId: params.runId,
+                      kind: 'ai_verification',
+                      score: result.score,
+                      feedback: result.feedback,
+                      metadata: {
+                        verified: result.verified,
+                        breakdown: result.breakdown ?? null,
                         gaps: result.gaps,
-                        feedback: result.feedback,
                         model: aiVerifyModel,
-                      },
+                      } as Prisma.InputJsonValue,
                     },
-                  },
-                  { status: 422 },
-                );
+                  });
+                } catch (advisoryErr) {
+                  // Never block the complete on an advisory write
+                  // failure — the owner can still see the result via
+                  // the ExecutionRun.aiVerify* columns above.
+                  const advisoryMsg =
+                    advisoryErr instanceof Error ? advisoryErr.message : String(advisoryErr);
+                  console.error(
+                    `[completion-verify] advisory RunReview write failed for run ${params.runId} — ExecutionRun.aiVerify* fallback in effect:`,
+                    advisoryMsg,
+                  );
+                }
               }
             }
           }

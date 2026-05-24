@@ -1,14 +1,18 @@
 /**
  * R-143: completion-verify observability — score / breakdown / feedback /
- * model must be persisted on every verification outcome, and 422 responses
- * must echo `runId` so the UI can deep-link to the failed verification.
+ * model must be persisted on every verification outcome.
  *
- * Three outcomes covered:
- *   - AI says "not verified, score < 75" → 422, response body has runId,
- *     DB row has score / breakdown / feedback / model populated.
- *   - AI says "verified, score ≥ 75" → 200, DB row has the AI fields.
+ * R-180 update: the gate is now *advisory* — a low score (< 75) no longer
+ * returns 422. Instead the route still writes the AI fields onto the
+ * ExecutionRun (R-143) AND inserts a `run_reviews` row of kind
+ * `ai_verification`, then lets the run finalize. These tests reflect the
+ * new contract:
+ *   - AI says "not verified, score < 75" → 200, run completes, RunReview
+ *     row is created with the score / feedback / breakdown.
+ *   - AI says "verified, score ≥ 75" → 200, DB row has the AI fields, no
+ *     RunReview row (passing runs don't need advisories).
  *   - AI returns null (unavailable) → run completes, DB row records
- *     feedback='AI unavailable, allowed through'.
+ *     feedback='AI unavailable, allowed through', no RunReview row.
  *
  * The aiClient module is mocked at the boundary so the tests do not need a
  * live LLM and run deterministically.
@@ -117,7 +121,13 @@ describe('R-143: completion-verify observability', () => {
     return run.id;
   }
 
-  it('422 response echoes runId; DB row records score / breakdown / feedback / model', async () => {
+  it('R-180: low-score verification is advisory — run completes, RunReview row is written', async () => {
+    // Pre-R-180 this case returned 422 with COMPLETION_VERIFICATION_FAILED.
+    // Post-R-180 the run finalizes (status=completed) and the score/feedback
+    // are persisted to BOTH:
+    //   * ExecutionRun.aiVerify* (R-143 dashboards keep working unchanged)
+    //   * run_reviews table (the new authoritative advisory store; owner UI
+    //     surfaces these alongside the run, R-181's hard gate will read here)
     mockState.nextResult = JSON.stringify({
       verified: false,
       score: 42,
@@ -141,22 +151,12 @@ describe('R-143: completion-verify observability', () => {
       { params: { projectId, taskId, runId } },
     );
 
-    expect(res.status).toBe(422);
-    const body = await res.json();
-    expect(body.error.code).toBe('COMPLETION_VERIFICATION_FAILED');
-    // The runId echo is the core R-143 contract: clients need it to deep-link
-    // to the failed run's audit record. Before R-143 the 422 response body
-    // dropped this entirely.
-    expect(body.error.details.runId).toBe(runId);
-    expect(body.error.details.score).toBe(42);
-    expect(body.error.details.breakdown).toEqual({
-      specificity: 30,
-      coherence: 50,
-      coverage: 40,
-    });
-    expect(body.error.details.model).toBe('mock-model-v1');
+    // R-180 contract: complete always returns 200 even when the AI scored
+    // the run < 75. The hard gate moves to R-181's rule evaluator.
+    expect(res.status).toBe(200);
 
     const persisted = await testPrisma.executionRun.findUnique({ where: { id: runId } });
+    // R-143 dashboards still work: ExecutionRun.aiVerify* is dual-written.
     expect(persisted?.aiVerifyScore).toBe(42);
     expect(persisted?.aiVerifyBreakdown).toEqual({
       specificity: 30,
@@ -165,10 +165,30 @@ describe('R-143: completion-verify observability', () => {
     });
     expect(persisted?.aiVerifyFeedback).toMatch(/Evidence too thin/);
     expect(persisted?.aiVerifyModel).toBe('mock-model-v1');
-    // 422 must NOT mark the run completed — the finalize updateMany is
-    // gated behind the early return.
-    expect(persisted?.status).toBe('running');
-    expect(persisted?.endedAt).toBeNull();
+    // The run actually finalizes now — pre-R-180 this stayed running.
+    expect(persisted?.status).toBe('completed');
+    expect(persisted?.endedAt).not.toBeNull();
+
+    // The new authoritative advisory store: one ai_verification row per
+    // failing verification. Owner UI lists these next to the run so a
+    // low score is visible-but-overridable instead of blocking complete.
+    const reviews = await testPrisma.runReview.findMany({
+      where: { runId },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(reviews).toHaveLength(1);
+    expect(reviews[0]?.kind).toBe('ai_verification');
+    expect(reviews[0]?.score).toBe(42);
+    expect(reviews[0]?.feedback).toMatch(/Evidence too thin/);
+    const meta = reviews[0]?.metadata as Record<string, unknown>;
+    expect(meta?.verified).toBe(false);
+    expect(meta?.breakdown).toEqual({
+      specificity: 30,
+      coherence: 50,
+      coverage: 40,
+    });
+    expect(meta?.model).toBe('mock-model-v1');
+    expect(meta?.gaps).toEqual(['no tests written']);
   });
 
   it('verified pass writes the AI fields and lets the run complete', async () => {
@@ -212,6 +232,13 @@ describe('R-143: completion-verify observability', () => {
     expect(persisted?.aiVerifyFeedback).toMatch(/Looks good/);
     expect(persisted?.aiVerifyModel).toBe('mock-model-v1');
     expect(persisted?.status).toBe('completed');
+
+    // R-180: passing runs deliberately do NOT write an advisory row. The
+    // owner UI uses the *presence* of a RunReview to flag a run as needing
+    // attention, so a verified pass should leave run_reviews empty for
+    // this run.
+    const reviews = await testPrisma.runReview.findMany({ where: { runId } });
+    expect(reviews).toHaveLength(0);
   });
 
   // ---- #184 / #185 — JSON.parse + audit catch isolation -------------------
@@ -250,17 +277,19 @@ describe('R-143: completion-verify observability', () => {
     expect(persisted?.status).toBe('completed');
   });
 
-  it('#184: a thrown audit-write does NOT mask a real 422 (verification result is authoritative)', async () => {
-    // Reviewers (#549 / #557 / #569 / #582) flagged that this test spies
-    // on testPrisma but the route uses @/lib/prisma — different
-    // PrismaClient instances. We document the limitation: this test
-    // verifies the *response code* contract (verification result wins
-    // over audit failures) by relying on the score=30 < 75 path the
-    // route takes regardless of audit state. The contract is also
-    // covered by the bestEffortAudit() helper's structural design (it
-    // catches all errors and never re-throws) — proven by the next test
-    // which directly exercises the "Phase 1 catch fired, audit was
-    // attempted, return code is 422" sequence.
+  it('#184 (post-R-180): a thrown audit-write does NOT block the advisory RunReview or the run finalize', async () => {
+    // Pre-R-180 contract: a low score returned 422, and the test asserted
+    // that a thrown audit-write did not mask that 422. Post-R-180 the
+    // gate is advisory: the contract becomes "advisory + run finalize
+    // are independent of the bestEffortAudit success path".
+    //
+    // Reviewers (#549 / #557 / #569 / #582) flagged that this spy targets
+    // testPrisma rather than @/lib/prisma — different PrismaClient
+    // instances. The structural guarantee is provided by the
+    // `bestEffortAudit` helper which catches all errors and never
+    // re-throws; this test pins the *behavioural* outcome (200 + run
+    // completed + advisory written) using the score=30 < 75 path which
+    // the route takes regardless of audit state.
     const updateSpy = vi.spyOn(testPrisma.executionRun, 'update');
     let throwOnce = true;
     updateSpy.mockImplementationOnce(((args: unknown) => {
@@ -297,10 +326,17 @@ describe('R-143: completion-verify observability', () => {
         { params: { projectId, taskId, runId } },
       );
 
-      expect(res.status).toBe(422);
-      const body = await res.json();
-      expect(body.error.code).toBe('COMPLETION_VERIFICATION_FAILED');
-      expect(body.error.details.score).toBe(30);
+      // R-180: complete always returns 200, even when the verification
+      // result is "score 30 / not verified".
+      expect(res.status).toBe(200);
+
+      // The advisory record is the new authoritative source — even if
+      // the bestEffortAudit() to ExecutionRun.aiVerify* threw, the
+      // RunReview write must still land.
+      const reviews = await testPrisma.runReview.findMany({ where: { runId } });
+      expect(reviews).toHaveLength(1);
+      expect(reviews[0]?.score).toBe(30);
+      expect(reviews[0]?.feedback).toMatch(/Score too low/);
     } finally {
       updateSpy.mockRestore();
     }
