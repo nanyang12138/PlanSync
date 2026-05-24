@@ -190,10 +190,65 @@ model PlanDeliverable {
   plan         Plan              @relation(fields: [planId], references: [id], onDelete: Cascade)
   supersededBy PlanDeliverable?  @relation("PlanDeliverableSupersedes", fields: [supersededById], references: [id], onDelete: SetNull)
   supersedes   PlanDeliverable[] @relation("PlanDeliverableSupersedes")
+  // R-191: back-reference for commit ↔ deliverable links derived from
+  // `github_push` events. Each row records that a commit `sha` touched
+  // files matched by this deliverable's `refUri` glob, or that the commit
+  // message named this deliverable's `slug` explicitly. The link is the
+  // foundation for R-192 auto-status (PR merged ∧ commit linked ∧ no
+  // drift → done) and the R-193 PR template injection.
+  commitLinks  CommitDeliverableLink[]
 
   @@unique([planId, slug])
   @@index([planId, status])
   @@map("plan_deliverables")
+}
+
+// R-191: commit ↔ deliverable links derived from GitHub `push` events.
+//
+// Each row records that commit `sha` is associated with deliverable
+// `deliverableId`, either because a file in the push matched the
+// deliverable's `refUri` glob (`matched_by = 'glob'`) or because the
+// commit message contained an explicit `[deliverable:<slug>]` marker
+// (`matched_by = 'message'`). The two reasons live as separate rows
+// (different `matched_by` values) so the audit trail keeps both
+// signals; downstream code reads `match_by='message' OR glob` and
+// treats the message form as the stronger signal when ranking.
+//
+// Lifecycle: the worker (R-162; until that lands, the link function is
+// also callable directly from the github webhook route for tests / dev)
+// consumes `github_push` outbox events and calls
+// `linkCommitsFromPushPayload`, which inserts rows here via the unique
+// (sha, deliverable_id, matched_by) constraint so re-delivery of the
+// same GitHub event is idempotent. R-192 reads this table to auto-derive
+// per-task completion state without trusting agent self-reports.
+//
+// Project id is denormalised onto the row (instead of joining through
+// `plan_deliverables → plans → projects`) so the worker can scope its
+// fan-out and the (project_id, sha) index can answer "what touched this
+// commit?" in one B-tree hop.
+model CommitDeliverableLink {
+  id            String   @id @default(cuid())
+  projectId     String   @map("project_id")
+  sha           String
+  deliverableId String   @map("deliverable_id")
+  // matchedBy ∈ ('glob' | 'message'). Enforced by a CHECK constraint in
+  // the migration; kept as String here so adding a new match reason is
+  // a one-migration change without a Prisma enum.
+  matchedBy     String   @map("matched_by")
+  // The actual evidence: the file path that hit the glob (`matched_by =
+  // 'glob'`) or the slug pulled from the commit message (`matched_by =
+  // 'message'`). Nullable so future match reasons that have no obvious
+  // single-string evidence (e.g. AI semantic similarity) can still land
+  // without a schema change.
+  matchedRef    String?  @map("matched_ref")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  deliverable PlanDeliverable @relation(fields: [deliverableId], references: [id], onDelete: Cascade)
+
+  @@unique([sha, deliverableId, matchedBy])
+  @@index([projectId, sha])
+  @@index([deliverableId])
+  @@map("commit_deliverable_links")
 }
 
 model PlanConstraint {
