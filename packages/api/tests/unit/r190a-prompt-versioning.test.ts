@@ -55,16 +55,32 @@ function sha256(s: string): string {
   return createHash('sha256').update(s).digest('hex');
 }
 
-// EXPECTED_PROMPT_HASHES — keep in alphabetical order so the diff stays
-// minimal when only one entry changes. Each value is the SHA-256 of the
-// entire system prompt string (preamble + body + everything else
-// exported from `*.prompt.ts`).
+// EXPECTED_PROMPT_HASHES — these are LITERAL STRINGS pinned at PR-review
+// time, NOT recomputed from the current source. If you change a prompt
+// body without bumping its version constant, the runtime sha256 below
+// will diverge from the pinned literal and the test fails — that's the
+// whole point.
+//
+// Failure-mode reminder (issue #832): an earlier version of this test
+// wrote `[CHAT_PROMPT_VERSION]: sha256(CHAT_SYSTEM)` which made the
+// expected and actual hashes identical by construction — the test could
+// never catch undeclared prompt edits. Do NOT compute these values at
+// test runtime.
+//
+// How to update: when you intentionally bump `<purpose>_PROMPT_VERSION`
+// AND change the body, run the test, copy the new actual hash from the
+// failure message into the literal below, commit both together.
 const EXPECTED_PROMPT_HASHES: Record<string, string> = {
-  [CHAT_PROMPT_VERSION]: sha256(CHAT_SYSTEM),
-  [COMPLETION_VERIFY_PROMPT_VERSION]: sha256(COMPLETION_VERIFY_SYSTEM),
-  [CONFLICT_PREDICTION_PROMPT_VERSION]: sha256(CONFLICT_PREDICTION_SYSTEM),
-  [IMPACT_ANALYSIS_PROMPT_VERSION]: sha256(IMPACT_ANALYSIS_SYSTEM),
-  [PLAN_DIFF_PROMPT_VERSION]: sha256(PLAN_DIFF_SYSTEM),
+  'chat@2026-05-24-r1':
+    'f0f6c45945233b5029df88f487ebb3574b5c343cf4bedf1dd34563e58074ae88',
+  'completion-verify@2026-05-24-r1':
+    '32cdc24637f591e474f7f14d1ff5d6e2241748f0a4c86942ef3c5b20d2d55bb8',
+  'conflict-prediction@2026-05-24-r1':
+    '6098ce8116d926aeea74f0562f38757ecb4bd794eb9ce06acd4aa9feaface2d7',
+  'impact-analysis@2026-05-24-r1':
+    'acc0086693d76b1917519615ce52ed7cabe38da94537af918f12997160bfc9d0',
+  'plan-diff@2026-05-24-r1':
+    '1dcd21f88fad60e7fcb695725475d7b84977350d2fc25e6f59592bdac994ce8b',
 };
 
 describe('R-190a prompt version naming convention', () => {
@@ -101,6 +117,23 @@ describe('R-190a prompt version naming convention', () => {
     expect(PLAN_DIFF_PROMPT_VERSION.startsWith('plan-diff@')).toBe(true);
     expect(PLAN_DIFF_VERIFIER_PROMPT_VERSION.startsWith('verifier-plan-diff@')).toBe(true);
     expect(IMPACT_CANCEL_VERIFIER_PROMPT_VERSION.startsWith('verifier-impact-cancel@')).toBe(true);
+  });
+});
+
+describe('R-190a EXPECTED_PROMPT_HASHES table completeness', () => {
+  // Catches "developer added a new *_PROMPT_VERSION constant but forgot
+  // to register a pinned hash" — without this meta-check the body-drift
+  // test below would silently skip the new entry.
+  it.each([
+    CHAT_PROMPT_VERSION,
+    COMPLETION_VERIFY_PROMPT_VERSION,
+    CONFLICT_PREDICTION_PROMPT_VERSION,
+    IMPACT_ANALYSIS_PROMPT_VERSION,
+    PLAN_DIFF_PROMPT_VERSION,
+  ])('%s has a pinned hash entry', (version) => {
+    expect(EXPECTED_PROMPT_HASHES).toHaveProperty(version);
+    expect(typeof EXPECTED_PROMPT_HASHES[version]).toBe('string');
+    expect(EXPECTED_PROMPT_HASHES[version]).toMatch(/^[0-9a-f]{64}$/);
   });
 });
 

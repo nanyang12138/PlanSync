@@ -7,6 +7,9 @@ import { resolveSuggestionSchema, AppError, ErrorCode } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
+import { writeBoth, type SplitField } from '@/lib/plan-items';
+
+const SPLIT_FIELDS = new Set<SplitField>(['constraints', 'standards', 'deliverables']);
 
 type Params = { params: { projectId: string; planId: string; suggestionId: string } };
 
@@ -47,24 +50,39 @@ async function applySuggestion(
     arrayFields.includes(suggestion.field as (typeof arrayFields)[number])
   ) {
     const currentArr = (plan as Record<string, unknown>)[suggestion.field] as string[];
-    await tx.plan.update({
-      where: { id: planId },
-      data: { [suggestion.field]: [...currentArr, suggestion.value] },
-    });
+    const next = [...currentArr, suggestion.value];
+    await applyArrayWrite(tx, planId, suggestion.field, next);
     return true;
   } else if (
     suggestion.action === 'remove' &&
     arrayFields.includes(suggestion.field as (typeof arrayFields)[number])
   ) {
     const currentArr = (plan as Record<string, unknown>)[suggestion.field] as string[];
-    await tx.plan.update({
-      where: { id: planId },
-      data: { [suggestion.field]: currentArr.filter((v) => v !== suggestion.value) },
-    });
+    const next = currentArr.filter((v) => v !== suggestion.value);
+    await applyArrayWrite(tx, planId, suggestion.field, next);
     return true;
   }
 
   return false;
+}
+
+// R-152: route array-field suggestion writes through writeBoth so the
+// split tables stay in lockstep. openQuestions has no split table, so it
+// keeps the direct plan.update path (same logic as the append route).
+async function applyArrayWrite(
+  tx: SuggestionTx,
+  planId: string,
+  field: string,
+  next: string[],
+): Promise<void> {
+  if (SPLIT_FIELDS.has(field as SplitField)) {
+    await writeBoth(planId, { [field as SplitField]: next }, tx);
+    return;
+  }
+  await tx.plan.update({
+    where: { id: planId },
+    data: { [field]: next },
+  });
 }
 
 export async function POST(req: NextRequest, { params }: Params) {

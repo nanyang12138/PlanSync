@@ -8,6 +8,7 @@ export * from './schemas/comment';
 export * from './schemas/task';
 export * from './schemas/drift';
 export * from './schemas/domain-event';
+export * from './schemas/plan-diff';
 
 // Drift v2 — pure structural diff + severity classifier
 // (consumed by API drift engine + CLI explanation rendering).

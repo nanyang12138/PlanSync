@@ -565,7 +565,7 @@
 
 #### R-020 [MEDIUM] exec_context 有 drift 时不启心跳
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B2
 - **depends_on**: R-005
 - **effort**: small
@@ -2579,7 +2579,7 @@
 
 #### R-145 [HIGH] `PlanDiff.changes` JSON 列强制 shared zod schema 校验
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: R-034
 - **effort**: small
@@ -2663,7 +2663,7 @@
 
 #### R-152 [HIGH] plan_update / propose / activate / append 全部改写新表
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B13
 - **depends_on**: R-151
 - **effort**: large
@@ -3168,7 +3168,8 @@
 
 #### R-201 [HIGH] Web 与 CLI 改用 client-core
 
-- **status**: pending
+- **status**: blocked
+- **blocked_reason**: fix_step 3 explicitly requires modifying other R-XXX entries ("B7 中 CLI/Web 不一致条目 → 大量 close as cancelled")，与 autonomous Cloud Agent 硬约束 "永远不要修改文档中其他 R-XXX 条目的 status / closed_in / 任何字段" 直接冲突；同时整体 effort 标记为 large、跨包重构（Web RSC + 所有 client components + cli/commands.ts + cli/ai-loop.ts + cli/sse-listener.ts），verification 要求 `grep -rc 'psRequest' packages/cli/src/commands.ts -eq 0` 即整个 CLI fetch 调用层全部替换，单 PR 无法安全完成。需架构方先拆分为多个子条目（例：R-201a Web RSC 迁移、R-201b CLI commands 迁移、R-201c CLI ai-loop 迁移）并改写 fix_steps（不再以"批量 cancel 其他条目"作为前置）后再 unblock。
 - **batch**: B18
 - **depends_on**: R-200
 - **effort**: large
@@ -3228,7 +3229,8 @@
 
 #### R-185 [CRITICAL] AI 调用切换到 Anthropic tool_use 严格结构化输出
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#818 (#846 post-merge fix)
 - **batch**: B19
 - **depends_on**: —
 - **effort**: medium
@@ -3254,7 +3256,8 @@
 
 #### R-186 [HIGH] 抽 `lib/ai/validate/` 公共层 + literal grounding 启发式
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#818 (#846 post-merge fix)
 - **batch**: B19
 - **depends_on**: R-185
 - **effort**: medium
@@ -3276,7 +3279,8 @@
 
 #### R-187 [HIGH] 高风险输出加二次 LLM-as-Judge verifier pass
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#818 (#846 post-merge fix)
 - **batch**: B19
 - **depends_on**: R-186
 - **effort**: medium
@@ -3298,7 +3302,8 @@
 
 #### R-188 [HIGH] Prompt injection 防御：不可信输入 sandboxing
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#818 (#846 post-merge fix)
 - **batch**: B19
 - **depends_on**: —
 - **effort**: small
@@ -3321,7 +3326,8 @@
 
 #### R-189 [MEDIUM] completion-verify 边界分自一致采样
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#818 (#846 post-merge fix)
 - **batch**: B19
 - **depends_on**: R-185
 - **effort**: small
@@ -3341,7 +3347,8 @@
 
 #### R-190a [MEDIUM] Prompt 版本化 + golden-set 回归测试
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#818 (#846 post-merge fix)
 - **batch**: B19
 - **depends_on**: R-185
 - **effort**: small
@@ -3363,7 +3370,8 @@
 
 #### R-191a [MEDIUM] AI 低置信度自动升级给 owner
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#818 (#846 post-merge fix)
 - **batch**: B19
 - **depends_on**: —
 - **effort**: small
