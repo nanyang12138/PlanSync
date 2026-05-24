@@ -112,7 +112,18 @@ export class Store<S extends BaseState> {
     }
     try {
       const result = await opts.action();
-      this.setState((state) => ({ ...opts.onSuccess(state, result), error: undefined }));
+      // Closes #783: a previous failed action left state.status === 'error'.
+      // The original implementation only patched `error: undefined` on
+      // success, leaving `status: 'error'` in place — so the UI saw
+      // "request failed" forever even after the next try worked. Always
+      // flip to `ready` after a successful retry. (Allowed transitions
+      // include error → ready and ready → ready, so this is safe to
+      // apply unconditionally.)
+      this.setState((state) => ({
+        ...opts.onSuccess(state, result),
+        status: 'ready',
+        error: undefined,
+      }));
       return result;
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
