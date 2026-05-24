@@ -14,6 +14,27 @@
 
 'use strict';
 
+// PR-B: Optional pre-crash output. Lets tests verify that McpClient's
+// diagnostic ring buffer captures what the child wrote (stderr text +
+// pino-style structured JSON on stdout) and surfaces it on crash.
+if (process.env.FAKE_MCP_STDERR_BEFORE_CRASH) {
+  process.stderr.write(process.env.FAKE_MCP_STDERR_BEFORE_CRASH + '\n');
+}
+if (process.env.FAKE_MCP_STDOUT_PINO_BEFORE_CRASH) {
+  // Mimics pino's default JSON shape: { level, time, msg, err: { type, message } }.
+  process.stdout.write(
+    JSON.stringify({
+      level: 50,
+      time: Date.now(),
+      msg: 'MCP Server failed to start',
+      err: {
+        type: 'ReferenceError',
+        message: process.env.FAKE_MCP_STDOUT_PINO_BEFORE_CRASH,
+      },
+    }) + '\n',
+  );
+}
+
 if (process.env.FAKE_MCP_CRASH_ON_START === '1') {
   process.exit(1);
 }
