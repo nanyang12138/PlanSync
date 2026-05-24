@@ -343,7 +343,7 @@ model ExecutionRun {
   aiVerifyFeedback  String? @map("ai_verify_feedback")
   aiVerifyModel     String? @map("ai_verify_model")
 
-  task    Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  task    Task        @relation(fields: [taskId], references: [id], onDelete: Cascade)
   apiKeys ApiKey[]
   // R-180: advisory verification reviews. Each row records the outcome of a
   // completion verification gate (today only `kind = 'ai_verification'`, but
