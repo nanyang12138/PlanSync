@@ -8,6 +8,7 @@ import {
   logValidationWarnings,
   validateOrNull,
 } from './validate';
+import { verifyPlanDiffBreaking } from './verifier';
 
 export interface PlanDiffResult {
   changes: Array<{
@@ -113,9 +114,48 @@ export async function getOrCreatePlanDiff(
     changeCount: result.changes.length,
   });
 
+  // R-187: only the breakingChanges=true path cascades to drift impact
+  // analysis across every open task, so it's the highest-side-effect bit
+  // in the response. Run a cheap second LLM pass; on reject/partial,
+  // downgrade breakingChanges to false BEFORE the cache write so the
+  // false-positive doesn't get pinned to the (fromPlanId, toPlanId) pair.
+  // The original value + verifier reasoning is preserved in an opaque
+  // `_meta` field so audit + UI can surface "we downgraded this" instead
+  // of silently lying.
+  let persisted: PlanDiffResult = result;
+  if (result.breakingChanges) {
+    const verdict = await verifyPlanDiffBreaking({
+      planA,
+      planB,
+      candidate: result,
+    });
+    if (verdict && verdict.verdict !== 'agree') {
+      logger.warn(
+        {
+          projectId,
+          fromPlanId,
+          toPlanId,
+          verifierVerdict: verdict.verdict,
+          verifierReasoning: verdict.reasoning,
+        },
+        'plan_diff_breaking_change_downgraded_by_verifier',
+      );
+      persisted = {
+        ...result,
+        breakingChanges: false,
+      };
+      (persisted as PlanDiffResult & { _meta?: unknown })._meta = {
+        verifierDisagreed: true,
+        originalBreakingChanges: true,
+        verifierVerdict: verdict.verdict,
+        verifierReasoning: verdict.reasoning,
+      };
+    }
+  }
+
   try {
     await prisma.planDiff.create({
-      data: { projectId, fromPlanId, toPlanId, changes: result as object },
+      data: { projectId, fromPlanId, toPlanId, changes: persisted as object },
     });
   } catch (dbErr: unknown) {
     const code =
@@ -128,5 +168,5 @@ export async function getOrCreatePlanDiff(
       logger.warn({ err: dbErr }, 'Failed to cache plan diff');
     }
   }
-  return result;
+  return persisted;
 }

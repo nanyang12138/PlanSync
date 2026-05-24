@@ -3237,7 +3237,7 @@
 
 #### R-187 [HIGH] 高风险输出加二次 LLM-as-Judge verifier pass
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B19
 - **depends_on**: R-186
 - **effort**: medium

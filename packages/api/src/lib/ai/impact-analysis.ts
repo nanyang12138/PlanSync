@@ -3,6 +3,7 @@ import { IMPACT_ANALYSIS_SYSTEM, buildImpactAnalysisUser } from './prompts/impac
 import { logger } from '../logger';
 import type { PlanDiffResult } from './plan-diff';
 import { IMPACT_ANALYSIS_TOOL, impactAnalysisResultZ } from './schemas';
+import { verifyImpactCancel } from './verifier';
 
 export interface ImpactResult {
   compatibilityScore: number;
@@ -45,6 +46,38 @@ export async function analyzeTaskImpact(
     return null;
   }
 
+  // R-187 helper: after we've materialised a clean ImpactResult, run the
+  // cancel-verifier only when the candidate recommends `cancel` (the
+  // destructive branch). reject/partial verdict → downgrade to `rebind`
+  // and append the verifier reasoning to affectedAreas so the owner has a
+  // visible trail of "the AI wanted to cancel, but the verifier disagreed".
+  async function maybeDowngradeCancel(candidate: ImpactResult): Promise<ImpactResult> {
+    if (candidate.suggestedAction !== 'cancel') return candidate;
+    const verdict = await verifyImpactCancel({
+      diff,
+      task,
+      candidate,
+    });
+    if (!verdict || verdict.verdict === 'agree') return candidate;
+    logger.warn(
+      {
+        taskTitle: task.title,
+        boundPlanVersion: task.boundPlanVersion,
+        verifierVerdict: verdict.verdict,
+        verifierReasoning: verdict.reasoning,
+      },
+      'impact_cancel_downgraded_by_verifier',
+    );
+    return {
+      ...candidate,
+      suggestedAction: 'rebind',
+      affectedAreas: [
+        ...candidate.affectedAreas,
+        `[verifier:${verdict.verdict}] downgraded from cancel — ${verdict.reasoning}`,
+      ],
+    };
+  }
+
   const safe = impactAnalysisResultZ.safeParse(parsed);
   if (!safe.success) {
     // The legacy code applied a "score-recovery" rule when only
@@ -74,7 +107,7 @@ export async function analyzeTaskImpact(
                 : 'high',
       };
       logger.warn({ issues: safe.error.flatten() }, 'Impact analysis schema mismatch — recovered');
-      return recovered;
+      return maybeDowngradeCancel(recovered);
     }
     logger.warn(
       { issues: safe.error.flatten(), parsed },
@@ -82,5 +115,5 @@ export async function analyzeTaskImpact(
     );
     return null;
   }
-  return safe.data;
+  return maybeDowngradeCancel(safe.data);
 }
