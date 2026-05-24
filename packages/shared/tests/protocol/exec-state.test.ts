@@ -40,12 +40,17 @@ describe('exec-state FSM table', () => {
     }
   });
 
-  it('keeps terminal states sealed (no allowed tools, no required next)', () => {
+  it('terminal states only accept plansync_exec_context to start the next session (P0-14)', () => {
+    // Closes #765-class — previously the terminal states had empty
+    // allowedTools, which blocked the documented "open a new exec_context
+    // for the next task" recovery path. They now accept exactly one
+    // tool (plansync_exec_context) which transitions back to
+    // CONTEXT_LOADED so the next /exec session can proceed.
     for (const state of TERMINAL_STATES) {
       const node = EXEC_STATE_MACHINE[state];
-      expect(node.allowedTools).toEqual([]);
-      expect(node.requiredNextOneOf).toEqual([]);
-      expect(node.transitions).toEqual({});
+      expect(node.allowedTools).toEqual(['plansync_exec_context']);
+      expect(node.requiredNextOneOf).toEqual(['plansync_exec_context']);
+      expect(node.transitions).toEqual({ plansync_exec_context: 'CONTEXT_LOADED' });
     }
   });
 
@@ -72,7 +77,16 @@ describe('exec-state FSM table', () => {
     expect(tools).toContain('plansync_execution_start');
     expect(tools).toContain('plansync_execution_heartbeat');
     expect(tools).toContain('plansync_execution_complete');
-    expect(tools).toContain('plansync_execution_abort');
+    // P0-14: plansync_execution_abort is NOT a real MCP tool (not in
+    // EXEC_ALLOWED in mcp-server/src/index.ts). We removed it from
+    // RUN_STARTED.allowedTools — early exit goes through
+    // plansync_execution_complete with status='cancelled'/'failed'.
+    expect(tools).not.toContain('plansync_execution_abort');
+    // P0-14: comment_edit / comment_delete ARE in the exec-mode
+    // whitelist (EXEC_ALLOWED) and should be reachable from
+    // PACK_FETCHED + RUN_STARTED.
+    expect(tools).toContain('plansync_comment_edit');
+    expect(tools).toContain('plansync_comment_delete');
     // returned sorted + deduped
     expect(tools).toEqual([...tools].sort());
     expect(new Set(tools).size).toBe(tools.length);
@@ -111,10 +125,15 @@ describe('checkTransition', () => {
     expect(state).toBe('COMPLETED');
   });
 
-  it('walks the abort path RUN_STARTED → ABORTED', () => {
+  it('rejects plansync_execution_abort because the tool does not exist (P0-14)', () => {
+    // Closes #765-class — the FSM previously declared
+    // plansync_execution_abort as a transition out of RUN_STARTED, but
+    // mcp-server does not register such a tool. Calling it produced an
+    // OUT_OF_SEQUENCE-shaped lie; now it correctly fails with
+    // OUT_OF_SEQUENCE because the tool is genuinely unknown.
     const r = checkTransition('RUN_STARTED', 'plansync_execution_abort');
-    expect(r.ok).toBe(true);
-    if (r.ok) expect(r.nextState).toBe('ABORTED');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toBe(OUT_OF_SEQUENCE);
   });
 
   it('rejects skipping plansync_task_pack and goes straight to execution_start', () => {
@@ -129,16 +148,18 @@ describe('checkTransition', () => {
     }
   });
 
-  it('rejects calling plansync_execution_complete before plansync_execution_start', () => {
+  it('accepts plansync_execution_complete from PACK_FETCHED (the /exec collapse path, P0-14)', () => {
+    // Closes #765-class — /exec sub-sessions get a pre-registered
+    // run from plansync_exec_context. The agent then reads the task
+    // pack and is supposed to call plansync_execution_complete
+    // directly, with no separate plansync_execution_start. Without
+    // this transition the FSM rejected the legitimate /exec flow.
     const r = checkTransition('PACK_FETCHED', 'plansync_execution_complete');
-    expect(r.ok).toBe(false);
-    if (!r.ok) {
-      expect(r.error).toBe(OUT_OF_SEQUENCE);
-      expect(r.requiredNextOneOf).toEqual(['plansync_execution_start']);
-    }
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.nextState).toBe('COMPLETED');
   });
 
-  it('rejects any gated tool once the run is COMPLETED', () => {
+  it('rejects gated WRITE tools once the run is COMPLETED but allows plansync_exec_context (P0-14)', () => {
     for (const t of [
       'plansync_execution_heartbeat',
       'plansync_execution_complete',
@@ -148,11 +169,31 @@ describe('checkTransition', () => {
       const r = checkTransition('COMPLETED', t);
       expect(r.ok, `expected ${t} from COMPLETED to fail`).toBe(false);
     }
+    // ...but exec_context restarts the session.
+    const restart = checkTransition('COMPLETED', 'plansync_exec_context');
+    expect(restart.ok).toBe(true);
+    if (restart.ok) expect(restart.nextState).toBe('CONTEXT_LOADED');
   });
 
-  it('rejects any gated tool once the run is ABORTED', () => {
-    const r = checkTransition('ABORTED', 'plansync_execution_heartbeat');
-    expect(r.ok).toBe(false);
+  it('rejects gated WRITE tools once the run is ABORTED but allows plansync_exec_context', () => {
+    const heartbeat = checkTransition('ABORTED', 'plansync_execution_heartbeat');
+    expect(heartbeat.ok).toBe(false);
+    const restart = checkTransition('ABORTED', 'plansync_exec_context');
+    expect(restart.ok).toBe(true);
+    if (restart.ok) expect(restart.nextState).toBe('CONTEXT_LOADED');
+  });
+
+  // Closes #765-class — comment_edit / comment_delete were in
+  // EXEC_ALLOWED but not in the FSM. Legit edits / deletes during
+  // PACK_FETCHED + RUN_STARTED used to be rejected.
+  it('accepts comment_edit / comment_delete from PACK_FETCHED + RUN_STARTED (P0-14)', () => {
+    for (const state of ['PACK_FETCHED', 'RUN_STARTED'] as const) {
+      for (const tool of ['plansync_comment_edit', 'plansync_comment_delete']) {
+        const r = checkTransition(state, tool);
+        expect(r.ok, `${tool} from ${state} should be allowed`).toBe(true);
+        if (r.ok) expect(r.nextState).toBe(state);
+      }
+    }
   });
 
   it('lets read-only tools through from any state, including terminal ones', () => {
