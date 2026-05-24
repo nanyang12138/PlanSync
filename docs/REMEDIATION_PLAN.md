@@ -565,7 +565,7 @@
 
 #### R-020 [MEDIUM] exec_context 有 drift 时不启心跳
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B2
 - **depends_on**: R-005
 - **effort**: small
