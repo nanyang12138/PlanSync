@@ -3,6 +3,7 @@ import { authenticate, requireProjectRole } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { aiClient } from '@/lib/ai/client';
 import { normalizeAiList, normalizeAiText } from '@/lib/ai/validate';
+import { UNTRUSTED_INPUT_PREAMBLE, tagUntrusted } from '@/lib/ai/sanitize';
 import { z } from 'zod';
 
 type Params = { params: { projectId: string } };
@@ -47,12 +48,18 @@ export async function POST(req: NextRequest, { params }: Params) {
     const body = bodySchema.parse(await req.json());
     const { field, currentValue, title, goal } = body;
 
-    const system = `You are PlanSync AI helping write a project plan. Be concise and direct. Write in English. ${FIELD_INSTRUCTIONS[field as PlanField]}`;
+    // Issue #825: prepend the untrusted-input contract so the model
+    // refuses to act on injection inside the wrapped spans below.
+    const system = `${UNTRUSTED_INPUT_PREAMBLE}\n\nYou are PlanSync AI helping write a project plan. Be concise and direct. Write in English. ${FIELD_INSTRUCTIONS[field as PlanField]}`;
 
+    // Issue #825: every user/DB-derived field below is wrapped. Without
+    // this, a hostile plan title or current-value text could rewrite
+    // the system instructions and trick the field improver into
+    // emitting unrelated content.
     const context = [
-      `Plan title: "${title}"`,
-      goal && field !== 'goal' ? `Goal: ${goal}` : null,
-      currentValue.trim() ? `Current value:\n${currentValue}` : null,
+      `Plan title: ${tagUntrusted(title, 'plan')}`,
+      goal && field !== 'goal' ? `Goal: ${tagUntrusted(goal, 'plan')}` : null,
+      currentValue.trim() ? `Current value:\n${tagUntrusted(currentValue, 'plan')}` : null,
     ]
       .filter(Boolean)
       .join('\n');

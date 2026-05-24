@@ -26,7 +26,7 @@
 
 import type { Prisma } from '@prisma/client';
 import { aiClient } from './client';
-import { COMPLETION_VERIFY_TOOL } from './schemas';
+import { COMPLETION_VERIFY_TOOL, completionVerifyResultZ } from './schemas';
 import { COMPLETION_VERIFY_PROMPT_VERSION } from './prompts/completion-verify.prompt';
 import { logger } from '../logger';
 
@@ -106,10 +106,28 @@ export async function applyCompletionVerifyConsistency(
         tool: COMPLETION_VERIFY_TOOL,
       });
       if (!raw) continue;
-      const parsed = JSON.parse(raw) as CompletionVerifyResult;
-      if (typeof parsed.score !== 'number') continue;
-      scores.push(parsed.score);
-      if (typeof parsed.feedback === 'string') feedbacks.push(parsed.feedback);
+      // Issues #830 / #826: previously this branch only checked
+      // `typeof parsed.score === 'number'`, so a model returning
+      // `{ score: 150 }` or `{ score: -5 }` or missing required
+      // fields would slip through and pollute the median + feedback.
+      // Full zod validation gives us the 0..100 bound + the integer
+      // requirement + the verified/gaps/feedback shape for free.
+      const parsedUnknown: unknown = JSON.parse(raw);
+      const safe = completionVerifyResultZ.safeParse(parsedUnknown);
+      if (!safe.success) {
+        logger.warn(
+          {
+            attempt: i + 1,
+            issues: safe.error.issues
+              .slice(0, 3)
+              .map((iss) => `${iss.path.join('.') || '<root>'}:${iss.message}`),
+          },
+          'completion_verify_consistency_sample_invalid_shape — dropping',
+        );
+        continue;
+      }
+      scores.push(safe.data.score);
+      feedbacks.push(safe.data.feedback);
     } catch (err) {
       logger.warn(
         { err, attempt: i + 1 },
@@ -135,9 +153,18 @@ export async function applyCompletionVerifyConsistency(
   const spread = max - min;
   const lowConfidence = spread > SPREAD_LOW_CONFIDENCE;
 
+  // Issue #829: the median can cross the 75 boundary in either
+  // direction (e.g. initial verified=true at 76, median drops to 72,
+  // so verified must flip to false; or initial verified=false at 70,
+  // median rises to 78). Without this re-derivation the RunReview row
+  // would show "score 78, verified=false" which the owner UI renders
+  // as a contradiction. The PASS_THRESHOLD must match completion-verify
+  // prompt: "Threshold: score >= 75 passes."
+  const PASS_THRESHOLD = 75;
   const correctedResult: CompletionVerifyResult = {
     ...initial,
     score: med,
+    verified: med >= PASS_THRESHOLD,
     feedback: lowConfidence
       ? `AI verification is unstable across ${scores.length} samples (${scores.join(' / ')}) — recommend human review. Original feedback: ${initial.feedback}`
       : initial.feedback,
@@ -148,6 +175,12 @@ export async function applyCompletionVerifyConsistency(
     scores,
     metadataPatch: {
       consistencyScores: scores,
+      // Issue #836: keep the per-sample feedback texts in metadata so
+      // the owner UI can surface "what did each judgement say" beside
+      // the lowConfidence flag. Without this the `feedbacks` array was
+      // populated but never read, which both wastes the data and fails
+      // eslint's no-unused-vars under --max-warnings 0.
+      consistencyFeedbacks: feedbacks,
       consistencyMedian: med,
       consistencySpread: spread,
       consistencyLowConfidence: lowConfidence,
