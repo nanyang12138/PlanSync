@@ -565,7 +565,7 @@
 
 #### R-020 [MEDIUM] exec_context 有 drift 时不启心跳
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B2
 - **depends_on**: R-005
 - **effort**: small
@@ -3167,7 +3167,8 @@
 
 #### R-201 [HIGH] Web 与 CLI 改用 client-core
 
-- **status**: pending
+- **status**: blocked
+- **blocked_reason**: fix_step 3 explicitly requires modifying other R-XXX entries ("B7 中 CLI/Web 不一致条目 → 大量 close as cancelled")，与 autonomous Cloud Agent 硬约束 "永远不要修改文档中其他 R-XXX 条目的 status / closed_in / 任何字段" 直接冲突；同时整体 effort 标记为 large、跨包重构（Web RSC + 所有 client components + cli/commands.ts + cli/ai-loop.ts + cli/sse-listener.ts），verification 要求 `grep -rc 'psRequest' packages/cli/src/commands.ts -eq 0` 即整个 CLI fetch 调用层全部替换，单 PR 无法安全完成。需架构方先拆分为多个子条目（例：R-201a Web RSC 迁移、R-201b CLI commands 迁移、R-201c CLI ai-loop 迁移）并改写 fix_steps（不再以"批量 cancel 其他条目"作为前置）后再 unblock。
 - **batch**: B18
 - **depends_on**: R-200
 - **effort**: large
