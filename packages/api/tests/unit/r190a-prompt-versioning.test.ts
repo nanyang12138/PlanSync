@@ -42,6 +42,12 @@ import {
   PLAN_DIFF_PROMPT_VERSION,
   PLAN_DIFF_SYSTEM,
 } from '../../src/lib/ai/prompts/plan-diff.prompt';
+// R-187 verifier prompts were added under R-190a too so they get the
+// same body-drift guard as the generator prompts.
+import {
+  IMPACT_CANCEL_VERIFIER_PROMPT_VERSION,
+  PLAN_DIFF_VERIFIER_PROMPT_VERSION,
+} from '../../src/lib/ai/verifier';
 
 const VERSION_PATTERN = /^[a-z][a-z0-9_-]*@\d{4}-\d{2}-\d{2}-r\d+$/;
 
@@ -68,6 +74,8 @@ describe('R-190a prompt version naming convention', () => {
     ['conflict-prediction', CONFLICT_PREDICTION_PROMPT_VERSION],
     ['impact-analysis', IMPACT_ANALYSIS_PROMPT_VERSION],
     ['plan-diff', PLAN_DIFF_PROMPT_VERSION],
+    ['plan-diff verifier', PLAN_DIFF_VERIFIER_PROMPT_VERSION],
+    ['impact-cancel verifier', IMPACT_CANCEL_VERIFIER_PROMPT_VERSION],
   ])('%s prompt version matches `<purpose>@YYYY-MM-DD-r<n>`', (_label, version) => {
     expect(version).toMatch(VERSION_PATTERN);
   });
@@ -79,6 +87,8 @@ describe('R-190a prompt version naming convention', () => {
       CONFLICT_PREDICTION_PROMPT_VERSION,
       IMPACT_ANALYSIS_PROMPT_VERSION,
       PLAN_DIFF_PROMPT_VERSION,
+      PLAN_DIFF_VERIFIER_PROMPT_VERSION,
+      IMPACT_CANCEL_VERIFIER_PROMPT_VERSION,
     ];
     expect(new Set(versions).size).toBe(versions.length);
   });
@@ -89,6 +99,8 @@ describe('R-190a prompt version naming convention', () => {
     expect(CONFLICT_PREDICTION_PROMPT_VERSION.startsWith('conflict-prediction@')).toBe(true);
     expect(IMPACT_ANALYSIS_PROMPT_VERSION.startsWith('impact-analysis@')).toBe(true);
     expect(PLAN_DIFF_PROMPT_VERSION.startsWith('plan-diff@')).toBe(true);
+    expect(PLAN_DIFF_VERIFIER_PROMPT_VERSION.startsWith('verifier-plan-diff@')).toBe(true);
+    expect(IMPACT_CANCEL_VERIFIER_PROMPT_VERSION.startsWith('verifier-impact-cancel@')).toBe(true);
   });
 });
 

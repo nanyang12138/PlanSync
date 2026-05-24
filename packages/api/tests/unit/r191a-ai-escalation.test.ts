@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const sendMailMock = vi.hoisted(() => vi.fn());
 const eventBusPublishMock = vi.hoisted(() => vi.fn());
 const prismaFindManyMock = vi.hoisted(() => vi.fn());
+const prismaFindUniqueMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/lib/email', () => ({
   sendMail: sendMailMock,
@@ -28,6 +29,7 @@ vi.mock('../../src/lib/event-bus', () => ({
 vi.mock('../../src/lib/prisma', () => ({
   prisma: {
     projectMember: { findMany: prismaFindManyMock },
+    project: { findUnique: prismaFindUniqueMock },
   },
 }));
 
@@ -35,6 +37,7 @@ beforeEach(async () => {
   sendMailMock.mockReset().mockReturnValue(true);
   eventBusPublishMock.mockReset();
   prismaFindManyMock.mockReset().mockResolvedValue([{ name: 'alice' }]);
+  prismaFindUniqueMock.mockReset().mockResolvedValue({ name: 'Demo Project' });
   const mod = await import('../../src/lib/ai-escalation');
   mod._resetAiEscalationRateLimit();
 });
@@ -64,6 +67,24 @@ describe('R-191a escalateLowConfidence', () => {
     expect(sendMailMock).toHaveBeenCalledTimes(1);
     expect(sendMailMock.mock.calls[0][0]).toEqual(['alice@example.com']);
     expect(sendMailMock.mock.calls[0][1]).toMatch(/impact_score_very_low/);
+    // R-191a refinement: subject + body use the friendly project name,
+    // not the raw projectId UUID the owner has no way of recognising.
+    expect(sendMailMock.mock.calls[0][1]).toContain('Demo Project');
+    expect(sendMailMock.mock.calls[0][2]).toContain('Demo Project');
+    expect(sendMailMock.mock.calls[0][2]).toContain('(proj)');
+  });
+
+  it('falls back to raw projectId when project name lookup returns null', async () => {
+    prismaFindUniqueMock.mockResolvedValueOnce(null);
+    const { escalateLowConfidence } = await import('../../src/lib/ai-escalation');
+    await escalateLowConfidence('proj-missing', 'impact_score_very_low', {
+      summary: 's',
+    });
+    expect(sendMailMock).toHaveBeenCalledTimes(1);
+    // Subject + body should still reference the projectId so the email
+    // is actionable, just without the friendly label.
+    expect(sendMailMock.mock.calls[0][1]).toContain('proj-missing');
+    expect(sendMailMock.mock.calls[0][2]).toContain('proj-missing');
   });
 
   it('rate-limits email (1/hour per project+kind) but still pushes SSE', async () => {

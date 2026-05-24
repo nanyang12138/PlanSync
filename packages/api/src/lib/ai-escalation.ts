@@ -98,15 +98,22 @@ export async function escalateLowConfidence(
   }
 
   try {
-    const owners = await prisma.projectMember.findMany({
-      where: { projectId, role: 'owner', type: 'human' },
-      select: { name: true },
-    });
+    // Resolve the project's friendly name + owners in one round-trip so
+    // the email body shows e.g. "Project: Auth Revamp (proj-xyz)" rather
+    // than the raw UUID an owner has no chance of recognising.
+    const [project, owners] = await Promise.all([
+      prisma.project.findUnique({ where: { id: projectId }, select: { name: true } }),
+      prisma.projectMember.findMany({
+        where: { projectId, role: 'owner', type: 'human' },
+        select: { name: true },
+      }),
+    ]);
     if (owners.length === 0) {
       logger.debug({ projectId, kind }, 'ai_escalation_no_human_owner_skip_email');
       return result;
     }
-    const subject = `[PlanSync] AI low-confidence signal: ${kind}`;
+    const projectLabel = project?.name ? `${project.name} (${projectId})` : projectId;
+    const subject = `[PlanSync] AI low-confidence signal in "${project?.name ?? projectId}": ${kind}`;
     const detailLines = payload.details
       ? Object.entries(payload.details).map(
           ([k, v]) => `  ${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`,
@@ -116,7 +123,7 @@ export async function escalateLowConfidence(
       'The PlanSync AI subsystem flagged a low-confidence result that needs human review.',
       '',
       `Kind: ${kind}`,
-      `Project: ${projectId}`,
+      `Project: ${projectLabel}`,
       payload.taskId ? `Task: ${payload.taskId}` : null,
       payload.runId ? `Run: ${payload.runId}` : null,
       payload.driftAlertId ? `Drift alert: ${payload.driftAlertId}` : null,

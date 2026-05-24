@@ -420,9 +420,6 @@ export async function enrichDriftAlertsWithAi(
   alerts: Array<{ id: string; taskId: string }>,
 ): Promise<void> {
   if (!aiClient.isAvailable || alerts.length === 0) return;
-  // R-191a: imported here (function-local lazy import not needed — top of
-  // file scope is cleaner) so the systematic-failure escalation has
-  // access to the rate-limited notify path.
 
   // 1. Batch-fetch tasks and the bound-plan rows they reference.
   const tasks = await prisma.task.findMany({

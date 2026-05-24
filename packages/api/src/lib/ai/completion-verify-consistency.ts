@@ -27,6 +27,7 @@
 import type { Prisma } from '@prisma/client';
 import { aiClient } from './client';
 import { COMPLETION_VERIFY_TOOL } from './schemas';
+import { COMPLETION_VERIFY_PROMPT_VERSION } from './prompts/completion-verify.prompt';
 import { logger } from '../logger';
 
 const LOWER_BOUNDARY = 60;
@@ -97,6 +98,11 @@ export async function applyCompletionVerifyConsistency(
       const saltedUser = `Sample ${i + 1} of ${EXTRA_SAMPLES + 1} — answer independently of any earlier judgement.\n\n${user}`;
       const raw = await aiClient.complete(system, saltedUser, {
         purpose: 'completion_verify_consistency',
+        // R-190a contract: every aiClient.complete call must carry the
+        // prompt version of the system text being sent. We reuse the
+        // base completion-verify prompt verbatim, so we tag with the
+        // same version (R-185 will further suffix `-toolv1`).
+        promptVersion: COMPLETION_VERIFY_PROMPT_VERSION,
         tool: COMPLETION_VERIFY_TOOL,
       });
       if (!raw) continue;

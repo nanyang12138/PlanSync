@@ -35,6 +35,11 @@
 import { z } from 'zod';
 import { aiClient } from './client';
 import { logger } from '../logger';
+import { UNTRUSTED_INPUT_PREAMBLE, tagUntrusted } from './sanitize';
+
+// R-190a: bump trailing r<n> when either *_VERIFIER_SYSTEM body changes.
+export const PLAN_DIFF_VERIFIER_PROMPT_VERSION = 'verifier-plan-diff@2026-05-24-r1';
+export const IMPACT_CANCEL_VERIFIER_PROMPT_VERSION = 'verifier-impact-cancel@2026-05-24-r1';
 
 const VERIFIER_RESULT_SCHEMA_Z = z.object({
   verdict: z.enum(['agree', 'reject', 'partial']),
@@ -58,12 +63,14 @@ export interface VerifierResult {
 
 async function runVerifier(
   purpose: string,
+  promptVersion: string,
   system: string,
   user: string,
 ): Promise<VerifierResult | null> {
   if (!aiClient.isAvailable) return null;
   const raw = await aiClient.complete(system, user, {
     purpose,
+    promptVersion,
     tool: {
       name: 'emit_verdict',
       description: 'Emit your binary-style verdict on whether the candidate output is grounded.',
@@ -89,7 +96,9 @@ async function runVerifier(
 // plan-diff verifier — only invoked when breakingChanges === true
 // ---------------------------------------------------------------------------
 
-const PLAN_DIFF_VERIFIER_SYSTEM = `You are a strict reviewer of plan-diff outputs.
+const PLAN_DIFF_VERIFIER_SYSTEM = `${UNTRUSTED_INPUT_PREAMBLE}
+
+You are a strict reviewer of plan-diff outputs.
 
 You receive: (a) two source plans (their key fields), (b) a candidate diff
 the previous model produced, including breakingChanges=true.
@@ -107,37 +116,66 @@ Return:
 Be terse — one short sentence of reasoning. Do not hedge.`;
 
 export async function verifyPlanDiffBreaking(opts: {
-  planA: { goal?: string | null; scope?: string | null; constraints?: unknown; standards?: unknown; deliverables?: unknown; openQuestions?: unknown };
-  planB: { goal?: string | null; scope?: string | null; constraints?: unknown; standards?: unknown; deliverables?: unknown; openQuestions?: unknown };
-  candidate: { changes: Array<{ aspect: string; from: string | null; to: string | null; type: string }>; summary: string; breakingChanges: boolean };
+  planA: {
+    goal?: string | null;
+    scope?: string | null;
+    constraints?: unknown;
+    standards?: unknown;
+    deliverables?: unknown;
+    openQuestions?: unknown;
+  };
+  planB: {
+    goal?: string | null;
+    scope?: string | null;
+    constraints?: unknown;
+    standards?: unknown;
+    deliverables?: unknown;
+    openQuestions?: unknown;
+  };
+  candidate: {
+    changes: Array<{ aspect: string; from: string | null; to: string | null; type: string }>;
+    summary: string;
+    breakingChanges: boolean;
+  };
 }): Promise<VerifierResult | null> {
   if (!opts.candidate.breakingChanges) return null;
+  // Every plan field is user-controlled, and the candidate diff is a
+  // prior LLM output that contains those same fields. Wrap both with
+  // R-188 tags so a poisoned plan field can't talk this verifier out of
+  // its scoring rubric — same defense the generator already has.
   const user = [
     '## Plan A (before)',
-    `goal: ${opts.planA.goal ?? 'N/A'}`,
-    `scope: ${opts.planA.scope ?? 'N/A'}`,
-    `constraints: ${JSON.stringify(opts.planA.constraints ?? [])}`,
-    `standards: ${JSON.stringify(opts.planA.standards ?? [])}`,
-    `deliverables: ${JSON.stringify(opts.planA.deliverables ?? [])}`,
+    `goal: ${tagUntrusted(opts.planA.goal ?? 'N/A', 'plan')}`,
+    `scope: ${tagUntrusted(opts.planA.scope ?? 'N/A', 'plan')}`,
+    `constraints: ${tagUntrusted(JSON.stringify(opts.planA.constraints ?? []), 'plan')}`,
+    `standards: ${tagUntrusted(JSON.stringify(opts.planA.standards ?? []), 'plan')}`,
+    `deliverables: ${tagUntrusted(JSON.stringify(opts.planA.deliverables ?? []), 'plan')}`,
     '',
     '## Plan B (after)',
-    `goal: ${opts.planB.goal ?? 'N/A'}`,
-    `scope: ${opts.planB.scope ?? 'N/A'}`,
-    `constraints: ${JSON.stringify(opts.planB.constraints ?? [])}`,
-    `standards: ${JSON.stringify(opts.planB.standards ?? [])}`,
-    `deliverables: ${JSON.stringify(opts.planB.deliverables ?? [])}`,
+    `goal: ${tagUntrusted(opts.planB.goal ?? 'N/A', 'plan')}`,
+    `scope: ${tagUntrusted(opts.planB.scope ?? 'N/A', 'plan')}`,
+    `constraints: ${tagUntrusted(JSON.stringify(opts.planB.constraints ?? []), 'plan')}`,
+    `standards: ${tagUntrusted(JSON.stringify(opts.planB.standards ?? []), 'plan')}`,
+    `deliverables: ${tagUntrusted(JSON.stringify(opts.planB.deliverables ?? []), 'plan')}`,
     '',
     '## Candidate diff (must justify breakingChanges=true)',
-    JSON.stringify(opts.candidate, null, 2),
+    tagUntrusted(JSON.stringify(opts.candidate, null, 2), 'plan'),
   ].join('\n');
-  return runVerifier('verifier_plan_diff_breaking', PLAN_DIFF_VERIFIER_SYSTEM, user);
+  return runVerifier(
+    'verifier_plan_diff_breaking',
+    PLAN_DIFF_VERIFIER_PROMPT_VERSION,
+    PLAN_DIFF_VERIFIER_SYSTEM,
+    user,
+  );
 }
 
 // ---------------------------------------------------------------------------
 // impact-analysis verifier — only invoked when suggestedAction === 'cancel'
 // ---------------------------------------------------------------------------
 
-const IMPACT_CANCEL_VERIFIER_SYSTEM = `You are a strict reviewer of drift-impact recommendations.
+const IMPACT_CANCEL_VERIFIER_SYSTEM = `${UNTRUSTED_INPUT_PREAMBLE}
+
+You are a strict reviewer of drift-impact recommendations.
 
 You receive: (a) the plan diff between two plan versions, (b) the task
 that is bound to the older version, (c) a candidate impact analysis
@@ -156,23 +194,42 @@ Be terse. One short sentence of reasoning.`;
 
 export async function verifyImpactCancel(opts: {
   diff: { changes: unknown; summary?: string; breakingChanges?: boolean };
-  task: { title: string; description?: string | null; type?: string | null; status: string; boundPlanVersion: number };
-  candidate: { compatibilityScore: number; suggestedAction: string; reasoning: string; affectedAreas: string[]; riskLevel: string };
+  task: {
+    title: string;
+    description?: string | null;
+    type?: string | null;
+    status: string;
+    boundPlanVersion: number;
+  };
+  candidate: {
+    compatibilityScore: number;
+    suggestedAction: string;
+    reasoning: string;
+    affectedAreas: string[];
+    riskLevel: string;
+  };
 }): Promise<VerifierResult | null> {
   if (opts.candidate.suggestedAction !== 'cancel') return null;
+  // R-188 wrapping: diff, task fields, and candidate are all
+  // user-controlled or downstream of user-controlled data.
   const user = [
     '## Plan Diff',
-    JSON.stringify(opts.diff, null, 2),
+    tagUntrusted(JSON.stringify(opts.diff, null, 2), 'plan'),
     '',
     '## Task',
-    `title: ${opts.task.title}`,
-    `description: ${opts.task.description ?? 'N/A'}`,
-    `type: ${opts.task.type ?? 'N/A'}`,
+    `title: ${tagUntrusted(opts.task.title, 'task')}`,
+    `description: ${tagUntrusted(opts.task.description ?? 'N/A', 'task')}`,
+    `type: ${tagUntrusted(opts.task.type ?? 'N/A', 'task')}`,
     `status: ${opts.task.status}`,
     `boundPlanVersion: v${opts.task.boundPlanVersion}`,
     '',
     '## Candidate impact analysis (suggestedAction=cancel)',
-    JSON.stringify(opts.candidate, null, 2),
+    tagUntrusted(JSON.stringify(opts.candidate, null, 2), 'plan'),
   ].join('\n');
-  return runVerifier('verifier_impact_cancel', IMPACT_CANCEL_VERIFIER_SYSTEM, user);
+  return runVerifier(
+    'verifier_impact_cancel',
+    IMPACT_CANCEL_VERIFIER_PROMPT_VERSION,
+    IMPACT_CANCEL_VERIFIER_SYSTEM,
+    user,
+  );
 }

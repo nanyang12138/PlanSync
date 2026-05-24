@@ -129,27 +129,27 @@
 
 ## 批次划分总览
 
-| 批次    | 主题                           | 条目数 | 关键交付                                  |
-| ------- | ------------------------------ | ------ | ----------------------------------------- |
-| **B1**  | Drift 进程中止与 AI 自处理消除 | 8      | 用户最痛的"rebind 后旧进程仍完成"彻底修好 |
-| **B2**  | 执行所有权与凭证收紧           | 12     | 关闭跨用户劫持 run、master secret 滥用    |
-| **B3**  | MCP 客户端重连与重试           | 6      | 解决"Not connected" 间歇失败              |
-| **B4**  | 契约统一                       | 14     | shared/API/MCP schema drift 阻断          |
-| **B5**  | 嵌套资源一致性                 | 7      | 跨项目越权读写关闭                        |
-| **B6**  | 并发与唯一性                   | 11     | 多 active plan、重复 drift、TOCTOU        |
-| **B7**  | CLI 体验对齐文档               | 16     | banner、phase、exec 入口、Ink 体验        |
-| **B8**  | DB 索引/enum/FK                | 13     | 性能与数据完整性                          |
-| **B9**  | 事件总线生产可用               | 4      | 多实例 SSE 不再丢消息                     |
-| **B10** | 文档与脚本对齐                 | 12     | 删过期文档、补 env、平台兼容              |
-| **B11** | Activity log 与可观测性        | 10     | 状态变更全部审计                          |
-| **B12** | 测试补齐                       | 18+    | 关键路径回归保障                          |
-| **B13** | Plan-as-code（结构化 plan 图） | 8      | 把 String[] plan 升级为可 FK 的关系图     |
-| **B14** | Outbox + 持久事件流            | 7      | 干掉 in-memory EventBus / webhook 队列    |
-| **B15** | Protocol-as-state-machine      | 7      | CLAUDE.md prose → MCP server 状态机强制   |
-| **B16** | AI 从 gate 变 advisor          | 5      | 消除"AI 错杀合法提交"，引入声明式 rule    |
-| **B17** | Git 真集成                     | 4      | task 状态由 PR/commit 推导，不再自报      |
-| **B18** | Service 拆分 + view-model 共享 | 4      | API/Worker/Web 三进程，三 surface 单数据  |
-| **B19** | 反幻觉硬化（hallucination hardening） | 7 | 把 prompt-only 约束补成 schema-strict / grounded / injection-safe 多层防御 |
+| 批次    | 主题                                  | 条目数 | 关键交付                                                                   |
+| ------- | ------------------------------------- | ------ | -------------------------------------------------------------------------- |
+| **B1**  | Drift 进程中止与 AI 自处理消除        | 8      | 用户最痛的"rebind 后旧进程仍完成"彻底修好                                  |
+| **B2**  | 执行所有权与凭证收紧                  | 12     | 关闭跨用户劫持 run、master secret 滥用                                     |
+| **B3**  | MCP 客户端重连与重试                  | 6      | 解决"Not connected" 间歇失败                                               |
+| **B4**  | 契约统一                              | 14     | shared/API/MCP schema drift 阻断                                           |
+| **B5**  | 嵌套资源一致性                        | 7      | 跨项目越权读写关闭                                                         |
+| **B6**  | 并发与唯一性                          | 11     | 多 active plan、重复 drift、TOCTOU                                         |
+| **B7**  | CLI 体验对齐文档                      | 16     | banner、phase、exec 入口、Ink 体验                                         |
+| **B8**  | DB 索引/enum/FK                       | 13     | 性能与数据完整性                                                           |
+| **B9**  | 事件总线生产可用                      | 4      | 多实例 SSE 不再丢消息                                                      |
+| **B10** | 文档与脚本对齐                        | 12     | 删过期文档、补 env、平台兼容                                               |
+| **B11** | Activity log 与可观测性               | 10     | 状态变更全部审计                                                           |
+| **B12** | 测试补齐                              | 18+    | 关键路径回归保障                                                           |
+| **B13** | Plan-as-code（结构化 plan 图）        | 8      | 把 String[] plan 升级为可 FK 的关系图                                      |
+| **B14** | Outbox + 持久事件流                   | 7      | 干掉 in-memory EventBus / webhook 队列                                     |
+| **B15** | Protocol-as-state-machine             | 7      | CLAUDE.md prose → MCP server 状态机强制                                    |
+| **B16** | AI 从 gate 变 advisor                 | 5      | 消除"AI 错杀合法提交"，引入声明式 rule                                     |
+| **B17** | Git 真集成                            | 4      | task 状态由 PR/commit 推导，不再自报                                       |
+| **B18** | Service 拆分 + view-model 共享        | 4      | API/Worker/Web 三进程，三 surface 单数据                                   |
+| **B19** | 反幻觉硬化（hallucination hardening） | 7      | 把 prompt-only 约束补成 schema-strict / grounded / injection-safe 多层防御 |
 
 > **新批次依赖关系**（最终权威以每条 `depends_on` 为准；下方为人类阅读摘要）：
 >
@@ -3252,7 +3252,7 @@
 - **verification**:
   - 单测：mock 第一次 LLM 返 `breakingChanges: true` + verifier 返 `reject` → 写库的 changes 里 `breakingChanges === false` 且 `_meta.verifierDisagreed === true`
   - 单测：mock impact 返 `suggestedAction: 'cancel'` + verifier 返 `agree` → 不修改
-  - 集成：ai_calls 表能看到对应的 `verifier_*` purpose 行
+  - 集成：ai*calls 表能看到对应的 `verifier*\*` purpose 行
 - **rollback**: 删除 verifier.ts 调用；候选输出按原逻辑写库
 
 ---
@@ -3485,196 +3485,196 @@ cursor-agent dispatch \
 
 ## 附录 A — 完整问题索引
 
-| ID    | 严重度   | 批次 | 标题                                                                           |
-| ----- | -------- | ---- | ------------------------------------------------------------------------------ |
-| R-001 | CRITICAL | B1   | 禁用 AI 后台自动解决 drift                                                     |
-| R-002 | CRITICAL | B1   | drift 触发时取消正在跑的 ExecutionRun                                          |
-| R-003 | CRITICAL | B1   | heartbeat / complete 加 run-task 版本对齐校验                                  |
-| R-004 | HIGH     | B1   | rebind 行为升级为"显式重启"                                                    |
-| R-005 | HIGH     | B1   | MCP heartbeat 把 superseded 转 agent abort                                     |
-| R-006 | HIGH     | B1   | drift complete-gate 同时检查 run 版本                                          |
-| R-007 | MEDIUM   | B1   | drift-engine 事件/邮件移到事务提交后                                           |
-| R-008 | HIGH     | B1   | 新增 `superseded` execution run 状态                                           |
-| R-009 | CRITICAL | B2   | heartbeat/complete 接口加 executor 身份校验                                    |
-| R-010 | CRITICAL | B2   | 生产环境拒绝 PLANSYNC_SECRET 默认值                                            |
-| R-011 | HIGH     | B2   | exec-scoped API key 绑定到 projectId                                           |
-| R-012 | HIGH     | B2   | execution_start 不再自动注册 agent 成员                                        |
-| R-013 | HIGH     | B2   | 首次登录开放注册改为受控                                                       |
-| R-014 | MEDIUM   | B2   | 密码 Bearer 模式仅开发环境保留                                                 |
-| R-015 | HIGH     | B2   | 给所有 owner-only 写路由加 requireNotExecScoped                                |
-| R-016 | HIGH     | B2   | 委托模式 task tools 使用 withUser                                              |
-| R-017 | HIGH     | B2   | withUser 在普通 API key 下抛错                                                 |
-| R-018 | HIGH     | B2   | my_work 跨项目模式尊重 agentName                                               |
-| R-019 | MEDIUM   | B2   | exec_context 区分 fatal/transient 错误                                         |
-| R-020 | MEDIUM   | B2   | exec_context 有 drift 时不启心跳                                               |
-| R-021 | CRITICAL | B3   | MCP 子进程崩溃可检测可自动恢复                                                 |
-| R-022 | HIGH     | B3   | MCP callTool 加单次重试                                                        |
-| R-023 | HIGH     | B3   | SSE listener 对 401/403 立刻提示用户                                           |
-| R-024 | MEDIUM   | B3   | MCP stop() 清理 pending requests                                               |
-| R-025 | HIGH     | B3   | psRequest 检查 HTTP 状态码                                                     |
-| R-026 | MEDIUM   | B3   | CLI auth 用 URL 协议选择 http vs https                                         |
-| R-027 | HIGH     | B4   | MCP task_update schema 复用 shared                                             |
-| R-028 | HIGH     | B4   | MCP task_create 复用 shared                                                    |
-| R-029 | MEDIUM   | B4   | MCP project_create/update 补 repoUrl/defaultBranch                             |
-| R-030 | HIGH     | B4   | shared planReviewSchema 补 focusNotes                                          |
-| R-031 | HIGH     | B4   | shared driftAlertSchema 补 affectedAreas/planDiffId                            |
-| R-032 | MEDIUM   | B4   | propose plan 建立 shared zod schema                                            |
-| R-033 | MEDIUM   | B4   | createActivity 强制 zod 校验 type                                              |
-| R-034 | HIGH     | B4   | 增加 schema-drift CI 守门测试                                                  |
-| R-035 | HIGH     | B4   | env.ts 验证所有运行时使用的 env 变量                                           |
-| R-036 | MEDIUM   | B4   | 删除 MCP plan_create 客户端 draft guard 或在 API 实施                          |
-| R-037 | MEDIUM   | B4   | MCP tool 统一错误格式                                                          |
-| R-038 | MEDIUM   | B4   | review_reject schema 强制 comment 非空                                         |
-| R-039 | LOW      | B4   | execution tools 错误统一为 JSON envelope                                       |
-| R-040 | LOW      | B4   | api-client 启动时校验 token 配置                                               |
-| R-041 | HIGH     | B5   | 所有 /plans/:planId/... 路由验证 plan ∈ project                                |
-| R-042 | HIGH     | B5   | task/drift 状态 query 参数 zod 校验                                            |
-| R-043 | HIGH     | B5   | webhook URL 校验防 SSRF                                                        |
-| R-044 | MEDIUM   | B5   | notify 路由限流 + owner-only                                                   |
-| R-045 | HIGH     | B5   | human task PATCH done 需要 execution 或 owner                                  |
-| R-046 | MEDIUM   | B5   | complete-human 加 open drift gate                                              |
-| R-047 | MEDIUM   | B5   | DELETE task 拒绝有 running run 的请求                                          |
-| R-048 | CRITICAL | B6   | plans 表加 partial unique 每项目一个 active                                    |
-| R-049 | HIGH     | B6   | task_claim 用 conditional updateMany 原子化                                    |
-| R-050 | MEDIUM   | B6   | plan 版本号生成放进事务                                                        |
-| R-051 | HIGH     | B6   | drift_alert 触发用 upsert 避免重复                                             |
-| R-052 | HIGH     | B6   | reactivate 把 drift 扫描放回事务                                               |
-| R-053 | MEDIUM   | B6   | suggestion accept 单事务 apply+update                                          |
-| R-054 | HIGH     | B6   | execution_start 拒绝 cancelled/blocked/done 任务                               |
-| R-055 | HIGH     | B6   | activate 路由要求非 0 reviewer 或 owner                                        |
-| R-056 | MEDIUM   | B6   | heartbeat scanner 改为 DB advisory lock                                        |
-| R-057 | MEDIUM   | B6   | stale 状态同步释放 task 与 exec-scoped key                                     |
-| R-058 | LOW      | B6   | drift_engine 使用 tx 读取                                                      |
-| R-059 | HIGH     | B7   | CLI banner phase 改用 API 返回的 project.phase                                 |
-| R-060 | HIGH     | B7   | /exec 允许 human assignee                                                      |
-| R-061 | HIGH     | B7   | worktree 失败时调用 failRun                                                    |
-| R-062 | HIGH     | B7   | 统一 bin/plansync --exec 与 CLI /exec                                          |
-| R-063 | HIGH     | B7   | AI loop 保留 tool_use/tool_result 历史                                         |
-| R-064 | HIGH     | B7   | !shell 命令在 Ink 之前 pause/unmount                                           |
-| R-065 | MEDIUM   | B7   | /clear /verbose 无 unmount 命令统一加入 unmount                                |
-| R-066 | MEDIUM   | B7   | Ink 监听 SIGWINCH 重渲染                                                       |
-| R-067 | MEDIUM   | B7   | Ink 支持 bracketed paste 多行提交                                              |
-| R-068 | MEDIUM   | B7   | Ink 非 TTY fallback                                                            |
-| R-069 | MEDIUM   | B7   | AI loop maxTurns 用户可见警告                                                  |
-| R-070 | MEDIUM   | B7   | AI loop 添加 token 预算估算                                                    |
-| R-071 | LOW      | B7   | /worker Ctrl+C 中断子进程                                                      |
-| R-072 | LOW      | B7   | suggestion ↓ 从未选状态进入                                                    |
-| R-073 | LOW      | B7   | /code 退出不清屏                                                               |
-| R-074 | MEDIUM   | B7   | /project <id> 验证项目存在                                                     |
-| R-075 | HIGH     | B8   | tasks 表加复合索引                                                             |
-| R-076 | HIGH     | B8   | drift_alerts 加复合索引                                                        |
-| R-077 | HIGH     | B8   | api_keys.keyPrefix 加索引                                                      |
-| R-078 | MEDIUM   | B8   | webhook_deliveries 加分页索引                                                  |
-| R-079 | HIGH     | B8   | 把 String 状态字段改为 Prisma enum                                             |
-| R-080 | MEDIUM   | B8   | ApiKey.execRunId FK                                                            |
-| R-081 | MEDIUM   | B8   | DriftAlert.planDiffId FK                                                       |
-| R-082 | MEDIUM   | B8   | PlanDiff.fromPlanId/toPlanId FK                                                |
-| R-083 | MEDIUM   | B8   | Task.boundPlanVersion 加复合 FK                                                |
-| R-084 | MEDIUM   | B8   | schema.prisma 标注 partial unique index                                        |
-| R-085 | LOW      | B8   | 统一 camelCase 列名                                                            |
-| R-086 | LOW      | B8   | PlanComment.parent onDelete 显式                                               |
-| R-087 | LOW      | B8   | DriftAlert.severity 加 default                                                 |
-| R-088 | CRITICAL | B9   | EventBus 替换为 Postgres LISTEN/NOTIFY                                         |
-| R-089 | MEDIUM   | B9   | SSE 改用 cookie 鉴权                                                           |
-| R-090 | MEDIUM   | B9   | SSE 加 backpressure / slow client 处理                                         |
-| R-091 | LOW      | B9   | MAX_SSE_CLIENTS 按 project 计                                                  |
-| R-092 | HIGH     | B10  | 构建 GitHub Action dist/index.js                                               |
-| R-093 | HIGH     | B10  | action 输入 api-key 加 core.setSecret                                          |
-| R-094 | HIGH     | B10  | action drift gate 按 PR 任务过滤                                               |
-| R-095 | HIGH     | B10  | PG_BIN / port_in_use 平台化                                                    |
-| R-096 | HIGH     | B10  | 删除 README 不存在的 demo 脚本引用                                             |
-| R-097 | HIGH     | B10  | CLAUDE.md 删除 task_update 虚假承诺                                            |
-| R-098 | MEDIUM   | B10  | CLAUDE.md Three contexts 文案修正                                              |
-| R-099 | MEDIUM   | B10  | .env.example 补缺失变量                                                        |
-| R-100 | MEDIUM   | B10  | bin/plansync 错误消息 --format 修正                                            |
-| R-101 | MEDIUM   | B10  | start-mcp 自动构建放到 CLI 启动路径                                            |
-| R-102 | MEDIUM   | B10  | 默认 Genie 路径平台化                                                          |
-| R-103 | LOW      | B10  | dev.sh 不再每次清 .next                                                        |
-| R-104 | HIGH     | B11  | plan PATCH 写 activity                                                         |
-| R-105 | HIGH     | B11  | task PATCH 写 activity                                                         |
-| R-106 | HIGH     | B11  | task DELETE 写 activity                                                        |
-| R-107 | HIGH     | B11  | drift cancel action 写 activity                                                |
-| R-108 | HIGH     | B11  | heartbeat-scanner stale/failed 写 activity                                     |
-| R-109 | HIGH     | B11  | comment edit/delete 写 activity                                                |
-| R-110 | HIGH     | B11  | project PATCH 写 activity                                                      |
-| R-111 | MEDIUM   | B11  | logger 中间件加 correlation id                                                 |
-| R-112 | LOW      | B11  | logger 用 env.LOG_LEVEL                                                        |
-| R-113 | LOW      | B11  | sendMail 异步队列化                                                            |
-| R-114 | HIGH     | B12  | complete-human 集成测试                                                        |
-| R-115 | HIGH     | B12  | tasks/conflicts 集成测试                                                       |
-| R-116 | HIGH     | B12  | chat/notify/ai-draft/ai-field 集成测试                                         |
-| R-117 | HIGH     | B12  | auth login/password/verify/logout 集成测试                                     |
-| R-118 | HIGH     | B12  | exec-sessions issue/revoke token 直测                                          |
-| R-119 | HIGH     | B12  | MCP execution\_\* 工具单测                                                     |
-| R-120 | HIGH     | B12  | MCP drift_resolve / check_task_conflicts 单测                                  |
-| R-121 | HIGH     | B12  | MCP plan*activate/reactivate/append/review*\* 单测                             |
-| R-122 | MEDIUM   | B12  | webhook delivery 单测                                                          |
-| R-123 | MEDIUM   | B12  | auth.ts 密码缓存边界单测                                                       |
-| R-124 | MEDIUM   | B12  | AI mock 让默认 CI 跑 ai.test                                                   |
-| R-125 | MEDIUM   | B12  | activity.ts 单测                                                               |
-| R-126 | MEDIUM   | B12  | B1 端到端集成测试                                                              |
-| R-127 | MEDIUM   | B12  | 并发 claim 压力测试                                                            |
-| R-128 | MEDIUM   | B12  | 并发 plan activate 压力测试                                                    |
-| R-129 | MEDIUM   | B12  | SSE 多实例端到端                                                               |
-| R-130 | LOW      | B12  | 文档示例代码可执行测试                                                         |
-| R-131 | HIGH     | B10  | 升级 Next.js 14 → 16（修复 2 个残留 high CVE）                                 |
-| R-132 | HIGH     | B4   | 升级 @modelcontextprotocol/sdk 1.3 → 1.29+ 并恢复 mcp-server typecheck         |
-| R-133 | MEDIUM   | B4   | 逐步把 `any` 替换为 `unknown`/具体类型，重新启用 ESLint `no-explicit-any` 警告 |
-| R-134 | MEDIUM   | B12  | plans.test.ts 抽出 `resetDraftPlans` helper（避免 R-036 guard 漏 cleanup）     |
-| R-135 | CRITICAL | B5   | task-pack 加 task↔project 归属校验                                            |
-| R-136 | CRITICAL | B2   | PLANSYNC_SECRET 增加 audit / 范围限制 / 强制 TTL                               |
-| R-137 | HIGH     | B2   | exec-scoped key 在缺 execRunId 时也强制 keyProjectId 校验                      |
-| R-138 | HIGH     | B10  | heartbeat-scanner 从 instrumentation 解耦                                      |
-| R-139 | HIGH     | B9   | webhook 重试改为持久化队列                                                     |
-| R-140 | HIGH     | B6   | 新增 task.executionGate 字段区分 system block                                  |
-| R-141 | MEDIUM   | B8   | ApiKey scrypt 热路径优化（内存缓存）                                           |
-| R-142 | HIGH     | B1   | MCP execution_aborted 改 protocol error                                        |
-| R-143 | HIGH     | B4   | completion-verify 可观测：score/breakdown/model 写库                           |
-| R-144 | MEDIUM   | B11  | 新增 ai_calls 表，所有 LLM 调用持久化                                          |
-| R-145 | HIGH     | B4   | PlanDiff.changes 强制 shared zod schema                                        |
-| R-146 | HIGH     | B10  | CLAUDE.md/AGENTS.md/ai-loop prompt 合并 single source                          |
-| R-150 | CRITICAL | B13  | 设计 Deliverable/Constraint/Standard 分表 schema                               |
-| R-151 | CRITICAL | B13  | 历史 plan 数据双写迁移                                                         |
-| R-152 | HIGH     | B13  | plan_update/propose/activate 改写新表                                          |
-| R-153 | HIGH     | B13  | Task→Deliverable FK 中间表                                                     |
-| R-154 | HIGH     | B13  | drift-engine 切换为图 diff                                                     |
-| R-155 | HIGH     | B13  | 新增 plansync_deliverable\_\* MCP 工具                                         |
-| R-156 | MEDIUM   | B13  | Web UI Deliverable 状态时间线                                                  |
-| R-157 | HIGH     | B13  | GitHub Action drift-gate 升级为语义 gate                                       |
-| R-160 | CRITICAL | B14  | 新增 domain_events 表 + 事务内 Outbox writer                                   |
-| R-161 | CRITICAL | B14  | 全部 eventBus.publish 改写 outbox.emit                                         |
-| R-162 | CRITICAL | B14  | 新增 plansync-worker 消费 outbox                                               |
-| R-163 | HIGH     | B14  | SSE relay 支持 lastEventId 回放                                                |
-| R-164 | HIGH     | B14  | Webhook dispatcher 改吃 outbox                                                 |
-| R-165 | HIGH     | B14  | Email 改为 outbox 消费者 + 去重                                                |
-| R-166 | HIGH     | B14  | 删除 instrumentation 启动 scanner，scanner 改吃 outbox                         |
-| R-170 | CRITICAL | B15  | 设计 ExecContextToken + nextRequired 状态机                                    |
-| R-171 | HIGH     | B15  | MCP server 实施 stateToken 校验                                                |
-| R-172 | HIGH     | B15  | CLAUDE.md 重写为 thin pointer                                                  |
-| R-173 | HIGH     | B15  | AGENTS.md 与 CLAUDE.md 合并到 generated source                                 |
-| R-174 | MEDIUM   | B15  | CLI ai-loop system prompt 从 generated 注入                                    |
-| R-175 | HIGH     | B15  | MCP tool surface 收敛到 ≤ 12 个                                                |
-| R-176 | MEDIUM   | B15  | 文档↔工具一致性 contract test                                                 |
-| R-180 | HIGH     | B16  | completion-verify 改为 advisory：永不 422                                      |
-| R-181 | HIGH     | B16  | 声明式 verification_rules 表 + 评估器                                          |
-| R-182 | HIGH     | B16  | ai_calls 表 + provider observability                                           |
-| R-183 | MEDIUM   | B16  | AI provider fallback + 限流 + 缓存                                             |
-| R-184 | MEDIUM   | B16  | UI/CLI 暴露 AI 建议 vs 规则 gate 区分                                          |
-| R-190 | HIGH     | B17  | 接收 GitHub webhook                                                            |
-| R-191 | HIGH     | B17  | commit↔deliverable 关联表 + 自动推导                                          |
-| R-192 | HIGH     | B17  | task 状态从 git + verification rules 自动推导                                  |
-| R-193 | MEDIUM   | B17  | PR template 自动注入 deliverable refs                                          |
-| R-200 | HIGH     | B18  | 抽出 @plansync/client-core view-model 包                                       |
-| R-201 | HIGH     | B18  | Web/CLI 改用 client-core                                                       |
-| R-202 | HIGH     | B18  | 拆 plansync-web 独立部署                                                       |
-| R-203 | MEDIUM   | B18  | 部署拓扑文档 + docker-compose / helm chart                                     |
-| R-185 | CRITICAL | B19  | AI 调用切到 Anthropic tool_use 严格结构化输出                                  |
-| R-186 | HIGH     | B19  | 抽 lib/ai/validate/ 共享层 + literal grounding 启发式                          |
-| R-187 | HIGH     | B19  | plan-diff / impact-analysis 加二次 LLM-as-Judge verifier pass                  |
-| R-188 | HIGH     | B19  | Prompt injection 防御：不可信输入 sandboxing                                   |
-| R-189 | MEDIUM   | B19  | completion-verify 边界分自一致采样                                             |
-| R-190a | MEDIUM  | B19  | Prompt 版本化 + golden-set 回归测试                                            |
-| R-191a | MEDIUM  | B19  | AI 低置信度自动升级给 owner                                                    |
+| ID     | 严重度   | 批次 | 标题                                                                           |
+| ------ | -------- | ---- | ------------------------------------------------------------------------------ |
+| R-001  | CRITICAL | B1   | 禁用 AI 后台自动解决 drift                                                     |
+| R-002  | CRITICAL | B1   | drift 触发时取消正在跑的 ExecutionRun                                          |
+| R-003  | CRITICAL | B1   | heartbeat / complete 加 run-task 版本对齐校验                                  |
+| R-004  | HIGH     | B1   | rebind 行为升级为"显式重启"                                                    |
+| R-005  | HIGH     | B1   | MCP heartbeat 把 superseded 转 agent abort                                     |
+| R-006  | HIGH     | B1   | drift complete-gate 同时检查 run 版本                                          |
+| R-007  | MEDIUM   | B1   | drift-engine 事件/邮件移到事务提交后                                           |
+| R-008  | HIGH     | B1   | 新增 `superseded` execution run 状态                                           |
+| R-009  | CRITICAL | B2   | heartbeat/complete 接口加 executor 身份校验                                    |
+| R-010  | CRITICAL | B2   | 生产环境拒绝 PLANSYNC_SECRET 默认值                                            |
+| R-011  | HIGH     | B2   | exec-scoped API key 绑定到 projectId                                           |
+| R-012  | HIGH     | B2   | execution_start 不再自动注册 agent 成员                                        |
+| R-013  | HIGH     | B2   | 首次登录开放注册改为受控                                                       |
+| R-014  | MEDIUM   | B2   | 密码 Bearer 模式仅开发环境保留                                                 |
+| R-015  | HIGH     | B2   | 给所有 owner-only 写路由加 requireNotExecScoped                                |
+| R-016  | HIGH     | B2   | 委托模式 task tools 使用 withUser                                              |
+| R-017  | HIGH     | B2   | withUser 在普通 API key 下抛错                                                 |
+| R-018  | HIGH     | B2   | my_work 跨项目模式尊重 agentName                                               |
+| R-019  | MEDIUM   | B2   | exec_context 区分 fatal/transient 错误                                         |
+| R-020  | MEDIUM   | B2   | exec_context 有 drift 时不启心跳                                               |
+| R-021  | CRITICAL | B3   | MCP 子进程崩溃可检测可自动恢复                                                 |
+| R-022  | HIGH     | B3   | MCP callTool 加单次重试                                                        |
+| R-023  | HIGH     | B3   | SSE listener 对 401/403 立刻提示用户                                           |
+| R-024  | MEDIUM   | B3   | MCP stop() 清理 pending requests                                               |
+| R-025  | HIGH     | B3   | psRequest 检查 HTTP 状态码                                                     |
+| R-026  | MEDIUM   | B3   | CLI auth 用 URL 协议选择 http vs https                                         |
+| R-027  | HIGH     | B4   | MCP task_update schema 复用 shared                                             |
+| R-028  | HIGH     | B4   | MCP task_create 复用 shared                                                    |
+| R-029  | MEDIUM   | B4   | MCP project_create/update 补 repoUrl/defaultBranch                             |
+| R-030  | HIGH     | B4   | shared planReviewSchema 补 focusNotes                                          |
+| R-031  | HIGH     | B4   | shared driftAlertSchema 补 affectedAreas/planDiffId                            |
+| R-032  | MEDIUM   | B4   | propose plan 建立 shared zod schema                                            |
+| R-033  | MEDIUM   | B4   | createActivity 强制 zod 校验 type                                              |
+| R-034  | HIGH     | B4   | 增加 schema-drift CI 守门测试                                                  |
+| R-035  | HIGH     | B4   | env.ts 验证所有运行时使用的 env 变量                                           |
+| R-036  | MEDIUM   | B4   | 删除 MCP plan_create 客户端 draft guard 或在 API 实施                          |
+| R-037  | MEDIUM   | B4   | MCP tool 统一错误格式                                                          |
+| R-038  | MEDIUM   | B4   | review_reject schema 强制 comment 非空                                         |
+| R-039  | LOW      | B4   | execution tools 错误统一为 JSON envelope                                       |
+| R-040  | LOW      | B4   | api-client 启动时校验 token 配置                                               |
+| R-041  | HIGH     | B5   | 所有 /plans/:planId/... 路由验证 plan ∈ project                                |
+| R-042  | HIGH     | B5   | task/drift 状态 query 参数 zod 校验                                            |
+| R-043  | HIGH     | B5   | webhook URL 校验防 SSRF                                                        |
+| R-044  | MEDIUM   | B5   | notify 路由限流 + owner-only                                                   |
+| R-045  | HIGH     | B5   | human task PATCH done 需要 execution 或 owner                                  |
+| R-046  | MEDIUM   | B5   | complete-human 加 open drift gate                                              |
+| R-047  | MEDIUM   | B5   | DELETE task 拒绝有 running run 的请求                                          |
+| R-048  | CRITICAL | B6   | plans 表加 partial unique 每项目一个 active                                    |
+| R-049  | HIGH     | B6   | task_claim 用 conditional updateMany 原子化                                    |
+| R-050  | MEDIUM   | B6   | plan 版本号生成放进事务                                                        |
+| R-051  | HIGH     | B6   | drift_alert 触发用 upsert 避免重复                                             |
+| R-052  | HIGH     | B6   | reactivate 把 drift 扫描放回事务                                               |
+| R-053  | MEDIUM   | B6   | suggestion accept 单事务 apply+update                                          |
+| R-054  | HIGH     | B6   | execution_start 拒绝 cancelled/blocked/done 任务                               |
+| R-055  | HIGH     | B6   | activate 路由要求非 0 reviewer 或 owner                                        |
+| R-056  | MEDIUM   | B6   | heartbeat scanner 改为 DB advisory lock                                        |
+| R-057  | MEDIUM   | B6   | stale 状态同步释放 task 与 exec-scoped key                                     |
+| R-058  | LOW      | B6   | drift_engine 使用 tx 读取                                                      |
+| R-059  | HIGH     | B7   | CLI banner phase 改用 API 返回的 project.phase                                 |
+| R-060  | HIGH     | B7   | /exec 允许 human assignee                                                      |
+| R-061  | HIGH     | B7   | worktree 失败时调用 failRun                                                    |
+| R-062  | HIGH     | B7   | 统一 bin/plansync --exec 与 CLI /exec                                          |
+| R-063  | HIGH     | B7   | AI loop 保留 tool_use/tool_result 历史                                         |
+| R-064  | HIGH     | B7   | !shell 命令在 Ink 之前 pause/unmount                                           |
+| R-065  | MEDIUM   | B7   | /clear /verbose 无 unmount 命令统一加入 unmount                                |
+| R-066  | MEDIUM   | B7   | Ink 监听 SIGWINCH 重渲染                                                       |
+| R-067  | MEDIUM   | B7   | Ink 支持 bracketed paste 多行提交                                              |
+| R-068  | MEDIUM   | B7   | Ink 非 TTY fallback                                                            |
+| R-069  | MEDIUM   | B7   | AI loop maxTurns 用户可见警告                                                  |
+| R-070  | MEDIUM   | B7   | AI loop 添加 token 预算估算                                                    |
+| R-071  | LOW      | B7   | /worker Ctrl+C 中断子进程                                                      |
+| R-072  | LOW      | B7   | suggestion ↓ 从未选状态进入                                                    |
+| R-073  | LOW      | B7   | /code 退出不清屏                                                               |
+| R-074  | MEDIUM   | B7   | /project <id> 验证项目存在                                                     |
+| R-075  | HIGH     | B8   | tasks 表加复合索引                                                             |
+| R-076  | HIGH     | B8   | drift_alerts 加复合索引                                                        |
+| R-077  | HIGH     | B8   | api_keys.keyPrefix 加索引                                                      |
+| R-078  | MEDIUM   | B8   | webhook_deliveries 加分页索引                                                  |
+| R-079  | HIGH     | B8   | 把 String 状态字段改为 Prisma enum                                             |
+| R-080  | MEDIUM   | B8   | ApiKey.execRunId FK                                                            |
+| R-081  | MEDIUM   | B8   | DriftAlert.planDiffId FK                                                       |
+| R-082  | MEDIUM   | B8   | PlanDiff.fromPlanId/toPlanId FK                                                |
+| R-083  | MEDIUM   | B8   | Task.boundPlanVersion 加复合 FK                                                |
+| R-084  | MEDIUM   | B8   | schema.prisma 标注 partial unique index                                        |
+| R-085  | LOW      | B8   | 统一 camelCase 列名                                                            |
+| R-086  | LOW      | B8   | PlanComment.parent onDelete 显式                                               |
+| R-087  | LOW      | B8   | DriftAlert.severity 加 default                                                 |
+| R-088  | CRITICAL | B9   | EventBus 替换为 Postgres LISTEN/NOTIFY                                         |
+| R-089  | MEDIUM   | B9   | SSE 改用 cookie 鉴权                                                           |
+| R-090  | MEDIUM   | B9   | SSE 加 backpressure / slow client 处理                                         |
+| R-091  | LOW      | B9   | MAX_SSE_CLIENTS 按 project 计                                                  |
+| R-092  | HIGH     | B10  | 构建 GitHub Action dist/index.js                                               |
+| R-093  | HIGH     | B10  | action 输入 api-key 加 core.setSecret                                          |
+| R-094  | HIGH     | B10  | action drift gate 按 PR 任务过滤                                               |
+| R-095  | HIGH     | B10  | PG_BIN / port_in_use 平台化                                                    |
+| R-096  | HIGH     | B10  | 删除 README 不存在的 demo 脚本引用                                             |
+| R-097  | HIGH     | B10  | CLAUDE.md 删除 task_update 虚假承诺                                            |
+| R-098  | MEDIUM   | B10  | CLAUDE.md Three contexts 文案修正                                              |
+| R-099  | MEDIUM   | B10  | .env.example 补缺失变量                                                        |
+| R-100  | MEDIUM   | B10  | bin/plansync 错误消息 --format 修正                                            |
+| R-101  | MEDIUM   | B10  | start-mcp 自动构建放到 CLI 启动路径                                            |
+| R-102  | MEDIUM   | B10  | 默认 Genie 路径平台化                                                          |
+| R-103  | LOW      | B10  | dev.sh 不再每次清 .next                                                        |
+| R-104  | HIGH     | B11  | plan PATCH 写 activity                                                         |
+| R-105  | HIGH     | B11  | task PATCH 写 activity                                                         |
+| R-106  | HIGH     | B11  | task DELETE 写 activity                                                        |
+| R-107  | HIGH     | B11  | drift cancel action 写 activity                                                |
+| R-108  | HIGH     | B11  | heartbeat-scanner stale/failed 写 activity                                     |
+| R-109  | HIGH     | B11  | comment edit/delete 写 activity                                                |
+| R-110  | HIGH     | B11  | project PATCH 写 activity                                                      |
+| R-111  | MEDIUM   | B11  | logger 中间件加 correlation id                                                 |
+| R-112  | LOW      | B11  | logger 用 env.LOG_LEVEL                                                        |
+| R-113  | LOW      | B11  | sendMail 异步队列化                                                            |
+| R-114  | HIGH     | B12  | complete-human 集成测试                                                        |
+| R-115  | HIGH     | B12  | tasks/conflicts 集成测试                                                       |
+| R-116  | HIGH     | B12  | chat/notify/ai-draft/ai-field 集成测试                                         |
+| R-117  | HIGH     | B12  | auth login/password/verify/logout 集成测试                                     |
+| R-118  | HIGH     | B12  | exec-sessions issue/revoke token 直测                                          |
+| R-119  | HIGH     | B12  | MCP execution\_\* 工具单测                                                     |
+| R-120  | HIGH     | B12  | MCP drift_resolve / check_task_conflicts 单测                                  |
+| R-121  | HIGH     | B12  | MCP plan*activate/reactivate/append/review*\* 单测                             |
+| R-122  | MEDIUM   | B12  | webhook delivery 单测                                                          |
+| R-123  | MEDIUM   | B12  | auth.ts 密码缓存边界单测                                                       |
+| R-124  | MEDIUM   | B12  | AI mock 让默认 CI 跑 ai.test                                                   |
+| R-125  | MEDIUM   | B12  | activity.ts 单测                                                               |
+| R-126  | MEDIUM   | B12  | B1 端到端集成测试                                                              |
+| R-127  | MEDIUM   | B12  | 并发 claim 压力测试                                                            |
+| R-128  | MEDIUM   | B12  | 并发 plan activate 压力测试                                                    |
+| R-129  | MEDIUM   | B12  | SSE 多实例端到端                                                               |
+| R-130  | LOW      | B12  | 文档示例代码可执行测试                                                         |
+| R-131  | HIGH     | B10  | 升级 Next.js 14 → 16（修复 2 个残留 high CVE）                                 |
+| R-132  | HIGH     | B4   | 升级 @modelcontextprotocol/sdk 1.3 → 1.29+ 并恢复 mcp-server typecheck         |
+| R-133  | MEDIUM   | B4   | 逐步把 `any` 替换为 `unknown`/具体类型，重新启用 ESLint `no-explicit-any` 警告 |
+| R-134  | MEDIUM   | B12  | plans.test.ts 抽出 `resetDraftPlans` helper（避免 R-036 guard 漏 cleanup）     |
+| R-135  | CRITICAL | B5   | task-pack 加 task↔project 归属校验                                            |
+| R-136  | CRITICAL | B2   | PLANSYNC_SECRET 增加 audit / 范围限制 / 强制 TTL                               |
+| R-137  | HIGH     | B2   | exec-scoped key 在缺 execRunId 时也强制 keyProjectId 校验                      |
+| R-138  | HIGH     | B10  | heartbeat-scanner 从 instrumentation 解耦                                      |
+| R-139  | HIGH     | B9   | webhook 重试改为持久化队列                                                     |
+| R-140  | HIGH     | B6   | 新增 task.executionGate 字段区分 system block                                  |
+| R-141  | MEDIUM   | B8   | ApiKey scrypt 热路径优化（内存缓存）                                           |
+| R-142  | HIGH     | B1   | MCP execution_aborted 改 protocol error                                        |
+| R-143  | HIGH     | B4   | completion-verify 可观测：score/breakdown/model 写库                           |
+| R-144  | MEDIUM   | B11  | 新增 ai_calls 表，所有 LLM 调用持久化                                          |
+| R-145  | HIGH     | B4   | PlanDiff.changes 强制 shared zod schema                                        |
+| R-146  | HIGH     | B10  | CLAUDE.md/AGENTS.md/ai-loop prompt 合并 single source                          |
+| R-150  | CRITICAL | B13  | 设计 Deliverable/Constraint/Standard 分表 schema                               |
+| R-151  | CRITICAL | B13  | 历史 plan 数据双写迁移                                                         |
+| R-152  | HIGH     | B13  | plan_update/propose/activate 改写新表                                          |
+| R-153  | HIGH     | B13  | Task→Deliverable FK 中间表                                                     |
+| R-154  | HIGH     | B13  | drift-engine 切换为图 diff                                                     |
+| R-155  | HIGH     | B13  | 新增 plansync_deliverable\_\* MCP 工具                                         |
+| R-156  | MEDIUM   | B13  | Web UI Deliverable 状态时间线                                                  |
+| R-157  | HIGH     | B13  | GitHub Action drift-gate 升级为语义 gate                                       |
+| R-160  | CRITICAL | B14  | 新增 domain_events 表 + 事务内 Outbox writer                                   |
+| R-161  | CRITICAL | B14  | 全部 eventBus.publish 改写 outbox.emit                                         |
+| R-162  | CRITICAL | B14  | 新增 plansync-worker 消费 outbox                                               |
+| R-163  | HIGH     | B14  | SSE relay 支持 lastEventId 回放                                                |
+| R-164  | HIGH     | B14  | Webhook dispatcher 改吃 outbox                                                 |
+| R-165  | HIGH     | B14  | Email 改为 outbox 消费者 + 去重                                                |
+| R-166  | HIGH     | B14  | 删除 instrumentation 启动 scanner，scanner 改吃 outbox                         |
+| R-170  | CRITICAL | B15  | 设计 ExecContextToken + nextRequired 状态机                                    |
+| R-171  | HIGH     | B15  | MCP server 实施 stateToken 校验                                                |
+| R-172  | HIGH     | B15  | CLAUDE.md 重写为 thin pointer                                                  |
+| R-173  | HIGH     | B15  | AGENTS.md 与 CLAUDE.md 合并到 generated source                                 |
+| R-174  | MEDIUM   | B15  | CLI ai-loop system prompt 从 generated 注入                                    |
+| R-175  | HIGH     | B15  | MCP tool surface 收敛到 ≤ 12 个                                                |
+| R-176  | MEDIUM   | B15  | 文档↔工具一致性 contract test                                                 |
+| R-180  | HIGH     | B16  | completion-verify 改为 advisory：永不 422                                      |
+| R-181  | HIGH     | B16  | 声明式 verification_rules 表 + 评估器                                          |
+| R-182  | HIGH     | B16  | ai_calls 表 + provider observability                                           |
+| R-183  | MEDIUM   | B16  | AI provider fallback + 限流 + 缓存                                             |
+| R-184  | MEDIUM   | B16  | UI/CLI 暴露 AI 建议 vs 规则 gate 区分                                          |
+| R-190  | HIGH     | B17  | 接收 GitHub webhook                                                            |
+| R-191  | HIGH     | B17  | commit↔deliverable 关联表 + 自动推导                                          |
+| R-192  | HIGH     | B17  | task 状态从 git + verification rules 自动推导                                  |
+| R-193  | MEDIUM   | B17  | PR template 自动注入 deliverable refs                                          |
+| R-200  | HIGH     | B18  | 抽出 @plansync/client-core view-model 包                                       |
+| R-201  | HIGH     | B18  | Web/CLI 改用 client-core                                                       |
+| R-202  | HIGH     | B18  | 拆 plansync-web 独立部署                                                       |
+| R-203  | MEDIUM   | B18  | 部署拓扑文档 + docker-compose / helm chart                                     |
+| R-185  | CRITICAL | B19  | AI 调用切到 Anthropic tool_use 严格结构化输出                                  |
+| R-186  | HIGH     | B19  | 抽 lib/ai/validate/ 共享层 + literal grounding 启发式                          |
+| R-187  | HIGH     | B19  | plan-diff / impact-analysis 加二次 LLM-as-Judge verifier pass                  |
+| R-188  | HIGH     | B19  | Prompt injection 防御：不可信输入 sandboxing                                   |
+| R-189  | MEDIUM   | B19  | completion-verify 边界分自一致采样                                             |
+| R-190a | MEDIUM   | B19  | Prompt 版本化 + golden-set 回归测试                                            |
+| R-191a | MEDIUM   | B19  | AI 低置信度自动升级给 owner                                                    |
 
 **统计**（含 2026-05-22 追加 + 2026-05-24 B19 追加 7 条；与正文 `^#### R-XXX [SEVERITY]` 标题精确一致）：
 

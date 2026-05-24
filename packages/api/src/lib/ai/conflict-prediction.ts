@@ -7,10 +7,7 @@ import {
 import { logger } from '../logger';
 import { z } from 'zod';
 import { CONFLICT_PREDICTION_TOOL, conflictPredictionResultZ } from './schemas';
-import {
-  assertIdsInAllowlist,
-  logValidationWarnings,
-} from './validate';
+import { assertIdsInAllowlist, logValidationWarnings } from './validate';
 
 export interface ConflictResult {
   conflicts: Array<{
@@ -50,14 +47,24 @@ export async function predictConflicts(
   );
   if (!response) return null;
 
-  // R-186: validate per-item rather than per-response. The legacy contract
-  // (test #137) is "keep the valid conflicts, drop the invalid ones in the
-  // same payload" — a per-response zod parse would reject the entire list
-  // as soon as a single malformed entry sneaks in (which still happens
-  // through the text-mode fallback path). We:
+  // R-186: validate per-item rather than per-response.
+  //
+  // Trade-off: R-185 tool_use strict mode would normally guarantee the
+  // whole response shape at the decoding layer, and a single per-response
+  // zod parse would be cleaner. We deliberately downgrade to per-item
+  // parsing here because:
+  //   * the legacy contract (test #137) is "keep the valid conflicts,
+  //     drop the invalid ones in the same payload" — chat surfaces depend
+  //     on this behaviour
+  //   * the text-mode fallback path (AMD without tool support / mock
+  //     provider) can produce a partially-malformed list
+  // Net effect: we lose the "all-or-nothing" strictness for this specific
+  // caller in exchange for backward-compat. Other callers (impact-analysis,
+  // plan-diff, ai-draft) keep the strict per-response parse.
+  //
+  // Flow:
   //   1. JSON.parse the response (parse failure → null, legacy contract)
-  //   2. Reject the whole thing only if the top-level shape lacks
-  //      `conflicts: array`
+  //   2. Reject only if the top-level shape lacks `conflicts: array`
   //   3. zod-validate each conflict independently; drop failures
   //   4. Run the R-186 allowlist guard on the per-item taskIds
   let parsed: unknown;
@@ -79,9 +86,8 @@ export async function predictConflicts(
   // Re-derive the per-item schema from the top-level zod so the source of
   // truth stays in schemas/. This keeps R-185 and R-186 consistent — any
   // future field added to the conflict shape is automatically picked up.
-  const itemSchema = (
-    conflictPredictionResultZ.shape.conflicts as z.ZodArray<z.ZodTypeAny>
-  ).element;
+  const itemSchema = (conflictPredictionResultZ.shape.conflicts as z.ZodArray<z.ZodTypeAny>)
+    .element;
   const inputIds = new Set(tasks.map((t) => t.id));
   const cleanedConflicts: ConflictResult['conflicts'] = [];
   const allWarnings: string[] = [];

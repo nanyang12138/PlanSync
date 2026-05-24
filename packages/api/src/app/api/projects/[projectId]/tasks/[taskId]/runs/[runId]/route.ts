@@ -281,15 +281,11 @@ export async function POST(req: NextRequest, { params }: Params) {
             // R-185: tool_use strict mode forces { verified, score 0-100,
             // gaps, feedback } at the decoding layer. Phase-2 JSON.parse
             // continues to act as a defense for the text-fallback path.
-            raw = await aiClient.complete(
-              COMPLETION_VERIFY_SYSTEM,
-              completionVerifyUserMessage,
-              {
-                purpose: 'completion_verify',
-                promptVersion: COMPLETION_VERIFY_PROMPT_VERSION,
-                tool: COMPLETION_VERIFY_TOOL,
-              },
-            );
+            raw = await aiClient.complete(COMPLETION_VERIFY_SYSTEM, completionVerifyUserMessage, {
+              purpose: 'completion_verify',
+              promptVersion: COMPLETION_VERIFY_PROMPT_VERSION,
+              tool: COMPLETION_VERIFY_TOOL,
+            });
           } catch (err) {
             const errMessage = err instanceof Error ? err.message : String(err);
             console.warn(

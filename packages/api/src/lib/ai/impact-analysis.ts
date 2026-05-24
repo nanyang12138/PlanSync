@@ -139,7 +139,9 @@ export async function analyzeTaskImpact(
         compatible: typeof p.compatible === 'boolean' ? p.compatible : score > 70,
         suggestedAction: score > 70 ? 'no_impact' : score > 30 ? 'rebind' : 'cancel',
         reasoning: p.reasoning as string,
-        affectedAreas: (p.affectedAreas as unknown[]).filter((x): x is string => typeof x === 'string'),
+        affectedAreas: (p.affectedAreas as unknown[]).filter(
+          (x): x is string => typeof x === 'string',
+        ),
         riskLevel:
           typeof p.riskLevel === 'string' && ['high', 'medium', 'low'].includes(p.riskLevel)
             ? (p.riskLevel as string)

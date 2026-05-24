@@ -7,11 +7,7 @@ import {
 } from './prompts/plan-diff.prompt';
 import { logger } from '../logger';
 import { PLAN_DIFF_TOOL, planDiffResultZ } from './schemas';
-import {
-  assertLiteralsInContext,
-  logValidationWarnings,
-  validateOrNull,
-} from './validate';
+import { assertLiteralsInContext, logValidationWarnings, validateOrNull } from './validate';
 import { verifyPlanDiffBreaking } from './verifier';
 
 export interface PlanDiffResult {
