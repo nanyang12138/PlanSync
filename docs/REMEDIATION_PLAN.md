@@ -3227,7 +3227,8 @@
 
 #### R-185 [CRITICAL] AI 调用切换到 Anthropic tool_use 严格结构化输出
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#818 (#846 post-merge fix)
 - **batch**: B19
 - **depends_on**: —
 - **effort**: medium
@@ -3253,7 +3254,8 @@
 
 #### R-186 [HIGH] 抽 `lib/ai/validate/` 公共层 + literal grounding 启发式
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#818 (#846 post-merge fix)
 - **batch**: B19
 - **depends_on**: R-185
 - **effort**: medium
@@ -3275,7 +3277,8 @@
 
 #### R-187 [HIGH] 高风险输出加二次 LLM-as-Judge verifier pass
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#818 (#846 post-merge fix)
 - **batch**: B19
 - **depends_on**: R-186
 - **effort**: medium
@@ -3297,7 +3300,8 @@
 
 #### R-188 [HIGH] Prompt injection 防御：不可信输入 sandboxing
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#818 (#846 post-merge fix)
 - **batch**: B19
 - **depends_on**: —
 - **effort**: small
@@ -3320,7 +3324,8 @@
 
 #### R-189 [MEDIUM] completion-verify 边界分自一致采样
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#818 (#846 post-merge fix)
 - **batch**: B19
 - **depends_on**: R-185
 - **effort**: small
@@ -3340,7 +3345,8 @@
 
 #### R-190a [MEDIUM] Prompt 版本化 + golden-set 回归测试
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#818 (#846 post-merge fix)
 - **batch**: B19
 - **depends_on**: R-185
 - **effort**: small
@@ -3362,7 +3368,8 @@
 
 #### R-191a [MEDIUM] AI 低置信度自动升级给 owner
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#818 (#846 post-merge fix)
 - **batch**: B19
 - **depends_on**: —
 - **effort**: small
