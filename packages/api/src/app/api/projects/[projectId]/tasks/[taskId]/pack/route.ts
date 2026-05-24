@@ -27,7 +27,11 @@ export async function GET(req: NextRequest, { params }: Params) {
       where: { projectId: params.projectId, version: task.boundPlanVersion },
     });
 
-    const project = await prisma.project.findUnique({ where: { id: params.projectId } });
+    // F2: defense-in-depth — same narrowing as buildTaskPack().
+    const project = await prisma.project.findUnique({
+      where: { id: params.projectId },
+      select: { id: true, name: true, phase: true },
+    });
 
     const openDrifts = await prisma.driftAlert.findMany({
       where: { taskId: params.taskId, status: 'open' },
