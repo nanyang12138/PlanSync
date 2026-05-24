@@ -276,7 +276,8 @@
 
 #### R-005 [HIGH] MCP heartbeat 把 superseded / RUN_STALE_VERSION 转为 agent abort
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#649
 - **batch**: B1
 - **depends_on**: R-003
 - **effort**: medium
@@ -298,7 +299,8 @@
 
 #### R-006 [HIGH] drift complete-gate 同时检查 run 版本
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#652
 - **batch**: B1
 - **depends_on**: R-003
 - **effort**: small
@@ -453,7 +455,8 @@
 
 #### R-014 [MEDIUM] 密码 Bearer 模式仅在开发环境保留
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#671
 - **batch**: B2
 - **depends_on**: R-013
 - **effort**: small
@@ -512,7 +515,8 @@
 
 #### R-017 [HIGH] `withUser` 在普通 API key 下抛错或退化警告
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#672
 - **batch**: B2
 - **depends_on**: R-010
 - **effort**: small
@@ -604,7 +608,8 @@
 
 #### R-022 [HIGH] MCP callTool 加单次重试
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#700
 - **batch**: B3
 - **depends_on**: R-021
 - **effort**: small
@@ -637,7 +642,8 @@
 
 #### R-024 [MEDIUM] MCP stop() 清理 pending requests
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#702
 - **batch**: B3
 - **depends_on**: R-021
 - **effort**: small
@@ -806,7 +812,8 @@
 
 #### R-034 [HIGH] 增加 schema-drift CI 守门测试
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#704
 - **batch**: B4
 - **depends_on**: R-027, R-028, R-029, R-030, R-031, R-032, R-033
 - **effort**: medium
@@ -892,7 +899,8 @@
 
 #### R-039 [LOW] execution tools 错误统一为 JSON envelope
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#706
 - **batch**: B4
 - **depends_on**: R-037
 - **effort**: small
@@ -907,7 +915,8 @@
 
 #### R-040 [LOW] api-client 启动时校验 token 配置
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#707
 - **batch**: B4
 - **depends_on**: R-010
 - **effort**: small
@@ -1118,7 +1127,8 @@
 
 #### R-051 [HIGH] drift_alert 触发用 upsert 避免重复
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#708
 - **batch**: B6
 - **depends_on**: R-008
 - **effort**: medium
@@ -1215,7 +1225,8 @@
 
 #### R-057 [MEDIUM] stale 状态同步释放 task 与 exec-scoped key
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#718
 - **batch**: B6
 - **depends_on**: R-008
 - **effort**: small
@@ -1300,7 +1311,8 @@
 
 #### R-062 [HIGH] 统一 `bin/plansync --exec` 与 CLI `/exec`
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#724
 - **batch**: B7
 - **depends_on**: R-060, R-061
 - **effort**: medium
@@ -1431,7 +1443,8 @@
 
 #### R-070 [MEDIUM] AI loop 添加 token 预算估算
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#729
 - **batch**: B7
 - **depends_on**: R-063
 - **effort**: medium
@@ -1729,7 +1742,8 @@
 
 #### R-090 [MEDIUM] SSE 加 backpressure / slow client 处理
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#743
 - **batch**: B9
 - **depends_on**: R-088
 - **effort**: medium
@@ -1744,7 +1758,8 @@
 
 #### R-091 [LOW] MAX_SSE_CLIENTS 改为按 project 计
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#745
 - **batch**: B9
 - **depends_on**: R-088
 - **effort**: small
@@ -1875,7 +1890,8 @@
 
 #### R-099 [MEDIUM] `.env.example` 补 PLANSYNC*SECRET / AUTH_DISABLED / AI keys / EMAIL*\*
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#751
 - **batch**: B10
 - **depends_on**: R-035
 - **effort**: small
@@ -1944,7 +1960,8 @@
 
 #### R-104 [HIGH] plan PATCH 写 activity
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#752, PR#758
 - **batch**: B11
 - **depends_on**: R-033
 - **effort**: small
@@ -1956,7 +1973,8 @@
 
 #### R-105 [HIGH] task PATCH 写 activity
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#754, PR#756, PR#757
 - **batch**: B11
 - **depends_on**: R-033
 - **effort**: small
@@ -1967,7 +1985,8 @@
 
 #### R-106 [HIGH] task DELETE 写 activity
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#756
 - **batch**: B11
 - **depends_on**: R-033
 - **effort**: small
@@ -1977,7 +1996,8 @@
 
 #### R-107 [HIGH] drift cancel action 写 activity
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#757
 - **batch**: B11
 - **depends_on**: R-033
 - **effort**: small
@@ -1988,7 +2008,8 @@
 
 #### R-108 [HIGH] heartbeat-scanner stale/failed 写 activity
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#758, PR#761
 - **batch**: B11
 - **depends_on**: R-033
 - **effort**: small
@@ -1998,7 +2019,8 @@
 
 #### R-109 [HIGH] comment edit/delete 写 activity
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#761, PR#764
 - **batch**: B11
 - **depends_on**: R-033
 - **effort**: small
@@ -2007,7 +2029,8 @@
 
 #### R-110 [HIGH] project PATCH 写 activity
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#764
 - **batch**: B11
 - **depends_on**: R-033
 - **effort**: small
@@ -2033,7 +2056,8 @@
 
 #### R-112 [LOW] logger 用 env.LOG_LEVEL 而不是 process.env
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#766
 - **batch**: B11
 - **depends_on**: R-035
 - **effort**: small
@@ -2059,7 +2083,8 @@
 
 #### R-114 [HIGH] complete-human 集成测试
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#767
 - **batch**: B12
 - **depends_on**: R-046
 - **effort**: small
@@ -2078,7 +2103,8 @@
 
 #### R-116 [HIGH] chat / notify / ai-draft / ai-field 集成测试
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#769
 - **batch**: B12
 - **depends_on**: R-044
 - **effort**: medium
@@ -2096,7 +2122,8 @@
 
 #### R-118 [HIGH] exec-sessions issue/revoke token 直测
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#768
 - **batch**: B12
 - **depends_on**: R-011
 - **effort**: small
@@ -2168,7 +2195,8 @@
 
 #### R-125 [MEDIUM] activity.ts 单测覆盖
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#771
 - **batch**: B12
 - **depends_on**: R-033
 - **effort**: small
@@ -2191,7 +2219,8 @@
 
 #### R-127 [MEDIUM] 并发 claim 压力测试
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#772
 - **batch**: B12
 - **depends_on**: R-049
 - **effort**: small
@@ -2200,7 +2229,8 @@
 
 #### R-128 [MEDIUM] 并发 plan activate 压力测试
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#773
 - **batch**: B12
 - **depends_on**: R-048
 - **effort**: small
@@ -2360,8 +2390,8 @@
 
 #### R-136 [CRITICAL] PLANSYNC_SECRET 增加 audit / 范围限制 / 强制 TTL
 
-- **status**: in_progress
-- **closed_in**: PR#673
+- **status**: done
+- **closed_in**: PR#673, PR#751
 - **batch**: B2
 - **depends_on**: R-010
 - **effort**: medium
@@ -2391,7 +2421,8 @@
 
 #### R-137 [HIGH] exec-scoped key 在缺 execRunId 时也强制 keyProjectId 校验
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#690
 - **batch**: B2
 - **depends_on**: R-011
 - **effort**: small
@@ -2430,7 +2461,8 @@
 
 #### R-139 [HIGH] webhook 重试改为持久化队列
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#747
 - **batch**: B9
 - **depends_on**: R-138
 - **interim_for**: R-164
@@ -2453,7 +2485,8 @@
 
 #### R-140 [HIGH] 新增 `task.executionGate` 字段，区分 system block 与 owner block
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#720
 - **batch**: B6
 - **depends_on**: R-002, R-008
 - **effort**: medium
@@ -2473,7 +2506,8 @@
 
 #### R-141 [MEDIUM] ApiKey scrypt 热路径优化（内存缓存）
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#740
 - **batch**: B8
 - **depends_on**: R-077
 - **effort**: small
@@ -2611,7 +2645,7 @@
 
 #### R-151 [CRITICAL] 历史 plan 数据双写迁移：String[] → 分表
 
-- **status**: in_progress
+- **status**: done
 - **closed_in**: PR#691
 - **batch**: B13
 - **depends_on**: R-150
@@ -2865,8 +2899,8 @@
 
 #### R-171 [HIGH] MCP server 实施 stateToken 校验 + OUT_OF_SEQUENCE error
 
-- **status**: in_progress
-- **closed_in**: PR#651
+- **status**: done
+- **closed_in**: PR#651, PR#746, PR#788, PR#795
 - **batch**: B15
 - **depends_on**: R-170
 - **effort**: large
@@ -2921,7 +2955,7 @@
 
 #### R-175 [HIGH] MCP tool surface 收敛到 ≤ 12 个
 
-- **status**: in_progress
+- **status**: done
 - **closed_in**: PR#664
 - **note**: Sliced into 3 PRs by fix*step number. step 1 (plan*_*append → plan_patch) is in flight in PR#664; steps 2 (execution*_ → run) and 3 (task\_\* → task) will each ship as separate follow-up PRs to keep merge-conflict surface bounded.
 - **batch**: B15
@@ -2958,7 +2992,8 @@
 
 #### R-180 [HIGH] completion-verify 改为 advisory：永不 422
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#776
 - **batch**: B16
 - **depends_on**: R-143
 - **effort**: small
@@ -3013,7 +3048,8 @@
 
 #### R-183 [MEDIUM] AI provider fallback + 限流 + 缓存
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#778
 - **batch**: B16
 - **depends_on**: R-182
 - **effort**: medium
@@ -3051,7 +3087,8 @@
 
 #### R-190 [HIGH] 接收 GitHub webhook：push / pull_request / pull_request_review
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#779
 - **batch**: B17
 - **depends_on**: R-160
 - **effort**: medium
@@ -3114,7 +3151,8 @@
 
 #### R-200 [HIGH] 抽出 `@plansync/client-core` view-model 包
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#782
 - **batch**: B18
 - **depends_on**: R-027, R-030
 - **effort**: large
