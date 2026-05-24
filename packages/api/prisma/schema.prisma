@@ -26,14 +26,15 @@ model Project {
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
 
-  members     ProjectMember[]
-  plans       Plan[]
-  tasks       Task[]
-  driftAlerts DriftAlert[]
-  activities  Activity[]
-  apiKeys     ApiKey[]
-  webhooks    Webhook[]
-  planDiffs   PlanDiff[]
+  members           ProjectMember[]
+  plans             Plan[]
+  tasks             Task[]
+  driftAlerts       DriftAlert[]
+  activities        Activity[]
+  apiKeys           ApiKey[]
+  webhooks          Webhook[]
+  planDiffs         PlanDiff[]
+  verificationRules VerificationRule[]
 
   @@map("projects")
 }
@@ -624,6 +625,56 @@ model AiCall {
   @@index([inputHash, purpose])
   @@index([createdAt(sort: Desc)])
   @@map("ai_calls")
+}
+
+// R-181: declarative, owner-configurable verification rules that act as a
+// HARD gate at `complete` time. R-180 demoted the AI scoring path to an
+// advisory (no more 422 from the AI), and this table now holds the rule
+// engine that *can* 422 a complete — but only on deterministic, owner-
+// editable conditions instead of "the LLM gave you a B-".
+//
+// Scope semantics:
+//   - scope = 'project'         — applies to every run in the project.
+//   - scope = 'task_type'       — applies only when task.type === scopeValue
+//                                  (e.g. enforce `require_files_changed`
+//                                  for code tasks but not research tasks).
+//   - scope = 'task'            — applies only when run.taskId === scopeValue
+//                                  (rare; useful for one-off escalations).
+//
+// `kind` is a String (not a Prisma enum) so a new rule kind is a one-file
+// evaluator change without a schema migration. Today the evaluator supports:
+//   - require_files_changed             — body.filesChanged must be non-empty
+//   - require_commits_on_branch         — body.branchName must be set + non-empty
+//   - require_pr_merged                 — body.prUrl must be set + non-empty
+//   - require_deliverable_evidence_for_each_ref
+//                                       — every plan deliverable ref on the
+//                                         task must appear as a substring of
+//                                         at least one deliverablesMet entry
+//   - min_output_summary_chars          — body.outputSummary length ≥ params.min
+//
+// `enabled` lets owners temporarily disable a rule without deleting it;
+// the evaluator skips disabled rows. `params` is the per-kind bag (e.g.
+// `{ min: 40 }` for min_output_summary_chars).
+model VerificationRule {
+  id         String   @id @default(cuid())
+  projectId  String   @map("project_id")
+  scope      String   @default("project") // project | task_type | task
+  scopeValue String?  @map("scope_value")
+  kind       String
+  params     Json     @default("{}")
+  enabled    Boolean  @default(true)
+  createdBy  String   @map("created_by")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  // Hot read path: "list all enabled rules for this project on complete".
+  // The evaluator filters by scope/scopeValue in memory after this fetch
+  // because the projectId,enabled index keeps the candidate set small
+  // (typical owner configures < 20 rules per project).
+  @@index([projectId, enabled])
+  @@map("verification_rules")
 }
 
 // R-160: transactional outbox. Every state-changing event is written to this
