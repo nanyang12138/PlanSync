@@ -12,7 +12,7 @@ type Params = { params: { projectId: string; planId: string; commentId: string }
 export async function PATCH(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
-    await requireProjectRole(auth, params.projectId);
+    const memberAuth = await requireProjectRole(auth, params.projectId);
     const body = await validateBody(req, updateCommentSchema);
 
     const comment = await prisma.planComment.findFirst({
@@ -47,7 +47,10 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       projectId: params.projectId,
       type: 'comment_updated',
       actorName: auth.userName,
-      actorType: 'human',
+      // Closes #762: hardcoding 'human' mislabels agent-driven edits in
+      // the audit feed. Use the membership type derived in
+      // requireProjectRole (defaults to 'human' for legacy rows).
+      actorType: memberAuth.projectMemberType ?? 'human',
       summary: `Comment on plan v${comment.plan.version} edited`,
       metadata: {
         planId: params.planId,
@@ -89,6 +92,17 @@ export async function DELETE(req: NextRequest, { params }: Params) {
         'Only the author or a project owner can delete this comment',
       );
     }
+    // Closes #763: a repeat DELETE on an already-soft-deleted comment used
+    // to write a fresh `comment_deleted` Activity row each time, polluting
+    // the audit trail with phantom delete events for a comment that was
+    // already gone. Treat re-delete as STATE_CONFLICT (idempotent failure
+    // — the resource is already in the requested state).
+    if (comment.isDeleted) {
+      throw new AppError(
+        ErrorCode.STATE_CONFLICT,
+        'Comment is already deleted; refusing to write a duplicate audit row',
+      );
+    }
 
     const updated = await prisma.planComment.update({
       where: { id: params.commentId },
@@ -105,7 +119,8 @@ export async function DELETE(req: NextRequest, { params }: Params) {
       projectId: params.projectId,
       type: 'comment_deleted',
       actorName: auth.userName,
-      actorType: 'human',
+      // Closes #762 — see PATCH branch above for rationale.
+      actorType: authCtx.projectMemberType ?? 'human',
       summary:
         comment.authorName === auth.userName
           ? `Comment on plan v${comment.plan.version} deleted by author`

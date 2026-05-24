@@ -15,6 +15,15 @@ import { logger } from './logger';
 export interface AuthContext {
   userName: string;
   projectRole?: 'owner' | 'developer';
+  /**
+   * Closes #762: ProjectMember.type ('human' | 'agent') of the
+   * authenticated caller within this project. Set by
+   * `requireProjectRole` after the membership lookup, so any route
+   * that writes an Activity row can record the correct actorType
+   * instead of hardcoding 'human'. Undefined when the call is not
+   * scoped to a specific project (no membership lookup happened).
+   */
+  projectMemberType?: 'human' | 'agent';
   execRunId?: string;
   /**
    * When the caller authenticated with an API key that was issued for a
@@ -508,7 +517,15 @@ export async function requireProjectRole(
     throw new AppError(ErrorCode.FORBIDDEN, 'Only project owners can perform this action');
   }
 
-  return { ...auth, projectRole: member.role as 'owner' | 'developer' };
+  return {
+    ...auth,
+    projectRole: member.role as 'owner' | 'developer',
+    // Closes #762: surface the membership type so route handlers can
+    // record the correct Activity.actorType. ProjectMember.type is
+    // a free-form string in Prisma but the documented domain is
+    // 'human' | 'agent'; coerce defensively.
+    projectMemberType: member.type === 'agent' ? 'agent' : 'human',
+  };
 }
 
 /**
