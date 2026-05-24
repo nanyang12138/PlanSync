@@ -25,6 +25,17 @@ const MAX_CONSECUTIVE_CRASHES = 3;
  */
 const RESTART_BACKOFF_MS = [0, 250, 750];
 
+/**
+ * Cap on how many recent output lines from the MCP child are retained for
+ * surfacing on a crash. The MCP server uses pino on stdout, so a single
+ * structured log line can be ~1 KB; 50 lines × ~1 KB = ~50 KB upper bound,
+ * which is small enough to keep in memory indefinitely yet plenty for
+ * humans to read on the terminal when something goes wrong.
+ */
+const CHILD_OUTPUT_RING_LINES = 50;
+/** Per-line cap so a runaway log line cannot blow memory. */
+const CHILD_OUTPUT_LINE_CAP = 4096;
+
 export class McpClient {
   private proc: ChildProcess | null = null;
   private pending = new Map<
@@ -48,6 +59,24 @@ export class McpClient {
    * up to every caller site.
    */
   private serverPath: string | null = null;
+
+  /**
+   * Ring buffer of recent output lines from the MCP child (both stderr and
+   * non-protocol stdout lines). When the subprocess crashes during startup
+   * we emit these to the user so they get an actionable repro instead of
+   * an opaque "subprocess exited (code 1)".
+   *
+   * Why both streams: pino — the MCP server's logger — defaults to stdout.
+   * A startup error like the R-040 "PLANSYNC_API_KEY is not set" or the
+   * R-171 "ReferenceError: readEnforceMode is not defined" is emitted as a
+   * structured pino JSON line on stdout that does NOT match a JSON-RPC
+   * id / method, so we recognise that case and route those orphan lines
+   * into this ring. Plain text on stderr (Node fatal error traces, etc.)
+   * is captured directly.
+   */
+  private childOutputLines: string[] = [];
+  /** Partial-line accumulator for stderr (chunks may not align with newlines). */
+  private stderrAccumulator = '';
 
   setNotifyPrinter(fn: (text: string) => void): void {
     this.notifyPrinter = fn;
@@ -90,8 +119,15 @@ export class McpClient {
 
     this.serverPath = serverPath;
     this.intentionalShutdown = false;
+    // Reset diagnostic buffers so a previous crash's output does not
+    // contaminate the next spawn's surface area.
+    this.childOutputLines = [];
+    this.stderrAccumulator = '';
     this.proc = spawn(cfg.nodeBin, [serverPath], {
-      stdio: ['pipe', 'pipe', 'inherit'],
+      // stderr is `pipe` (not `inherit`) so we can capture Node fatal-error
+      // traces and surface them in the crash message instead of having them
+      // race against the prompt.
+      stdio: ['pipe', 'pipe', 'pipe'],
       env,
     });
 
@@ -103,11 +139,35 @@ export class McpClient {
       this.readBuffer = lines.pop() || '';
       for (const line of lines) {
         if (!line.trim()) continue;
+        let parsed: unknown;
         try {
-          this.handleMessage(JSON.parse(line));
+          parsed = JSON.parse(line);
         } catch {
-          /* ignore */
+          // Non-JSON on stdout (e.g. accidental console.log in a tool
+          // handler). Capture for crash diagnostics; ignore otherwise.
+          this.recordChildOutput(line);
+          continue;
         }
+        if (this.isJsonRpcFrame(parsed)) {
+          this.handleMessage(parsed as Parameters<McpClient['handleMessage']>[0]);
+        } else {
+          // JSON that isn't a JSON-RPC frame is almost always pino —
+          // the MCP server's logger defaults to stdout, so startup
+          // errors like the R-040 "PLANSYNC_API_KEY is not set" land
+          // here. Capture them for crash diagnostics so the user sees
+          // a real repro instead of just "code 1".
+          this.recordChildOutput(line);
+        }
+      }
+    });
+
+    proc.stderr!.on('data', (chunk: Buffer) => {
+      this.stderrAccumulator += chunk.toString();
+      const lines = this.stderrAccumulator.split('\n');
+      this.stderrAccumulator = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        this.recordChildOutput(line);
       }
     });
 
@@ -147,6 +207,13 @@ export class McpClient {
     if (this.proc !== proc) return;
     this.proc = null;
     this.readBuffer = '';
+    // Flush any unterminated stderr partial-line so it shows up in the
+    // diagnostic dump (Node sometimes writes the final fatal-error line
+    // without a trailing '\n').
+    if (this.stderrAccumulator.trim()) {
+      this.recordChildOutput(this.stderrAccumulator);
+    }
+    this.stderrAccumulator = '';
 
     const wasIntentional = this.intentionalShutdown;
     this.intentionalShutdown = false;
@@ -166,9 +233,87 @@ export class McpClient {
     if (wasIntentional) return;
 
     this.consecutiveCrashes += 1;
+    const summary = this.formatChildOutputForDisplay();
     process.stdout.write(
       `\n${c.yellow}⚠ MCP subprocess exited unexpectedly (${reason}); the next tool call will attempt to restart it.${c.reset}\n`,
     );
+    if (summary) {
+      process.stdout.write(
+        `${c.dim}  Last output from MCP child (most recent last):${c.reset}\n${summary}\n`,
+      );
+    }
+  }
+
+  /**
+   * Append a captured line from the MCP child's stdout/stderr to the
+   * diagnostic ring buffer, with caps to keep memory bounded even if the
+   * child goes into a tight log loop.
+   */
+  private recordChildOutput(line: string): void {
+    const trimmed = line.replace(/\r$/, '');
+    if (!trimmed) return;
+    const capped =
+      trimmed.length > CHILD_OUTPUT_LINE_CAP
+        ? trimmed.slice(0, CHILD_OUTPUT_LINE_CAP) + '…'
+        : trimmed;
+    this.childOutputLines.push(capped);
+    if (this.childOutputLines.length > CHILD_OUTPUT_RING_LINES) {
+      this.childOutputLines.splice(0, this.childOutputLines.length - CHILD_OUTPUT_RING_LINES);
+    }
+  }
+
+  /** Heuristic: a JSON-RPC response or notification has either an `id` field or `method`+`jsonrpc`. */
+  private isJsonRpcFrame(parsed: unknown): boolean {
+    if (typeof parsed !== 'object' || parsed === null) return false;
+    const o = parsed as { id?: unknown; method?: unknown; jsonrpc?: unknown };
+    if (typeof o.id === 'number' || typeof o.id === 'string') return true;
+    if (typeof o.method === 'string' && typeof o.jsonrpc === 'string') return true;
+    return false;
+  }
+
+  /**
+   * Render the ring buffer for human display. Each line gets indented and
+   * colourised; if a line parses as pino-style JSON we extract the
+   * `msg`/`err.message` fields so the user sees the operational message
+   * instead of the full structured payload.
+   */
+  private formatChildOutputForDisplay(): string {
+    if (this.childOutputLines.length === 0) return '';
+    return this.childOutputLines
+      .map((line) => `${c.dim}  │${c.reset} ${this.summariseLine(line)}`)
+      .join('\n');
+  }
+
+  private summariseLine(line: string): string {
+    const trimmed = line.trim();
+    if (!(trimmed.startsWith('{') && trimmed.endsWith('}'))) return line;
+    try {
+      const obj = JSON.parse(trimmed) as {
+        msg?: unknown;
+        err?: { message?: unknown; type?: unknown };
+        level?: unknown;
+      };
+      const msg = typeof obj.msg === 'string' ? obj.msg : '';
+      const errMsg =
+        obj.err && typeof obj.err.message === 'string'
+          ? `${typeof obj.err.type === 'string' ? obj.err.type + ': ' : ''}${obj.err.message}`
+          : '';
+      if (msg || errMsg) {
+        return [msg, errMsg].filter(Boolean).join(' — ');
+      }
+    } catch {
+      /* fall through */
+    }
+    return line;
+  }
+
+  /**
+   * Public read access to the diagnostic ring buffer so callers (status
+   * banners, integration tests) can inspect what the child last said.
+   * Returns a fresh copy so callers cannot mutate internal state.
+   */
+  getRecentChildOutput(): string[] {
+    return [...this.childOutputLines];
   }
 
   private handleMessage(msg: {
