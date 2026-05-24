@@ -12,6 +12,7 @@ export const activityTypeSchema = z.enum([
   'project_updated',
   'plan_created',
   'plan_proposed',
+  'plan_withdrawn',
   'plan_activated',
   'plan_superseded',
   'plan_reactivated',

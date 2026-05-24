@@ -64,11 +64,21 @@ describe('R-048: at most one active plan per project', () => {
       makeReq(`/api/projects/${projectId}/plans/${plan.id}/propose`, {
         method: 'POST',
         userName: owner,
-        body: { reviewers: [] },
+        body: {},
       }),
       { params: { projectId, planId: plan.id } },
     );
     expect(proposed.status).toBe(200);
+
+    // R-205: propose now auto-adds the owner as the sole reviewer when no
+    // reviewer set is supplied. To exercise the R-048 concurrency code path
+    // without depending on `?force=true`, mark the owner-self review as
+    // approved directly so the activate route's review-gate check passes.
+    await testPrisma.planReview.updateMany({
+      where: { planId: plan.id },
+      data: { status: 'approved' },
+    });
+
     return plan;
   }
 
@@ -140,19 +150,19 @@ describe('R-048: at most one active plan per project', () => {
     const a = await createProposedPlan('R-048 plan A');
     const b = await createProposedPlan('R-048 plan B');
 
-    // ?force=true bypasses the R-055 "no reviewers" gate so this test
-    // exercises the R-048 concurrency code path instead of being rejected
-    // upstream by the review-gate check.
+    // Both proposed plans have an approved owner-self review (R-205). They
+    // pass the review gate, so this test exercises the R-048 concurrency
+    // code path instead of being rejected upstream.
     const [ra, rb] = await Promise.all([
       activatePost(
-        makeReq(`/api/projects/${projectId}/plans/${a.id}/activate?force=true`, {
+        makeReq(`/api/projects/${projectId}/plans/${a.id}/activate`, {
           method: 'POST',
           userName: owner,
         }),
         { params: { projectId, planId: a.id } },
       ),
       activatePost(
-        makeReq(`/api/projects/${projectId}/plans/${b.id}/activate?force=true`, {
+        makeReq(`/api/projects/${projectId}/plans/${b.id}/activate`, {
           method: 'POST',
           userName: owner,
         }),

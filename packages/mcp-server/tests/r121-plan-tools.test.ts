@@ -92,9 +92,7 @@ function getToolInputSchema(
   name: string,
 ):
   | {
-      safeParse: (
-        input: unknown,
-      ) => {
+      safeParse: (input: unknown) => {
         success: boolean;
         error?: { issues: Array<{ path: (string | number)[]; message: string }> };
       };
@@ -189,6 +187,100 @@ describe('R-121: MCP plan_activate / reactivate / append / review_* unit tests',
       // Root client must not be used in delegation mode
       expect(rootPost).not.toHaveBeenCalled();
       expect(rootGet).not.toHaveBeenCalled();
+    });
+
+    it('R205-A1: force=true appends ?force=true to the activate URL', async () => {
+      rootPost.mockResolvedValueOnce({ data: { id: 'pl1', status: 'active' } });
+      rootGet.mockResolvedValueOnce({ data: { status: 'active' } });
+
+      await callTool(server, 'plansync_plan_activate', {
+        projectId: 'p1',
+        planId: 'pl1',
+        force: true,
+      });
+
+      expect(rootPost).toHaveBeenCalledWith('/api/projects/p1/plans/pl1/activate?force=true', {});
+      expect(rootGet).toHaveBeenCalledWith('/api/projects/p1/plans/pl1');
+    });
+
+    it('R205-A2: force=false (default) leaves the URL clean', async () => {
+      rootPost.mockResolvedValueOnce({ data: { id: 'pl1', status: 'active' } });
+      rootGet.mockResolvedValueOnce({ data: { status: 'active' } });
+
+      await callTool(server, 'plansync_plan_activate', {
+        projectId: 'p1',
+        planId: 'pl1',
+        force: false,
+      });
+
+      expect(rootPost).toHaveBeenCalledWith('/api/projects/p1/plans/pl1/activate', {});
+    });
+
+    it('R205-A3: force flag is propagated through delegation (asAgent)', async () => {
+      delegatedPost.mockResolvedValueOnce({ data: { id: 'pl1', status: 'active' } });
+      delegatedGet.mockResolvedValueOnce({ data: { status: 'active' } });
+
+      await callTool(server, 'plansync_plan_activate', {
+        projectId: 'p1',
+        planId: 'pl1',
+        force: true,
+        asAgent: 'genie',
+      });
+
+      expect(withUser).toHaveBeenCalledWith('genie');
+      expect(delegatedPost).toHaveBeenCalledWith(
+        '/api/projects/p1/plans/pl1/activate?force=true',
+        {},
+      );
+      expect(rootPost).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('plansync_plan_withdraw (R-205)', () => {
+    it('R205-W1: POSTs to /withdraw then verifies the plan is back to draft', async () => {
+      rootPost.mockResolvedValueOnce({ data: { id: 'pl1', status: 'draft' } });
+      rootGet.mockResolvedValueOnce({ data: { status: 'draft' } });
+
+      const result = await callTool(server, 'plansync_plan_withdraw', {
+        projectId: 'p1',
+        planId: 'pl1',
+      });
+
+      expect(rootPost).toHaveBeenCalledWith('/api/projects/p1/plans/pl1/withdraw', {});
+      expect(rootGet).toHaveBeenCalledWith('/api/projects/p1/plans/pl1');
+      const text = singleText(result);
+      expect(text).toContain('"status": "draft"');
+      expect(text).not.toContain('may have failed');
+    });
+
+    it('R205-W2: warns when the verify GET still shows a non-draft status', async () => {
+      rootPost.mockResolvedValueOnce({ data: { id: 'pl1' } });
+      rootGet.mockResolvedValueOnce({ data: { status: 'proposed' } });
+
+      const result = await callTool(server, 'plansync_plan_withdraw', {
+        projectId: 'p1',
+        planId: 'pl1',
+      });
+
+      const text = singleText(result);
+      expect(text).toContain('still "proposed"');
+      expect(text).toContain('may have failed');
+    });
+
+    it('R205-W3: asAgent routes both calls through api.withUser', async () => {
+      delegatedPost.mockResolvedValueOnce({ data: { id: 'pl1' } });
+      delegatedGet.mockResolvedValueOnce({ data: { status: 'draft' } });
+
+      await callTool(server, 'plansync_plan_withdraw', {
+        projectId: 'p1',
+        planId: 'pl1',
+        asAgent: 'genie',
+      });
+
+      expect(withUser).toHaveBeenCalledWith('genie');
+      expect(delegatedPost).toHaveBeenCalledWith('/api/projects/p1/plans/pl1/withdraw', {});
+      expect(delegatedGet).toHaveBeenCalledWith('/api/projects/p1/plans/pl1');
+      expect(rootPost).not.toHaveBeenCalled();
     });
   });
 

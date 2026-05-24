@@ -353,6 +353,33 @@ Do NOT stop execution. Instead:
 
 ---
 
+## Plan State Machine Invariants (R-205) — read before any plan\_\* call
+
+These invariants are how PlanSync's plan-lifecycle tools fit together. Verify
+them in your head before each call; violating them is the most common source
+of stuck plans.
+
+1. `plansync_plan_propose` reviewer policy:
+   - Explicit `reviewers` argument wins.
+   - Otherwise the API falls back to `plan.requiredReviewers` if non-empty.
+   - Otherwise the **owner is auto-added as the sole reviewer** (owner-self-review).
+   - For multi-reviewer plans, list every reviewer in the propose call.
+     **Reviewers cannot be added after the plan is `proposed`** — withdraw to
+     draft (`plansync_plan_withdraw`) and re-propose if the set must change.
+2. A `proposed` plan has exactly three exits — pick one, do not invent more:
+   - All reviewers approve → `plansync_plan_activate`.
+   - Owner emergency override → `plansync_plan_activate` with `force: true`
+     (only valid when `reviews.length === 0`; recorded in audit trail).
+   - Roll back to draft → `plansync_plan_withdraw`, then edit + re-propose.
+3. There is **no** `plansync plan ...` shell subcommand. `bin/plansync` is the
+   Terminal launcher; it does not parse `plan`, `task`, `activate`, `--force`,
+   etc. If you find yourself wanting "the CLI flag for force", that is a
+   hallucination — use the MCP tool's `force: true` parameter.
+4. `plansync_plan_activate` `force` is ignored when reviewers exist; the route
+   still requires every reviewer to have approved before flipping to `active`.
+
+---
+
 ## After Work
 
 - Call `plansync_execution_complete` with a summary of what was done — this marks the task done

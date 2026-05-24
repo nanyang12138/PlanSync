@@ -54,15 +54,28 @@ export async function POST(req: NextRequest, { params }: Params) {
     // to plan.requiredReviewers, which may also be empty), so without this
     // check the review pathway can be bypassed entirely. Owners can still
     // override by passing ?force=true, which makes the decision auditable.
+    // R-055: a 'proposed' plan with 0 reviewers must not slip through the
+    // review gate. New proposals auto-add the owner as reviewer (R-205) so this
+    // branch is only reachable for legacy plans. To avoid AI agents inventing
+    // non-existent CLI flags after reading this error, the message points
+    // explicitly at the MCP tool and the HTTP query parameter — those are the
+    // ONLY two paths. There is no `plansync plan activate --force` CLI
+    // subcommand; `bin/plansync` is just a Terminal launcher.
+    let forceUsed = false;
     if (plan.status === 'proposed') {
       if (plan.reviews.length === 0) {
         const force = new URL(req.url).searchParams.get('force') === 'true';
         if (!force) {
           throw new AppError(
             ErrorCode.STATE_CONFLICT,
-            'Cannot activate a proposed plan with no reviewers. Owner must pass ?force=true to override.',
+            'Cannot activate a proposed plan with zero reviewers. To override, either ' +
+              'call the MCP tool plansync_plan_activate with { force: true }, or send ' +
+              'POST /api/projects/{projectId}/plans/{planId}/activate?force=true. ' +
+              'Alternatively, withdraw the plan back to draft (plansync_plan_withdraw) and ' +
+              're-propose with reviewers. There is no plansync CLI subcommand for activate.',
           );
         }
+        forceUsed = true;
       } else {
         const allApproved = plan.reviews.every((r) => r.status === 'approved');
         if (!allApproved) {
@@ -146,11 +159,12 @@ export async function POST(req: NextRequest, { params }: Params) {
       type: 'plan_activated',
       actorName: auth.userName,
       actorType: 'human',
-      summary: `Plan v${activated.version} "${activated.title}" activated${driftAlerts.length > 0 ? ` (${driftAlerts.length} drift alerts)` : ''}`,
+      summary: `Plan v${activated.version} "${activated.title}" activated${forceUsed ? ' (force, review gate bypassed)' : ''}${driftAlerts.length > 0 ? ` (${driftAlerts.length} drift alerts)` : ''}`,
       metadata: {
         planId: activated.id,
         version: activated.version,
         driftCount: driftAlerts.length,
+        forceUsed,
       },
     });
 

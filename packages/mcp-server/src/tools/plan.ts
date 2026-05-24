@@ -129,7 +129,10 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
         )
         .optional()
         .describe(
-          'Reviewer names or {name, focusNotes} objects. Use focusNotes to tell each reviewer what aspect to focus on.',
+          'Reviewer names or {name, focusNotes} objects. Use focusNotes to tell each reviewer what aspect to focus on. ' +
+            'IMPORTANT: if you omit reviewers AND the plan has no requiredReviewers, the API will auto-add the owner as the sole reviewer ' +
+            '(R-205). For multi-reviewer plans you MUST list every reviewer here — they cannot be added after the plan moves to "proposed". ' +
+            'If you need to change reviewers later, withdraw the plan back to draft via plansync_plan_withdraw.',
         ),
       asAgent: z
         .string()
@@ -170,6 +173,15 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
     {
       projectId: z.string(),
       planId: z.string().describe('Plan ID (not version). Use plansync_plan_list to find it.'),
+      force: z
+        .boolean()
+        .optional()
+        .describe(
+          'OWNER override (R-055). Activate a "proposed" plan even if it has zero reviewers. ' +
+            'Use only when intentionally bypassing the review gate; the override is recorded in the audit trail. ' +
+            'New proposals auto-add the owner as a reviewer (R-205), so this flag is mainly for legacy plans ' +
+            'that were proposed before that fallback existed.',
+        ),
       asAgent: z
         .string()
         .optional()
@@ -179,10 +191,10 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
     },
     async (args) => {
       const effectiveApi = args.asAgent ? api.withUser(args.asAgent) : api;
-      const result = await effectiveApi.post(
-        `/api/projects/${args.projectId}/plans/${args.planId}/activate`,
-        {},
-      );
+      const url = args.force
+        ? `/api/projects/${args.projectId}/plans/${args.planId}/activate?force=true`
+        : `/api/projects/${args.projectId}/plans/${args.planId}/activate`;
+      const result = await effectiveApi.post(url, {});
       const verify = await effectiveApi.get<{ data?: { status?: string } }>(
         `/api/projects/${args.projectId}/plans/${args.planId}`,
       );
@@ -195,6 +207,49 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
               text:
                 `Activation call succeeded but plan status is still "${verifiedStatus}", not "active". ` +
                 `Tell the user the activation may have failed and suggest checking /status.`,
+            },
+          ],
+        };
+      }
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'plansync_plan_withdraw',
+    'Withdraw a "proposed" plan back to "draft" so the owner can edit it and re-propose with a different reviewer set. ' +
+      'OWNER ONLY. Pending PlanReview rows for this plan are deleted on withdraw. ' +
+      'Use this as the escape hatch when a proposed plan needs a different reviewer list — reviewers cannot be added to ' +
+      'an already-proposed plan, so withdraw → edit → propose is the supported path. ' +
+      'Do NOT call this when doing "work as <agent>" delegation.',
+    {
+      projectId: z.string(),
+      planId: z.string().describe('Plan ID of the proposed plan to withdraw'),
+      asAgent: z
+        .string()
+        .optional()
+        .describe(
+          "Delegation: act as this agent so the API enforces their role, not the session user's.",
+        ),
+    },
+    async (args) => {
+      const effectiveApi = args.asAgent ? api.withUser(args.asAgent) : api;
+      const result = await effectiveApi.post(
+        `/api/projects/${args.projectId}/plans/${args.planId}/withdraw`,
+        {},
+      );
+      const verify = await effectiveApi.get<{ data?: { status?: string } }>(
+        `/api/projects/${args.projectId}/plans/${args.planId}`,
+      );
+      const verifiedStatus = verify.data?.status ?? 'unknown';
+      if (verifiedStatus !== 'draft') {
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `Withdraw call succeeded but plan status is still "${verifiedStatus}", not "draft". ` +
+                `Tell the user the withdrawal may have failed and suggest checking /status.`,
             },
           ],
         };
