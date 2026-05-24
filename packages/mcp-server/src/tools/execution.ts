@@ -294,7 +294,56 @@ export function registerExecutionTools(server: McpServer, api: ApiClient) {
       }
 
       try {
-        const taskPack = await api.get(`/api/projects/${projectId}/tasks/${taskId}/pack`);
+        const taskPack = await api.get<{ data?: { driftAlerts?: DriftAlert[] } }>(
+          `/api/projects/${projectId}/tasks/${taskId}/pack`,
+        );
+        // R-020: do NOT auto-start the heartbeat while open drift alerts are
+        // attached to this task. Heartbeats keep the run "alive" on the API
+        // side, but the agent must not actually proceed until those drifts are
+        // resolved (rebind / no_impact / cancel). Returning a `blocked`
+        // envelope lets the agent (and the CLI surface) tell the user to
+        // resolve drift first instead of silently ticking heartbeats on a run
+        // that cannot make progress.
+        const drifts = taskPack?.data?.driftAlerts ?? [];
+        if (drifts.length > 0) {
+          const driftLines = drifts
+            .map(
+              (d) =>
+                `  [${(d.severity ?? 'unknown').toUpperCase()}] ${d.reason}  →  plansync_drift_resolve ${d.id} action=rebind`,
+            )
+            .join('\n');
+          const guidance = [
+            '⚠ Execution blocked — unresolved drifts on this task',
+            '',
+            'Resolve each alert before starting/continuing execution:',
+            '',
+            'Drift alerts:',
+            driftLines,
+            '',
+            '  plansync_drift_resolve <driftId> action=rebind     → accept new plan, continue',
+            '  plansync_drift_resolve <driftId> action=no_impact  → change does not affect this task',
+            '  plansync_drift_resolve <driftId> action=cancel     → release the task',
+          ].join('\n');
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  execMode: true,
+                  runId,
+                  taskId,
+                  projectId,
+                  taskPack,
+                  blocked: {
+                    reason: 'drift_unresolved',
+                    drifts,
+                    guidance,
+                  },
+                }),
+              },
+            ],
+          };
+        }
         heartbeatManager.start(runId, projectId, taskId, api, makeDriftCallback(server));
         return {
           content: [
