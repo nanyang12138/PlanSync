@@ -154,13 +154,34 @@ type PreflightResult =
     };
 
 /**
+ * R-142 rollback flag — `PLANSYNC_MCP_LEGACY_ABORT=true` reverts to the
+ * pre-R-142 behaviour where an aborted run only emits a
+ * `sendLoggingMessage` notification and subsequent tool calls are still
+ * dispatched normally. Generic MCP clients that render
+ * `notifications/message` as chat will treat the abort as a soft hint and
+ * keep going, which is the exact bug R-142 fixes. The flag exists purely
+ * as an emergency escape hatch and is OFF by default.
+ *
+ * Exported so tests can pin the parsing without poking at the env var
+ * directly.
+ */
+export function isLegacyAbortEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env.PLANSYNC_MCP_LEGACY_ABORT;
+  if (typeof raw !== 'string') return false;
+  const normalized = raw.trim().toLowerCase();
+  return normalized === 'true' || normalized === '1' || normalized === 'yes';
+}
+
+/**
  * Pre-flight checks run before every tool handler invocation. Exported for
  * tests; the production wrapper composes this with the handler call + the
  * error translator.
  *
  * Order matters:
  *   1. RUN_ABORTED — once the API kills the run, every subsequent call
- *      must be rejected uniformly regardless of FSM state.
+ *      must be rejected uniformly regardless of FSM state. Unless the
+ *      `PLANSYNC_MCP_LEGACY_ABORT` rollback flag is set, in which case we
+ *      skip the gate and let the call through (legacy behaviour).
  *   2. DELEGATION_BLOCKED — operator policy gate runs before FSM gating
  *      so a delegated agent gets the same explanation it would get
  *      outside exec mode.
@@ -171,7 +192,7 @@ type PreflightResult =
 export function evaluatePreflight(toolName: string, options: ToolWrapperOptions): PreflightResult {
   const getAbort = options.getRunAbortReason ?? isRunAborted;
   const abort = getAbort();
-  if (abort) {
+  if (abort && !isLegacyAbortEnabled()) {
     return { kind: 'short-circuit', response: buildAbortEnvelope(abort) };
   }
 

@@ -305,6 +305,81 @@ export interface InvariantMismatch {
   firstDivergenceIdx: number | null;
 }
 
+/**
+ * R-152 step 2: when a new plan version is activated, link every
+ * PlanDeliverable on that new version back to the previous active
+ * version's deliverable that shares the same slug, by setting the
+ * **older** row's `supersededById` to the **new** row's id.
+ *
+ * Direction rationale: the schema's self-FK (`PlanDeliverable.supersededBy`)
+ * lives on the row being replaced, so the "is this thing still current?"
+ * question is answered with `where: { supersededById: null }` from any
+ * point in time — including when reading historical plan versions. This
+ * matches how drift v3 and per-deliverable timelines (R-156) want to
+ * walk the chain.
+ *
+ * Matching strategy: by `slug` only. Slugs are stable, human-readable
+ * identifiers (e.g. `auth/oidc-callback`); a rename of `title` should not
+ * break the supersede chain. If the new version dropped a slug entirely
+ * (deliverable removed) the old row's `supersededById` is left at NULL —
+ * that signals "nothing replaces this" to drift-engine and is exactly the
+ * "removed deliverable" case it must alert on.
+ *
+ * Idempotent: callable multiple times. Re-running on an already-linked
+ * pair is a no-op because we filter for `supersededById: null` on the
+ * source side. This matters because activate may be retried (R-048
+ * P2002 retry) and we don't want to re-touch already-linked rows.
+ *
+ * Always invoked inside the activate transaction so that the link write
+ * commits atomically with the plan.status flip — same reason persistDriftAlerts
+ * is kept in-transaction (R-007 / R-052).
+ *
+ * @param projectId - the project the plan belongs to (used to scope the
+ *   "previous active plan" lookup; we must not match against another
+ *   project's leftover deliverables that happened to share a slug)
+ * @param newPlanId - the plan version that just became `active`
+ * @returns the number of supersede links created (useful for tests)
+ */
+export async function supersedeDeliverables(
+  projectId: string,
+  newPlanId: string,
+  client: PrismaClient | Prisma.TransactionClient = defaultPrisma,
+): Promise<number> {
+  const newDeliverables = await client.planDeliverable.findMany({
+    where: { planId: newPlanId },
+    select: { id: true, slug: true },
+  });
+  if (newDeliverables.length === 0) return 0;
+
+  const oldPlans = await client.plan.findMany({
+    where: {
+      projectId,
+      status: 'superseded',
+      id: { not: newPlanId },
+    },
+    select: { id: true },
+  });
+  if (oldPlans.length === 0) return 0;
+
+  const oldPlanIds = oldPlans.map((p) => p.id);
+  let linked = 0;
+  for (const nd of newDeliverables) {
+    // Update every previous-version deliverable that shares this slug AND
+    // is not already pointing somewhere. updateMany is one round-trip and
+    // returns a count, which we add up so callers can see the wiring took.
+    const res = await client.planDeliverable.updateMany({
+      where: {
+        planId: { in: oldPlanIds },
+        slug: nd.slug,
+        supersededById: null,
+      },
+      data: { supersededById: nd.id, status: 'deprecated' },
+    });
+    linked += res.count;
+  }
+  return linked;
+}
+
 export async function checkPlanItemsInvariant(
   planId: string,
   client: PrismaClient | Prisma.TransactionClient = defaultPrisma,

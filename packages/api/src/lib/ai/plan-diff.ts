@@ -1,3 +1,4 @@
+import { planDiffChangesSchema } from '@plansync/shared';
 import { prisma } from '../prisma';
 import { aiClient } from './client';
 import {
@@ -34,7 +35,33 @@ export async function getOrCreatePlanDiff(
   });
   if (existing) {
     if (existing.projectId !== projectId) return null;
-    return existing.changes as unknown as PlanDiffResult;
+    // R-145: validate the cached row against the shared schema BEFORE
+    // returning. A row that fails safeParse here was either written
+    // before the schema was tightened, came from a now-removed AI
+    // provider, or was hand-edited by an admin debugging the DB. In all
+    // three cases we'd rather discard + re-derive than ship corrupt
+    // input downstream (drift engine, plans page, impact analysis all
+    // narrow into different keys and silently misbehave on bad data).
+    const cacheParse = planDiffChangesSchema.safeParse(existing.changes);
+    if (cacheParse.success) {
+      return cacheParse.data as unknown as PlanDiffResult;
+    }
+    logger.warn(
+      {
+        projectId,
+        fromPlanId,
+        toPlanId,
+        issues: cacheParse.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`),
+      },
+      'plan_diff cache row failed shared schema validation — discarding and recomputing',
+    );
+    try {
+      await prisma.planDiff.delete({
+        where: { fromPlanId_toPlanId: { fromPlanId, toPlanId } },
+      });
+    } catch (delErr: unknown) {
+      logger.debug({ err: delErr }, 'Failed to evict stale plan_diff cache row (continuing)');
+    }
   }
 
   if (!aiClient.isAvailable) return null;
@@ -154,9 +181,31 @@ export async function getOrCreatePlanDiff(
     }
   }
 
+  // R-145: enforce the shared schema BEFORE writing the JSON column.
+  // `parse` (not safeParse) is intentional — at this point the row is
+  // about to be cached for every reader, so we'd rather fail loud + the
+  // caller gets `null` from `validateOrNull` semantics one level up than
+  // silently pin a malformed shape to the (fromPlanId, toPlanId) pair.
+  // `persisted` may carry the R-187 `_meta` audit envelope; the schema's
+  // top-level passthrough keeps that field intact.
+  let toPersist: object;
+  try {
+    toPersist = planDiffChangesSchema.parse(persisted) as object;
+  } catch (schemaErr: unknown) {
+    logger.warn(
+      {
+        projectId,
+        fromPlanId,
+        toPlanId,
+        err: schemaErr,
+      },
+      'plan_diff payload failed shared schema validation — refusing to cache',
+    );
+    return null;
+  }
   try {
     await prisma.planDiff.create({
-      data: { projectId, fromPlanId, toPlanId, changes: persisted as object },
+      data: { projectId, fromPlanId, toPlanId, changes: toPersist },
     });
   } catch (dbErr: unknown) {
     const code =

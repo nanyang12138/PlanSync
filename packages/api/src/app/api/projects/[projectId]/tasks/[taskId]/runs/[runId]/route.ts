@@ -14,7 +14,7 @@ import {
   COMPLETION_VERIFY_SYSTEM,
   buildCompletionVerifyUser,
 } from '@/lib/ai/prompts/completion-verify.prompt';
-import { COMPLETION_VERIFY_TOOL } from '@/lib/ai/schemas';
+import { COMPLETION_VERIFY_TOOL, completionVerifyResultZ } from '@/lib/ai/schemas';
 import { applyCompletionVerifyConsistency } from '@/lib/ai/completion-verify-consistency';
 
 type Params = { params: { projectId: string; taskId: string; runId: string } };
@@ -315,7 +315,17 @@ export async function POST(req: NextRequest, { params }: Params) {
               aiVerifyModel,
             });
           } else if (raw !== null) {
-            // ---- Phase 2: JSON.parse ----------------------------------
+            // ---- Phase 2: JSON.parse + zod-validate -------------------
+            // Issues #822 / #826: previously this path did
+            // `JSON.parse(raw) as typeof result` which trusted whatever
+            // shape the model returned. tool_use makes structural drift
+            // unlikely but the text-mode fallback path (and the mock
+            // provider) can still return payloads with missing required
+            // fields, out-of-range scores, or wrong types. The
+            // downstream consistency sampler and RunReview write then
+            // get garbage. We now zod-validate the parsed result and
+            // treat shape failures the same as malformed JSON — audit
+            // + allow-through (R-180 advisory contract).
             let result: {
               verified: boolean;
               score: number;
@@ -324,7 +334,27 @@ export async function POST(req: NextRequest, { params }: Params) {
               feedback: string;
             } | null;
             try {
-              result = JSON.parse(raw) as typeof result;
+              const parsed: unknown = JSON.parse(raw);
+              const safe = completionVerifyResultZ.safeParse(parsed);
+              if (!safe.success) {
+                const issueSummary = safe.error.issues
+                  .slice(0, 3)
+                  .map((i) => `${i.path.join('.') || '<root>'}:${i.message}`)
+                  .join('; ');
+                console.warn(
+                  `[completion-verify] AI returned shape-invalid payload for task ${params.taskId}, run ${params.runId} — allowing through:`,
+                  issueSummary,
+                );
+                await bestEffortAudit({
+                  aiVerifyScore: null,
+                  aiVerifyBreakdown: Prisma.DbNull,
+                  aiVerifyFeedback: `AI returned shape-invalid payload, allowed through: ${issueSummary}`,
+                  aiVerifyModel,
+                });
+                result = null;
+              } else {
+                result = safe.data;
+              }
             } catch (parseErr) {
               const parseMsg = parseErr instanceof Error ? parseErr.message : String(parseErr);
               console.warn(
