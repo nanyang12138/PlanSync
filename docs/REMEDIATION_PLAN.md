@@ -2578,7 +2578,7 @@
 
 #### R-145 [HIGH] `PlanDiff.changes` JSON 列强制 shared zod schema 校验
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B4
 - **depends_on**: R-034
 - **effort**: small
