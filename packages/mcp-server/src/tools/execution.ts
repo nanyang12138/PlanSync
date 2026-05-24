@@ -295,12 +295,57 @@ export function registerExecutionTools(server: McpServer, api: ApiClient) {
 
       try {
         const taskPack = await api.get(`/api/projects/${projectId}/tasks/${taskId}/pack`);
-        heartbeatManager.start(runId, projectId, taskId, api, makeDriftCallback(server));
+
+        // R-020: do not start the heartbeat when the task has unresolved
+        // drift alerts. Starting the heartbeat against a drifted task would
+        // either be a no-op (server pauses the run) or worse — it would let
+        // the agent believe execution is live and walk into RUN_PAUSED on
+        // the next tool call. Surface the drift up front so the agent stops
+        // and asks the owner to resolve before any work begins.
+        const drifts =
+          (taskPack as { data?: { driftAlerts?: DriftAlert[] } } | null | undefined)?.data
+            ?.driftAlerts ?? [];
+
+        if (drifts.length === 0) {
+          heartbeatManager.start(runId, projectId, taskId, api, makeDriftCallback(server));
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({ execMode: true, runId, taskId, projectId, taskPack }),
+              },
+            ],
+          };
+        }
+
+        const highCount = drifts.filter((d) => d.severity === 'high').length;
+        const driftLines = drifts
+          .map(
+            (d) =>
+              `  [${d.severity.toUpperCase()}] ${d.reason}  →  plansync_drift_resolve ${d.id} action=rebind`,
+          )
+          .join('\n');
+        const message = [
+          `⚠ DRIFT DETECTED: ${drifts.length} alert(s) (${highCount} high). ` +
+            `Pause execution immediately and resolve before continuing.`,
+          driftLines,
+          '',
+          'Heartbeat NOT started — resolve every drift, then call plansync_exec_context again.',
+        ].join('\n');
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({ execMode: true, runId, taskId, projectId, taskPack }),
+              text: JSON.stringify({
+                execMode: true,
+                runId,
+                taskId,
+                projectId,
+                taskPack,
+                blocked: 'drift_unresolved',
+                driftAlerts: drifts,
+                message,
+              }),
             },
           ],
         };
