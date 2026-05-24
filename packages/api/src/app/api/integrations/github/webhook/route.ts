@@ -158,17 +158,44 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   // Persist one outbox row per matching project so downstream consumers
-  // can fan out independently. Use `outbox.emitOutOfTx` because we're at
-  // the HTTP boundary with no surrounding state-change tx to bind to.
-  for (const project of verified) {
-    await outbox.emitOutOfTx(eventType, {
-      projectId: project.id,
-      data: {
+  // can fan out independently. We use `outbox.emitOutOfTxStrict` (NOT the
+  // best-effort `emitOutOfTx`) because we're an HTTP receiver and the
+  // outbox row is the *only* durable record of the event. If persistence
+  // fails we MUST surface a 5xx so GitHub re-delivers — the previous
+  // best-effort helper swallowed errors and let GitHub mark the delivery
+  // as success, dropping the event permanently
+  // (closes #781 #793 #797 #806).
+  try {
+    for (const project of verified) {
+      await outbox.emitOutOfTxStrict(eventType, {
+        projectId: project.id,
+        data: {
+          deliveryId,
+          repository: repoSlug,
+          payload,
+        },
+      });
+    }
+  } catch (err) {
+    logger.error(
+      {
+        err,
         deliveryId,
-        repository: repoSlug,
-        payload,
+        eventName,
+        repoSlug,
+        projects: verified.map((p) => p.id),
       },
-    });
+      'github webhook: outbox persistence failed, returning 503 so GitHub will retry',
+    );
+    return NextResponse.json(
+      {
+        error: {
+          code: 'OUTBOX_PERSIST_FAILED',
+          message: 'Webhook receiver failed to persist event; please retry',
+        },
+      },
+      { status: 503 },
+    );
   }
 
   return NextResponse.json(

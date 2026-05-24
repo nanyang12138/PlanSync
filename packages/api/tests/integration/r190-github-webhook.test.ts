@@ -12,12 +12,13 @@
  * `github_pull_request_review` row in `domain_events` via the transactional
  * outbox writer.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import crypto from 'node:crypto';
 import { NextRequest } from 'next/server';
 import { PrismaClient } from '@prisma/client';
 import { domainEventPayloadSchema } from '@plansync/shared';
 import { POST as webhookPost } from '@/app/api/integrations/github/webhook/route';
+import * as outboxModule from '@/lib/outbox';
 
 const prisma = new PrismaClient();
 
@@ -221,5 +222,47 @@ describe('R-190 GitHub webhook receiver', () => {
     // The earlier "valid push" test wrote exactly one row; ping must not
     // add another.
     expect(rows.length).toBe(1);
+  });
+
+  // Closes #781 #793 #797 #806: the receiver previously called
+  // `outbox.emitOutOfTx`, which logs-and-swallows. A DB failure (validation,
+  // FK, transient) therefore left the route returning 200 to GitHub, which
+  // marks the delivery success and never retries → permanent silent loss.
+  // The fix uses `emitOutOfTxStrict` and surfaces a 5xx so GitHub re-delivers.
+  it('returns 503 when outbox persistence fails so GitHub will redeliver (closes #781 #793 #797 #806)', async () => {
+    const body = {
+      ref: 'refs/heads/main',
+      after: '0123456789abcdef0123456789abcdef01234567',
+      repository: { full_name: repoSlug },
+      commits: [{ id: '0123456789abcdef0123456789abcdef01234567', message: 'feat: x' }],
+    };
+    const raw = JSON.stringify(body);
+
+    // Make the strict emitter throw — simulates DB write failure.
+    const spy = vi
+      .spyOn(outboxModule.outbox, 'emitOutOfTxStrict')
+      .mockRejectedValueOnce(new Error('simulated DB failure'));
+
+    try {
+      const res = await webhookPost(
+        new NextRequest('http://localhost/api/integrations/github/webhook', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-github-event': 'push',
+            'x-github-delivery': `r190-fail-${Date.now()}`,
+            'x-hub-signature-256': signBody(secret, raw),
+          },
+          body: raw,
+        }),
+      );
+
+      expect(res.status).toBe(503);
+      const json = await res.json();
+      expect(json.error?.code).toBe('OUTBOX_PERSIST_FAILED');
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
