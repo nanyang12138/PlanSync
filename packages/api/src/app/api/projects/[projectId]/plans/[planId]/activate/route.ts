@@ -14,6 +14,7 @@ import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
 import { logger } from '@/lib/logger';
 import { requirePlanInProject } from '@/lib/plan-scope';
+import { supersedeDeliverables } from '@/lib/plan-items';
 
 type Params = { params: { projectId: string; planId: string } };
 
@@ -116,6 +117,14 @@ export async function POST(req: NextRequest, { params }: Params) {
             activatedBy: auth.userName,
           },
         });
+
+        // R-152: link previous-version PlanDeliverable rows to the new
+        // ones via supersededById (slug-matched). This must happen *after*
+        // the previous active plan has been flipped to 'superseded'
+        // (updateMany above) so the scoping query can find them. Idempotent
+        // and safe to run on a brand-new plan with no historical chain —
+        // it's a no-op when no superseded rows exist.
+        await supersedeDeliverables(params.projectId, params.planId, tx);
 
         const scanResult = await runDriftScan(tx, params.projectId, a.version);
         const alerts = await persistDriftAlerts(tx, params.projectId, scanResult.alerts);
