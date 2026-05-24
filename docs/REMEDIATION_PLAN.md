@@ -3324,7 +3324,7 @@
 
 #### R-191a [MEDIUM] AI 低置信度自动升级给 owner
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B19
 - **depends_on**: —
 - **effort**: small

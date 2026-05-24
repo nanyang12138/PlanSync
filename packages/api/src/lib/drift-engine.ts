@@ -4,6 +4,7 @@ import { prisma } from './prisma';
 import { aiClient } from './ai/client';
 import { getOrCreatePlanDiff } from './ai/plan-diff';
 import { analyzeTaskImpact } from './ai/impact-analysis';
+import { escalateLowConfidence } from './ai-escalation';
 import { eventBus } from './event-bus';
 import { sendMail, userEmail } from './email';
 import {
@@ -419,6 +420,9 @@ export async function enrichDriftAlertsWithAi(
   alerts: Array<{ id: string; taskId: string }>,
 ): Promise<void> {
   if (!aiClient.isAvailable || alerts.length === 0) return;
+  // R-191a: imported here (function-local lazy import not needed — top of
+  // file scope is cleaner) so the systematic-failure escalation has
+  // access to the rate-limited notify path.
 
   // 1. Batch-fetch tasks and the bound-plan rows they reference.
   const tasks = await prisma.task.findMany({
@@ -449,6 +453,13 @@ export async function enrichDriftAlertsWithAi(
   );
   const diffByBoundPlanId = new Map(diffEntries);
 
+  // R-191a: track the per-alert outcomes so we can escalate when the
+  // whole enrich pass systemically fails (e.g. provider outage). One
+  // owner notification covers the entire pass rather than spamming on
+  // every alert.
+  let enrichAttempts = 0;
+  let enrichFailures = 0;
+
   // 3. Run impact analysis + DriftAlert update for each alert in parallel.
   // Each iteration is independent: distinct DriftAlert row, distinct AI call.
   await Promise.all(
@@ -463,8 +474,14 @@ export async function enrichDriftAlertsWithAi(
         const diff = diffByBoundPlanId.get(boundPlan.id);
         if (!diff) return;
 
-        const impact = await analyzeTaskImpact(diff, task);
-        if (!impact) return;
+        enrichAttempts += 1;
+        // R-191a: pass projectId / taskId so impact-analysis can
+        // escalate single-task low-confidence signals straight to owner.
+        const impact = await analyzeTaskImpact(diff, task, projectId, task.id);
+        if (!impact) {
+          enrichFailures += 1;
+          return;
+        }
 
         const planDiffRow = await prisma.planDiff.findUnique({
           where: { fromPlanId_toPlanId: { fromPlanId: boundPlan.id, toPlanId: activePlanId } },
@@ -487,8 +504,21 @@ export async function enrichDriftAlertsWithAi(
           },
         });
       } catch (err) {
+        enrichFailures += 1;
         logger.error({ err, alertId: alert.id }, 'Failed to enrich drift alert with AI');
       }
     }),
   );
+
+  // R-191a: if every (or near-every) enrich attempt failed, the LLM
+  // provider chain is likely broken. Escalate ONCE for the whole pass
+  // rather than per-alert spam. Threshold: at least 3 attempts and >=
+  // 80% failure rate. The escalation module's own rate-limit (1/hour
+  // per project+kind) further smooths out reconnect churn.
+  if (enrichAttempts >= 3 && enrichFailures / enrichAttempts >= 0.8) {
+    void escalateLowConfidence(projectId, 'drift_enrich_systematic_failure', {
+      summary: `AI drift-enrich pass failed on ${enrichFailures} of ${enrichAttempts} alerts after activating plan ${activePlanId}. Drift alerts will remain without AI suggestions until the provider recovers.`,
+      details: { enrichAttempts, enrichFailures, activePlanId },
+    });
+  }
 }

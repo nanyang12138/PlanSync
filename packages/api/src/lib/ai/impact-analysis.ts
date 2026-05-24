@@ -8,6 +8,7 @@ import { logger } from '../logger';
 import type { PlanDiffResult } from './plan-diff';
 import { IMPACT_ANALYSIS_TOOL, impactAnalysisResultZ } from './schemas';
 import { verifyImpactCancel } from './verifier';
+import { escalateLowConfidence } from '../ai-escalation';
 
 export interface ImpactResult {
   compatibilityScore: number;
@@ -27,6 +28,12 @@ export async function analyzeTaskImpact(
     status: string;
     boundPlanVersion: number;
   },
+  // R-191a: caller may pass projectId so we can escalate low-confidence
+  // signals to the owner. Optional for backward-compat with tests; when
+  // omitted we skip the escalation path entirely (the analysis still
+  // runs and returns the same shape).
+  projectId?: string,
+  taskId?: string,
 ): Promise<ImpactResult | null> {
   if (!aiClient.isAvailable) return null;
 
@@ -44,7 +51,18 @@ export async function analyzeTaskImpact(
       tool: IMPACT_ANALYSIS_TOOL,
     },
   );
-  if (!response) return null;
+  if (!response) {
+    // R-191a: a null response on the impact-analysis path means we have
+    // no AI signal at all for a drift that COULD have been "no_impact"
+    // or could have been "cancel" — the owner should know.
+    if (projectId) {
+      void escalateLowConfidence(projectId, 'impact_returned_null', {
+        summary: `AI impact analysis returned no result for task "${task.title}". The drift alert will remain open without an AI recommendation; please review manually.`,
+        taskId,
+      });
+    }
+    return null;
+  }
 
   let parsed: unknown;
   try {
@@ -59,6 +77,23 @@ export async function analyzeTaskImpact(
   // destructive branch). reject/partial verdict → downgrade to `rebind`
   // and append the verifier reasoning to affectedAreas so the owner has a
   // visible trail of "the AI wanted to cancel, but the verifier disagreed".
+  // R-191a: if the AI is very confident this task is incompatible
+  // (score < 30), notify the owner. The candidate stays returned so
+  // downstream code keeps working; escalation is purely additive.
+  async function maybeEscalateVeryLowScore(candidate: ImpactResult): Promise<void> {
+    if (!projectId) return;
+    if (candidate.compatibilityScore >= 30) return;
+    void escalateLowConfidence(projectId, 'impact_score_very_low', {
+      summary: `AI impact analysis scored task "${task.title}" at ${candidate.compatibilityScore}/100 against the active plan. Suggested action: ${candidate.suggestedAction}.`,
+      taskId,
+      details: {
+        compatibilityScore: candidate.compatibilityScore,
+        riskLevel: candidate.riskLevel,
+        reasoning: candidate.reasoning,
+      },
+    });
+  }
+
   async function maybeDowngradeCancel(candidate: ImpactResult): Promise<ImpactResult> {
     if (candidate.suggestedAction !== 'cancel') return candidate;
     const verdict = await verifyImpactCancel({
@@ -115,6 +150,7 @@ export async function analyzeTaskImpact(
                 : 'high',
       };
       logger.warn({ issues: safe.error.flatten() }, 'Impact analysis schema mismatch — recovered');
+      await maybeEscalateVeryLowScore(recovered);
       return maybeDowngradeCancel(recovered);
     }
     logger.warn(
@@ -123,5 +159,6 @@ export async function analyzeTaskImpact(
     );
     return null;
   }
+  await maybeEscalateVeryLowScore(safe.data);
   return maybeDowngradeCancel(safe.data);
 }
