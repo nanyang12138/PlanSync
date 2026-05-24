@@ -3259,7 +3259,7 @@
 
 #### R-188 [HIGH] Prompt injection 防御：不可信输入 sandboxing
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B19
 - **depends_on**: —
 - **effort**: small

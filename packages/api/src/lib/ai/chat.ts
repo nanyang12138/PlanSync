@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma';
 import { aiClient } from './client';
 import { CHAT_SYSTEM, buildChatUserMessage } from './prompts/chat.prompt';
+import { logSuspectedInjection } from './sanitize';
 
 export type ChatMessage = { role: 'user' | 'assistant'; content: string };
 
@@ -71,6 +72,12 @@ export async function chat(
   if (!aiClient.isAvailable) {
     return { reply: null, aiAvailable: false };
   }
+
+  // R-188: chat is the highest-risk surface — user types directly into
+  // the prompt. Scan the incoming message for OWASP LLM01 patterns and
+  // log; we do NOT block (heuristic has false positives, the actual
+  // defense is tagUntrusted in buildChatUserMessage).
+  logSuspectedInjection('chat', 'chat', message, { projectId });
 
   const context = await buildChatContext(projectId);
   const userMessage = buildChatUserMessage(message, history, context);

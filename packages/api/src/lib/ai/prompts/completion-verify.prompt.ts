@@ -1,3 +1,5 @@
+import { UNTRUSTED_INPUT_PREAMBLE, tagUntrusted } from '../sanitize';
+
 // Task types whose completion evidence must include filesChanged when claims describe
 // concrete file work. Decoupling this from the prompt text makes it cheap to add new
 // task types (just update this set + TASK_TYPES in shared) without rewriting the prompt.
@@ -8,7 +10,12 @@ export function isFileProducingType(t: string): boolean {
   return FILE_PRODUCING_TASK_TYPES.has(t);
 }
 
-export const COMPLETION_VERIFY_SYSTEM = `You are a task completion verifier for a project management system.
+// R-188: untrusted-input preamble at the top of every system prompt so
+// the model is consistent across capabilities about how to treat
+// <untrusted> tagged spans.
+export const COMPLETION_VERIFY_SYSTEM = `${UNTRUSTED_INPUT_PREAMBLE}
+
+You are a task completion verifier for a project management system.
 
 Your job: evaluate whether an agent's submitted evidence demonstrates genuine, specific completion of the assigned task.
 
@@ -79,43 +86,46 @@ export function buildCompletionVerifyUser(
 ): string {
   const sections: string[] = [];
 
-  // Task context
-  sections.push(`Task: ${context.taskTitle}`);
-  sections.push(`Type: ${context.taskType}`);
+  // R-188: every field below is agent / user controlled — task fields
+  // come from whoever created the task, deliverablesMet/filesChanged/
+  // outputSummary are exactly what the (potentially hostile) executing
+  // agent submitted. Wrap each span so the verifier model cannot be
+  // talked out of its scoring rubric by a "ignore previous instructions"
+  // string inside a claim.
+  sections.push(`Task: ${tagUntrusted(context.taskTitle, 'task')}`);
+  sections.push(`Type: ${tagUntrusted(context.taskType, 'task')}`);
   if (context.taskDescription) {
-    sections.push(`\nTask description:\n${context.taskDescription}`);
+    sections.push(`\nTask description:\n${tagUntrusted(context.taskDescription, 'task')}`);
   }
   if (context.expectedOutput) {
-    sections.push(`\nExpected output: ${context.expectedOutput}`);
+    sections.push(`\nExpected output: ${tagUntrusted(context.expectedOutput, 'task')}`);
   }
 
-  // Plan deliverable refs (structured requirements, if any)
   if (context.planDeliverableRefs && context.planDeliverableRefs.length > 0) {
     sections.push(
-      `\nPlan deliverable refs (each must be explicitly addressed):\n${context.planDeliverableRefs.map((d, i) => `${i + 1}. ${d}`).join('\n')}`,
+      `\nPlan deliverable refs (each must be explicitly addressed):\n${context.planDeliverableRefs
+        .map((d, i) => `${i + 1}. ${tagUntrusted(d, 'plan')}`)
+        .join('\n')}`,
     );
   }
 
-  // Agent evidence: claims
   sections.push(
     `\nAgent's claimed deliverablesMet (${deliverablesMet.length} items):\n${
       deliverablesMet.length > 0
-        ? deliverablesMet.map((d, i) => `${i + 1}. ${d}`).join('\n')
+        ? deliverablesMet.map((d, i) => `${i + 1}. ${tagUntrusted(d, 'user')}`).join('\n')
         : '(none provided)'
     }`,
   );
 
-  // Agent evidence: files changed
   const files = context.filesChanged ?? [];
   sections.push(
     `\nFiles changed (${files.length}):\n${
-      files.length > 0 ? files.join('\n') : '(none reported)'
+      files.length > 0 ? files.map((f) => tagUntrusted(f, 'user')).join('\n') : '(none reported)'
     }`,
   );
 
-  // Agent evidence: output summary
   if (context.outputSummary) {
-    sections.push(`\nOutput summary:\n${context.outputSummary}`);
+    sections.push(`\nOutput summary:\n${tagUntrusted(context.outputSummary, 'user')}`);
   }
 
   // Evaluation instruction
