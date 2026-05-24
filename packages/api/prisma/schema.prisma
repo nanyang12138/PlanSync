@@ -187,9 +187,9 @@ model PlanDeliverable {
   supersededById String?  @map("superseded_by_id")
   createdAt      DateTime @default(now()) @map("created_at")
 
-  plan         Plan              @relation(fields: [planId], references: [id], onDelete: Cascade)
-  supersededBy PlanDeliverable?  @relation("PlanDeliverableSupersedes", fields: [supersededById], references: [id], onDelete: SetNull)
-  supersedes   PlanDeliverable[] @relation("PlanDeliverableSupersedes")
+  plan         Plan                  @relation(fields: [planId], references: [id], onDelete: Cascade)
+  supersededBy PlanDeliverable?      @relation("PlanDeliverableSupersedes", fields: [supersededById], references: [id], onDelete: SetNull)
+  supersedes   PlanDeliverable[]     @relation("PlanDeliverableSupersedes")
   // R-153: tasks that explicitly reference this deliverable. Linked by row id
   // (not slug) so renaming `slug` in a future plan version does not silently
   // break drift attribution — the join survives the rename because it is
@@ -329,7 +329,7 @@ model Task {
   createdAt           DateTime  @default(now()) @map("created_at")
   updatedAt           DateTime  @updatedAt @map("updated_at")
 
-  project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project          Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
   // R-083: composite FK to plans(projectId, version). The same `projectId`
   // column participates in two relations (Project + Plan); Prisma allows this
   // as long as the relations are otherwise unambiguous. The relation is named
@@ -338,9 +338,9 @@ model Task {
   // project is deleted, its plans and tasks cascade independently, and adding
   // a plan-side cascade here keeps the constraint satisfied regardless of the
   // (undefined) order Postgres evaluates the two cascades.
-  boundPlan     Plan           @relation("TaskBoundPlan", fields: [projectId, boundPlanVersion], references: [projectId, version], onDelete: Cascade, onUpdate: Cascade)
-  executionRuns ExecutionRun[]
-  driftAlerts   DriftAlert[]
+  boundPlan        Plan                  @relation("TaskBoundPlan", fields: [projectId, boundPlanVersion], references: [projectId, version], onDelete: Cascade, onUpdate: Cascade)
+  executionRuns    ExecutionRun[]
+  driftAlerts      DriftAlert[]
   // R-153: many-to-many link to PlanDeliverable. The legacy
   // `planDeliverableRefs: String[]` column above is kept as a derived
   // (denormalised) projection for backwards compatibility — read paths now
