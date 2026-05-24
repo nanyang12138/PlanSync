@@ -2524,7 +2524,7 @@
 
 #### R-142 [HIGH] MCP `execution_aborted` 改为 protocol-level error
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B1
 - **depends_on**: R-005
 - **effort**: medium
