@@ -2524,7 +2524,8 @@
 
 #### R-144 [MEDIUM] 新增 `ai_calls` 表，所有 LLM 调用全链路记录
 
-- **status**: pending
+- **status**: blocked
+- **blocked_reason**: superseded by R-182 (status: done); `ai_calls` 表与 `/api/ai-usage` 已由 R-182 实现，本条 fix_steps 全部为 no-op，实质已完成且无可独立实施的工作。条目自带 `superseded_by: R-182` 与"cron 必跳过本条"语义；标 blocked 防止后续 cron run 反复挑出此条。
 - **batch**: B11
 - **depends_on**: —
 - **superseded_by**: R-182
