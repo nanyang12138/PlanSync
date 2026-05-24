@@ -1,5 +1,12 @@
 import { UNTRUSTED_INPUT_PREAMBLE, tagUntrusted } from '../sanitize';
 
+// R-190a: stable identifier for THIS prompt revision. Bump the trailing
+// `r<n>` segment whenever you change the body of `COMPLETION_VERIFY_SYSTEM`
+// or `buildCompletionVerifyUser` in a way that could shift the model's
+// behaviour. The golden-set regression test asserts the body hash matches
+// what the version claims — so forgetting to bump fails CI immediately.
+export const COMPLETION_VERIFY_PROMPT_VERSION = 'completion-verify@2026-05-24-r1';
+
 // Task types whose completion evidence must include filesChanged when claims describe
 // concrete file work. Decoupling this from the prompt text makes it cheap to add new
 // task types (just update this set + TASK_TYPES in shared) without rewriting the prompt.

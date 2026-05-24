@@ -1,5 +1,8 @@
 import { UNTRUSTED_INPUT_PREAMBLE, tagUntrusted } from '../sanitize';
 
+// R-190a: bump the trailing `r<n>` when you change the body below.
+export const CONFLICT_PREDICTION_PROMPT_VERSION = 'conflict-prediction@2026-05-24-r1';
+
 export const CONFLICT_PREDICTION_SYSTEM = `${UNTRUSTED_INPUT_PREAMBLE}
 
 You are an expert at predicting conflicts between tasks in a software project.

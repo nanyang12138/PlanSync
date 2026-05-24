@@ -1,5 +1,8 @@
 import { UNTRUSTED_INPUT_PREAMBLE, tagUntrusted } from '../sanitize';
 
+// R-190a: bump the trailing `r<n>` when you change the body below.
+export const IMPACT_ANALYSIS_PROMPT_VERSION = 'impact-analysis@2026-05-24-r1';
+
 export const IMPACT_ANALYSIS_SYSTEM = `${UNTRUSTED_INPUT_PREAMBLE}
 
 You are an expert at analyzing how plan changes affect running tasks.

@@ -10,6 +10,7 @@ import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
 import { aiClient } from '@/lib/ai/client';
 import {
+  COMPLETION_VERIFY_PROMPT_VERSION,
   COMPLETION_VERIFY_SYSTEM,
   buildCompletionVerifyUser,
 } from '@/lib/ai/prompts/completion-verify.prompt';
@@ -283,7 +284,11 @@ export async function POST(req: NextRequest, { params }: Params) {
             raw = await aiClient.complete(
               COMPLETION_VERIFY_SYSTEM,
               completionVerifyUserMessage,
-              { purpose: 'completion_verify', tool: COMPLETION_VERIFY_TOOL },
+              {
+                purpose: 'completion_verify',
+                promptVersion: COMPLETION_VERIFY_PROMPT_VERSION,
+                tool: COMPLETION_VERIFY_TOOL,
+              },
             );
           } catch (err) {
             const errMessage = err instanceof Error ? err.message : String(err);

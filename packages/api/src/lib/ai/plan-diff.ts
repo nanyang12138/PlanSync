@@ -1,6 +1,10 @@
 import { prisma } from '../prisma';
 import { aiClient } from './client';
-import { PLAN_DIFF_SYSTEM, buildPlanDiffUser } from './prompts/plan-diff.prompt';
+import {
+  PLAN_DIFF_PROMPT_VERSION,
+  PLAN_DIFF_SYSTEM,
+  buildPlanDiffUser,
+} from './prompts/plan-diff.prompt';
 import { logger } from '../logger';
 import { PLAN_DIFF_TOOL, planDiffResultZ } from './schemas';
 import {
@@ -55,6 +59,7 @@ export async function getOrCreatePlanDiff(
   // the DB cache.
   const response = await aiClient.complete(PLAN_DIFF_SYSTEM, buildPlanDiffUser(planA, planB), {
     purpose: 'plan_diff',
+    promptVersion: PLAN_DIFF_PROMPT_VERSION,
     tool: PLAN_DIFF_TOOL,
   });
   if (!response) return null;

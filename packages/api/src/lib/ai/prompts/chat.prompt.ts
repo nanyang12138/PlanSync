@@ -1,5 +1,8 @@
 import { UNTRUSTED_INPUT_PREAMBLE, tagUntrusted } from '../sanitize';
 
+// R-190a: bump the trailing `r<n>` when you change the body below.
+export const CHAT_PROMPT_VERSION = 'chat@2026-05-24-r1';
+
 // R-188: every system prompt begins with the untrusted-input contract
 // so the model knows that <untrusted> tags wrap data, not instructions.
 // The preamble is intentionally short + stable so prompt-caching

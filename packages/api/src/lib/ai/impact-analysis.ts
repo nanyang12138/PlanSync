@@ -1,5 +1,9 @@
 import { aiClient } from './client';
-import { IMPACT_ANALYSIS_SYSTEM, buildImpactAnalysisUser } from './prompts/impact-analysis.prompt';
+import {
+  IMPACT_ANALYSIS_PROMPT_VERSION,
+  IMPACT_ANALYSIS_SYSTEM,
+  buildImpactAnalysisUser,
+} from './prompts/impact-analysis.prompt';
 import { logger } from '../logger';
 import type { PlanDiffResult } from './plan-diff';
 import { IMPACT_ANALYSIS_TOOL, impactAnalysisResultZ } from './schemas';
@@ -34,7 +38,11 @@ export async function analyzeTaskImpact(
   const response = await aiClient.complete(
     IMPACT_ANALYSIS_SYSTEM,
     buildImpactAnalysisUser(diff, task),
-    { purpose: 'drift_impact', tool: IMPACT_ANALYSIS_TOOL },
+    {
+      purpose: 'drift_impact',
+      promptVersion: IMPACT_ANALYSIS_PROMPT_VERSION,
+      tool: IMPACT_ANALYSIS_TOOL,
+    },
   );
   if (!response) return null;
 

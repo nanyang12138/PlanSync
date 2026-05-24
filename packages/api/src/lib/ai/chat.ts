@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/prisma';
 import { aiClient } from './client';
-import { CHAT_SYSTEM, buildChatUserMessage } from './prompts/chat.prompt';
+import { CHAT_PROMPT_VERSION, CHAT_SYSTEM, buildChatUserMessage } from './prompts/chat.prompt';
 import { logSuspectedInjection } from './sanitize';
 
 export type ChatMessage = { role: 'user' | 'assistant'; content: string };
@@ -81,7 +81,10 @@ export async function chat(
 
   const context = await buildChatContext(projectId);
   const userMessage = buildChatUserMessage(message, history, context);
-  const reply = await aiClient.complete(CHAT_SYSTEM, userMessage, { purpose: 'chat' });
+  const reply = await aiClient.complete(CHAT_SYSTEM, userMessage, {
+    purpose: 'chat',
+    promptVersion: CHAT_PROMPT_VERSION,
+  });
 
   return { reply, aiAvailable: true };
 }

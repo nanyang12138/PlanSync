@@ -3302,7 +3302,7 @@
 
 #### R-190a [MEDIUM] Prompt 版本化 + golden-set 回归测试
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B19
 - **depends_on**: R-185
 - **effort**: small

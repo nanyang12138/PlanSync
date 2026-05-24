@@ -1,5 +1,6 @@
 import { aiClient } from './client';
 import {
+  CONFLICT_PREDICTION_PROMPT_VERSION,
   CONFLICT_PREDICTION_SYSTEM,
   buildConflictPredictionUser,
 } from './prompts/conflict-prediction.prompt';
@@ -41,7 +42,11 @@ export async function predictConflicts(
   const response = await aiClient.complete(
     CONFLICT_PREDICTION_SYSTEM,
     buildConflictPredictionUser(tasks),
-    { purpose: 'conflict_prediction', tool: CONFLICT_PREDICTION_TOOL },
+    {
+      purpose: 'conflict_prediction',
+      promptVersion: CONFLICT_PREDICTION_PROMPT_VERSION,
+      tool: CONFLICT_PREDICTION_TOOL,
+    },
   );
   if (!response) return null;
 

@@ -1,5 +1,8 @@
 import { UNTRUSTED_INPUT_PREAMBLE, tagUntrusted } from '../sanitize';
 
+// R-190a: bump the trailing `r<n>` when you change the body below.
+export const PLAN_DIFF_PROMPT_VERSION = 'plan-diff@2026-05-24-r1';
+
 export const PLAN_DIFF_SYSTEM = `${UNTRUSTED_INPUT_PREAMBLE}
 
 You are an expert project analyst. Compare two plan versions and identify meaningful changes.
