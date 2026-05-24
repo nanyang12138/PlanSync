@@ -187,9 +187,9 @@ model PlanDeliverable {
   supersededById String?  @map("superseded_by_id")
   createdAt      DateTime @default(now()) @map("created_at")
 
-  plan         Plan              @relation(fields: [planId], references: [id], onDelete: Cascade)
-  supersededBy PlanDeliverable?  @relation("PlanDeliverableSupersedes", fields: [supersededById], references: [id], onDelete: SetNull)
-  supersedes   PlanDeliverable[] @relation("PlanDeliverableSupersedes")
+  plan         Plan                    @relation(fields: [planId], references: [id], onDelete: Cascade)
+  supersededBy PlanDeliverable?        @relation("PlanDeliverableSupersedes", fields: [supersededById], references: [id], onDelete: SetNull)
+  supersedes   PlanDeliverable[]       @relation("PlanDeliverableSupersedes")
   // R-191: back-reference for commit ↔ deliverable links derived from
   // `github_push` events. Each row records that a commit `sha` touched
   // files matched by this deliverable's `refUri` glob, or that the commit
