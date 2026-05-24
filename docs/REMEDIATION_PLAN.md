@@ -3282,7 +3282,7 @@
 
 #### R-189 [MEDIUM] completion-verify 边界分自一致采样
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B19
 - **depends_on**: R-185
 - **effort**: small
