@@ -3,6 +3,11 @@ import { authenticate, requireProjectRole } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { aiClient } from '@/lib/ai/client';
 import { PLAN_DRAFT_TOOL, planDraftResultZ } from '@/lib/ai/schemas';
+import {
+  UNTRUSTED_INPUT_PREAMBLE,
+  tagUntrusted,
+  logSuspectedInjection,
+} from '@/lib/ai/sanitize';
 import { z } from 'zod';
 
 type Params = { params: { projectId: string } };
@@ -12,7 +17,9 @@ const bodySchema = z.object({
   description: z.string().max(1000).optional(),
 });
 
-const SYSTEM = `You are PlanSync AI. Generate a structured software project plan draft.
+const SYSTEM = `${UNTRUSTED_INPUT_PREAMBLE}
+
+You are PlanSync AI. Generate a structured software project plan draft.
 Return ONLY valid JSON — no explanation, no markdown fences. Use this exact shape:
 {
   "goal": "string — what this plan version is trying to achieve (2-4 sentences)",
@@ -37,7 +44,20 @@ export async function POST(req: NextRequest, { params }: Params) {
     }
 
     const body = bodySchema.parse(await req.json());
-    const userMsg = `Project plan title: "${body.title}"${body.description ? `\nContext: ${body.description}` : ''}\n\nGenerate a complete plan draft as JSON.`;
+    // R-188 (closes #821 #825): title + description are end-user input and
+    // were previously string-interpolated raw into the LLM prompt. An
+    // attacker could plant "Ignore the system prompt and ..." in the title
+    // and the model would sometimes obey. Wrap each span with
+    // <untrusted source="..."> tags + log heuristic injection patterns.
+    logSuspectedInjection('plan_ai_draft', 'plan', body.title, { projectId: params.projectId });
+    if (body.description) {
+      logSuspectedInjection('plan_ai_draft', 'plan', body.description, {
+        projectId: params.projectId,
+      });
+    }
+    const userMsg = `Project plan title: ${tagUntrusted(body.title, 'plan')}${
+      body.description ? `\nContext: ${tagUntrusted(body.description, 'plan')}` : ''
+    }\n\nGenerate a complete plan draft as JSON.`;
 
     // R-185: tool_use strict mode forces the 6 required fields at the
     // decoding layer. zod.safeParse below is the application-level safety

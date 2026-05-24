@@ -3,6 +3,11 @@ import { authenticate, requireProjectRole } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { aiClient } from '@/lib/ai/client';
 import { normalizeAiList, normalizeAiText } from '@/lib/ai/validate';
+import {
+  UNTRUSTED_INPUT_PREAMBLE,
+  tagUntrusted,
+  logSuspectedInjection,
+} from '@/lib/ai/sanitize';
 import { z } from 'zod';
 
 type Params = { params: { projectId: string } };
@@ -47,12 +52,31 @@ export async function POST(req: NextRequest, { params }: Params) {
     const body = bodySchema.parse(await req.json());
     const { field, currentValue, title, goal } = body;
 
-    const system = `You are PlanSync AI helping write a project plan. Be concise and direct. Write in English. ${FIELD_INSTRUCTIONS[field as PlanField]}`;
+    const system = `${UNTRUSTED_INPUT_PREAMBLE}
 
+You are PlanSync AI helping write a project plan. Be concise and direct. Write in English. ${FIELD_INSTRUCTIONS[field as PlanField]}`;
+
+    // R-188 (closes #821 #825): title / goal / currentValue are user-supplied
+    // and were previously raw-interpolated into the prompt. Wrap with
+    // <untrusted source="plan"> tags + log injection-pattern heuristics so a
+    // malicious value in any of these fields cannot redirect the model.
+    for (const [name, value] of [
+      ['title', title],
+      ['goal', goal],
+      ['currentValue', currentValue],
+    ] as const) {
+      if (value) {
+        logSuspectedInjection('plan_ai_field', 'plan', value, {
+          projectId: params.projectId,
+          field,
+          source: name,
+        });
+      }
+    }
     const context = [
-      `Plan title: "${title}"`,
-      goal && field !== 'goal' ? `Goal: ${goal}` : null,
-      currentValue.trim() ? `Current value:\n${currentValue}` : null,
+      `Plan title: ${tagUntrusted(title, 'plan')}`,
+      goal && field !== 'goal' ? `Goal: ${tagUntrusted(goal, 'plan')}` : null,
+      currentValue.trim() ? `Current value:\n${tagUntrusted(currentValue, 'plan')}` : null,
     ]
       .filter(Boolean)
       .join('\n');

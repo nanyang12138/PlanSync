@@ -302,3 +302,53 @@ describe('R-188 end-to-end: hostile task title cannot break out of sandbox', () 
     expect(wrappedContent).toContain('IGNORE ALL');
   });
 });
+
+// Closes #821 / #825: plan-ai-draft and plan-ai-field were the last two AI
+// routes that string-interpolated user-controlled fields directly into the
+// LLM prompt, bypassing the R-188 sandboxing the rest of the AI surface had
+// already adopted. There is no exported `build*User` helper for these
+// routes (the prompt is assembled inline), so we regression-test the route
+// source files directly.
+describe('R-188 ai-draft / ai-field route prompt sandboxing', () => {
+  it('plan ai-draft route wraps title and description with tagUntrusted', async () => {
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const src = await fs.readFile(
+      path.resolve(
+        __dirname,
+        '../../src/app/api/projects/[projectId]/plans/ai-draft/route.ts',
+      ),
+      'utf8',
+    );
+    expect(src).toContain("from '@/lib/ai/sanitize'");
+    expect(src).toContain('UNTRUSTED_INPUT_PREAMBLE');
+    expect(src).toMatch(/tagUntrusted\(body\.title/);
+    expect(src).toMatch(/tagUntrusted\(body\.description/);
+    expect(src).toMatch(/logSuspectedInjection\(/);
+    // Hard-fail if the bare-interpolation pattern returns. Match the
+    // backtick-template fragment without escapes (template literals don't
+    // need quotes around ${...}); tagUntrusted output already contains
+    // <untrusted source="plan"> tags, no surrounding quotes needed.
+    expect(src).not.toMatch(/Project plan title:\s*"\$\{body\.title\}"/);
+  });
+
+  it('plan ai-field route wraps title / goal / currentValue with tagUntrusted', async () => {
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const src = await fs.readFile(
+      path.resolve(
+        __dirname,
+        '../../src/app/api/projects/[projectId]/plans/ai-field/route.ts',
+      ),
+      'utf8',
+    );
+    expect(src).toContain("from '@/lib/ai/sanitize'");
+    expect(src).toContain('UNTRUSTED_INPUT_PREAMBLE');
+    expect(src).toMatch(/tagUntrusted\(title/);
+    expect(src).toMatch(/tagUntrusted\(goal/);
+    expect(src).toMatch(/tagUntrusted\(currentValue/);
+    expect(src).toMatch(/logSuspectedInjection\(/);
+    expect(src).not.toMatch(/Plan title:\s*"\$\{title\}"/);
+    expect(src).not.toMatch(/`Goal:\s*\$\{goal\}`/);
+  });
+});
