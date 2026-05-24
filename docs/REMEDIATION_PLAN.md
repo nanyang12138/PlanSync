@@ -3043,7 +3043,7 @@
 
 #### R-190 [HIGH] 接收 GitHub webhook：push / pull_request / pull_request_review
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B17
 - **depends_on**: R-160
 - **effort**: medium

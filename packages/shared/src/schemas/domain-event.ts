@@ -80,6 +80,10 @@ export const domainEventTypeSchema = z.enum([
   'member_added',
   'member_removed',
   'member_updated',
+  // GitHub integration (R-190 — webhook ingestion)
+  'github_push',
+  'github_pull_request',
+  'github_pull_request_review',
   // Infrastructure / synthetic
   'bus_resync_required',
 ]);
@@ -142,6 +146,9 @@ export const domainEventPayloadSchema = z.discriminatedUnion('type', [
   eventVariant('member_added'),
   eventVariant('member_removed'),
   eventVariant('member_updated'),
+  eventVariant('github_push'),
+  eventVariant('github_pull_request'),
+  eventVariant('github_pull_request_review'),
   eventVariant('bus_resync_required'),
 ]);
 export type DomainEventPayload = z.infer<typeof domainEventPayloadSchema>;
