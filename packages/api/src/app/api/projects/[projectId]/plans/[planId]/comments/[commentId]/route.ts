@@ -12,7 +12,7 @@ type Params = { params: { projectId: string; planId: string; commentId: string }
 export async function PATCH(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
-    await requireProjectRole(auth, params.projectId);
+    const memberAuth = await requireProjectRole(auth, params.projectId);
     const body = await validateBody(req, updateCommentSchema);
 
     const comment = await prisma.planComment.findFirst({
@@ -47,7 +47,10 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       projectId: params.projectId,
       type: 'comment_updated',
       actorName: auth.userName,
-      actorType: 'human',
+      // Closes #762: hardcoding 'human' mislabels agent-driven edits in
+      // the audit feed. Use the membership type derived in
+      // requireProjectRole (defaults to 'human' for legacy rows).
+      actorType: memberAuth.projectMemberType ?? 'human',
       summary: `Comment on plan v${comment.plan.version} edited`,
       metadata: {
         planId: params.planId,
@@ -89,10 +92,36 @@ export async function DELETE(req: NextRequest, { params }: Params) {
         'Only the author or a project owner can delete this comment',
       );
     }
-
-    const updated = await prisma.planComment.update({
-      where: { id: params.commentId },
+    // Closes #763 + R7 #953: the original guard
+    //   if (comment.isDeleted) throw STATE_CONFLICT
+    // was non-atomic. Two concurrent DELETEs that BOTH observed
+    // isDeleted=false in the read above each issued an update and
+    // each wrote an audit row — exactly the duplicate-delete event
+    // problem #763 was supposed to close.
+    //
+    // Move the "are we the first deleter" check INTO the SQL WHERE
+    // clause via updateMany. The Postgres row lock guarantees
+    // exactly one updater sees count=1; everyone else sees count=0
+    // and bails before the audit write. R-109's per-delete
+    // Activity row is therefore at-most-once even under concurrent
+    // contention.
+    const flip = await prisma.planComment.updateMany({
+      where: { id: params.commentId, isDeleted: false },
       data: { isDeleted: true, content: '' },
+    });
+    if (flip.count === 0) {
+      // Either the row no longer exists (caller raced with a hard
+      // delete elsewhere) or another concurrent DELETE already
+      // soft-deleted it. Either way the resource is already in the
+      // requested state — return STATE_CONFLICT so the caller knows
+      // their write was a no-op.
+      throw new AppError(
+        ErrorCode.STATE_CONFLICT,
+        'Comment is already deleted; refusing to write a duplicate audit row',
+      );
+    }
+    const updated = await prisma.planComment.findUniqueOrThrow({
+      where: { id: params.commentId },
     });
 
     // R-109: audit-log comment soft-delete. Owners can delete any
@@ -105,7 +134,8 @@ export async function DELETE(req: NextRequest, { params }: Params) {
       projectId: params.projectId,
       type: 'comment_deleted',
       actorName: auth.userName,
-      actorType: 'human',
+      // Closes #762 — see PATCH branch above for rationale.
+      actorType: authCtx.projectMemberType ?? 'human',
       summary:
         comment.authorName === auth.userName
           ? `Comment on plan v${comment.plan.version} deleted by author`
