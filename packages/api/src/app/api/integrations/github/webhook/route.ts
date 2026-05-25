@@ -158,26 +158,34 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   // Persist one outbox row per matching project so downstream consumers
-  // can fan out independently. We use `outbox.emitOutOfTxStrict` (NOT the
-  // best-effort `emitOutOfTx`) because we're an HTTP receiver and the
-  // outbox row is the *only* durable record of the event. If persistence
-  // fails we MUST surface a 5xx so GitHub re-delivers — the previous
-  // best-effort helper swallowed errors and let GitHub mark the delivery
-  // as success, dropping the event permanently
-  // (closes #781 #793 #797 #806).
+  // can fan out independently. We use `outbox.emit` inside an explicit
+  // tx (NOT the best-effort `emitOutOfTx`) because we're an HTTP
+  // receiver and the outbox row is the *only* durable record of the
+  // event. If persistence fails we MUST surface a 5xx so GitHub
+  // re-delivers — the previous best-effort helper swallowed errors and
+  // let GitHub mark the delivery as success, dropping the event
+  // permanently (closes #781 #793 #797 #806).
   //
-  // R3 (closes #932 / #950): when a single repo serves multiple projects
-  // we MUST persist all per-project outbox rows in ONE transaction.
-  // The pre-fix code looped emitOutOfTxStrict, each running its own tx.
-  // If project 1 committed and project 2 then failed, the route returned
-  // 503 → GitHub redelivered → project 1 saw the same delivery twice
-  // (same deliveryId, but a fresh outbox row regardless), violating
-  // at-most-once-per-(deliveryId, projectId) downstream consumers expect.
-  // A single tx makes the multi-project insert atomic: either all land
-  // or none do, and the GitHub redelivery on 503 finds an empty state
-  // and retries the whole set cleanly.
+  // R3 (closes #932 #950): single-tx covers all per-project rows so a
+  // partial commit can't leave one project with a duplicated row when
+  // GitHub redelivers on 503.
+  //
+  // R-new3 (closes #1005): GitHub will redeliver a webhook on ANY non-
+  // 2xx response (transient network blip, our own 5xx, ...). Without
+  // explicit dedup, each redelivery wrote a fresh outbox row per
+  // matching project even on success — same X-GitHub-Delivery,
+  // duplicate downstream events. The fix: in the same tx, INSERT a row
+  // into inbound_webhook_deliveries with UNIQUE(source, delivery_id).
+  // A repeat delivery hits the unique constraint, the tx rolls back,
+  // and we short-circuit with 200 (no fan-out, no retry).
   try {
     await prisma.$transaction(async (tx) => {
+      // The dedup row goes FIRST so a duplicate fails fast before any
+      // outbox write happens. The unique constraint
+      // (source, delivery_id) is what makes this race-free.
+      await tx.inboundWebhookDelivery.create({
+        data: { source: 'github', deliveryId },
+      });
       for (const project of verified) {
         await outbox.emit(tx, eventType, {
           projectId: project.id,
@@ -190,6 +198,17 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       }
     });
   } catch (err) {
+    // R-new3 — Prisma surfaces unique-violation as P2002. That means
+    // we've already processed this delivery; tell GitHub all-good so
+    // it stops retrying.
+    const code = (err as { code?: string } | null)?.code;
+    if (code === 'P2002') {
+      logger.info(
+        { deliveryId, eventName, repoSlug },
+        'github webhook: dedup hit, this delivery was already processed; returning 200',
+      );
+      return NextResponse.json({ data: { ok: true, deduped: true, deliveryId } }, { status: 200 });
+    }
     logger.error(
       {
         err,
