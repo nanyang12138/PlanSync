@@ -278,27 +278,24 @@ describe('R-143: completion-verify observability', () => {
   });
 
   it('#184 (post-R-180): a thrown audit-write does NOT block the advisory RunReview or the run finalize', async () => {
-    // Pre-R-180 contract: a low score returned 422, and the test asserted
-    // that a thrown audit-write did not mask that 422. Post-R-180 the
-    // gate is advisory: the contract becomes "advisory + run finalize
-    // are independent of the bestEffortAudit success path".
-    //
-    // Reviewers (#549 / #557 / #569 / #582) flagged that this spy targets
-    // testPrisma rather than @/lib/prisma — different PrismaClient
-    // instances. The structural guarantee is provided by the
-    // `bestEffortAudit` helper which catches all errors and never
-    // re-throws; this test pins the *behavioural* outcome (200 + run
-    // completed + advisory written) using the score=30 < 75 path which
-    // the route takes regardless of audit state.
-    const updateSpy = vi.spyOn(testPrisma.executionRun, 'update');
+    // Closes #549 #557 #569 #582 (P0-12): the previous version of this
+    // test did `vi.spyOn(testPrisma.executionRun, 'update')`. testPrisma
+    // is a SEPARATE PrismaClient instance from the production singleton
+    // imported by the route, so the spy never intercepted the route's
+    // update — the "audit write throws" branch was never actually
+    // exercised. Use `spyOnProductionPrisma` (added to tests/helpers/
+    // request.ts) which patches the @/lib/prisma singleton directly.
     let throwOnce = true;
-    updateSpy.mockImplementationOnce(((args: unknown) => {
-      if (throwOnce) {
-        throwOnce = false;
-        return Promise.reject(new Error('simulated DB drop during audit write'));
-      }
-      return testPrisma.executionRun.update.call(testPrisma.executionRun, args as never);
-    }) as never);
+    const restoreSpy = await (await import('../helpers/request'))
+      .spyOnProductionPrisma('executionRun', 'update', (originalUpdate) => {
+        return ((args: never) => {
+          if (throwOnce) {
+            throwOnce = false;
+            return Promise.reject(new Error('simulated DB drop during audit write'));
+          }
+          return (originalUpdate as (a: never) => unknown)(args);
+        }) as typeof originalUpdate;
+      });
 
     mockState.nextResult = JSON.stringify({
       verified: false,
@@ -337,8 +334,14 @@ describe('R-143: completion-verify observability', () => {
       expect(reviews).toHaveLength(1);
       expect(reviews[0]?.score).toBe(30);
       expect(reviews[0]?.feedback).toMatch(/Score too low/);
+
+      // Closes #549 #557 #569 #582 — the spy MUST have actually been
+      // hit. If the wiring regresses (e.g. someone refactors the route
+      // to use a different prisma reference), throwOnce stays true and
+      // we know the test was a silent no-op again.
+      expect(throwOnce).toBe(false);
     } finally {
-      updateSpy.mockRestore();
+      restoreSpy();
     }
   });
 

@@ -78,10 +78,16 @@ export async function register() {
     const procWithFlag = process as NodeJS.Process & { __plansyncMailFlush?: boolean };
     if (!procWithFlag.__plansyncMailFlush) {
       procWithFlag.__plansyncMailFlush = true;
-      const { flushSendMailQueue, _sendMailQueueLengthForTests } = await import('./lib/email');
+      const { flushSendMailQueue, getPendingMailTotal } = await import('./lib/email');
       registerMailDrainOnExit({
         flushSendMailQueue,
-        getPendingCount: _sendMailQueueLengthForTests,
+        // P0-7 / closes #541-cls: aggregate (queue + inFlight + processing)
+        // — the previous wiring read queue.length only, so a 5s drain
+        // that timed out while a sendmail child was still running
+        // misreported `pending=0` and exited with code 0, SIGKILL'ing
+        // the in-flight child mid-write. getPendingMailTotal makes
+        // the drain accurate.
+        getPendingCount: getPendingMailTotal,
         onExit: (code) => process.exit(code),
         installSignalHandler: (signal, handler) => {
           process.on(signal, handler);
