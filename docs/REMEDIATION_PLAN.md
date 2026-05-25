@@ -3016,7 +3016,7 @@
 
 #### R-181 [HIGH] 声明式 `verification_rules` 表 + 评估器
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B16
 - **depends_on**: R-180
 - **effort**: large
