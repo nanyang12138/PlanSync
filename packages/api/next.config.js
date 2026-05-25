@@ -36,9 +36,30 @@ const nextConfig = {
   // R-131 / G3 (Next.js 15 migration):
   //   - `experimental.serverComponentsExternalPackages` was promoted to
   //     the top-level `serverExternalPackages` in Next 15.
-  //   - `experimental.instrumentationHook` is no longer needed because
+  //   - `experimental.instrumentationHook` is removed because
   //     `instrumentation.js` is enabled by default in Next 15+.
-  serverExternalPackages: ['pino', 'pino-pretty', '@prisma/client', '.prisma/client'],
+  // #143 (preserved from master): `pg` + `pg-native` must also be marked
+  // external for route-handler Node runtime so webpack's production
+  // minifier doesn't mangle `Client` -> `e` and break EventBusPG.
+  serverExternalPackages: [
+    'pino',
+    'pino-pretty',
+    '@prisma/client',
+    '.prisma/client',
+    'pg',
+    'pg-native',
+  ],
+  webpack: (config, { isServer }) => {
+    if (isServer) {
+      const existing = Array.isArray(config.externals)
+        ? config.externals
+        : config.externals
+        ? [config.externals]
+        : [];
+      config.externals = [...existing, 'pg', 'pg-native'];
+    }
+    return config;
+  },
 };
 
 module.exports = nextConfig;

@@ -1,4 +1,5 @@
-// G3 / R-131 (Next.js 15) — same bug class P0-2 (#845) fixed for Next 14:
+// G3 / R-131 (Next.js 15) — same bug class P0-2 (#845, root cause of
+// nightly e2e #143) fixed for Next 14:
 // `import { Client } from 'pg'` lets webpack treat the entire dependent
 // module chain as an async ESM module (because pg ships dual ESM+CJS
 // exports), and route handlers that synchronously call `new EventBusPG()`
@@ -11,8 +12,9 @@ import type { Client as PgClient } from 'pg';
 import { createHash, randomUUID } from 'crypto';
 
 // Type and value share the same name on purpose: `Client` is the runtime
-// constructor and the type that callers expect. ESLint can't see the
-// type-only declaration so we silence no-redeclare on the value line.
+// constructor and the type that callers expect. TypeScript allows
+// type-and-value declarations under the same identifier; the only complaint
+// came from eslint's `no-redeclare`, which we disable on the value line.
 type Client = PgClient;
 const requireFromHere = createRequire(__filename);
 // eslint-disable-next-line no-redeclare
