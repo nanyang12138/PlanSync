@@ -286,16 +286,17 @@ describe('R-143: completion-verify observability', () => {
     // exercised. Use `spyOnProductionPrisma` (added to tests/helpers/
     // request.ts) which patches the @/lib/prisma singleton directly.
     let throwOnce = true;
-    const restoreSpy = await (await import('../helpers/request'))
-      .spyOnProductionPrisma('executionRun', 'update', (originalUpdate) => {
-        return ((args: never) => {
-          if (throwOnce) {
-            throwOnce = false;
-            return Promise.reject(new Error('simulated DB drop during audit write'));
-          }
-          return (originalUpdate as (a: never) => unknown)(args);
-        }) as typeof originalUpdate;
-      });
+    const restoreSpy = await (
+      await import('../helpers/request')
+    ).spyOnProductionPrisma('executionRun', 'update', (originalUpdate) => {
+      return ((args: never) => {
+        if (throwOnce) {
+          throwOnce = false;
+          return Promise.reject(new Error('simulated DB drop during audit write'));
+        }
+        return (originalUpdate as (a: never) => unknown)(args);
+      }) as typeof originalUpdate;
+    });
 
     mockState.nextResult = JSON.stringify({
       verified: false,

@@ -26,7 +26,10 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function initial(score: number, feedback = 'okay'): {
+function initial(
+  score: number,
+  feedback = 'okay',
+): {
   verified: boolean;
   score: number;
   breakdown?: { specificity: number; coherence: number; coverage: number };
@@ -91,11 +94,7 @@ describe('R-189 completion-verify self-consistency', () => {
       .mockResolvedValueOnce(JSON.stringify(initial(45, 'second')))
       .mockResolvedValueOnce(JSON.stringify(initial(95, 'third')));
 
-    const outcome = await applyCompletionVerifyConsistency(
-      initial(72, 'first'),
-      'sys',
-      'user',
-    );
+    const outcome = await applyCompletionVerifyConsistency(initial(72, 'first'), 'sys', 'user');
 
     expect(outcome.lowConfidence).toBe(true);
     expect(outcome.result.score).toBe(72); // median(45,72,95)
