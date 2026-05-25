@@ -109,9 +109,7 @@ export class RunStore extends Store<RunState> {
         // refetch via load()" — the live data path through the API is the
         // single source of truth for run state, the SSE event just tells
         // us "something changed".
-        const run = (event.data as { run?: unknown } | undefined)?.run as
-          | ExecutionRun
-          | undefined;
+        const run = (event.data as { run?: unknown } | undefined)?.run as ExecutionRun | undefined;
         if (run && typeof run === 'object' && typeof run.id === 'string') {
           this.setState((state) => {
             const byId = { ...state.byId, [run.id]: run };
