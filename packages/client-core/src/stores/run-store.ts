@@ -87,41 +87,48 @@ export class RunStore extends Store<RunState> {
     // emits, so a remote run never appeared in the local store. The
     // other three events ('execution_stale' / 'execution_failed' /
     // 'execution_superseded') are emitted by the heartbeat scanner and
-    // also carry only run/task ids — not full run objects. We treat all
-    // four uniformly: claim the event so the registry can fan it to
-    // subscribers, merge a full run object if the payload happens to
-    // include one, otherwise leave the store unchanged (caller refetches).
+    // also carry only run/task ids — not full run objects.
     const STORE_AFFECTING_EVENTS: ReadonlySet<string> = new Set([
       'task_started',
       'execution_stale',
       'execution_failed',
       'execution_superseded',
     ]);
-    switch (event.type) {
-      default: {
-        if (!STORE_AFFECTING_EVENTS.has(event.type)) return false;
-        // Closes #784 — the previous code expected `event.data.run` to be
-        // a complete ExecutionRun, but every server-side publisher sends
-        // lightweight ids only (avoids fanning out kilobyte payloads
-        // through SSE and keeps the wire schema stable). When a full run
-        // object is present (legacy / future events that opt in), use it
-        // directly; otherwise return true to signal "the caller should
-        // refetch via load()" — the live data path through the API is the
-        // single source of truth for run state, the SSE event just tells
-        // us "something changed".
-        const run = (event.data as { run?: unknown } | undefined)?.run as ExecutionRun | undefined;
-        if (run && typeof run === 'object' && typeof run.id === 'string') {
-          this.setState((state) => {
-            const byId = { ...state.byId, [run.id]: run };
-            return { ...state, byId, activeIds: recomputeActive(byId) };
-          });
-        }
-        // Always return true so subscribers see "an event affected this
-        // store" and can decide to refetch. Returning false would have
-        // signalled "store ignored the event"; that's only correct when
-        // we're sure no run state changed.
-        return true;
-      }
+    if (!STORE_AFFECTING_EVENTS.has(event.type)) return false;
+
+    // Closes #784 — when a full ExecutionRun is on the payload (legacy
+    // or future opt-in publishers), merge it directly. No refetch needed.
+    const run = (event.data as { run?: unknown } | undefined)?.run as ExecutionRun | undefined;
+    if (run && typeof run === 'object' && typeof run.id === 'string') {
+      this.setState((state) => {
+        const byId = { ...state.byId, [run.id]: run };
+        return { ...state, byId, activeIds: recomputeActive(byId) };
+      });
+      return true;
     }
+
+    // Closes #918 / #939 / #954 (R5 review feedback): the lightweight
+    // payload doesn't carry the run object. Returning `true` alone is
+    // not enough — `StoreRegistry` discards the return value, so the
+    // UI never learns there was a change. Schedule a fire-and-forget
+    // refetch against the API so the new run actually shows up in the
+    // store. We can only refetch if we know which project we already
+    // loaded; if `loadedProjectId` is null (store hasn't been loaded
+    // yet) we still claim the event (a future load() will see the
+    // server-side state) but skip the refetch since we don't know
+    // which scope to query.
+    const projectId = this.getState().loadedProjectId;
+    if (projectId) {
+      const taskId = (event.data as { taskId?: unknown } | undefined)?.taskId;
+      const taskScope = typeof taskId === 'string' ? taskId : undefined;
+      // void on purpose — failures bubble through the load() error
+      // pathway. We deliberately do NOT await: handleEvent must stay
+      // synchronous (the registry calls all stores' handleEvent in a
+      // tight loop and one slow refetch shouldn't block the others).
+      void this.load(projectId, taskScope).catch(() => {
+        /* swallowed: load() already wrote state.error via runAction */
+      });
+    }
+    return true;
   }
 }
