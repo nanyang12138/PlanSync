@@ -1,6 +1,18 @@
 import { NextRequest } from 'next/server';
 import { PrismaClient } from '@prisma/client';
 
+// `testPrisma` is intentionally a SEPARATE PrismaClient from the
+// production singleton in `@/lib/prisma`. Both connect to the same
+// Postgres so plain CRUD reads / writes against `testPrisma` see the
+// same rows the route just wrote — that's the only thing CRUD-style
+// assertions need.
+//
+// Tests that need to *intercept* a production write (e.g. assert that
+// `bestEffortAudit` swallows DB errors and continues) must NOT
+// `vi.spyOn(testPrisma.X, 'method')` — that spies the test's own
+// client and never touches the route's calls. Use the helper
+// `spyOnProductionPrisma` below, which spies the actual `@/lib/prisma`
+// singleton.
 const prisma = new PrismaClient();
 
 export function makeReq(
@@ -105,3 +117,53 @@ export async function resetDraftPlans(projectId: string) {
 }
 
 export { prisma as testPrisma };
+
+/**
+ * Closes #549 #557 #569 #582 #777 #794 #801 #803 #809 #810 #814 (P0-12).
+ *
+ * Returns a vitest spy on the PRODUCTION Prisma singleton's method, so
+ * tests can intercept the exact calls that route handlers make via
+ * `import { prisma } from '@/lib/prisma'`. Without this, every test
+ * that did `vi.spyOn(testPrisma.X.method)` was silently asserting
+ * against an un-spied path — the spy fired on the test client, the
+ * route used the OTHER client, and the "audit-write failure" branch
+ * was never actually exercised.
+ *
+ * Usage:
+ *   const restore = await spyOnProductionPrisma('executionRun', 'update', (orig) =>
+ *     vi.fn().mockImplementationOnce(() => Promise.reject(new Error('boom')))
+ *       .mockImplementation(orig),
+ *   );
+ *   try { ... } finally { restore(); }
+ *
+ * The helper deliberately does NOT use `vi.spyOn` directly because
+ * Prisma's model proxies (e.g. `prisma.executionRun`) can be
+ * regenerated per-access in some Prisma client builds, defeating
+ * `vi.spyOn`. Instead we save the original method, swap in the
+ * caller-built mock, and `restore()` puts the original back.
+ */
+export async function spyOnProductionPrisma<
+  M extends keyof Awaited<ReturnType<typeof importProductionPrisma>>['prisma'],
+  K extends keyof Awaited<ReturnType<typeof importProductionPrisma>>['prisma'][M] & string,
+>(
+  model: M,
+  method: K,
+  buildMock: (
+    original: Awaited<ReturnType<typeof importProductionPrisma>>['prisma'][M][K],
+  ) => Awaited<ReturnType<typeof importProductionPrisma>>['prisma'][M][K],
+): Promise<() => void> {
+  const { prisma: prodPrisma } = await importProductionPrisma();
+  const target = prodPrisma[model] as Record<string, unknown>;
+  const original = target[method as string] as Awaited<
+    ReturnType<typeof importProductionPrisma>
+  >['prisma'][M][K];
+  const mock = buildMock(original);
+  target[method as string] = mock as unknown;
+  return () => {
+    target[method as string] = original as unknown;
+  };
+}
+
+async function importProductionPrisma() {
+  return await import('@/lib/prisma');
+}

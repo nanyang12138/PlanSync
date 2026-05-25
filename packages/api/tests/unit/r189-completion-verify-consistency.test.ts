@@ -26,7 +26,10 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function initial(score: number, feedback = 'okay'): {
+function initial(
+  score: number,
+  feedback = 'okay',
+): {
   verified: boolean;
   score: number;
   breakdown?: { specificity: number; coherence: number; coverage: number };
@@ -91,11 +94,7 @@ describe('R-189 completion-verify self-consistency', () => {
       .mockResolvedValueOnce(JSON.stringify(initial(45, 'second')))
       .mockResolvedValueOnce(JSON.stringify(initial(95, 'third')));
 
-    const outcome = await applyCompletionVerifyConsistency(
-      initial(72, 'first'),
-      'sys',
-      'user',
-    );
+    const outcome = await applyCompletionVerifyConsistency(initial(72, 'first'), 'sys', 'user');
 
     expect(outcome.lowConfidence).toBe(true);
     expect(outcome.result.score).toBe(72); // median(45,72,95)
@@ -175,5 +174,59 @@ describe('R-189 completion-verify self-consistency', () => {
     expect(firstSalted).toContain('ORIGINAL_USER');
     expect(secondSalted).toContain('ORIGINAL_USER');
     expect(firstSalted).not.toBe(secondSalted);
+  });
+
+  // Closes #835 #829 — `verified` is what downstream code (route advisory
+  // check, owner UI, RunReview metadata) actually branches on. After
+  // median correction it must agree with the corrected score.
+  it('re-derives `verified` from the corrected median score (false → true crossing)', async () => {
+    const { applyCompletionVerifyConsistency } = await import(
+      '../../src/lib/ai/completion-verify-consistency'
+    );
+    // Initial 72 (verified=false), extra samples 80 + 82 → median 80,
+    // post-correction `verified` MUST be true to agree with the score.
+    completeMock
+      .mockResolvedValueOnce(JSON.stringify(initial(80)))
+      .mockResolvedValueOnce(JSON.stringify(initial(82)));
+
+    const outcome = await applyCompletionVerifyConsistency(initial(72), 'sys', 'user');
+    expect(outcome.result.score).toBe(80);
+    expect(outcome.result.verified).toBe(true);
+  });
+
+  it('re-derives `verified` from the corrected median score (true → false crossing)', async () => {
+    const { applyCompletionVerifyConsistency } = await import(
+      '../../src/lib/ai/completion-verify-consistency'
+    );
+    // Initial 78 (verified=true), extra samples 60 + 65 → median 65,
+    // post-correction `verified` MUST be false.
+    completeMock
+      .mockResolvedValueOnce(JSON.stringify(initial(60)))
+      .mockResolvedValueOnce(JSON.stringify(initial(65)));
+
+    const outcome = await applyCompletionVerifyConsistency(initial(78), 'sys', 'user');
+    expect(outcome.result.score).toBe(65);
+    expect(outcome.result.verified).toBe(false);
+  });
+
+  // Closes #830 — extra-sample schema validation. Out-of-range scores
+  // (negative, >100) must be discarded, not folded into the median.
+  it('discards extra samples that violate the result schema (e.g. score=999)', async () => {
+    const { applyCompletionVerifyConsistency } = await import(
+      '../../src/lib/ai/completion-verify-consistency'
+    );
+    // First extra sample is out-of-range (999), second is valid (78).
+    // Without schema validation, the median of [72, 999, 78] would be
+    // 78 (still valid by accident) but 999 would also flow into
+    // `consistencyScores` metadata + Prisma writes downstream. With
+    // validation, only the valid 78 survives → scores=[72, 78],
+    // median=75, no out-of-range value persisted.
+    completeMock
+      .mockResolvedValueOnce(JSON.stringify({ ...initial(72), score: 999 }))
+      .mockResolvedValueOnce(JSON.stringify(initial(78)));
+
+    const outcome = await applyCompletionVerifyConsistency(initial(72), 'sys', 'user');
+    expect(outcome.scores).toEqual([72, 78]);
+    expect(outcome.result.score).toBe(75); // median of [72, 78]
   });
 });

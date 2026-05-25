@@ -158,17 +158,57 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   // Persist one outbox row per matching project so downstream consumers
-  // can fan out independently. Use `outbox.emitOutOfTx` because we're at
-  // the HTTP boundary with no surrounding state-change tx to bind to.
-  for (const project of verified) {
-    await outbox.emitOutOfTx(eventType, {
-      projectId: project.id,
-      data: {
-        deliveryId,
-        repository: repoSlug,
-        payload,
-      },
+  // can fan out independently. We use `outbox.emitOutOfTxStrict` (NOT the
+  // best-effort `emitOutOfTx`) because we're an HTTP receiver and the
+  // outbox row is the *only* durable record of the event. If persistence
+  // fails we MUST surface a 5xx so GitHub re-delivers — the previous
+  // best-effort helper swallowed errors and let GitHub mark the delivery
+  // as success, dropping the event permanently
+  // (closes #781 #793 #797 #806).
+  //
+  // R3 (closes #932 / #950): when a single repo serves multiple projects
+  // we MUST persist all per-project outbox rows in ONE transaction.
+  // The pre-fix code looped emitOutOfTxStrict, each running its own tx.
+  // If project 1 committed and project 2 then failed, the route returned
+  // 503 → GitHub redelivered → project 1 saw the same delivery twice
+  // (same deliveryId, but a fresh outbox row regardless), violating
+  // at-most-once-per-(deliveryId, projectId) downstream consumers expect.
+  // A single tx makes the multi-project insert atomic: either all land
+  // or none do, and the GitHub redelivery on 503 finds an empty state
+  // and retries the whole set cleanly.
+  try {
+    await prisma.$transaction(async (tx) => {
+      for (const project of verified) {
+        await outbox.emit(tx, eventType, {
+          projectId: project.id,
+          data: {
+            deliveryId,
+            repository: repoSlug,
+            payload,
+          },
+        });
+      }
     });
+  } catch (err) {
+    logger.error(
+      {
+        err,
+        deliveryId,
+        eventName,
+        repoSlug,
+        projects: verified.map((p) => p.id),
+      },
+      'github webhook: outbox persistence failed, returning 503 so GitHub will retry',
+    );
+    return NextResponse.json(
+      {
+        error: {
+          code: 'OUTBOX_PERSIST_FAILED',
+          message: 'Webhook receiver failed to persist event; please retry',
+        },
+      },
+      { status: 503 },
+    );
   }
 
   return NextResponse.json(
