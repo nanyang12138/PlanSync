@@ -2134,7 +2134,7 @@
 
 #### R-119 [HIGH] MCP execution\_\* 工具单测
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B12
 - **depends_on**: R-005, R-019, R-020
 - **effort**: medium
