@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { prisma, PROJECT_PUBLIC_SELECT } from '@/lib/prisma';
 import { authenticate } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { validateBody, validateSearchParams } from '@/lib/validate';
@@ -19,6 +19,8 @@ export async function GET(req: NextRequest) {
         skip,
         take: pageSize,
         orderBy: { createdAt: 'desc' },
+        // R-190 / closes #780 #796: omit githubWebhookSecret.
+        select: PROJECT_PUBLIC_SELECT,
       }),
       prisma.project.count({ where: memberFilter }),
     ]);
@@ -40,6 +42,8 @@ export async function POST(req: NextRequest) {
     const project = await prisma.$transaction(async (tx) => {
       const p = await tx.project.create({
         data: { ...body, createdBy: auth.userName },
+        // R-190 / closes #780 #796: never echo secret on create.
+        select: PROJECT_PUBLIC_SELECT,
       });
       await tx.projectMember.create({
         data: { projectId: p.id, name: auth.userName, role: 'owner', type: 'human' },
