@@ -140,12 +140,8 @@ export function registerDeliverableTools(server: McpServer, api: ApiClient) {
       'cannot infer (e.g. slug renames across plan versions, mid-version cancellation).',
     {
       projectId: z.string(),
-      planId: z
-        .string()
-        .describe('Plan that owns the OLD (being-retired) deliverable.'),
-      deliverableId: z
-        .string()
-        .describe('Old (being-retired) deliverable id.'),
+      planId: z.string().describe('Plan that owns the OLD (being-retired) deliverable.'),
+      deliverableId: z.string().describe('Old (being-retired) deliverable id.'),
       newDeliverableId: z
         .string()
         .describe('New deliverable id that replaces it (must be in the same project).'),

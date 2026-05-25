@@ -74,10 +74,7 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
     }
 
     if (body.newDeliverableId === oldRow.id) {
-      throw new AppError(
-        ErrorCode.BAD_REQUEST,
-        'A deliverable cannot supersede itself',
-      );
+      throw new AppError(ErrorCode.BAD_REQUEST, 'A deliverable cannot supersede itself');
     }
 
     // Fetch the new row + its enclosing plan so we can enforce the

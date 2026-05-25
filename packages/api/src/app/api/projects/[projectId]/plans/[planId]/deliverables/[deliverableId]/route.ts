@@ -27,11 +27,7 @@ type Params = {
   params: Promise<{ projectId: string; planId: string; deliverableId: string }>;
 };
 
-async function loadDeliverableInPlan(
-  deliverableId: string,
-  planId: string,
-  projectId: string,
-) {
+async function loadDeliverableInPlan(deliverableId: string, planId: string, projectId: string) {
   await requirePlanInProject(planId, projectId);
   const row = await prisma.planDeliverable.findUnique({
     where: { id: deliverableId },
@@ -47,11 +43,7 @@ export async function GET(req: NextRequest, __nextCtx: Params) {
   try {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);
-    const row = await loadDeliverableInPlan(
-      params.deliverableId,
-      params.planId,
-      params.projectId,
-    );
+    const row = await loadDeliverableInPlan(params.deliverableId, params.planId, params.projectId);
     return NextResponse.json({ data: row });
   } catch (error) {
     return handleApiError(error);

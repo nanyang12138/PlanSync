@@ -31,7 +31,7 @@ export const deliverableSlugSchema = z
   .string()
   .min(1)
   .max(120)
-  .regex(/^[a-z0-9][a-z0-9\-\/]*$/, {
+  .regex(/^[a-z0-9][a-z0-9\-/]*$/, {
     message: 'slug must be lowercase alphanumeric with - and / (no leading - or /)',
   });
 

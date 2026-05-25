@@ -84,10 +84,7 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
       // invalidate ongoing reviews and break drift v2 attribution. The
       // supported path is to draft a new plan version and supersede the
       // current row via the supersede endpoint instead.
-      throw new AppError(
-        ErrorCode.STATE_CONFLICT,
-        'Only draft plans can have deliverables added',
-      );
+      throw new AppError(ErrorCode.STATE_CONFLICT, 'Only draft plans can have deliverables added');
     }
 
     let created;
