@@ -10,6 +10,7 @@
  * runs after `requireProjectRole` for the project already.
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { authenticate, requireProjectRole, requireNotExecScoped } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
@@ -40,10 +41,7 @@ function validatePayload(body: unknown): {
   }
   const scope = typeof b.scope === 'string' ? b.scope : 'project';
   if (!(SCOPES as readonly string[]).includes(scope)) {
-    throw new AppError(
-      ErrorCode.VALIDATION_ERROR,
-      `scope must be one of: ${SCOPES.join(', ')}`,
-    );
+    throw new AppError(ErrorCode.VALIDATION_ERROR, `scope must be one of: ${SCOPES.join(', ')}`);
   }
   const scopeValue =
     scope === 'project'
@@ -52,10 +50,7 @@ function validatePayload(body: unknown): {
         ? b.scopeValue
         : null;
   if (scope !== 'project' && scopeValue === null) {
-    throw new AppError(
-      ErrorCode.VALIDATION_ERROR,
-      `scopeValue is required when scope=${scope}`,
-    );
+    throw new AppError(ErrorCode.VALIDATION_ERROR, `scopeValue is required when scope=${scope}`);
   }
   const params =
     b.params && typeof b.params === 'object' && !Array.isArray(b.params)
@@ -95,7 +90,7 @@ export async function POST(req: NextRequest, { params }: Params) {
         kind: payload.kind,
         scope: payload.scope,
         scopeValue: payload.scopeValue,
-        params: payload.params,
+        params: payload.params as Prisma.InputJsonValue,
         enabled: payload.enabled,
         createdBy: auth.userName,
       },

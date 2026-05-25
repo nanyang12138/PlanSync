@@ -10,6 +10,7 @@
  * noisy rule without losing its history.
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { authenticate, requireProjectRole, requireNotExecScoped } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
@@ -34,13 +35,7 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     }
 
     const body = (await req.json()) as Record<string, unknown>;
-    const data: {
-      enabled?: boolean;
-      kind?: string;
-      scope?: string;
-      scopeValue?: string | null;
-      params?: Record<string, unknown>;
-    } = {};
+    const data: Prisma.VerificationRuleUpdateInput = {};
 
     if (body.enabled !== undefined) {
       if (typeof body.enabled !== 'boolean') {
@@ -81,7 +76,7 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       if (!body.params || typeof body.params !== 'object' || Array.isArray(body.params)) {
         throw new AppError(ErrorCode.VALIDATION_ERROR, 'params must be an object');
       }
-      data.params = body.params as Record<string, unknown>;
+      data.params = body.params as Prisma.InputJsonValue;
     }
 
     const updated = await prisma.verificationRule.update({
