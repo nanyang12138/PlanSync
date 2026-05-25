@@ -116,4 +116,51 @@ describe('McpClient — child stdout/stderr capture (PR-B)', () => {
     // happy path is leaking warnings the user shouldn't see.
     expect(client.getRecentChildOutput()).toEqual([]);
   });
+
+  // P0-11 / closes #808: handleExit must flush BOTH stdio buffers,
+  // not just stderr. The MCP child can crash mid-pino-line on stdout
+  // (no trailing newline) — the partial bytes are exactly the
+  // diagnostic the user needs.
+  it('flushes a stdout partial line (no trailing \\n) on exit (#808)', async () => {
+    process.env.FAKE_MCP_STDOUT_PARTIAL_NO_NEWLINE =
+      'fatal-stdout-without-newline-' + Math.random().toString(36).slice(2);
+    process.env.FAKE_MCP_CRASH_ON_START = '1';
+
+    await expect(client.start(FAKE_SERVER)).rejects.toThrow();
+
+    const captured = client.getRecentChildOutput().join('\n');
+    expect(captured).toContain(process.env.FAKE_MCP_STDOUT_PARTIAL_NO_NEWLINE);
+  });
+
+  it('flushes a stderr partial line (no trailing \\n) on exit (#808)', async () => {
+    process.env.FAKE_MCP_STDERR_PARTIAL_NO_NEWLINE =
+      'fatal-stderr-without-newline-' + Math.random().toString(36).slice(2);
+    process.env.FAKE_MCP_CRASH_ON_START = '1';
+
+    await expect(client.start(FAKE_SERVER)).rejects.toThrow();
+
+    const captured = client.getRecentChildOutput().join('\n');
+    expect(captured).toContain(process.env.FAKE_MCP_STDERR_PARTIAL_NO_NEWLINE);
+  });
+
+  // P0-11 / closes #807: a child that streams a giant unbroken line to
+  // stderr must NOT be able to grow McpClient's accumulator without
+  // bound. The accumulator is force-flushed at CHILD_OUTPUT_LINE_CAP
+  // (4096) so memory stays bounded. The captured output is truncated
+  // to the cap (with the documented "…" suffix from recordChildOutput).
+  it('caps stderr accumulator at CHILD_OUTPUT_LINE_CAP even with no newline (#807)', async () => {
+    // 50_000 chars >> CHILD_OUTPUT_LINE_CAP (4096).
+    process.env.FAKE_MCP_STDERR_GIANT_LINE = '50000';
+    process.env.FAKE_MCP_CRASH_ON_START = '1';
+
+    await expect(client.start(FAKE_SERVER)).rejects.toThrow();
+
+    const captured = client.getRecentChildOutput();
+    expect(captured.length).toBeGreaterThan(0);
+    // Each captured entry must be at-or-below the cap. The cap is 4096
+    // chars; entries that hit the cap get a "…" suffix (length 4097).
+    for (const line of captured) {
+      expect(line.length).toBeLessThanOrEqual(5000);
+    }
+  });
 });
