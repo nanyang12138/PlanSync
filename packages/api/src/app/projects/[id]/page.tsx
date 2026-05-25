@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { cookies } from 'next/headers';
-import { prisma } from '@/lib/prisma';
+import { prisma, PROJECT_PUBLIC_SELECT } from '@/lib/prisma';
 import { DriftAlertCard } from '@/components/dashboard/drift-alert-card';
 import { TaskViewToggle } from '@/components/dashboard/task-view-toggle';
 import { NewTaskButton } from '@/components/dashboard/new-task-button';
@@ -14,9 +14,13 @@ import { StatusBlock } from '@/components/shared/status-block';
 import { SectionShell } from '@/components/shared/section-shell';
 
 export default async function ProjectDashboard({ params }: { params: { id: string } }) {
+  // R-190 / closes #780 #796: never include the webhook secret in the
+  // server-rendered HTML payload — switch from `include: {...}` to an
+  // explicit `select` that pulls in the relations but omits the secret.
   const project = await prisma.project.findUnique({
     where: { id: params.id },
-    include: {
+    select: {
+      ...PROJECT_PUBLIC_SELECT,
       members: { orderBy: { createdAt: 'asc' } },
       plans: { orderBy: { version: 'desc' } },
       tasks: { orderBy: { createdAt: 'desc' } },

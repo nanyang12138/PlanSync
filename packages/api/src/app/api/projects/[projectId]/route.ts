@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { prisma, PROJECT_PUBLIC_SELECT } from '@/lib/prisma';
 import { authenticate, requireProjectRole, requireNotExecScoped } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { validateBody } from '@/lib/validate';
@@ -11,9 +11,13 @@ type Params = { params: { projectId: string } };
 export async function GET(req: NextRequest, { params }: Params) {
   try {
     const auth = await authenticate(req);
+    // R-190 / closes #780 #796: do NOT use `include` here — `include` returns
+    // every column on Project including `githubWebhookSecret`. Switch to an
+    // explicit `select` plus the `_count` aggregate.
     const project = await prisma.project.findUnique({
       where: { id: params.projectId },
-      include: {
+      select: {
+        ...PROJECT_PUBLIC_SELECT,
         _count: { select: { members: true, plans: true, tasks: true } },
       },
     });
@@ -59,6 +63,9 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     const project = await prisma.project.update({
       where: { id: params.projectId },
       data: body,
+      // R-190 / closes #780 #796: never echo the webhook secret back on
+      // PATCH responses either.
+      select: PROJECT_PUBLIC_SELECT,
     });
 
     // R-110: audit trail for owner-driven project edits. Records the changed
