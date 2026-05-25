@@ -100,7 +100,7 @@ describe('R-115: GET /tasks/conflicts integration', () => {
   it('rejects non-members with 403 (cross-project leak guard)', async () => {
     const res = await conflictsGet(
       makeReq(`/api/projects/${projectId}/tasks/conflicts`, { userName: outsider }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(403);
     const body = await res.json();
@@ -120,7 +120,7 @@ describe('R-115: GET /tasks/conflicts integration', () => {
 
     const res = await conflictsGet(
       makeReq(`/api/projects/${projectId}/tasks/conflicts`, { userName: owner }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -160,7 +160,7 @@ describe('R-115: GET /tasks/conflicts integration', () => {
 
     const res = await conflictsGet(
       makeReq(`/api/projects/${projectId}/tasks/conflicts`, { userName: owner }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -187,7 +187,7 @@ describe('R-115: GET /tasks/conflicts integration', () => {
 
     const res = await conflictsGet(
       makeReq(`/api/projects/${projectId}/tasks/conflicts`, { userName: owner }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(200);
 
@@ -222,7 +222,7 @@ describe('R-115: GET /tasks/conflicts integration', () => {
 
     const res = await conflictsGet(
       makeReq(`/api/projects/${projectId}/tasks/conflicts`, { userName: owner }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(200);
     expect(mockedPredictConflicts).toHaveBeenCalledTimes(1);

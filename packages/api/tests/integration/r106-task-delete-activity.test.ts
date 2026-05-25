@@ -58,7 +58,7 @@ describe('R-106: task DELETE writes activity', () => {
           assigneeType: opts?.assignee ? 'human' : undefined,
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(201);
     return (await res.json()).data.id;
@@ -77,7 +77,7 @@ describe('R-106: task DELETE writes activity', () => {
         method: 'DELETE',
         userName: owner,
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
     expect(res.status).toBe(200);
 
@@ -137,7 +137,7 @@ describe('R-106: task DELETE writes activity', () => {
         method: 'DELETE',
         userName: owner,
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
     expect(res.status).toBe(409);
 
@@ -165,7 +165,7 @@ describe('R-106: task DELETE writes activity', () => {
         method: 'DELETE',
         userName: owner,
       }),
-      { params: { projectId, taskId: 'does-not-exist' } },
+      { params: Promise.resolve({ projectId, taskId: 'does-not-exist' }) },
     );
     expect(res.status).toBe(404);
 

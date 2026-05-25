@@ -16,12 +16,7 @@ vi.mock('@/lib/event-bus', () => ({
 import { POST as reactivatePost } from '@/app/api/projects/[projectId]/plans/[planId]/reactivate/route';
 import * as driftEngine from '@/lib/drift-engine';
 import { eventBus } from '@/lib/event-bus';
-import {
-  makeReq,
-  createTestProject,
-  cleanupProject,
-  testPrisma,
-} from '../helpers/request';
+import { makeReq, createTestProject, cleanupProject, testPrisma } from '../helpers/request';
 
 describe('R-052: reactivate runs drift scan + persist inside the same transaction', () => {
   const owner = 'r052-owner';
@@ -126,7 +121,7 @@ describe('R-052: reactivate runs drift scan + persist inside the same transactio
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId: planV1Id } },
+      { params: Promise.resolve({ projectId, planId: planV1Id }) },
     );
 
     // The persist failure surfaces as a non-2xx response.

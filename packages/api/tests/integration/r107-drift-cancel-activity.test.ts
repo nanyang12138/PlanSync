@@ -132,7 +132,7 @@ describe('R-107: drift cancel action writes task_cancelled activity', () => {
         userName: owner,
         body: { action: 'cancel' },
       }),
-      { params: { projectId, driftId } },
+      { params: Promise.resolve({ projectId, driftId }) },
     );
     expect(res.status).toBe(200);
 
@@ -187,7 +187,7 @@ describe('R-107: drift cancel action writes task_cancelled activity', () => {
         userName: owner,
         body: { action: 'no_impact' },
       }),
-      { params: { projectId, driftId } },
+      { params: Promise.resolve({ projectId, driftId }) },
     );
     expect(res.status).toBe(200);
 
@@ -222,7 +222,7 @@ describe('R-107: drift cancel action writes task_cancelled activity', () => {
         userName: owner,
         body: { action: 'rebind' },
       }),
-      { params: { projectId, driftId } },
+      { params: Promise.resolve({ projectId, driftId }) },
     );
     expect(res.status).toBe(200);
 

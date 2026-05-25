@@ -81,21 +81,54 @@ export class RunStore extends Store<RunState> {
   }
 
   handleEvent(event: DomainEvent): boolean {
-    switch (event.type) {
-      case 'execution_started':
-      case 'execution_stale':
-      case 'execution_failed':
-      case 'execution_superseded': {
-        const run = (event.data?.run ?? null) as ExecutionRun | null;
-        if (!run) return false;
-        this.setState((state) => {
-          const byId = { ...state.byId, [run.id]: run };
-          return { ...state, byId, activeIds: recomputeActive(byId) };
-        });
-        return true;
-      }
-      default:
-        return false;
+    // Closes #785 — the API publishes 'task_started' (lightweight payload
+    // {taskId, executorName, executorType}); the previous version of
+    // RunStore listened for 'execution_started' which the server never
+    // emits, so a remote run never appeared in the local store. The
+    // other three events ('execution_stale' / 'execution_failed' /
+    // 'execution_superseded') are emitted by the heartbeat scanner and
+    // also carry only run/task ids — not full run objects.
+    const STORE_AFFECTING_EVENTS: ReadonlySet<string> = new Set([
+      'task_started',
+      'execution_stale',
+      'execution_failed',
+      'execution_superseded',
+    ]);
+    if (!STORE_AFFECTING_EVENTS.has(event.type)) return false;
+
+    // Closes #784 — when a full ExecutionRun is on the payload (legacy
+    // or future opt-in publishers), merge it directly. No refetch needed.
+    const run = (event.data as { run?: unknown } | undefined)?.run as ExecutionRun | undefined;
+    if (run && typeof run === 'object' && typeof run.id === 'string') {
+      this.setState((state) => {
+        const byId = { ...state.byId, [run.id]: run };
+        return { ...state, byId, activeIds: recomputeActive(byId) };
+      });
+      return true;
     }
+
+    // Closes #918 / #939 / #954 (R5 review feedback): the lightweight
+    // payload doesn't carry the run object. Returning `true` alone is
+    // not enough — `StoreRegistry` discards the return value, so the
+    // UI never learns there was a change. Schedule a fire-and-forget
+    // refetch against the API so the new run actually shows up in the
+    // store. We can only refetch if we know which project we already
+    // loaded; if `loadedProjectId` is null (store hasn't been loaded
+    // yet) we still claim the event (a future load() will see the
+    // server-side state) but skip the refetch since we don't know
+    // which scope to query.
+    const projectId = this.getState().loadedProjectId;
+    if (projectId) {
+      const taskId = (event.data as { taskId?: unknown } | undefined)?.taskId;
+      const taskScope = typeof taskId === 'string' ? taskId : undefined;
+      // void on purpose — failures bubble through the load() error
+      // pathway. We deliberately do NOT await: handleEvent must stay
+      // synchronous (the registry calls all stores' handleEvent in a
+      // tight loop and one slow refetch shouldn't block the others).
+      void this.load(projectId, taskScope).catch(() => {
+        /* swallowed: load() already wrote state.error via runAction */
+      });
+    }
+    return true;
   }
 }

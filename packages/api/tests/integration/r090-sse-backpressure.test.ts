@@ -40,7 +40,7 @@ describe('R-090: SSE per-client backpressure', () => {
 
   async function openStream() {
     const res = await eventsGet(makeReq(`/api/projects/${projectId}/events`, { userName: owner }), {
-      params: { projectId },
+      params: Promise.resolve({ projectId }),
     });
     expect(res.status).toBe(200);
     const reader = res.body!.getReader();

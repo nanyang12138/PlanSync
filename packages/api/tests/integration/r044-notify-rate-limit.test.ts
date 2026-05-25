@@ -38,7 +38,7 @@ describe('R-044: notify route — owner-only + per-user rate limit', () => {
         userName: developer,
         body: { type: 'plan_owner', planId },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(403);
     const body = await res.json();
@@ -53,7 +53,7 @@ describe('R-044: notify route — owner-only + per-user rate limit', () => {
           userName: owner,
           body: { type: 'plan_owner', planId },
         }),
-        { params: { projectId } },
+        { params: Promise.resolve({ projectId }) },
       );
 
     const r1 = await callOnce();

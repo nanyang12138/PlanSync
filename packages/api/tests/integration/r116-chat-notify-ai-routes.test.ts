@@ -84,7 +84,7 @@ describe('R-116 — chat / notify / ai-draft / ai-field route integration', () =
           userName: outsider,
           body: { message: 'hello' },
         }),
-        { params: { projectId } },
+        { params: Promise.resolve({ projectId }) },
       );
       expect(res.status).toBe(403);
       const body = await res.json();
@@ -98,7 +98,7 @@ describe('R-116 — chat / notify / ai-draft / ai-field route integration', () =
           userName: owner,
           body: { message: '' },
         }),
-        { params: { projectId } },
+        { params: Promise.resolve({ projectId }) },
       );
       expect(res.status).toBe(400);
       const body = await res.json();
@@ -116,7 +116,7 @@ describe('R-116 — chat / notify / ai-draft / ai-field route integration', () =
           userName: owner,
           body: { message: 'still here?', history: tooLongHistory },
         }),
-        { params: { projectId } },
+        { params: Promise.resolve({ projectId }) },
       );
       expect(res.status).toBe(400);
       const body = await res.json();
@@ -135,7 +135,7 @@ describe('R-116 — chat / notify / ai-draft / ai-field route integration', () =
           userName: developer,
           body: { message: 'what should I work on?' },
         }),
-        { params: { projectId } },
+        { params: Promise.resolve({ projectId }) },
       );
       expect(res.status).toBe(200);
       const body = await res.json();
@@ -159,7 +159,7 @@ describe('R-116 — chat / notify / ai-draft / ai-field route integration', () =
           userName: owner,
           body: { planId },
         }),
-        { params: { projectId } },
+        { params: Promise.resolve({ projectId }) },
       );
       expect(res.status).toBe(400);
       const body = await res.json();
@@ -174,7 +174,7 @@ describe('R-116 — chat / notify / ai-draft / ai-field route integration', () =
           userName: owner,
           body: { type: 'plan_owner' },
         }),
-        { params: { projectId } },
+        { params: Promise.resolve({ projectId }) },
       );
       expect(res.status).toBe(400);
       const body = await res.json();
@@ -188,7 +188,7 @@ describe('R-116 — chat / notify / ai-draft / ai-field route integration', () =
           userName: owner,
           body: { type: 'plan_unknown', planId },
         }),
-        { params: { projectId } },
+        { params: Promise.resolve({ projectId }) },
       );
       expect(res.status).toBe(400);
       const body = await res.json();
@@ -203,7 +203,7 @@ describe('R-116 — chat / notify / ai-draft / ai-field route integration', () =
           userName: owner,
           body: { type: 'plan_owner', planId: 'cl_does_not_exist_zzz' },
         }),
-        { params: { projectId } },
+        { params: Promise.resolve({ projectId }) },
       );
       expect(res.status).toBe(404);
       const body = await res.json();
@@ -217,7 +217,7 @@ describe('R-116 — chat / notify / ai-draft / ai-field route integration', () =
           userName: owner,
           body: { type: 'plan_reviewers', planId },
         }),
-        { params: { projectId } },
+        { params: Promise.resolve({ projectId }) },
       );
       expect(res.status).toBe(200);
       const body = await res.json();
@@ -255,7 +255,7 @@ describe('R-116 — chat / notify / ai-draft / ai-field route integration', () =
             userName: owner,
             body: { type: 'plan_reviewers', planId: draft.id },
           }),
-          { params: { projectId } },
+          { params: Promise.resolve({ projectId }) },
         );
         expect(res.status).toBe(200);
         const body = await res.json();
@@ -272,7 +272,7 @@ describe('R-116 — chat / notify / ai-draft / ai-field route integration', () =
           userName: owner,
           body: { type: 'plan_owner', planId },
         }),
-        { params: { projectId } },
+        { params: Promise.resolve({ projectId }) },
       );
       expect(res.status).toBe(200);
       const body = await res.json();
@@ -290,7 +290,7 @@ describe('R-116 — chat / notify / ai-draft / ai-field route integration', () =
           userName: outsider,
           body: { title: 'New plan' },
         }),
-        { params: { projectId } },
+        { params: Promise.resolve({ projectId }) },
       );
       expect(res.status).toBe(403);
       const body = await res.json();
@@ -304,7 +304,7 @@ describe('R-116 — chat / notify / ai-draft / ai-field route integration', () =
           userName: owner,
           body: { description: 'no title' },
         }),
-        { params: { projectId } },
+        { params: Promise.resolve({ projectId }) },
       );
       expect(res.status).toBe(400);
       const body = await res.json();
@@ -318,7 +318,7 @@ describe('R-116 — chat / notify / ai-draft / ai-field route integration', () =
           userName: owner,
           body: { title: 'x'.repeat(201) },
         }),
-        { params: { projectId } },
+        { params: Promise.resolve({ projectId }) },
       );
       expect(res.status).toBe(400);
       const body = await res.json();
@@ -338,7 +338,7 @@ describe('R-116 — chat / notify / ai-draft / ai-field route integration', () =
           userName: owner,
           body: { title: 'New plan', description: 'context' },
         }),
-        { params: { projectId } },
+        { params: Promise.resolve({ projectId }) },
       );
       expect(res.status).toBe(502);
       const body = await res.json();
@@ -357,7 +357,7 @@ describe('R-116 — chat / notify / ai-draft / ai-field route integration', () =
           userName: outsider,
           body: { field: 'goal', currentValue: '', title: 'New plan' },
         }),
-        { params: { projectId } },
+        { params: Promise.resolve({ projectId }) },
       );
       expect(res.status).toBe(403);
       const body = await res.json();
@@ -371,7 +371,7 @@ describe('R-116 — chat / notify / ai-draft / ai-field route integration', () =
           userName: owner,
           body: { field: 'not-a-field', currentValue: '', title: 'New plan' },
         }),
-        { params: { projectId } },
+        { params: Promise.resolve({ projectId }) },
       );
       expect(res.status).toBe(400);
       const body = await res.json();
@@ -389,7 +389,7 @@ describe('R-116 — chat / notify / ai-draft / ai-field route integration', () =
             title: 'New plan',
           },
         }),
-        { params: { projectId } },
+        { params: Promise.resolve({ projectId }) },
       );
       expect(res.status).toBe(400);
       const body = await res.json();
@@ -422,7 +422,7 @@ describe('R-116 — chat / notify / ai-draft / ai-field route integration', () =
               goal: 'to ship faster',
             },
           }),
-          { params: { projectId } },
+          { params: Promise.resolve({ projectId }) },
         );
         expect(res.status).toBe(200);
         const body = await res.json();

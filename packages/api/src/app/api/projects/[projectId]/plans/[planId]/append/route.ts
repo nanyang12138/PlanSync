@@ -21,9 +21,10 @@ const appendSchema = z.object({
   items: z.array(z.string().min(1).max(2000)).min(1).max(50),
 });
 
-type Params = { params: { projectId: string; planId: string } };
+type Params = { params: Promise<{ projectId: string; planId: string }> };
 
-export async function POST(req: NextRequest, { params }: Params) {
+export async function POST(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     requireNotExecScoped(auth);
