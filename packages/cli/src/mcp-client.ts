@@ -137,6 +137,18 @@ export class McpClient {
       this.readBuffer += chunk.toString();
       const lines = this.readBuffer.split('\n');
       this.readBuffer = lines.pop() || '';
+      // Closes #807: bound the partial-line buffer too. A malicious or
+      // misbehaving MCP child that writes a multi-megabyte line without
+      // a trailing newline used to grow `readBuffer` without limit
+      // (split on '\n' produced a single huge segment, the CAP only
+      // applies per-line inside recordChildOutput which never runs
+      // until a newline arrives). If the partial line exceeds the per-
+      // line cap, force-flush it as a diagnostic line and reset the
+      // buffer; subsequent bytes start a new line.
+      if (this.readBuffer.length > CHILD_OUTPUT_LINE_CAP) {
+        this.recordChildOutput(this.readBuffer);
+        this.readBuffer = '';
+      }
       for (const line of lines) {
         if (!line.trim()) continue;
         let parsed: unknown;
@@ -165,6 +177,13 @@ export class McpClient {
       this.stderrAccumulator += chunk.toString();
       const lines = this.stderrAccumulator.split('\n');
       this.stderrAccumulator = lines.pop() || '';
+      // Closes #807: same bounded-growth guard as stdout above.
+      // Without this a child that streams unbounded bytes to stderr
+      // without a newline can OOM the CLI.
+      if (this.stderrAccumulator.length > CHILD_OUTPUT_LINE_CAP) {
+        this.recordChildOutput(this.stderrAccumulator);
+        this.stderrAccumulator = '';
+      }
       for (const line of lines) {
         if (!line.trim()) continue;
         this.recordChildOutput(line);
@@ -185,7 +204,15 @@ export class McpClient {
     //   4. surface a warning to the user
     // The handler intentionally ignores exits triggered by `stop()` so that
     // graceful shutdown does not look like a crash.
-    proc.on('exit', (code, signal) => this.handleExit(proc, code, signal));
+    //
+    // Closes #792: we listen on `'close'` (not `'exit'`) for crash
+    // summary generation. `'exit'` fires as soon as the child exits but
+    // BEFORE its stdout/stderr have been drained — a fatal error
+    // written immediately before exit may not yet be in our buffers,
+    // which is the diagnostic line the user most needs. `'close'`
+    // fires only after the streams emit `'end'`, so by the time we
+    // build the summary every byte the child wrote is captured.
+    proc.on('close', (code, signal) => this.handleExit(proc, code, signal));
 
     await this.request('initialize', {
       protocolVersion: '2024-11-05',
@@ -206,10 +233,16 @@ export class McpClient {
     // Ignore stale exit events from a previous process instance.
     if (this.proc !== proc) return;
     this.proc = null;
+    // Closes #808: previously this dropped the stdout partial-line
+    // buffer (`this.readBuffer = ''`) without recording it. When the
+    // MCP child crashes mid-pino-line on stdout (a fatal-error trace
+    // can flush part of a JSON line and then die), the most diagnostic
+    // bytes — the actual error message — used to be silently
+    // discarded. Flush both buffers symmetrically.
+    if (this.readBuffer.trim()) {
+      this.recordChildOutput(this.readBuffer);
+    }
     this.readBuffer = '';
-    // Flush any unterminated stderr partial-line so it shows up in the
-    // diagnostic dump (Node sometimes writes the final fatal-error line
-    // without a trailing '\n').
     if (this.stderrAccumulator.trim()) {
       this.recordChildOutput(this.stderrAccumulator);
     }
