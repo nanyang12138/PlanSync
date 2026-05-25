@@ -208,15 +208,13 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
       //   * 422 body has   error.gate === 'rule'             — hard, deterministic
       //   * 200 body has   advisory.kind === 'ai_low_score'  — soft, advisory
       // Both shapes never appear together.
-      let advisory:
-        | {
-            kind: 'ai_low_score';
-            runReviewId?: string;
-            score: number;
-            feedback: string;
-            lowConfidence?: boolean;
-          }
-        | null = null;
+      let advisory: {
+        kind: 'ai_low_score';
+        runReviewId?: string;
+        score: number;
+        feedback: string;
+        lowConfidence?: boolean;
+      } | null = null;
 
       if (body.status === 'completed') {
         // Layer 2: deliverablesMet required for all executors
