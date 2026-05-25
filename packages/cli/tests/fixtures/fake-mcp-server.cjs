@@ -35,8 +35,30 @@ if (process.env.FAKE_MCP_STDOUT_PINO_BEFORE_CRASH) {
   );
 }
 
+// P0-11 / closes #808: emit a partial line with no trailing newline so
+// the test can verify McpClient's exit handler flushes its readBuffer
+// instead of silently dropping the bytes.
+if (process.env.FAKE_MCP_STDOUT_PARTIAL_NO_NEWLINE) {
+  process.stdout.write(process.env.FAKE_MCP_STDOUT_PARTIAL_NO_NEWLINE);
+}
+if (process.env.FAKE_MCP_STDERR_PARTIAL_NO_NEWLINE) {
+  process.stderr.write(process.env.FAKE_MCP_STDERR_PARTIAL_NO_NEWLINE);
+}
+
+// P0-11 / closes #807: emit a single very long line (no newline) to
+// verify McpClient force-flushes the buffer at the per-line cap and
+// doesn't grow memory unboundedly.
+if (process.env.FAKE_MCP_STDERR_GIANT_LINE) {
+  const size = Number(process.env.FAKE_MCP_STDERR_GIANT_LINE);
+  if (Number.isFinite(size) && size > 0) {
+    process.stderr.write('X'.repeat(size));
+  }
+}
+
 if (process.env.FAKE_MCP_CRASH_ON_START === '1') {
-  process.exit(1);
+  // Give Node a tick to flush stdio so the child's bytes reach the
+  // parent's data handlers before the close event fires (P0-11 / #792).
+  setImmediate(() => process.exit(1));
 }
 
 if (process.env.FAKE_MCP_CRASH_AFTER_MS) {
