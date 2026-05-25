@@ -33,13 +33,92 @@
 import { loadRepoDotenv } from './load-dotenv';
 loadRepoDotenv();
 
-// #259: validate DATABASE_URL synchronously before importing anything that
-// will try to use it. Without this, a misconfigured worker stays alive
-// forever, only logs an error every 60s when the scanner runs, and gets
-// reported as "healthy" by liveness probes that just check process state.
-if (!process.env.DATABASE_URL) {
+// #259: validate DATABASE_URL synchronously before importing anything
+// that will try to use it. Without this, a misconfigured worker stays
+// alive forever, only logs an error every 60s when the scanner runs,
+// and gets reported as "healthy" by liveness probes that just check
+// process state.
+//
+// Five failure modes the truthy check missed (closes #571-class +
+// R1/R1b round-2 review #934 #935 #942 #952 #1003 #1004 #990 #991):
+//   1. Empty / whitespace-only DATABASE_URL.
+//   2. DATABASE_URL with an unresolved `${USER}` / `${PG_PORT}` ref
+//      (the curly form is unambiguously bash-template syntax).
+//   3. DATABASE_URL that does not start with `postgresql://` /
+//      `postgres://` (any scheme Prisma can't speak).
+//   4. DATABASE_URL that has the right scheme but no host segment
+//      (e.g. `postgresql://`, `postgresql:///plansync_dev`) — the
+//      original truthy-only check accepted these and the connection
+//      attempt failed minutes later.
+//   5. DATABASE_URL the WHATWG URL parser rejects entirely.
+//
+// Failure messages route through redactDbUrl() so an operator with
+// inline credentials (`postgresql://user:pass@host/db`) doesn't
+// see them echoed to stderr or pino logs.
+const PG_URL_RE = /^postgres(?:ql)?:\/\/([^/?#]*)/;
+
+function redactDbUrl(raw: string): string {
+  // R1b / closes #1003 #990 — pre-fix, when raw didn't match the
+  // postgres URL shape, the redactor returned the first 16 chars
+  // verbatim. A URL like `mysql://user:pass@…` therefore leaked
+  // user:pass before failing the scheme check. Now we always
+  // strip everything before the host: parse via the WHATWG URL
+  // class and emit `<scheme>://***@<host>:<port>/…` regardless
+  // of scheme; if even WHATWG fails to parse, fall back to the
+  // scheme prefix only — never any chars from the credentials
+  // segment.
+  try {
+    const u = new URL(raw);
+    const port = u.port ? `:${u.port}` : '';
+    return `${u.protocol}//***@${u.hostname || '?'}${port}/…`;
+  } catch {
+    // Strip any `<scheme>:` prefix; everything after `:` is potentially
+    // credentials/host and must NOT appear in logs.
+    const colon = raw.indexOf(':');
+    if (colon > 0) return `${raw.slice(0, colon)}://[unparseable]`;
+    return '[unparseable]';
+  }
+}
+
+function validateDatabaseUrl(raw: string | undefined): string | null {
+  if (!raw) return 'DATABASE_URL is not set';
+  const trimmed = raw.trim();
+  if (!trimmed) return 'DATABASE_URL is empty / whitespace-only';
+  // Curly `${VAR}` is unambiguously template syntax. We deliberately
+  // do NOT flag bare `$VAR` — by the time we run, dotenv + bash have
+  // already done their thing; any remaining `$VAR` is data
+  // (passwords, secrets), not a template (closes #935 #942 #952).
+  if (/\$\{[A-Za-z_][A-Za-z0-9_]*\}/.test(trimmed)) {
+    return `DATABASE_URL contains unresolved \${VAR} template; redacted=${redactDbUrl(trimmed)}`;
+  }
+  if (!trimmed.startsWith('postgresql://') && !trimmed.startsWith('postgres://')) {
+    return `DATABASE_URL must start with 'postgresql://' (redacted=${redactDbUrl(trimmed)})`;
+  }
+  // R1b / closes #1004 — a scheme-prefix-only check accepts
+  // `postgresql:///plansync_dev` (no host). Reject when the
+  // authority section between `//` and the next `/` is empty,
+  // and confirm WHATWG can parse it as a URL with a hostname.
+  const hostMatch = trimmed.match(PG_URL_RE);
+  if (!hostMatch || !hostMatch[1] || hostMatch[1].split('@').pop() === '') {
+    return `DATABASE_URL has empty host (redacted=${redactDbUrl(trimmed)})`;
+  }
+  try {
+    const u = new URL(trimmed);
+    if (!u.hostname) {
+      return `DATABASE_URL has empty hostname (redacted=${redactDbUrl(trimmed)})`;
+    }
+  } catch {
+    return `DATABASE_URL is not a parsable URL (redacted=${redactDbUrl(trimmed)})`;
+  }
+  return null;
+}
+
+const dbUrlError = validateDatabaseUrl(process.env.DATABASE_URL);
+if (dbUrlError) {
   console.error(
-    'PlanSync worker: DATABASE_URL is not set. Refusing to start — the heartbeat scanner cannot run without a Postgres connection. Source .env or export DATABASE_URL before invoking the worker.',
+    `PlanSync worker: ${dbUrlError}. Refusing to start — the heartbeat scanner ` +
+      `cannot run without a valid Postgres connection. Source .env or export ` +
+      `DATABASE_URL=postgresql://… before invoking the worker.`,
   );
   process.exit(2);
 }
