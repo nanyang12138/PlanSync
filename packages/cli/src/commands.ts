@@ -584,6 +584,89 @@ export async function handleSlashCommand(
     return 'handled';
   }
 
+  if (cmd === '/explain') {
+    // R-184: surface verification-rule details next to a rule-gate failure.
+    // The complete route (R-181) returns 422 with `error.gate === 'rule'`
+    // and `error.details.failedRules: [{ ruleId, kind, message }]`. The
+    // CLI / agent can then run `/explain rule <id>` to get the rule's
+    // scope, params, and a one-liner about what it asks the run to prove.
+    // This is intentionally distinct from how AI-low-score advisories
+    // (200 + `advisory.kind === 'ai_low_score'`) are surfaced — the rule
+    // gate is a hard, deterministic owner contract and gets its own
+    // command instead of being lumped in with AI advisory rendering.
+    const sub = parts[1]?.trim().toLowerCase();
+    const ruleId = parts[2]?.trim();
+    if (sub !== 'rule' || !ruleId) {
+      ctx.rawInput.unmountForMenu();
+      console.log(`\n${c.yellow}Usage: /explain rule <ruleId>${c.reset}\n`);
+      return 'handled';
+    }
+    if (!cfg.project) {
+      ctx.rawInput.unmountForMenu();
+      console.log(
+        `\n${c.yellow}No project selected. Use /project to select one first.${c.reset}\n`,
+      );
+      return 'handled';
+    }
+
+    const explainRuleKind = (kind: string): string => {
+      switch (kind) {
+        case 'require_files_changed':
+          return 'At least one file must appear in `filesChanged` on complete.';
+        case 'require_commits_on_branch':
+          return '`branchName` must be set on complete (proof the agent committed somewhere).';
+        case 'require_pr_merged':
+          return '`task.prUrl` must be set before complete (PR opened and PATCHed).';
+        case 'require_deliverable_evidence_for_each_ref':
+          return 'Every `task.planDeliverableRefs` entry must appear (substring) in `deliverablesMet`.';
+        case 'min_output_summary_chars':
+          return '`outputSummary` must be at least `params.min` characters long.';
+        default:
+          return '(no human-readable description for this rule kind)';
+      }
+    };
+
+    try {
+      const list = await apiGet<{
+        data?: Array<{
+          id: string;
+          kind: string;
+          scope: string;
+          scopeValue: string | null;
+          params: unknown;
+          enabled: boolean;
+          createdAt?: string;
+        }>;
+      }>(`/api/projects/${cfg.project}/verification-rules`);
+      const match = (list.data ?? []).find((r) => r.id === ruleId);
+      ctx.rawInput.unmountForMenu();
+      if (!match) {
+        console.log(`\n${c.yellow}Rule "${ruleId}" not found in this project.${c.reset}\n`);
+        return 'handled';
+      }
+      const scopeStr = match.scopeValue ? `${match.scope}=${match.scopeValue}` : match.scope;
+      const enabledTag = match.enabled
+        ? `${c.green}enabled${c.reset}`
+        : `${c.dim}disabled${c.reset}`;
+      console.log(
+        `\n  ${c.bold}Verification rule${c.reset} ${c.dim}${match.id}${c.reset}  [${enabledTag}]\n`,
+      );
+      console.log(`  ${c.cyan}kind${c.reset}    ${match.kind}`);
+      console.log(`  ${c.cyan}scope${c.reset}   ${scopeStr}`);
+      console.log(`  ${c.cyan}params${c.reset}  ${JSON.stringify(match.params ?? {})}`);
+      console.log(`\n  ${c.dim}${explainRuleKind(match.kind)}${c.reset}`);
+      console.log(
+        `\n  ${c.dim}Hard gate (R-181): a 422 with error.gate === 'rule' fires when this rule's check fails on complete.${c.reset}\n`,
+      );
+    } catch (err: unknown) {
+      ctx.rawInput.unmountForMenu();
+      console.log(
+        `\n${c.red}✗ Failed to fetch rules: ${err instanceof Error ? err.message : String(err)}${c.reset}\n`,
+      );
+    }
+    return 'handled';
+  }
+
   if (cmd === '/worker') {
     if (!cfg.project) {
       ctx.rawInput.unmountForMenu();
