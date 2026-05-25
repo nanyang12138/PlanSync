@@ -228,7 +228,13 @@ describe('R-190 GitHub webhook receiver', () => {
   // `outbox.emitOutOfTx`, which logs-and-swallows. A DB failure (validation,
   // FK, transient) therefore left the route returning 200 to GitHub, which
   // marks the delivery success and never retries → permanent silent loss.
-  // The fix uses `emitOutOfTxStrict` and surfaces a 5xx so GitHub re-delivers.
+  // The fix wraps emit() in an explicit prisma.$transaction and surfaces
+  // a 5xx so GitHub re-delivers.
+  //
+  // R3 update (closes #932 #950): the route now uses a single
+  // `prisma.$transaction(...)` covering ALL per-project emits, so we
+  // spy on `outbox.emit` (the in-tx variant) rather than
+  // `emitOutOfTxStrict`.
   it('returns 503 when outbox persistence fails so GitHub will redeliver (closes #781 #793 #797 #806)', async () => {
     const body = {
       ref: 'refs/heads/main',
@@ -238,9 +244,8 @@ describe('R-190 GitHub webhook receiver', () => {
     };
     const raw = JSON.stringify(body);
 
-    // Make the strict emitter throw — simulates DB write failure.
     const spy = vi
-      .spyOn(outboxModule.outbox, 'emitOutOfTxStrict')
+      .spyOn(outboxModule.outbox, 'emit')
       .mockRejectedValueOnce(new Error('simulated DB failure'));
 
     try {
@@ -260,9 +265,93 @@ describe('R-190 GitHub webhook receiver', () => {
       expect(res.status).toBe(503);
       const json = await res.json();
       expect(json.error?.code).toBe('OUTBOX_PERSIST_FAILED');
-      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy).toHaveBeenCalled();
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  // R3 (closes #932 #950): a multi-project repo (one slug → N projects)
+  // must persist all rows in ONE transaction. If project N fails after
+  // project 1 committed in its own tx, GitHub's redelivery on 503 would
+  // make project 1 receive a duplicate. With one outer tx, the failed
+  // emit aborts the whole batch — the redelivered request finds an
+  // empty state and retries cleanly.
+  it('persists multi-project rows atomically (closes #932 #950)', async () => {
+    // Add a second project sharing the same repo slug.
+    const proj2 = await prisma.project.create({
+      data: {
+        name: `r190-multi-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        phase: 'planning',
+        createdBy: 'r190-owner',
+        githubRepo: repoSlug,
+        githubWebhookSecret: secret,
+      },
+    });
+
+    const body = {
+      ref: 'refs/heads/main',
+      after: '0123456789abcdef0123456789abcdef01234567',
+      repository: { full_name: repoSlug },
+      commits: [{ id: '0123456789abcdef0123456789abcdef01234567', message: 'feat: multi' }],
+    };
+    const raw = JSON.stringify(body);
+    const deliveryId = `r190-multi-fail-${Date.now()}`;
+
+    // Make the SECOND emit call fail. The outer tx must roll back
+    // the FIRST insert too.
+    let callCount = 0;
+    const spy = vi
+      .spyOn(outboxModule.outbox, 'emit')
+      .mockImplementation(async (tx, type, input) => {
+        callCount += 1;
+        if (callCount === 2) throw new Error('simulated mid-batch failure');
+        // Forward to the original implementation so the first row exists
+        // *inside the tx* — the rollback is what we're asserting.
+        const original = vi.mocked(outboxModule.outbox.emit).getMockName();
+        await (await import('@/lib/outbox')).emit(tx, type, input);
+        void original;
+      });
+
+    try {
+      const res = await webhookPost(
+        new NextRequest('http://localhost/api/integrations/github/webhook', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-github-event': 'push',
+            'x-github-delivery': deliveryId,
+            'x-hub-signature-256': signBody(secret, raw),
+          },
+          body: raw,
+        }),
+      );
+
+      expect(res.status).toBe(503);
+
+      // Critical assertion: NO domain_events row was committed for
+      // EITHER project. If the route had used per-project tx loops
+      // pre-R3, the first project's row would still be here.
+      const rowsForProj1 = await prisma.domainEvent.findMany({
+        where: { projectId, eventType: 'github_push' },
+      });
+      const rowsForProj2 = await prisma.domainEvent.findMany({
+        where: { projectId: proj2.id, eventType: 'github_push' },
+      });
+      // The earlier "valid push" test wrote one row for projectId; that
+      // baseline is unchanged. proj2 must have ZERO rows for this
+      // failed delivery.
+      expect(
+        rowsForProj1.find((r) => {
+          const data = r.payload as { data?: { deliveryId?: string } } | null;
+          return data?.data?.deliveryId === deliveryId;
+        }),
+      ).toBeUndefined();
+      expect(rowsForProj2).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+      await prisma.domainEvent.deleteMany({ where: { projectId: proj2.id } });
+      await prisma.project.delete({ where: { id: proj2.id } }).catch(() => {});
     }
   });
 });
