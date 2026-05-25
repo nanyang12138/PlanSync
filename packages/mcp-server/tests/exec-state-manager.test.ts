@@ -116,7 +116,7 @@ describe('R-171 ExecStateManager: read-only tools', () => {
 });
 
 describe('R-171 ExecStateManager: terminal state rejects writes in enforce mode', () => {
-  it('rejects any write attempt after COMPLETED', () => {
+  it('rejects writes after COMPLETED but allows plansync_exec_context to restart (P0-14)', () => {
     const mgr = new ExecStateManager({ enforceMode: 'enforce' });
     legalSequence(mgr);
     expect(mgr.getState()).toBe('COMPLETED');
@@ -126,9 +126,9 @@ describe('R-171 ExecStateManager: terminal state rejects writes in enforce mode'
       const payload = JSON.parse(r.envelope.content[0].text);
       expect(payload.error.code).toBe('OUT_OF_SEQUENCE');
       expect(payload.error.currentState).toBe('COMPLETED');
-      // No nextRequired available from a terminal state.
-      expect(payload.error.requiredNextOneOf).toEqual([]);
-      expect(payload.error.hint).toMatch(/terminal/);
+      // P0-14: requiredNextOneOf now points back at exec_context so an
+      // agent stuck in COMPLETED knows how to start the next session.
+      expect(payload.error.requiredNextOneOf).toEqual(['plansync_exec_context']);
     }
   });
 });
@@ -203,7 +203,12 @@ describe('R-171 ExecStateManager: token minting', () => {
 
 describe('R-171 ExecStateManager: buildOutOfSequenceEnvelope shape', () => {
   it('contains the exact fields documented in docs/PROTOCOL.md', () => {
-    const env = buildOutOfSequenceEnvelope('plansync_execution_complete', 'PACK_FETCHED');
+    // P0-14: PACK_FETCHED accepts both execution_start AND
+    // execution_complete (the /exec collapse path), so we exercise
+    // the OUT_OF_SEQUENCE envelope with a tool that genuinely is NOT
+    // allowed from PACK_FETCHED — plansync_exec_context is in
+    // UNINITIALIZED only.
+    const env = buildOutOfSequenceEnvelope('plansync_exec_context', 'PACK_FETCHED');
     expect(env.isError).toBe(true);
     const payload = JSON.parse(env.content[0].text);
     expect(payload.error).toMatchObject({
@@ -211,7 +216,11 @@ describe('R-171 ExecStateManager: buildOutOfSequenceEnvelope shape', () => {
       currentState: 'PACK_FETCHED',
     });
     expect(payload.error.allowedTools).toContain('plansync_execution_start');
-    expect(payload.error.requiredNextOneOf).toEqual(['plansync_execution_start']);
+    expect(payload.error.allowedTools).toContain('plansync_execution_complete');
+    expect(payload.error.requiredNextOneOf).toEqual([
+      'plansync_execution_start',
+      'plansync_execution_complete',
+    ]);
     expect(payload.error.message).toMatch(/PACK_FETCHED/);
   });
 });
