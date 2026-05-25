@@ -44,17 +44,46 @@ export async function POST(req: NextRequest, { params }: Params) {
       );
     }
 
+    // Closes #816: the previous version read the plan's status with
+    // requirePlanInProject (OUTSIDE any transaction), then unconditionally
+    // ran `tx.plan.update({ where: { id } })` inside the transaction.
+    // A concurrent activate (or another withdraw) that flipped the plan's
+    // state between the check and the update used to be silently
+    // overwritten — e.g. a freshly-activated plan could be reverted to
+    // `draft` and its PlanReview rows deleted. Use updateMany scoped to
+    // `status: 'proposed'` so the row only updates when it's still in
+    // the same state we observed; on count===0 we abort with
+    // STATE_CONFLICT instead of corrupting state.
     const withdrawn = await prisma.$transaction(async (tx) => {
-      // PlanReview rows are scoped to the current proposal cycle. Drop them
-      // so the next propose call starts with a clean review slate; otherwise
-      // stale "approved" rows would survive a full edit-and-re-propose loop
-      // and silently let an updated plan inherit prior approvals.
-      await tx.planReview.deleteMany({ where: { planId: plan.id } });
-
-      return tx.plan.update({
-        where: { id: params.planId },
+      const result = await tx.plan.updateMany({
+        where: { id: params.planId, status: 'proposed' },
         data: { status: 'draft' },
       });
+      if (result.count === 0) {
+        // Race lost: another writer changed the status between our
+        // read above and this update. Re-read to give the caller an
+        // actionable status instead of a generic conflict.
+        const fresh = await tx.plan.findUnique({
+          where: { id: params.planId },
+          select: { status: true },
+        });
+        throw new AppError(
+          ErrorCode.STATE_CONFLICT,
+          `Concurrent state change: plan is no longer 'proposed' (now '${fresh?.status ?? 'unknown'}'). ` +
+            'Re-read the plan and decide whether to withdraw it again or take a different action.',
+        );
+      }
+      // Only after a successful status flip do we drop the PlanReview
+      // rows. If we did this first and then the updateMany lost the
+      // race, we'd have already destroyed the proposal cycle's review
+      // history without producing the corresponding draft transition.
+      await tx.planReview.deleteMany({ where: { planId: params.planId } });
+
+      const fresh = await tx.plan.findUnique({ where: { id: params.planId } });
+      if (!fresh) {
+        throw new AppError(ErrorCode.NOT_FOUND, 'Plan disappeared after withdraw');
+      }
+      return fresh;
     });
 
     await createActivity({
