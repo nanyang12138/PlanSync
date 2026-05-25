@@ -554,12 +554,8 @@ describe('R-136: gcExpiredMasterDelegations', () => {
   //   - drift resolution endpoint is `/drifts/{driftId}` (not `/drift-alerts/.../resolve`)
   //   - execution_start / heartbeat / complete / task_rebind must be reachable.
   it('master route allowlist matches the actual app routes', () => {
-    expect(
-      isMasterRouteAllowed('POST', '/api/projects/p1/drifts/d1'),
-    ).toBe(true);
-    expect(
-      isMasterRouteAllowed('POST', '/api/projects/p1/drift-alerts/d1/resolve'),
-    ).toBe(false);
+    expect(isMasterRouteAllowed('POST', '/api/projects/p1/drifts/d1')).toBe(true);
+    expect(isMasterRouteAllowed('POST', '/api/projects/p1/drift-alerts/d1/resolve')).toBe(false);
 
     expect(isMasterRouteAllowed('POST', '/api/projects/p1/tasks/t1/runs')).toBe(true);
     expect(isMasterRouteAllowed('PATCH', '/api/projects/p1/tasks/t1/runs/r1')).toBe(true);

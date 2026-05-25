@@ -58,7 +58,7 @@ describe('R-105: task PATCH writes activity', () => {
           assigneeType: assignee ? 'human' : undefined,
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(201);
     return (await res.json()).data.id;
@@ -77,7 +77,7 @@ describe('R-105: task PATCH writes activity', () => {
         userName: owner,
         body: { status: 'in_progress' },
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
     expect(res.status).toBe(200);
 
@@ -116,7 +116,7 @@ describe('R-105: task PATCH writes activity', () => {
         userName: owner,
         body: { assignee: devB },
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
     expect(res.status).toBe(200);
 
@@ -150,7 +150,7 @@ describe('R-105: task PATCH writes activity', () => {
         userName: owner,
         body: { assignee: null },
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
     expect(res.status).toBe(200);
 
@@ -187,7 +187,7 @@ describe('R-105: task PATCH writes activity', () => {
         userName: owner,
         body: { title: 'renamed-by-owner' },
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
     expect(res.status).toBe(200);
 

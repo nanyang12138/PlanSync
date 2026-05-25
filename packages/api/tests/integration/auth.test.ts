@@ -23,7 +23,7 @@ describe('S: Authentication & Authorization', () => {
   it('S5: AUTH_DISABLED=true, only x-user-name header → 200', async () => {
     // AUTH_DISABLED=true is set in setup.ts, so just x-user-name should work
     const res = await projectGet(makeReq(`/api/projects/${projectId}`, { userName: owner }), {
-      params: { projectId },
+      params: Promise.resolve({ projectId }),
     });
     expect(res.status).toBe(200);
   });
@@ -35,14 +35,14 @@ describe('S: Authentication & Authorization', () => {
         userName: owner,
         authToken: secret,
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(200);
   });
 
   it('S7: non-member accesses project → 403', async () => {
     const res = await projectGet(makeReq(`/api/projects/${projectId}`, { userName: outsider }), {
-      params: { projectId },
+      params: Promise.resolve({ projectId }),
     });
     expect(res.status).toBe(403);
   });
@@ -54,7 +54,7 @@ describe('S: Authentication & Authorization', () => {
         userName: dev,
         body: { name: 'new-person', role: 'developer', type: 'human' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(403);
   });
@@ -62,7 +62,7 @@ describe('S: Authentication & Authorization', () => {
   it('S10: Alice is member → 200', async () => {
     const res = await membersGet(
       makeReq(`/api/projects/${projectId}/members`, { userName: owner }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(200);
   });
@@ -70,7 +70,7 @@ describe('S: Authentication & Authorization', () => {
   it('S11: Bob is not member → 403', async () => {
     const res = await membersGet(
       makeReq(`/api/projects/${projectId}/members`, { userName: 'not-bob-not-member' }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(403);
   });

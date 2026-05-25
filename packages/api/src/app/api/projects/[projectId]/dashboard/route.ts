@@ -3,9 +3,10 @@ import { prisma, PROJECT_PUBLIC_SELECT } from '@/lib/prisma';
 import { authenticate, requireProjectRole } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 
-type Params = { params: { projectId: string } };
+type Params = { params: Promise<{ projectId: string }> };
 
-export async function GET(req: NextRequest, { params }: Params) {
+export async function GET(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);

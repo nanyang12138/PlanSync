@@ -68,7 +68,7 @@ describe('R-205: owner self-review fallback on propose', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(propRes.status).toBe(200);
 
@@ -88,7 +88,7 @@ describe('R-205: owner self-review fallback on propose', () => {
         body: {},
         searchParams: { action: 'approve' },
       }),
-      { params: { projectId, planId, reviewId } },
+      { params: Promise.resolve({ projectId, planId, reviewId }) },
     );
 
     const actRes = await activatePost(
@@ -97,7 +97,7 @@ describe('R-205: owner self-review fallback on propose', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(actRes.status).toBe(200);
     const actBody = await actRes.json();
@@ -113,7 +113,7 @@ describe('R-205: owner self-review fallback on propose', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
 
     const proposedActivity = await testPrisma.activity.findFirst({
@@ -137,7 +137,7 @@ describe('R-205: owner self-review fallback on propose', () => {
         userName: owner,
         body: { reviewers: [explicitReviewer] },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
 
     const reviews = await testPrisma.planReview.findMany({ where: { planId } });
@@ -175,7 +175,7 @@ describe('R-205: owner self-review fallback on propose', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId: plan.id } },
+      { params: Promise.resolve({ projectId, planId: plan.id }) },
     );
 
     const reviews = await testPrisma.planReview.findMany({ where: { planId: plan.id } });
@@ -208,7 +208,7 @@ describe('R-205: activate force=true records audit metadata', () => {
         body: {},
         searchParams: { force: 'true' },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(actRes.status).toBe(200);
 
@@ -230,7 +230,7 @@ describe('R-205: activate force=true records audit metadata', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
 
     const review = await testPrisma.planReview.findFirstOrThrow({ where: { planId } });
@@ -241,7 +241,7 @@ describe('R-205: activate force=true records audit metadata', () => {
         body: {},
         searchParams: { action: 'approve' },
       }),
-      { params: { projectId, planId, reviewId: review.id } },
+      { params: Promise.resolve({ projectId, planId, reviewId: review.id }) },
     );
 
     await activatePost(
@@ -250,7 +250,7 @@ describe('R-205: activate force=true records audit metadata', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
 
     const activity = await testPrisma.activity.findFirst({

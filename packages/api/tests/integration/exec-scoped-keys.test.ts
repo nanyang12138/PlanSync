@@ -97,7 +97,7 @@ describe('Exec-scoped API key', () => {
           boundPlanVersion: activePlanVersion,
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(403);
     const body = await res.json();
@@ -119,7 +119,7 @@ describe('Exec-scoped API key', () => {
           deliverables: [],
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(403);
   });
@@ -143,7 +143,7 @@ describe('Exec-scoped API key', () => {
         authToken: scopedKey,
         body: { reviewers: [owner] },
       }),
-      { params: { projectId, planId: draft.id } },
+      { params: Promise.resolve({ projectId, planId: draft.id }) },
     );
     expect(res.status).toBe(403);
   });
@@ -167,7 +167,7 @@ describe('Exec-scoped API key', () => {
         authToken: scopedKey,
         body: {},
       }),
-      { params: { projectId, planId: proposed.id } },
+      { params: Promise.resolve({ projectId, planId: proposed.id }) },
     );
     expect(res.status).toBe(403);
   });
@@ -191,7 +191,7 @@ describe('Exec-scoped API key', () => {
         authToken: scopedKey,
         body: {},
       }),
-      { params: { projectId, planId: superseded.id } },
+      { params: Promise.resolve({ projectId, planId: superseded.id }) },
     );
     expect(res.status).toBe(403);
     const body = await res.json();
@@ -210,7 +210,7 @@ describe('Exec-scoped API key', () => {
           boundPlanVersion: activePlanVersion,
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(201);
   });
@@ -249,7 +249,7 @@ describe('Exec-scoped API key', () => {
           boundPlanVersion: activePlanVersion,
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(401);
   });
@@ -279,7 +279,7 @@ describe('Exec-scoped API key', () => {
           userName: owner,
           authToken: projectAKey,
         }),
-        { params: { projectId: projectBId } },
+        { params: Promise.resolve({ projectId: projectBId }) },
       );
       expect(denied.status).toBe(403);
       const body = await denied.json();
@@ -291,7 +291,7 @@ describe('Exec-scoped API key', () => {
           userName: owner,
           authToken: projectAKey,
         }),
-        { params: { projectId } },
+        { params: Promise.resolve({ projectId }) },
       );
       expect(allowed.status).toBe(200);
     } finally {

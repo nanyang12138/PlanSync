@@ -87,7 +87,7 @@ describe('R-055: activate route requires non-zero reviewers OR explicit owner fo
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(actRes.status).toBe(409);
     const actBody = await actRes.json();
@@ -115,7 +115,7 @@ describe('R-055: activate route requires non-zero reviewers OR explicit owner fo
         body: {},
         searchParams: { force: 'true' },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(actRes.status).toBe(200);
     const actBody = await actRes.json();
@@ -131,7 +131,7 @@ describe('R-055: activate route requires non-zero reviewers OR explicit owner fo
         userName: owner,
         body: { reviewers: [reviewer] },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(propRes.status).toBe(200);
 
@@ -141,7 +141,7 @@ describe('R-055: activate route requires non-zero reviewers OR explicit owner fo
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(actRes.status).toBe(409);
     const actBody = await actRes.json();
@@ -157,7 +157,7 @@ describe('R-055: activate route requires non-zero reviewers OR explicit owner fo
         body: {},
         searchParams: { force: 'true' },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(forcedRes.status).toBe(409);
   });
@@ -171,7 +171,7 @@ describe('R-055: activate route requires non-zero reviewers OR explicit owner fo
         userName: owner,
         body: { reviewers: [reviewer] },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
 
     const reviews = await testPrisma.planReview.findMany({ where: { planId } });
@@ -185,7 +185,7 @@ describe('R-055: activate route requires non-zero reviewers OR explicit owner fo
         body: {},
         searchParams: { action: 'approve' },
       }),
-      { params: { projectId, planId, reviewId } },
+      { params: Promise.resolve({ projectId, planId, reviewId }) },
     );
     expect(approveRes.status).toBe(200);
 
@@ -195,7 +195,7 @@ describe('R-055: activate route requires non-zero reviewers OR explicit owner fo
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(actRes.status).toBe(200);
     const actBody = await actRes.json();

@@ -6,9 +6,10 @@ import { validateBody } from '@/lib/validate';
 import { updateProjectSchema, AppError, ErrorCode } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
 
-type Params = { params: { projectId: string } };
+type Params = { params: Promise<{ projectId: string }> };
 
-export async function GET(req: NextRequest, { params }: Params) {
+export async function GET(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     // R-190 / closes #780 #796: do NOT use `include` here — `include` returns
@@ -47,7 +48,8 @@ export async function GET(req: NextRequest, { params }: Params) {
   }
 }
 
-export async function PATCH(req: NextRequest, { params }: Params) {
+export async function PATCH(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     requireNotExecScoped(auth);
@@ -95,7 +97,8 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   }
 }
 
-export async function DELETE(req: NextRequest, { params }: Params) {
+export async function DELETE(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     requireNotExecScoped(auth);

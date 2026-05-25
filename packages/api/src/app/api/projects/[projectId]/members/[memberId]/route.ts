@@ -9,9 +9,10 @@ import { eventBus } from '@/lib/event-bus';
 import { sendMail, userEmail } from '@/lib/email';
 import { logger } from '@/lib/logger';
 
-type Params = { params: { projectId: string; memberId: string } };
+type Params = { params: Promise<{ projectId: string; memberId: string }> };
 
-export async function PATCH(req: NextRequest, { params }: Params) {
+export async function PATCH(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     requireNotExecScoped(auth);
@@ -85,7 +86,8 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   }
 }
 
-export async function DELETE(req: NextRequest, { params }: Params) {
+export async function DELETE(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     requireNotExecScoped(auth);

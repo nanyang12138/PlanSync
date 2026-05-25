@@ -10,9 +10,10 @@ import { dispatchWebhooks } from '@/lib/webhook';
 import { sendMail, userEmail } from '@/lib/email';
 import { logger } from '@/lib/logger';
 
-type Params = { params: { projectId: string } };
+type Params = { params: Promise<{ projectId: string }> };
 
-export async function GET(req: NextRequest, { params }: Params) {
+export async function GET(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);
@@ -28,7 +29,8 @@ export async function GET(req: NextRequest, { params }: Params) {
   }
 }
 
-export async function POST(req: NextRequest, { params }: Params) {
+export async function POST(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     requireNotExecScoped(auth);
