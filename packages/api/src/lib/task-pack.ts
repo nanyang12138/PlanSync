@@ -19,7 +19,13 @@ export async function buildTaskPack(taskId: string, projectId: string) {
     where: { projectId, version: task.boundPlanVersion },
   });
 
-  const project = await prisma.project.findUnique({ where: { id: projectId } });
+  // F2: defense-in-depth — only read the fields the pack response
+  // exposes. The full row would carry `githubWebhookSecret`, and
+  // task-pack is the canonical payload returned to MCP / CLI / agents.
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { id: true, name: true, phase: true },
+  });
 
   const openDrifts = await prisma.driftAlert.findMany({
     where: { taskId, status: 'open' },

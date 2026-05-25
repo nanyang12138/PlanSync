@@ -207,7 +207,14 @@ async function dispatchWebhooksInternal(
   });
   if (webhooks.length === 0) return;
 
-  const project = await prisma.project.findUnique({ where: { id: projectId } });
+  // F2: defense-in-depth — only read the fields we actually need so a
+  // future regression that echoes `project` to a webhook payload can't
+  // accidentally include `githubWebhookSecret`. Narrow select also
+  // saves an unnecessary column read on hot dispatch path.
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { name: true },
+  });
   const projectName = project?.name ?? projectId;
   const timestamp = new Date().toISOString();
 
