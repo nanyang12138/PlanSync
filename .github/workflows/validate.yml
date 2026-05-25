@@ -269,7 +269,8 @@ jobs:
         run: |
           set -e
           test -f packages/cli/dist/index.js  || { echo "::error::missing cli/dist/index.js"; exit 1; }
-          # G2 (ink 4 -> 6): ink 6 ships JS-native yoga-layout, no wasm needed.
+          # G2 (ink 4 → 6): ink 6 ships JS-native yoga-layout, no wasm needed.
+          # The legacy yoga.wasm copy step was removed from packages/cli/build.
 
       - name: Build @plansync/api
         run: npm run build --workspace=@plansync/api

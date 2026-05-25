@@ -52,6 +52,14 @@ export class InvalidTransitionError extends Error {
 export class Store<S extends BaseState> {
   private current: S;
   private readonly listeners = new Set<Listener<S>>();
+  /**
+   * R5 / closes #940: monotonically increasing sequence number stamped
+   * on every runAction at start. The success path only writes back if
+   * its seq matches the current latest — so a late-arriving stale
+   * success cannot overwrite a more-recent error.
+   */
+  private actionSeq = 0;
+  private latestActionSeq = 0;
 
   constructor(initial: S) {
     this.current = initial;
@@ -106,16 +114,45 @@ export class Store<S extends BaseState> {
     onSuccess: (state: S, result: T) => S;
     onFailure?: (state: S, error: Error) => S;
   }): Promise<T> {
+    // R5 / closes #940: stamp this action with a fresh sequence number.
+    // The success path checks the seq against the latest at that point;
+    // if a later action started in between, this one's success is stale
+    // and must NOT overwrite the newer state.
+    this.actionSeq += 1;
+    const seq = this.actionSeq;
+    this.latestActionSeq = seq;
+
     const before = this.current;
     if (opts.optimistic) {
       this.setState(opts.optimistic);
     }
     try {
       const result = await opts.action();
-      this.setState((state) => ({ ...opts.onSuccess(state, result), error: undefined }));
+      if (seq !== this.latestActionSeq) {
+        // A newer action superseded us. Don't touch state — its handler
+        // will own the next status flip. Still return the result so
+        // direct callers (e.g. an immediate `.then`) can use it.
+        return result;
+      }
+      // Closes #783: a previous failed action left state.status === 'error'.
+      // The original implementation only patched `error: undefined` on
+      // success, leaving `status: 'error'` in place — so the UI saw
+      // "request failed" forever even after the next try worked. Always
+      // flip to `ready` after a successful retry. (Allowed transitions
+      // include error → ready and ready → ready, so this is safe to
+      // apply unconditionally.)
+      this.setState((state) => ({
+        ...opts.onSuccess(state, result),
+        status: 'ready',
+        error: undefined,
+      }));
       return result;
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
+      if (seq !== this.latestActionSeq) {
+        // A newer action superseded us. Don't roll back its progress.
+        throw error;
+      }
       // Roll back optimistic changes, then apply caller-supplied failure
       // patch (e.g. surface the error message on a specific row) and flip
       // status to `error`.
