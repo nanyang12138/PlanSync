@@ -10,6 +10,11 @@ import {
   isMasterTargetAllowed,
   recordMasterDelegation,
 } from './master-audit';
+// env import keeps the boot-time validation in scope — even if no symbol
+// from `env` is referenced here, importing the module triggers
+// `validateEnv()` at server start, which is what enforces the production
+// rejection of PLANSYNC_MASTER_LEGACY=true (closes #791 #798).
+import './env';
 import { logger } from './logger';
 
 export interface AuthContext {
@@ -323,6 +328,11 @@ export async function authenticate(req: NextRequest): Promise<AuthContext> {
     }
 
     // R-136 escape hatch — explicit opt-out of all abuse controls.
+    // env.ts's superRefine block REFUSES TO BOOT in production when
+    // PLANSYNC_MASTER_LEGACY=true, so the runtime read here is safely
+    // dev/test-only (closes #791 #798). We read process.env directly
+    // (not the validated `env` object) so tests can flip the flag
+    // mid-run without re-importing the env singleton.
     if (process.env.PLANSYNC_MASTER_LEGACY === 'true') {
       logger.warn(
         { targetUser: userName, route: `${req.method} ${req.nextUrl.pathname}` },
@@ -373,8 +383,13 @@ export async function authenticate(req: NextRequest): Promise<AuthContext> {
 
     // R-136 (2) + (4) — TTL + audit. Reuse the most recent unexpired row
     // for (callerIp, targetUser) so a chatty agent doesn't generate one
-    // audit row per request.
-    const ttlMin = Number(process.env.PLANSYNC_MASTER_DELEGATION_TTL_MIN ?? '60');
+    // audit row per request. The TTL value is validated at boot by
+    // env.ts (zod coerce-positive-number), and we additionally guard at
+    // call time so a malformed mid-process override (or NODE_ENV=test
+    // tests that bypass env validation) never drives TTL=NaN→0
+    // and instantly expires every delegation (closes #788).
+    const ttlMinRaw = Number(process.env.PLANSYNC_MASTER_DELEGATION_TTL_MIN);
+    const ttlMin = Number.isFinite(ttlMinRaw) && ttlMinRaw > 0 ? ttlMinRaw : 60;
     const ttlMs = ttlMin * 60 * 1000;
     const callerIp = callerIpFromRequest(req);
     const callerUa = req.headers.get('user-agent') ?? 'unknown';
