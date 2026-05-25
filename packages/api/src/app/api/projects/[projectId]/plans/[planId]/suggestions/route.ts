@@ -54,6 +54,21 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
       );
     }
 
+    // R-155: if the caller scoped the suggestion to a specific
+    // PlanDeliverable, verify the row exists AND belongs to THIS plan
+    // before writing. Cross-plan or non-existent ids collapse to NOT_FOUND
+    // (no probing surface). Storing the FK without this check would let
+    // any member quietly attach suggestions to arbitrary deliverables.
+    if (body.deliverableId) {
+      const deliverable = await prisma.planDeliverable.findUnique({
+        where: { id: body.deliverableId },
+        select: { planId: true },
+      });
+      if (!deliverable || deliverable.planId !== params.planId) {
+        throw new AppError(ErrorCode.NOT_FOUND, 'Deliverable not found');
+      }
+    }
+
     const member = await prisma.projectMember.findUnique({
       where: { projectId_name: { projectId: params.projectId, name: auth.userName } },
     });

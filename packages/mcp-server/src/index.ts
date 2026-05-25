@@ -8,6 +8,7 @@ import { EventListener } from './event-listener';
 import { registerProjectTools } from './tools/project';
 import { registerMemberTools } from './tools/member';
 import { registerPlanTools } from './tools/plan';
+import { registerDeliverableTools } from './tools/deliverable';
 import { registerSuggestionTools } from './tools/suggestion';
 import { registerCommentTools } from './tools/comment';
 import { registerTaskTools } from './tools/task';
@@ -81,6 +82,11 @@ async function main() {
     'plansync_comment_list',
     'plansync_exec_context',
     'plansync_check_task_conflicts',
+    // R-155: deliverable read-only access (execution agents need to see the
+    // active deliverable set to understand what they're producing; writes
+    // remain owner-only and are intentionally excluded).
+    'plansync_deliverable_list',
+    'plansync_deliverable_show',
     // Execution lifecycle
     'plansync_execution_start',
     'plansync_execution_heartbeat',
@@ -116,6 +122,10 @@ async function main() {
     'plansync_comment_list',
     'plansync_exec_context',
     'plansync_check_task_conflicts',
+    // R-155: deliverable read-only access (agents reviewing a plan need to
+    // see the deliverable set to write a meaningful review).
+    'plansync_deliverable_list',
+    'plansync_deliverable_show',
     // Execution lifecycle
     'plansync_execution_start',
     'plansync_execution_heartbeat',
@@ -211,6 +221,7 @@ async function main() {
   registerProjectTools(server, api);
   registerMemberTools(server, api);
   registerPlanTools(server, api, config);
+  registerDeliverableTools(server, api);
   registerSuggestionTools(server, api);
   registerCommentTools(server, api);
   registerTaskTools(server, api);

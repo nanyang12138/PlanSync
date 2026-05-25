@@ -30,6 +30,14 @@ import {
   suggestionActionSchema,
   suggestionStatusSchema,
 } from '../schemas/suggestion';
+import {
+  deliverableSchema,
+  createDeliverableSchema,
+  updateDeliverableSchema,
+  supersedeDeliverableSchema,
+  deliverableRefTypeSchema,
+  deliverableStatusSchema,
+} from '../schemas/deliverable';
 import { commentSchema, createCommentSchema, updateCommentSchema } from '../schemas/comment';
 import {
   taskSchema,
@@ -88,6 +96,14 @@ export type ResolveSuggestion = z.infer<typeof resolveSuggestionSchema>;
 export type SuggestionField = z.infer<typeof suggestionFieldSchema>;
 export type SuggestionAction = z.infer<typeof suggestionActionSchema>;
 export type SuggestionStatus = z.infer<typeof suggestionStatusSchema>;
+
+// Deliverable (R-155)
+export type Deliverable = z.infer<typeof deliverableSchema>;
+export type CreateDeliverable = z.infer<typeof createDeliverableSchema>;
+export type UpdateDeliverable = z.infer<typeof updateDeliverableSchema>;
+export type SupersedeDeliverable = z.infer<typeof supersedeDeliverableSchema>;
+export type DeliverableRefType = z.infer<typeof deliverableRefTypeSchema>;
+export type DeliverableStatus = z.infer<typeof deliverableStatusSchema>;
 
 // Comment
 export type PlanComment = z.infer<typeof commentSchema>;

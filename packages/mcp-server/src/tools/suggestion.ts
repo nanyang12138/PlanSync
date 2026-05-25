@@ -15,6 +15,20 @@ export function registerSuggestionTools(server: McpServer, api: ApiClient) {
         .describe('set: replace field value, append: add to array, remove: remove from array'),
       value: z.string().describe('The suggested content'),
       reason: z.string().describe('Why this change is needed'),
+      // R-155: scope a deliverables-field suggestion to one PlanDeliverable
+      // row instead of the whole array. The owner UI surfaces this id so the
+      // suggestion can be applied to the specific item (rename, deprecate,
+      // swap refUri) without rewriting the entire `deliverables` list.
+      // Optional + only meaningful when field === 'deliverables'; the API
+      // validates the deliverable belongs to the same plan and rejects
+      // cross-plan references with NOT_FOUND.
+      deliverableId: z
+        .string()
+        .optional()
+        .describe(
+          'Optional. When field="deliverables", scope the suggestion to one PlanDeliverable id. ' +
+            'Use plansync_deliverable_list to find the id.',
+        ),
     },
     async (args) => {
       const { projectId, planId, ...body } = args;

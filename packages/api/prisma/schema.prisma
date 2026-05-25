@@ -143,9 +143,19 @@ model PlanSuggestion {
   resolvedComment String?   @map("resolved_comment")
   createdAt       DateTime  @default(now()) @map("created_at")
   resolvedAt      DateTime? @map("resolved_at")
+  // R-155: optional pointer to the specific PlanDeliverable this suggestion
+  // targets. Lets `plansync_plan_suggest` propose a change to one item
+  // (rename a deliverable, mark it deprecated, swap its refUri) instead of
+  // having to rewrite the whole `deliverables` array. Nullable so legacy
+  // free-text suggestions keep working without backfill, and ON DELETE
+  // SET NULL preserves the suggestion's audit trail when an owner deletes
+  // the deliverable from a draft.
+  deliverableId   String?   @map("deliverable_id")
 
-  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  plan        Plan             @relation(fields: [planId], references: [id], onDelete: Cascade)
+  deliverable PlanDeliverable? @relation(fields: [deliverableId], references: [id], onDelete: SetNull)
 
+  @@index([deliverableId])
   @@map("plan_suggestions")
 }
 
@@ -205,6 +215,11 @@ model PlanDeliverable {
   // as a derived/legacy column for backwards compatibility; the link rows
   // are the source of truth from now on.
   taskLinks    TaskDeliverableLink[]
+  // R-155: suggestions that explicitly target this deliverable (`deliverable_id`
+  // on `plan_suggestions`). The relation is reverse-side only; the actual FK
+  // lives on PlanSuggestion with ON DELETE SET NULL so deleting a deliverable
+  // does not also delete the audit trail of past suggestions touching it.
+  suggestions  PlanSuggestion[]
 
   @@unique([planId, slug])
   @@index([planId, status])
