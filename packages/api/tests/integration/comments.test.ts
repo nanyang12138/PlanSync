@@ -335,3 +335,87 @@ describe('E: Comment System', () => {
     }
   });
 });
+
+// R7 (closes #953) — concurrent DELETE must not produce duplicate
+// comment_deleted Activity rows. The race exists because the
+// original guard read isDeleted into JS, then ran a separate UPDATE.
+// Two requests that both observed isDeleted=false each issued an
+// UPDATE AND each wrote an audit row. The fix moves the
+// isDeleted=false predicate INTO the SQL WHERE clause via
+// updateMany; Postgres row-locks the row, exactly one updater sees
+// count=1, everyone else sees count=0 and bails before the audit
+// write.
+describe('R7 concurrent DELETE writes at most one audit row (#953)', () => {
+  it('parallel DELETE on the same comment yields exactly one comment_deleted Activity', async () => {
+    // Self-contained setup so this test can't be order-coupled with
+    // the rest of the suite.
+    const r7OwnerName = `r7-owner-${Date.now()}`;
+    const proj = await testPrisma.project.create({
+      data: {
+        name: `r7-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        phase: 'planning',
+        createdBy: r7OwnerName,
+      },
+    });
+    await testPrisma.projectMember.create({
+      data: { projectId: proj.id, name: r7OwnerName, role: 'owner', type: 'human' },
+    });
+    const plan = await testPrisma.plan.create({
+      data: {
+        projectId: proj.id,
+        title: 'r7-plan',
+        goal: 'g',
+        scope: 's',
+        version: 1,
+        status: 'active',
+        createdBy: r7OwnerName,
+      },
+    });
+
+    try {
+      const createRes = await POST(
+        makeReq(`/api/projects/${proj.id}/plans/${plan.id}/comments`, {
+          method: 'POST',
+          userName: r7OwnerName,
+          body: { content: 'race target' },
+        }),
+        { params: { projectId: proj.id, planId: plan.id } },
+      );
+      const cid = (await createRes.json()).data.id;
+
+      // Fire two DELETEs in parallel.
+      const both = await Promise.all([
+        DELETE(
+          makeReq(`/api/projects/${proj.id}/plans/${plan.id}/comments/${cid}`, {
+            method: 'DELETE',
+            userName: r7OwnerName,
+          }),
+          { params: { projectId: proj.id, planId: plan.id, commentId: cid } },
+        ),
+        DELETE(
+          makeReq(`/api/projects/${proj.id}/plans/${plan.id}/comments/${cid}`, {
+            method: 'DELETE',
+            userName: r7OwnerName,
+          }),
+          { params: { projectId: proj.id, planId: plan.id, commentId: cid } },
+        ),
+      ]);
+
+      // Exactly one 200 + one 409.
+      const statuses = both.map((r) => r.status).sort();
+      expect(statuses).toEqual([200, 409]);
+
+      // Critical: only ONE comment_deleted Activity row for this comment.
+      const audits = await testPrisma.activity.findMany({
+        where: { projectId: proj.id, type: 'comment_deleted' },
+      });
+      const hits = audits.filter((a) => {
+        const meta = a.metadata as { commentId?: string } | null;
+        return meta?.commentId === cid;
+      });
+      expect(hits).toHaveLength(1);
+    } finally {
+      await testPrisma.project.delete({ where: { id: proj.id } }).catch(() => {});
+    }
+  });
+});

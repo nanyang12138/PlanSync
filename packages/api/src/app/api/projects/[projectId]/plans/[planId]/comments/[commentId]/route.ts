@@ -92,21 +92,36 @@ export async function DELETE(req: NextRequest, { params }: Params) {
         'Only the author or a project owner can delete this comment',
       );
     }
-    // Closes #763: a repeat DELETE on an already-soft-deleted comment used
-    // to write a fresh `comment_deleted` Activity row each time, polluting
-    // the audit trail with phantom delete events for a comment that was
-    // already gone. Treat re-delete as STATE_CONFLICT (idempotent failure
-    // — the resource is already in the requested state).
-    if (comment.isDeleted) {
+    // Closes #763 + R7 #953: the original guard
+    //   if (comment.isDeleted) throw STATE_CONFLICT
+    // was non-atomic. Two concurrent DELETEs that BOTH observed
+    // isDeleted=false in the read above each issued an update and
+    // each wrote an audit row — exactly the duplicate-delete event
+    // problem #763 was supposed to close.
+    //
+    // Move the "are we the first deleter" check INTO the SQL WHERE
+    // clause via updateMany. The Postgres row lock guarantees
+    // exactly one updater sees count=1; everyone else sees count=0
+    // and bails before the audit write. R-109's per-delete
+    // Activity row is therefore at-most-once even under concurrent
+    // contention.
+    const flip = await prisma.planComment.updateMany({
+      where: { id: params.commentId, isDeleted: false },
+      data: { isDeleted: true, content: '' },
+    });
+    if (flip.count === 0) {
+      // Either the row no longer exists (caller raced with a hard
+      // delete elsewhere) or another concurrent DELETE already
+      // soft-deleted it. Either way the resource is already in the
+      // requested state — return STATE_CONFLICT so the caller knows
+      // their write was a no-op.
       throw new AppError(
         ErrorCode.STATE_CONFLICT,
         'Comment is already deleted; refusing to write a duplicate audit row',
       );
     }
-
-    const updated = await prisma.planComment.update({
+    const updated = await prisma.planComment.findUniqueOrThrow({
       where: { id: params.commentId },
-      data: { isDeleted: true, content: '' },
     });
 
     // R-109: audit-log comment soft-delete. Owners can delete any
