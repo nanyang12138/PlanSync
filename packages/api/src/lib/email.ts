@@ -212,8 +212,26 @@ export async function flushSendMailQueue(): Promise<void> {
 export const flushSendMailQueueForTests = flushSendMailQueue;
 
 /**
- * Test-only: read the current pending queue length.
+ * Test-only: read the current pending queue length (waiting messages
+ * only, not in-flight). Most call sites should use
+ * {@link getPendingMailTotal} instead — this helper exists for tests
+ * that specifically want to assert the queue rejection path.
  */
 export function _sendMailQueueLengthForTests(): number {
   return queue.length;
+}
+
+/**
+ * P0-7 / closes #541-cls: the SIGTERM drain reports 'queue drained' on
+ * timeout if and only if `pending === 0`. The previous implementation
+ * read `queue.length` only, which excludes in-flight `spawn` children
+ * and the `processing` worker. A 5s drain that fired while a
+ * sendmail child was still running would then misreport "drained" and
+ * `process.exit(0)` would SIGKILL the in-flight child mid-write.
+ *
+ * `getPendingMailTotal` aggregates all three signals so the drain
+ * accurately reports residual messages.
+ */
+export function getPendingMailTotal(): number {
+  return queue.length + inFlight.size + (processing ? 1 : 0);
 }
