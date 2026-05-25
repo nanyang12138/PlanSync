@@ -76,8 +76,19 @@ describe('K: API Key Management', () => {
       }),
     );
 
-    const after = await testPrisma.apiKey.findUnique({ where: { id: keyId } });
-    expect(after?.lastUsedAt?.getTime()).toBeGreaterThanOrEqual(before?.lastUsedAt?.getTime() ?? 0);
+    // The lastUsedAt update runs asynchronously inside authenticate(). On
+    // slow CI runners the I/O can take 100ms+, so a single read often sees
+    // a null lastUsedAt and `.getTime()` becomes undefined. Poll up to 2s
+    // for the write to land. Threshold-based assertion below still gives
+    // a real failure if the write never happens.
+    const beforeTs = before?.lastUsedAt?.getTime() ?? 0;
+    const deadline = Date.now() + 2000;
+    let after = await testPrisma.apiKey.findUnique({ where: { id: keyId } });
+    while ((after?.lastUsedAt?.getTime() ?? -1) < beforeTs && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 25));
+      after = await testPrisma.apiKey.findUnique({ where: { id: keyId } });
+    }
+    expect(after?.lastUsedAt?.getTime()).toBeGreaterThanOrEqual(beforeTs);
   });
 
   it('K4: DELETE /auth/api-keys/:id → 200', async () => {
