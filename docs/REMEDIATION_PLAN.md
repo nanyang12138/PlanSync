@@ -565,7 +565,8 @@
 
 #### R-020 [MEDIUM] exec_context 有 drift 时不启心跳
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#895
 - **batch**: B2
 - **depends_on**: R-005
 - **effort**: small
@@ -2113,7 +2114,8 @@
 
 #### R-117 [HIGH] auth login/password/verify/logout 集成测试（不走 AUTH_DISABLED）
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#896
 - **batch**: B12
 - **depends_on**: R-013, R-014
 - **effort**: medium
@@ -2543,7 +2545,8 @@
 
 #### R-142 [HIGH] MCP `execution_aborted` 改为 protocol-level error
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#842
 - **batch**: B1
 - **depends_on**: R-005
 - **effort**: medium
@@ -2598,7 +2601,8 @@
 
 #### R-145 [HIGH] `PlanDiff.changes` JSON 列强制 shared zod schema 校验
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#858
 - **batch**: B4
 - **depends_on**: R-034
 - **effort**: small
@@ -2682,7 +2686,8 @@
 
 #### R-152 [HIGH] plan_update / propose / activate / append 全部改写新表
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#879
 - **batch**: B13
 - **depends_on**: R-151
 - **effort**: large
@@ -2697,7 +2702,8 @@
 
 #### R-153 [HIGH] Task→Deliverable FK 中间表
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#883
 - **batch**: B13
 - **depends_on**: R-151
 - **effort**: large
@@ -3062,7 +3068,8 @@
 
 #### R-181 [HIGH] 声明式 `verification_rules` 表 + 评估器
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#888
 - **batch**: B16
 - **depends_on**: R-180
 - **effort**: large
@@ -3157,7 +3164,8 @@
 
 #### R-191 [HIGH] commit↔deliverable 关联表 + 自动推导
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#885
 - **batch**: B17
 - **depends_on**: R-190, R-150
 - **effort**: medium
