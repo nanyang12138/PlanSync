@@ -267,13 +267,21 @@ export class McpClient {
 
     this.consecutiveCrashes += 1;
     const summary = this.formatChildOutputForDisplay();
-    process.stdout.write(
-      `\n${c.yellow}⚠ MCP subprocess exited unexpectedly (${reason}); the next tool call will attempt to restart it.${c.reset}\n`,
-    );
-    if (summary) {
+    // Guard the stdout writes — in tests / piped runs stdout can be closed
+    // (EPIPE) by the time the child's exit event fires, and a synchronous
+    // throw from this listener surfaces as an unhandled error in vitest.
+    try {
       process.stdout.write(
-        `${c.dim}  Last output from MCP child (most recent last):${c.reset}\n${summary}\n`,
+        `\n${c.yellow}⚠ MCP subprocess exited unexpectedly (${reason}); the next tool call will attempt to restart it.${c.reset}\n`,
       );
+      if (summary) {
+        process.stdout.write(
+          `${c.dim}  Last output from MCP child (most recent last):${c.reset}\n${summary}\n`,
+        );
+      }
+    } catch (writeErr) {
+      const errno = (writeErr as NodeJS.ErrnoException | undefined)?.code;
+      if (errno !== 'EPIPE' && errno !== 'ERR_STREAM_DESTROYED') throw writeErr;
     }
   }
 

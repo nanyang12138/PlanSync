@@ -75,14 +75,24 @@ test('#366/#540/#567: dev.sh exports USER so next.config.js sees the resolved va
   assert.notEqual(nodeUser, 'dev', 'node USER fell back to literal "dev" — export not propagating');
 });
 
-test('static guard: dev.sh contains `export USER=` (refactor-resistance)', () => {
+test('static guard: dev.sh exports both PLANSYNC_BUILD_USER and USER (F1 refactor-resistance)', () => {
   const text = readFileSync(DEV_SH, 'utf-8');
-  // Match the export line tolerant of formatting (single or double
-  // quotes, spaces around `=`, etc.).
-  const exportLine = /^\s*export\s+USER\s*=\s*["']\$\{USER:-\$\(whoami\)\}["']/m;
+  // F1 (#899) replaced the single `export USER="${USER:-$(whoami)}"` line with
+  // a canonical PLANSYNC_BUILD_USER chain that next.config.js, build.sh, and
+  // dev.sh all share. Both exports must be present so the resolved
+  // identity propagates to every consumer (Next process, cache marker,
+  // distDir).
+  const buildUserExport =
+    /^\s*export\s+PLANSYNC_BUILD_USER\s*=\s*["']\$\{PLANSYNC_BUILD_USER:-\$\{USER:-\$\(whoami\)\}\}["']/m;
+  const userExport = /^\s*export\s+USER\s*=\s*["']\$PLANSYNC_BUILD_USER["']/m;
   assert.match(
     text,
-    exportLine,
-    `dev.sh missing 'export USER="\${USER:-$(whoami)}"' regression-guard line`,
+    buildUserExport,
+    `dev.sh missing canonical PLANSYNC_BUILD_USER export (F1 chain: PLANSYNC_BUILD_USER → USER → whoami)`,
+  );
+  assert.match(
+    text,
+    userExport,
+    `dev.sh must re-export USER="$PLANSYNC_BUILD_USER" so legacy tooling that reads USER sees the resolved identity`,
   );
 });
