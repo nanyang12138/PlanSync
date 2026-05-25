@@ -379,7 +379,7 @@ describe('R7 concurrent DELETE writes at most one audit row (#953)', () => {
           userName: r7OwnerName,
           body: { content: 'race target' },
         }),
-        { params: { projectId: proj.id, planId: plan.id } },
+        { params: Promise.resolve({ projectId: proj.id, planId: plan.id }) },
       );
       const cid = (await createRes.json()).data.id;
 
@@ -390,14 +390,14 @@ describe('R7 concurrent DELETE writes at most one audit row (#953)', () => {
             method: 'DELETE',
             userName: r7OwnerName,
           }),
-          { params: { projectId: proj.id, planId: plan.id, commentId: cid } },
+          { params: Promise.resolve({ projectId: proj.id, planId: plan.id, commentId: cid }) },
         ),
         DELETE(
           makeReq(`/api/projects/${proj.id}/plans/${plan.id}/comments/${cid}`, {
             method: 'DELETE',
             userName: r7OwnerName,
           }),
-          { params: { projectId: proj.id, planId: plan.id, commentId: cid } },
+          { params: Promise.resolve({ projectId: proj.id, planId: plan.id, commentId: cid }) },
         ),
       ]);
 
