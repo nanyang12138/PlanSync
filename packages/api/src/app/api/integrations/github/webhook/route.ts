@@ -178,6 +178,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // into inbound_webhook_deliveries with UNIQUE(source, delivery_id).
   // A repeat delivery hits the unique constraint, the tx rolls back,
   // and we short-circuit with 200 (no fan-out, no retry).
+  if (!deliveryId) {
+    // GitHub always sends X-GitHub-Delivery; a missing header means the
+    // request didn't come from GitHub's infrastructure. We refuse to fan
+    // out without it because we have no way to dedupe.
+    logger.warn({ eventName, repoSlug }, 'github webhook: missing X-GitHub-Delivery header');
+    return NextResponse.json(
+      { error: { code: 'BAD_REQUEST', message: 'X-GitHub-Delivery header is required' } },
+      { status: 400 },
+    );
+  }
   try {
     await prisma.$transaction(async (tx) => {
       // The dedup row goes FIRST so a duplicate fails fast before any
