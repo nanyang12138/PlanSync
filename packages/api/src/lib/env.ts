@@ -48,6 +48,20 @@ const baseEnvSchema = z.object({
   //   postgres — Postgres LISTEN/NOTIFY (required for multi-instance prod).
   // Default: postgres in production, memory elsewhere.
   PLANSYNC_EVENT_BUS: z.enum(['memory', 'postgres']).optional(),
+
+  // R-136: master-delegation knobs. Validated here so a typo (e.g.
+  // `PLANSYNC_MASTER_DELEGATION_TTL_MIN=abc` → NaN → 0ms TTL → every
+  // delegation immediately expired) fails at boot instead of silently
+  // poisoning auth (closes #788). PLANSYNC_MASTER_LEGACY is the
+  // explicit-bypass escape hatch for dev only — refused in production
+  // by the superRefine block below (closes #791 #798).
+  PLANSYNC_MASTER_LEGACY: z
+    .string()
+    .transform((v) => v === 'true')
+    .default('false'),
+  PLANSYNC_MASTER_DELEGATION_TTL_MIN: z.coerce.number().positive().default(60),
+  PLANSYNC_MASTER_ALLOWED_TARGETS: z.string().optional(),
+  PLANSYNC_MASTER_DENY_TARGETS: z.string().optional(),
 });
 
 export const envSchema = baseEnvSchema.superRefine((data, ctx) => {
@@ -81,6 +95,24 @@ export const envSchema = baseEnvSchema.superRefine((data, ctx) => {
       message:
         'PLANSYNC_SECRET must be at least 32 characters in production. ' +
         'Generate a strong value with: openssl rand -hex 32',
+    });
+  }
+
+  // R-136: refuse the master-delegation bypass in production. The legacy
+  // flag exists for one-off dev debugging; allowing it in production would
+  // skip the audit trail / target allowlist / route allowlist / TTL all
+  // at once. The fast path through env validation is the only place where
+  // we can fail-closed before auth.ts even reads the var.
+  // Closes #791 / #798 — these were filed because a previous refactor
+  // dropped this guard from env.ts.
+  if (data.PLANSYNC_MASTER_LEGACY) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['PLANSYNC_MASTER_LEGACY'],
+      message:
+        'PLANSYNC_MASTER_LEGACY=true is forbidden in production: it bypasses ' +
+        'master-delegation audit, allowlist, deny-list, and TTL all at once. ' +
+        'Use it only on dev hosts. Unset the variable to start in production.',
     });
   }
 });
