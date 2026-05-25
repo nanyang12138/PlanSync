@@ -2973,6 +2973,40 @@
 
 ---
 
+#### R-204 [HIGH] MCP execution\_\* tools → run(runId, action) (R-175 step 2)
+
+- **status**: pending
+- **batch**: B15
+- **depends_on**: R-175
+- **effort**: medium
+- **files**: `packages/mcp-server/src/tools/execution.ts` (deprecate), `packages/mcp-server/src/tools/run.ts` (new), `packages/cli/src/ai-loop.ts`, `docs/PROTOCOL.md`
+- **note**: R11 (#929) split — R-175 was originally one entry covering 3 fix_steps, but only step 1 (plan\_\*\_append → plan_patch) shipped in PR#664. R-204 tracks step 2 (formerly informally referenced as R-175a) as a real, schedulable cron entry so the dependency graph has a concrete follow-up to point at.
+- **fix_steps**:
+  1. Add `plansync_run(runId, action)` tool with `action ∈ {start, heartbeat, complete}`.
+  2. Migrate all internal callers (web UI client, ai-loop, github-action) to the new tool.
+  3. Mark `plansync_execution_start / heartbeat / complete` as deprecated aliases for one release.
+  4. Update CLAUDE.md / AGENTS.md / docs/PROTOCOL.md to reference `plansync_run` only.
+- **verification**: tools/list shows `plansync_run`; integration tests cover all three actions through the new tool; deprecation warning fires on every legacy alias call.
+
+---
+
+#### R-205 [HIGH] MCP task\_\* tools → task(action, args) (R-175 step 3)
+
+- **status**: pending
+- **batch**: B15
+- **depends_on**: R-204
+- **effort**: medium
+- **files**: `packages/mcp-server/src/tools/task.ts` (consolidate), `packages/cli/src/ai-loop.ts`, `docs/PROTOCOL.md`
+- **note**: R11 (#929) split — R-175 step 3 (formerly informally referenced as R-175b). Sequenced after R-204 because the consolidation pattern (one tool with `action` discriminator) is the same and we want to vet it on the smaller `run` surface first before touching the larger `task` surface.
+- **fix_steps**:
+  1. Add `plansync_task(action, args)` tool with `action ∈ {create, update, claim, decline, rebind}`.
+  2. Migrate internal callers; deprecate `plansync_task_create / update / claim / decline / rebind` for one release.
+  3. After R-204 + R-205 ship: tools/list count ≤ 12 (the original R-175 success criterion).
+  4. Flip R-175 to `done` in the same PR that closes R-205.
+- **verification**: tools/list count ≤ 12; same coverage matrix as R-204 applied to the task surface.
+
+---
+
 #### R-176 [MEDIUM] 文档↔工具一致性 contract test
 
 - **status**: pending
@@ -3715,6 +3749,8 @@ cursor-agent dispatch \
 | R-201  | HIGH     | B18  | Web/CLI 改用 client-core                                                       |
 | R-202  | HIGH     | B18  | 拆 plansync-web 独立部署                                                       |
 | R-203  | MEDIUM   | B18  | 部署拓扑文档 + docker-compose / helm chart                                     |
+| R-204  | HIGH     | B15  | MCP execution\_\* → run(runId, action) (R-175 step 2)                          |
+| R-205  | HIGH     | B15  | MCP task\_\* → task(action, args) (R-175 step 3)                               |
 | R-185  | CRITICAL | B19  | AI 调用切到 Anthropic tool_use 严格结构化输出                                  |
 | R-186  | HIGH     | B19  | 抽 lib/ai/validate/ 共享层 + literal grounding 启发式                          |
 | R-187  | HIGH     | B19  | plan-diff / impact-analysis 加二次 LLM-as-Judge verifier pass                  |
@@ -3726,7 +3762,7 @@ cursor-agent dispatch \
 **统计**（含 2026-05-22 追加 + 2026-05-24 B19 追加 7 条；与正文 `^#### R-XXX [SEVERITY]` 标题精确一致）：
 
 - CRITICAL: 8 + 8 + 1 = **17**
-- HIGH: 62 + 30 + 3 = **95**
+- HIGH: 62 + 30 + 3 + 2 = **97**
 - MEDIUM: 50 + 9 + 3 = **62**
 - LOW: 14 + 0 + 0 = **14**
 - **合计 188 条**（其中 2026-05-22 追加 47 条，2026-05-24 B19 追加 7 条）

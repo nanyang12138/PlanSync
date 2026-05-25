@@ -158,8 +158,10 @@ const MASTER_ROUTE_ALLOWLIST: Array<{ method: string | '*'; path: RegExp }> = [
   // heartbeat / complete / task_rebind).
   // execution_start / list runs:
   { method: 'POST', path: /^\/api\/projects\/[^/]+\/tasks\/[^/]+\/runs$/ },
-  // heartbeat / execution_complete:
-  { method: 'PATCH', path: /^\/api\/projects\/[^/]+\/tasks\/[^/]+\/runs\/[^/]+$/ },
+  // heartbeat / execution_complete: POST /tasks/{taskId}/runs/{runId}?action=…
+  // (Closes #931 #933 — the previous entry used PATCH but the actual route
+  // exports POST and the MCP client posts to it. PATCH never matched.)
+  { method: 'POST', path: /^\/api\/projects\/[^/]+\/tasks\/[^/]+\/runs\/[^/]+(?:\?.*)?$/ },
   // task_rebind:
   { method: 'POST', path: /^\/api\/projects\/[^/]+\/tasks\/[^/]+\/rebind$/ },
 
