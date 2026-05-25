@@ -33,22 +33,30 @@ import { makeReq, createTestProject, cleanupProject, testPrisma } from '../helpe
 
 const owner = 'r140-owner';
 
-async function setupTaskOnV1(opts: {
-  v1Goal?: string;
-  v1Deliverables?: string[];
-  v1Scope?: string;
-  taskRefs?: string[];
-}) {
+interface DelivSpec {
+  slug: string;
+  body: string;
+  refUri?: string | null;
+}
+
+/**
+ * R-154: severity is driven by the deliverable-id-based diff over
+ * `plan_deliverables` rows linked through `task_deliverable_links`. The
+ * test helper materialises that graph explicitly because the legacy
+ * `Plan.deliverables: String[]` column alone no longer participates in
+ * the severity calculation.
+ */
+async function setupTaskOnV1(opts: { v1Deliverables: DelivSpec[]; linkedSlugs: string[] }) {
   const { projectId } = await createTestProject(owner);
   const v1 = await testPrisma.plan.create({
     data: {
       projectId,
       title: 'v1',
-      goal: opts.v1Goal ?? 'g1',
-      scope: opts.v1Scope ?? 's1',
+      goal: 'g1',
+      scope: 's1',
       constraints: [],
       standards: [],
-      deliverables: opts.v1Deliverables ?? ['rest api'],
+      deliverables: opts.v1Deliverables.map((d) => d.body),
       openQuestions: [],
       requiredReviewers: [],
       version: 1,
@@ -58,6 +66,18 @@ async function setupTaskOnV1(opts: {
       activatedBy: owner,
     },
   });
+  for (const d of opts.v1Deliverables) {
+    await testPrisma.planDeliverable.create({
+      data: {
+        planId: v1.id,
+        slug: d.slug,
+        title: d.slug,
+        body: d.body,
+        refUri: d.refUri ?? null,
+        status: 'active',
+      },
+    });
+  }
   const task = await testPrisma.task.create({
     data: {
       projectId,
@@ -68,26 +88,34 @@ async function setupTaskOnV1(opts: {
       assignee: owner,
       assigneeType: 'human',
       boundPlanVersion: v1.version,
-      planDeliverableRefs: opts.taskRefs ?? ['rest api'],
+      planDeliverableRefs: opts.linkedSlugs,
       agentConstraints: [],
     },
   });
+  if (opts.linkedSlugs.length > 0) {
+    const linked = await testPrisma.planDeliverable.findMany({
+      where: { planId: v1.id, slug: { in: opts.linkedSlugs } },
+      select: { id: true },
+    });
+    for (const ld of linked) {
+      await testPrisma.taskDeliverableLink.create({
+        data: { taskId: task.id, deliverableId: ld.id },
+      });
+    }
+  }
   return { projectId, taskId: task.id, v1Version: v1.version };
 }
 
-async function createAndActivateV2(
-  projectId: string,
-  v2: { goal?: string; scope?: string; deliverables?: string[] },
-) {
+async function createAndActivateV2(projectId: string, v2Deliverables: DelivSpec[]) {
   const draft = await testPrisma.plan.create({
     data: {
       projectId,
       title: 'v2',
-      goal: v2.goal ?? 'g1',
-      scope: v2.scope ?? 's1',
+      goal: 'g1',
+      scope: 's1',
       constraints: [],
       standards: [],
-      deliverables: v2.deliverables ?? ['rest api'],
+      deliverables: v2Deliverables.map((d) => d.body),
       openQuestions: [],
       requiredReviewers: [],
       version: 2,
@@ -95,6 +123,18 @@ async function createAndActivateV2(
       createdBy: owner,
     },
   });
+  for (const d of v2Deliverables) {
+    await testPrisma.planDeliverable.create({
+      data: {
+        planId: draft.id,
+        slug: d.slug,
+        title: d.slug,
+        body: d.body,
+        refUri: d.refUri ?? null,
+        status: 'active',
+      },
+    });
+  }
   const res = await activatePost(
     makeReq(`/api/projects/${projectId}/plans/${draft.id}/activate`, {
       method: 'POST',
@@ -117,11 +157,12 @@ describe('R-140: drift writes executionGate, never touches task.status', () => {
 
   it('plan v2 activate with a breaking diff → task.status unchanged, executionGate="drift_high"', async () => {
     ({ projectId, taskId } = await setupTaskOnV1({
-      v1Goal: 'ship the rest api',
-      taskRefs: ['rest api'],
+      v1Deliverables: [{ slug: 'rest-api', body: 'rest api spec v1' }],
+      linkedSlugs: ['rest-api'],
     }));
-    // v2 modifies the goal — a structural breaking change for any task.
-    await createAndActivateV2(projectId, { goal: 'pivot to graphql' });
+    // v2 changes the body of the deliverable the task is linked to — R-154
+    // classifies this as 'breaking'.
+    await createAndActivateV2(projectId, [{ slug: 'rest-api', body: 'rest api spec v2' }]);
 
     const task = await testPrisma.task.findUnique({ where: { id: taskId } });
     expect(task?.executionGate).toBe('drift_high');
@@ -141,16 +182,13 @@ describe('R-140: drift writes executionGate, never touches task.status', () => {
 
   it('plan v2 activate with a medium diff → executionGate="drift_medium" (status still untouched)', async () => {
     ({ projectId, taskId } = await setupTaskOnV1({
-      v1Scope: 'web only',
-      v1Deliverables: ['rest api'],
-      taskRefs: ['rest api'],
+      v1Deliverables: [{ slug: 'rest-api', body: 'rest api spec', refUri: 'https://figma.com/A' }],
+      linkedSlugs: ['rest-api'],
     }));
-    // Only scope changes; the task's referenced deliverable is intact.
-    // structuralSeverity = medium → executionGate = 'drift_medium'.
-    await createAndActivateV2(projectId, {
-      scope: 'web + mobile',
-      deliverables: ['rest api'],
-    });
+    // Only the refUri shifts; body is identical. R-154 classifies as 'medium'.
+    await createAndActivateV2(projectId, [
+      { slug: 'rest-api', body: 'rest api spec', refUri: 'https://figma.com/B' },
+    ]);
 
     const task = await testPrisma.task.findUnique({ where: { id: taskId } });
     expect(task?.executionGate).toBe('drift_medium');
@@ -159,10 +197,10 @@ describe('R-140: drift writes executionGate, never touches task.status', () => {
 
   it('execution_start on a gated task returns 409 STATE_CONFLICT with the drift hint', async () => {
     ({ projectId, taskId } = await setupTaskOnV1({
-      v1Goal: 'ship the rest api',
-      taskRefs: ['rest api'],
+      v1Deliverables: [{ slug: 'rest-api', body: 'rest api spec v1' }],
+      linkedSlugs: ['rest-api'],
     }));
-    await createAndActivateV2(projectId, { goal: 'pivot to graphql' });
+    await createAndActivateV2(projectId, [{ slug: 'rest-api', body: 'rest api spec v2' }]);
 
     // Sanity: gate is on, status is preserved.
     const gated = await testPrisma.task.findUnique({ where: { id: taskId } });
@@ -200,10 +238,10 @@ describe('R-140: drift writes executionGate, never touches task.status', () => {
 
   it('drift_resolve action=rebind clears executionGate and keeps the R-004 restart contract', async () => {
     ({ projectId, taskId } = await setupTaskOnV1({
-      v1Goal: 'ship the rest api',
-      taskRefs: ['rest api'],
+      v1Deliverables: [{ slug: 'rest-api', body: 'rest api spec v1' }],
+      linkedSlugs: ['rest-api'],
     }));
-    await createAndActivateV2(projectId, { goal: 'pivot to graphql' });
+    await createAndActivateV2(projectId, [{ slug: 'rest-api', body: 'rest api spec v2' }]);
 
     const gated = await testPrisma.task.findUnique({ where: { id: taskId } });
     expect(gated?.executionGate).toBe('drift_high');
@@ -247,10 +285,10 @@ describe('R-140: drift writes executionGate, never touches task.status', () => {
 
   it('drift_resolve action=no_impact clears executionGate without touching status', async () => {
     ({ projectId, taskId } = await setupTaskOnV1({
-      v1Goal: 'ship the rest api',
-      taskRefs: ['rest api'],
+      v1Deliverables: [{ slug: 'rest-api', body: 'rest api spec v1' }],
+      linkedSlugs: ['rest-api'],
     }));
-    await createAndActivateV2(projectId, { goal: 'pivot to graphql' });
+    await createAndActivateV2(projectId, [{ slug: 'rest-api', body: 'rest api spec v2' }]);
 
     const alert = await testPrisma.driftAlert.findFirst({
       where: { projectId, taskId, status: 'open' },
@@ -278,10 +316,10 @@ describe('R-140: drift writes executionGate, never touches task.status', () => {
 
   it('drift_resolve action=cancel clears executionGate and sets status=cancelled', async () => {
     ({ projectId, taskId } = await setupTaskOnV1({
-      v1Goal: 'ship the rest api',
-      taskRefs: ['rest api'],
+      v1Deliverables: [{ slug: 'rest-api', body: 'rest api spec v1' }],
+      linkedSlugs: ['rest-api'],
     }));
-    await createAndActivateV2(projectId, { goal: 'pivot to graphql' });
+    await createAndActivateV2(projectId, [{ slug: 'rest-api', body: 'rest api spec v2' }]);
 
     const alert = await testPrisma.driftAlert.findFirst({
       where: { projectId, taskId, status: 'open' },
