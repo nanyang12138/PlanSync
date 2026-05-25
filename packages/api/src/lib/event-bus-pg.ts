@@ -1,5 +1,24 @@
-import { Client } from 'pg';
+// We deliberately avoid `import { Client } from 'pg'` here because Next.js
+// 14's webpack treats `pg` as an async ESM-interop module (its `exports`
+// field declares both ESM and CJS entry points), which makes the entire
+// importing chain async. When `EventBusPG` is then constructed synchronously
+// from a route handler the `new EventBusPG()` site reads the unresolved
+// async module and throws `TypeError: e is not a constructor` at runtime
+// (root cause of nightly e2e failure #143). A runtime-resolved
+// `createRequire` keeps the load synchronous and outside webpack's bundling,
+// so the real `pg.Client` constructor is what we end up using.
+import { createRequire } from 'node:module';
+import type { Client as PgClient } from 'pg';
 import { createHash, randomUUID } from 'crypto';
+
+// Type and value share the same name on purpose: `Client` is the runtime
+// constructor and the type that callers expect. TypeScript allows
+// type-and-value declarations under the same identifier; the only complaint
+// came from eslint's `no-redeclare`, which we disable on the value line.
+type Client = PgClient;
+const requireFromHere = createRequire(__filename);
+// eslint-disable-next-line no-redeclare
+const Client = requireFromHere('pg').Client as typeof PgClient;
 import { logger } from './logger';
 import { MemoryEventBus } from './event-bus-memory';
 import type {

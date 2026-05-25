@@ -2678,7 +2678,7 @@
 
 #### R-153 [HIGH] Task→Deliverable FK 中间表
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B13
 - **depends_on**: R-151
 - **effort**: large
@@ -3009,7 +3009,7 @@
 
 #### R-181 [HIGH] 声明式 `verification_rules` 表 + 评估器
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B16
 - **depends_on**: R-180
 - **effort**: large
@@ -3104,7 +3104,7 @@
 
 #### R-191 [HIGH] commit↔deliverable 关联表 + 自动推导
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B17
 - **depends_on**: R-190, R-150
 - **effort**: medium

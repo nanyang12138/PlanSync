@@ -43,6 +43,11 @@ export function useRealtime(
       'plan_proposed',
       'plan_activated',
       'plan_draft_updated',
+      // Closes #817: the R-205 withdraw route publishes 'plan_withdrawn'
+      // so other connected users see the proposal disappear in real time.
+      // Browsers listening only for the previous events used to keep
+      // showing the proposed plan until manual refresh.
+      'plan_withdrawn',
       'drift_detected',
       'drift_resolved',
       'task_created',
