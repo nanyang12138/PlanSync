@@ -52,7 +52,7 @@ describe('C: Plan Lifecycle', () => {
           requiredReviewers: [],
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(201);
     const body = await res.json();
@@ -69,7 +69,7 @@ describe('C: Plan Lifecycle', () => {
         userName: owner,
         body: { title: 'Missing fields' }, // missing goal, scope
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(400);
     const body = await res.json();
@@ -92,7 +92,7 @@ describe('C: Plan Lifecycle', () => {
           requiredReviewers: [],
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(403);
   });
@@ -104,7 +104,7 @@ describe('C: Plan Lifecycle', () => {
         userName: owner,
         body: { goal: 'updated goal' },
       }),
-      { params: { projectId, planId: draftPlanId } },
+      { params: Promise.resolve({ projectId, planId: draftPlanId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -118,7 +118,7 @@ describe('C: Plan Lifecycle', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId: draftPlanId } },
+      { params: Promise.resolve({ projectId, planId: draftPlanId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -128,7 +128,7 @@ describe('C: Plan Lifecycle', () => {
   it('C11: GET /plans/active → 200', async () => {
     const res = await activeGet(
       makeReq(`/api/projects/${projectId}/plans/active`, { userName: owner }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -153,7 +153,7 @@ describe('C: Plan Lifecycle', () => {
           requiredReviewers: [],
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const planV2Id = (await res2.json()).data.id;
 
@@ -163,13 +163,13 @@ describe('C: Plan Lifecycle', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId: planV2Id } },
+      { params: Promise.resolve({ projectId, planId: planV2Id }) },
     );
 
     // v1 should now be superseded
     const v1res = await planGet(
       makeReq(`/api/projects/${projectId}/plans/${draftPlanId}`, { userName: owner }),
-      { params: { projectId, planId: draftPlanId } },
+      { params: Promise.resolve({ projectId, planId: draftPlanId }) },
     );
     const v1 = await v1res.json();
     expect(v1.data.status).toBe('superseded');
@@ -181,7 +181,7 @@ describe('C: Plan Lifecycle', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId: draftPlanId } },
+      { params: Promise.resolve({ projectId, planId: draftPlanId }) },
     );
     expect(reactivateRes.status).toBe(200);
     const reactivated = await reactivateRes.json();
@@ -205,7 +205,7 @@ describe('C: Plan Lifecycle', () => {
           requiredReviewers: [],
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const proposedPlanId = (await createRes.json()).data.id;
 
@@ -215,7 +215,7 @@ describe('C: Plan Lifecycle', () => {
         userName: owner,
         body: { reviewers: [reviewer] },
       }),
-      { params: { projectId, planId: proposedPlanId } },
+      { params: Promise.resolve({ projectId, planId: proposedPlanId }) },
     );
 
     const patchRes = await planPatch(
@@ -224,7 +224,7 @@ describe('C: Plan Lifecycle', () => {
         userName: owner,
         body: { goal: 'should fail' },
       }),
-      { params: { projectId, planId: proposedPlanId } },
+      { params: Promise.resolve({ projectId, planId: proposedPlanId }) },
     );
     expect(patchRes.status).toBe(409);
     const body = await patchRes.json();
@@ -252,7 +252,7 @@ describe('C: Plan Lifecycle', () => {
           requiredReviewers: [],
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const newPlanId = (await createRes.json()).data.id;
 
@@ -263,7 +263,7 @@ describe('C: Plan Lifecycle', () => {
         userName: owner,
         body: { reviewers: [reviewer] },
       }),
-      { params: { projectId, planId: newPlanId } },
+      { params: Promise.resolve({ projectId, planId: newPlanId }) },
     );
     expect(propRes.status).toBe(200);
     const propBody = await propRes.json();
@@ -276,7 +276,7 @@ describe('C: Plan Lifecycle', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId: newPlanId } },
+      { params: Promise.resolve({ projectId, planId: newPlanId }) },
     );
     expect(earlyActivate.status).toBe(409);
 
@@ -289,7 +289,7 @@ describe('C: Plan Lifecycle', () => {
         userName: reviewer,
         body: {},
       }),
-      { params: { projectId, planId: newPlanId, reviewId } },
+      { params: Promise.resolve({ projectId, planId: newPlanId, reviewId }) },
     );
     expect(approveRes.status).toBe(200);
     const approveBody = await approveRes.json();
@@ -302,7 +302,7 @@ describe('C: Plan Lifecycle', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId: newPlanId } },
+      { params: Promise.resolve({ projectId, planId: newPlanId }) },
     );
     expect(actRes.status).toBe(200);
     const actBody = await actRes.json();
@@ -327,7 +327,7 @@ describe('C: Plan Lifecycle', () => {
           requiredReviewers: [],
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const planId2 = (await createRes.json()).data.id;
 
@@ -337,7 +337,7 @@ describe('C: Plan Lifecycle', () => {
         userName: owner,
         body: { reviewers: [reviewer] },
       }),
-      { params: { projectId, planId: planId2 } },
+      { params: Promise.resolve({ projectId, planId: planId2 }) },
     );
 
     const reviews = await testPrisma.planReview.findMany({ where: { planId: planId2 } });
@@ -348,7 +348,7 @@ describe('C: Plan Lifecycle', () => {
         userName: reviewer,
         body: {},
       }),
-      { params: { projectId, planId: planId2, reviewId } },
+      { params: Promise.resolve({ projectId, planId: planId2, reviewId }) },
     );
     expect(rejectRes.status).toBe(200);
     expect((await rejectRes.json()).data.status).toBe('rejected');
@@ -379,7 +379,7 @@ describe('C: Plan Lifecycle', () => {
           requiredReviewers: [],
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const planId = (await createRes.json()).data.id;
 
@@ -389,7 +389,7 @@ describe('C: Plan Lifecycle', () => {
         userName: owner,
         body: { reviewers: [newReviewer] },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(propRes.status).toBe(200);
 
@@ -426,7 +426,7 @@ describe('C: Plan Lifecycle', () => {
           requiredReviewers: [],
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const planId = (await createRes.json()).data.id;
 
@@ -436,7 +436,7 @@ describe('C: Plan Lifecycle', () => {
         userName: owner,
         body: { reviewers: [{ name: agentReviewer, type: 'agent' }] },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(propRes.status).toBe(200);
 
@@ -466,7 +466,7 @@ describe('C: Plan Lifecycle', () => {
           requiredReviewers: [],
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const planId = (await createRes.json()).data.id;
 
@@ -476,7 +476,7 @@ describe('C: Plan Lifecycle', () => {
         userName: owner,
         body: { reviewers: [{ name: 'r1', type: 'robot' }] },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(res.status).toBe(400);
     const body = await res.json();
@@ -501,7 +501,7 @@ describe('C: Plan Lifecycle', () => {
           requiredReviewers: [],
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const planId = (await createRes.json()).data.id;
 
@@ -512,7 +512,7 @@ describe('C: Plan Lifecycle', () => {
         userName: owner,
         body: { reviewers: tooMany },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(res.status).toBe(400);
     const body = await res.json();
@@ -537,7 +537,7 @@ describe('C: Plan Lifecycle', () => {
           requiredReviewers: [reviewer],
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const planId = (await createRes.json()).data.id;
 
@@ -547,7 +547,7 @@ describe('C: Plan Lifecycle', () => {
         userName: owner,
         // no body — should fall through to plan.requiredReviewers
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -578,7 +578,7 @@ describe('C: Plan Lifecycle', () => {
             requiredReviewers: [],
           },
         }),
-        { params: { projectId } },
+        { params: Promise.resolve({ projectId }) },
       );
       const body = await res.json();
       versions.push(body.data.version);

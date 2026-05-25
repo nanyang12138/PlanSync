@@ -16,10 +16,12 @@ import {
 } from '@/lib/ai/prompts/completion-verify.prompt';
 import { COMPLETION_VERIFY_TOOL, completionVerifyResultZ } from '@/lib/ai/schemas';
 import { applyCompletionVerifyConsistency } from '@/lib/ai/completion-verify-consistency';
+import { evaluateProjectVerificationRules } from '@/lib/verification-rules';
 
-type Params = { params: { projectId: string; taskId: string; runId: string } };
+type Params = { params: Promise<{ projectId: string; taskId: string; runId: string }> };
 
-export async function POST(req: NextRequest, { params }: Params) {
+export async function POST(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const url = new URL(req.url);
     const action = url.searchParams.get('action');
@@ -204,6 +206,48 @@ export async function POST(req: NextRequest, { params }: Params) {
           throw new AppError(
             ErrorCode.VALIDATION_ERROR,
             'deliverablesMet is required when completing a task. List each plan deliverable and confirm it was met.',
+          );
+        }
+
+        // R-181: declarative rule gate. Runs BEFORE the AI completion-verify
+        // path because rule failures are deterministic owner contracts and
+        // should not be masked by an AI advisory write. Returns 422 with a
+        // structured `{ gate: 'rule', failedRules: [...] }` envelope (R-184
+        // contract) so the CLI / UI can render rule failures distinctly
+        // from `RunReview { kind: 'ai_verification' }` advisories.
+        const ruleResult = await evaluateProjectVerificationRules(params.projectId, {
+          task: {
+            id: run.task.id,
+            type: run.task.type,
+            prUrl: run.task.prUrl,
+            planDeliverableRefs: run.task.planDeliverableRefs ?? [],
+          },
+          body: {
+            outputSummary: body.outputSummary,
+            filesChanged: body.filesChanged,
+            branchName: body.branchName,
+            deliverablesMet: body.deliverablesMet,
+          },
+        });
+        if (ruleResult.failed.length > 0) {
+          return NextResponse.json(
+            {
+              error: {
+                code: 'VERIFICATION_RULE_FAILED',
+                message:
+                  `Cannot complete: ${ruleResult.failed.length} verification rule(s) failed. ` +
+                  `Owner can edit rules under project settings.`,
+                gate: 'rule',
+                details: {
+                  failedRules: ruleResult.failed.map((r) => ({
+                    ruleId: r.ruleId,
+                    kind: r.kind,
+                    message: r.message,
+                  })),
+                },
+              },
+            },
+            { status: 422 },
           );
         }
 

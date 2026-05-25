@@ -37,7 +37,7 @@ describe('R-036: API rejects creating a second draft/proposed plan', () => {
         userName: owner,
         body: planBody('R036 Draft One'),
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(first.status).toBe(201);
     const firstBody = await first.json();
@@ -49,7 +49,7 @@ describe('R-036: API rejects creating a second draft/proposed plan', () => {
         userName: owner,
         body: planBody('R036 Draft Two'),
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(second.status).toBe(409);
     const errBody = await second.json();
@@ -70,7 +70,7 @@ describe('R-036: API rejects creating a second draft/proposed plan', () => {
           userName: 'r036-owner-2',
           body: planBody('R036 Proposed'),
         }),
-        { params: { projectId: isolatedProjectId } },
+        { params: Promise.resolve({ projectId: isolatedProjectId }) },
       );
       expect(draft.status).toBe(201);
       const draftId = (await draft.json()).data.id;
@@ -81,7 +81,7 @@ describe('R-036: API rejects creating a second draft/proposed plan', () => {
           userName: 'r036-owner-2',
           body: { reviewers: ['r036-reviewer-2'] },
         }),
-        { params: { projectId: isolatedProjectId, planId: draftId } },
+        { params: Promise.resolve({ projectId: isolatedProjectId, planId: draftId }) },
       );
       expect(propRes.status).toBe(200);
       expect((await propRes.json()).data.status).toBe('proposed');
@@ -92,7 +92,7 @@ describe('R-036: API rejects creating a second draft/proposed plan', () => {
           userName: 'r036-owner-2',
           body: planBody('R036 Should Be Blocked'),
         }),
-        { params: { projectId: isolatedProjectId } },
+        { params: Promise.resolve({ projectId: isolatedProjectId }) },
       );
       expect(blocked.status).toBe(409);
       const blockedBody = await blocked.json();

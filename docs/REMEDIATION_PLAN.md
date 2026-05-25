@@ -2260,7 +2260,14 @@
 
 #### R-131 [HIGH] 升级 Next.js 14 → 16（修复残留 high CVE）
 
-- **status**: blocked
+- **status**: in_progress
+- **closed_in**: TBD (G3 PR — Next.js 15.5.18 + React 19 baseline; Next 16 follow-up tracked separately)
+- **note**: G3 (cursor/g3-nextjs-15-upgrade-r131-f191) shipped the
+  Next.js 14→15.5.18 + React 18→19 migration on top of G2's CLI
+  ink upgrade. `npm audit --omit=dev` now reports 0 critical / 0
+  high (was 0 critical / 2 high — both Next.js GHSAs fixed at
+  `15.5.16+`). Bumping further to Next 16 is no longer
+  CVE-driven and can ship as a separate routine bump.
 - **blocked_reason**: fix_step 5 要求修改 `.github/workflows/validate.yml`（恢复 audit-level=high），autonomous Cloud Agent 硬约束禁止改动 `.github/workflows/*`；此外 fix_step 3 "处理 App Router、middleware、Pages Router compatibility" 范围开放（涉及 Next 14→15→16 两个大版本跨越、React 18→19 升级，rollback 注释也明示"大 PR，建议单独 feature branch + 灰度 + revert plan"），不适合 autonomous run 一次完成，需人工分批分发后再 unblock。
 - **batch**: B10
 - **depends_on**: —
@@ -2678,7 +2685,7 @@
 
 #### R-153 [HIGH] Task→Deliverable FK 中间表
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B13
 - **depends_on**: R-151
 - **effort**: large
@@ -3043,7 +3050,7 @@
 
 #### R-181 [HIGH] 声明式 `verification_rules` 表 + 评估器
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B16
 - **depends_on**: R-180
 - **effort**: large
@@ -3138,7 +3145,7 @@
 
 #### R-191 [HIGH] commit↔deliverable 关联表 + 自动推导
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B17
 - **depends_on**: R-190, R-150
 - **effort**: medium

@@ -118,7 +118,7 @@ describe('R-137: project-scoped key without execRunId still enforces project bou
         userName: owner,
         authToken: rawKey,
       }),
-      { params: { projectId: projectBId } },
+      { params: Promise.resolve({ projectId: projectBId }) },
     );
 
     expect(res.status).toBe(403);
@@ -148,7 +148,7 @@ describe('R-137: project-scoped key without execRunId still enforces project bou
         userName: owner,
         authToken: rawKey,
       }),
-      { params: { projectId: projectAId } },
+      { params: Promise.resolve({ projectId: projectAId }) },
     );
 
     // 200 = membership + scope both pass. Critically NOT 403.
@@ -179,7 +179,7 @@ describe('R-137: project-scoped key without execRunId still enforces project bou
         userName: owner,
         authToken: rawKey,
       }),
-      { params: { projectId: projectAId } },
+      { params: Promise.resolve({ projectId: projectAId }) },
     );
 
     expect(res.status).toBe(403);

@@ -6,7 +6,7 @@ import { PLAN_DRAFT_TOOL, planDraftResultZ } from '@/lib/ai/schemas';
 import { UNTRUSTED_INPUT_PREAMBLE, tagUntrusted } from '@/lib/ai/sanitize';
 import { z } from 'zod';
 
-type Params = { params: { projectId: string } };
+type Params = { params: Promise<{ projectId: string }> };
 
 const bodySchema = z.object({
   title: z.string().min(1).max(200),
@@ -32,7 +32,8 @@ Return ONLY valid JSON — no explanation, no markdown fences. Use this exact sh
 }
 Be specific and actionable. Each array should have 3-6 items. Write in English.`;
 
-export async function POST(req: NextRequest, { params }: Params) {
+export async function POST(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);

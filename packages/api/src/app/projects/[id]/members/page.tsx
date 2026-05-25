@@ -8,7 +8,13 @@ import { RealtimeWrapper } from '@/components/realtime-wrapper';
 import { PageHeader } from '@/components/shared/page-header';
 import { SectionShell } from '@/components/shared/section-shell';
 
-export default async function ProjectMembersPage({ params }: { params: { id: string } }) {
+export default async function ProjectMembersPage({
+  params: paramsPromise,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  // R-131 / G3 (Next.js 15): page params are async; resolve once up front.
+  const params = await paramsPromise;
   // R-190 / closes #780 #796: omit githubWebhookSecret from SSR payload.
   const project = await prisma.project.findUnique({
     where: { id: params.id },

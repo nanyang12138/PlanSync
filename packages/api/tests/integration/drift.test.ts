@@ -110,7 +110,7 @@ describe('H: Drift Engine', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId: planV2Id } },
+      { params: Promise.resolve({ projectId, planId: planV2Id }) },
     );
   });
 
@@ -120,7 +120,7 @@ describe('H: Drift Engine', () => {
 
   it('H1: activate v2 → task 产生 DriftAlert', async () => {
     const res = await driftsGet(makeReq(`/api/projects/${projectId}/drifts`, { userName: owner }), {
-      params: { projectId },
+      params: Promise.resolve({ projectId }),
     });
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -224,7 +224,7 @@ describe('H: Drift Engine', () => {
         userName: owner,
         body: { action: 'no_impact' },
       }),
-      { params: { projectId, driftId } },
+      { params: Promise.resolve({ projectId, driftId }) },
     );
     expect(res.status).toBe(200);
     const updated = await testPrisma.driftAlert.findUnique({ where: { id: driftId } });
@@ -245,7 +245,7 @@ describe('H: Drift Engine', () => {
         userName: owner,
         body: { action: 'no_impact' },
       }),
-      { params: { projectId, driftId } },
+      { params: Promise.resolve({ projectId, driftId }) },
     );
     expect(res.status).toBeGreaterThanOrEqual(400);
   });
@@ -275,7 +275,7 @@ describe('H: Drift Engine', () => {
           userName: owner,
           body: { action: 'rebind' },
         }),
-        { params: { projectId, driftId } },
+        { params: Promise.resolve({ projectId, driftId }) },
       );
       expect(res.status).toBe(200);
       const task = await testPrisma.task.findUnique({ where: { id: taskDoneId } });
@@ -288,7 +288,7 @@ describe('H: Drift Engine', () => {
           userName: owner,
           body: { action: 'rebind' },
         }),
-        { params: { projectId, driftId } },
+        { params: Promise.resolve({ projectId, driftId }) },
       );
       expect(res.status).toBe(200);
     }
@@ -320,7 +320,7 @@ describe('H: Drift Engine', () => {
         userName: 'fresh-owner',
         body: {},
       }),
-      { params: { projectId: freshProjectId, planId: freshPlan.id } },
+      { params: Promise.resolve({ projectId: freshProjectId, planId: freshPlan.id }) },
     );
 
     const alerts = await testPrisma.driftAlert.findMany({ where: { projectId: freshProjectId } });
@@ -352,7 +352,7 @@ describe('H: Drift Engine', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId: planV1Id } },
+      { params: Promise.resolve({ projectId, planId: planV1Id }) },
     );
     expect(reactivateRes.status).toBe(200);
 

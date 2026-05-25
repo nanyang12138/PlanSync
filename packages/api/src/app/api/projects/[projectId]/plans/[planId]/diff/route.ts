@@ -5,9 +5,10 @@ import { handleApiError } from '@/lib/errors';
 import { getOrCreatePlanDiff } from '@/lib/ai/plan-diff';
 import { requirePlanInProject } from '@/lib/plan-scope';
 
-type Params = { params: { projectId: string; planId: string } };
+type Params = { params: Promise<{ projectId: string; planId: string }> };
 
-export async function GET(req: NextRequest, { params }: Params) {
+export async function GET(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);

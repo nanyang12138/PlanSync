@@ -107,7 +107,7 @@ describe('K: API Key Management', () => {
         method: 'DELETE',
         userName: owner,
       }),
-      { params: { keyId: toDeleteId } },
+      { params: Promise.resolve({ keyId: toDeleteId }) },
     );
     expect(res.status).toBe(200);
   });

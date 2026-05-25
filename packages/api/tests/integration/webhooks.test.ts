@@ -77,7 +77,7 @@ describe('J: Webhook Delivery', () => {
           events: ['plan_activated', 'task_created'],
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(201);
     const body = await res.json();
@@ -92,7 +92,7 @@ describe('J: Webhook Delivery', () => {
         userName: dev,
         body: { url: `http://localhost:${mockPort}/hook2`, events: ['task_created'] },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(403);
   });
@@ -100,7 +100,7 @@ describe('J: Webhook Delivery', () => {
   it('J2: GET /webhooks (owner) → 200, data array', async () => {
     const res = await webhooksGet(
       makeReq(`/api/projects/${projectId}/webhooks`, { userName: owner }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -125,7 +125,7 @@ describe('J: Webhook Delivery', () => {
           requiredReviewers: [],
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const planId = (await createRes.json()).data.id;
 
@@ -135,7 +135,7 @@ describe('J: Webhook Delivery', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
 
     // Wait for webhook delivery (async)
@@ -146,7 +146,7 @@ describe('J: Webhook Delivery', () => {
   it('J6: GET /webhooks/:id/deliveries → 200', async () => {
     const res = await deliveriesGet(
       makeReq(`/api/webhooks/${webhookId}/deliveries`, { userName: owner }),
-      { params: { webhookId } },
+      { params: Promise.resolve({ webhookId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -161,7 +161,7 @@ describe('J: Webhook Delivery', () => {
         userName: owner,
         body: {},
       }),
-      { params: { webhookId } },
+      { params: Promise.resolve({ webhookId }) },
     );
     expect(res.status).toBe(200);
     await new Promise((r) => setTimeout(r, 200));
@@ -182,7 +182,7 @@ describe('J: Webhook Delivery', () => {
           secret: 'my-secret-key',
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(secretRes.status).toBe(201);
     const secretWebhookId = (await secretRes.json()).data.id;
@@ -194,7 +194,7 @@ describe('J: Webhook Delivery', () => {
         userName: owner,
         body: {},
       }),
-      { params: { webhookId: secretWebhookId } },
+      { params: Promise.resolve({ webhookId: secretWebhookId }) },
     );
     await new Promise((r) => setTimeout(r, 200));
     if (receivedRequests.length > 0) {
@@ -214,7 +214,7 @@ describe('J: Webhook Delivery', () => {
         userName: owner,
         body: { url: 'ftp://example.com/hook', events: ['plan_activated'] },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(400);
     const body = await res.json();
@@ -229,7 +229,7 @@ describe('J: Webhook Delivery', () => {
         userName: owner,
         body: { url: 'not-a-real-url', events: ['plan_activated'] },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(400);
     const body = await res.json();
@@ -243,7 +243,7 @@ describe('J: Webhook Delivery', () => {
         userName: owner,
         body: { url: `http://localhost:${mockPort}/bad`, events: [] },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBeGreaterThanOrEqual(400);
   });
@@ -256,7 +256,7 @@ describe('J: Webhook Delivery', () => {
         userName: owner,
         body: { url: `http://localhost:${mockPort}/to-delete`, events: ['task_created'] },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const toDeleteId = (await createRes.json()).data.id;
 
@@ -265,7 +265,7 @@ describe('J: Webhook Delivery', () => {
         method: 'DELETE',
         userName: owner,
       }),
-      { params: { webhookId: toDeleteId } },
+      { params: Promise.resolve({ webhookId: toDeleteId }) },
     );
     expect(res.status).toBe(200);
   });

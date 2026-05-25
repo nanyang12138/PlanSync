@@ -8,13 +8,12 @@ import { createActivity } from '@/lib/activity';
 import { eventBus } from '@/lib/event-bus';
 import { sendMail, userEmail } from '@/lib/email';
 
-type Params = { params: { projectId: string; planId: string; reviewId: string } };
+type Params = { params: Promise<{ projectId: string; planId: string; reviewId: string }> };
 
-async function handleReviewAction(
-  req: NextRequest,
-  { params }: Params,
-  action: 'approved' | 'rejected',
-) {
+async function handleReviewAction(req: NextRequest, ctx: Params, action: 'approved' | 'rejected') {
+  // R-131 / G3 (Next.js 15): params is now a Promise, await it once
+  // so the rest of the helper can keep using the resolved object.
+  const params = await ctx.params;
   const auth = await authenticate(req);
   const member = await requireProjectRole(auth, params.projectId);
   const body = await validateBody(req, reviewActionSchema);

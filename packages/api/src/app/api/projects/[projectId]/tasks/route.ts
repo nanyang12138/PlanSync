@@ -16,8 +16,9 @@ import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
 import { sendMail, userEmail } from '@/lib/email';
 import { logger } from '@/lib/logger';
+import { syncTaskDeliverableLinks } from '@/lib/task-deliverable-links';
 
-type Params = { params: { projectId: string } };
+type Params = { params: Promise<{ projectId: string }> };
 
 // R-042: validate task list query params against shared enums so that callers
 // passing e.g. ?status=foo get a clear 400 instead of an empty result set.
@@ -26,7 +27,8 @@ const taskListQuerySchema = paginationSchema.extend({
   assignee: z.string().trim().min(1).optional(),
 });
 
-export async function GET(req: NextRequest, { params }: Params) {
+export async function GET(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);
@@ -58,7 +60,8 @@ export async function GET(req: NextRequest, { params }: Params) {
   }
 }
 
-export async function POST(req: NextRequest, { params }: Params) {
+export async function POST(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     requireNotExecScoped(auth);
@@ -88,13 +91,25 @@ export async function POST(req: NextRequest, { params }: Params) {
         }
       }
 
-      return tx.task.create({
+      const created = await tx.task.create({
         data: {
           ...body,
           projectId: params.projectId,
           boundPlanVersion: activePlan.version,
         },
       });
+
+      // R-153: seed `task_deliverable_links` for the new task. Done inside
+      // the same transaction so a slug typo / unresolvable ref does not
+      // produce a half-created task.
+      await syncTaskDeliverableLinks(tx, {
+        taskId: created.id,
+        projectId: params.projectId,
+        boundPlanVersion: activePlan.version,
+        slugs: created.planDeliverableRefs,
+      });
+
+      return created;
     });
 
     await createActivity({

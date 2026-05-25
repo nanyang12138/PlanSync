@@ -10,10 +10,12 @@ import { sendMail, userEmail } from '@/lib/email';
 import { logger } from '@/lib/logger';
 import { auditCrossProjectTaskIfNeeded } from '@/lib/task-scope';
 import { createActivity } from '@/lib/activity';
+import { syncTaskDeliverableLinks } from '@/lib/task-deliverable-links';
 
-type Params = { params: { projectId: string; taskId: string } };
+type Params = { params: Promise<{ projectId: string; taskId: string }> };
 
-export async function GET(req: NextRequest, { params }: Params) {
+export async function GET(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);
@@ -42,7 +44,8 @@ const VALID_STATUS_TRANSITIONS: Record<string, string[]> = {
   blocked: ['in_progress'],
 };
 
-export async function PATCH(req: NextRequest, { params }: Params) {
+export async function PATCH(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     const authed = await requireProjectRole(auth, params.projectId);
@@ -132,6 +135,19 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       data: body,
     });
 
+    // R-153: when the legacy slug array is rewritten by the owner, keep the
+    // `task_deliverable_links` middle table in sync. The link rows are the
+    // source of truth that survives slug renames; the slug array is the
+    // human-friendly mirror that drives this resolve step.
+    if (body.planDeliverableRefs !== undefined) {
+      await syncTaskDeliverableLinks(undefined, {
+        taskId: updated.id,
+        projectId: updated.projectId,
+        boundPlanVersion: updated.boundPlanVersion,
+        slugs: body.planDeliverableRefs,
+      });
+    }
+
     // R-105: audit-log task PATCH effects. PATCH is the canonical mutation
     // surface for status flips and assignee changes, but until now only the
     // execution-driven mutations (claim, complete-human, execution_complete)
@@ -218,7 +234,8 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   }
 }
 
-export async function DELETE(req: NextRequest, { params }: Params) {
+export async function DELETE(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     requireNotExecScoped(auth);

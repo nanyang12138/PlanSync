@@ -25,7 +25,7 @@ describe('B: Member Management', () => {
         userName: owner,
         body: { name: dev, role: 'developer', type: 'human' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(201);
     const body = await res.json();
@@ -40,7 +40,7 @@ describe('B: Member Management', () => {
         userName: dev,
         body: { name: dev2, role: 'developer', type: 'human' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(403);
   });
@@ -52,7 +52,7 @@ describe('B: Member Management', () => {
         userName: owner,
         body: { name: dev, role: 'developer', type: 'human' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(409);
     const body = await res.json();
@@ -61,7 +61,7 @@ describe('B: Member Management', () => {
 
   it('B3: GET /members → 200, data 数组', async () => {
     const res = await GET(makeReq(`/api/projects/${projectId}/members`, { userName: owner }), {
-      params: { projectId },
+      params: Promise.resolve({ projectId }),
     });
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -78,7 +78,7 @@ describe('B: Member Management', () => {
         userName: owner,
         body: { role: 'owner' },
       }),
-      { params: { projectId, memberId } },
+      { params: Promise.resolve({ projectId, memberId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -96,7 +96,7 @@ describe('B: Member Management', () => {
         userName: dev,
         body: { role: 'developer' },
       }),
-      { params: { projectId, memberId } },
+      { params: Promise.resolve({ projectId, memberId }) },
     );
     expect(res.status).toBe(403);
   });
@@ -110,7 +110,7 @@ describe('B: Member Management', () => {
         userName: owner,
         body: { role: 'developer' },
       }),
-      { params: { projectId, memberId } },
+      { params: Promise.resolve({ projectId, memberId }) },
     );
     expect(res.status).toBe(400);
   });
@@ -123,7 +123,7 @@ describe('B: Member Management', () => {
         method: 'DELETE',
         userName: dev,
       }),
-      { params: { projectId, memberId } },
+      { params: Promise.resolve({ projectId, memberId }) },
     );
     expect(res.status).toBe(403);
   });
@@ -136,7 +136,7 @@ describe('B: Member Management', () => {
         method: 'DELETE',
         userName: owner,
       }),
-      { params: { projectId, memberId } },
+      { params: Promise.resolve({ projectId, memberId }) },
     );
     expect(res.status).toBe(400);
   });
@@ -153,7 +153,7 @@ describe('B: Member Management', () => {
         method: 'DELETE',
         userName: owner,
       }),
-      { params: { projectId, memberId } },
+      { params: Promise.resolve({ projectId, memberId }) },
     );
     expect(res.status).toBe(200);
   });
@@ -178,7 +178,7 @@ describe('B-A: Member Management — Extended Coverage', () => {
         userName: owner,
         body: { name: 'bot-worker', role: 'developer', type: 'agent' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(201);
     const body = await res.json();
@@ -194,7 +194,7 @@ describe('B-A: Member Management — Extended Coverage', () => {
         userName: owner,
         body: { name: 'bot-owner', role: 'owner', type: 'agent' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(201);
     const body = await res.json();
@@ -212,7 +212,7 @@ describe('B-A: Member Management — Extended Coverage', () => {
         userName: owner,
         body: { type: 'agent' },
       }),
-      { params: { projectId, memberId: created.id } },
+      { params: Promise.resolve({ projectId, memberId: created.id }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -230,7 +230,7 @@ describe('B-A: Member Management — Extended Coverage', () => {
         userName: owner,
         body: { role: 'owner', type: 'agent' },
       }),
-      { params: { projectId, memberId: created.id } },
+      { params: Promise.resolve({ projectId, memberId: created.id }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -246,7 +246,7 @@ describe('B-A: Member Management — Extended Coverage', () => {
         userName: owner,
         body: { role: 'developer' },
       }),
-      { params: { projectId, memberId: fakeMemberId } },
+      { params: Promise.resolve({ projectId, memberId: fakeMemberId }) },
     );
     expect(res.status).toBe(404);
     const body = await res.json();
@@ -260,7 +260,7 @@ describe('B-A: Member Management — Extended Coverage', () => {
         method: 'DELETE',
         userName: owner,
       }),
-      { params: { projectId, memberId: fakeMemberId } },
+      { params: Promise.resolve({ projectId, memberId: fakeMemberId }) },
     );
     expect(res.status).toBe(404);
     const body = await res.json();
@@ -278,7 +278,7 @@ describe('B-A: Member Management — Extended Coverage', () => {
         userName: owner,
         body: { role: 'developer' },
       }),
-      { params: { projectId, memberId: secondOwner.id } },
+      { params: Promise.resolve({ projectId, memberId: secondOwner.id }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();

@@ -147,7 +147,7 @@ describe('R-041: /plans/[planId]/* routes verify plan ∈ project', () => {
   it('GET /plans/:planId — cross-project access → 404 NOT_FOUND', async () => {
     const res = await planGet(
       makeReq(`/api/projects/${projectAId}/plans/${planBDraftId}`, { userName: ownerA }),
-      { params: { projectId: projectAId, planId: planBDraftId } },
+      { params: Promise.resolve({ projectId: projectAId, planId: planBDraftId }) },
     );
     expect(res.status).toBe(404);
     const body = await res.json();
@@ -161,7 +161,7 @@ describe('R-041: /plans/[planId]/* routes verify plan ∈ project', () => {
         userName: ownerA,
         body: { goal: 'hacked' },
       }),
-      { params: { projectId: projectAId, planId: planBDraftId } },
+      { params: Promise.resolve({ projectId: projectAId, planId: planBDraftId }) },
     );
     expect(res.status).toBe(404);
 
@@ -176,7 +176,7 @@ describe('R-041: /plans/[planId]/* routes verify plan ∈ project', () => {
         method: 'DELETE',
         userName: ownerA,
       }),
-      { params: { projectId: projectAId, planId: planBDraftId } },
+      { params: Promise.resolve({ projectId: projectAId, planId: planBDraftId }) },
     );
     expect(res.status).toBe(404);
 
@@ -192,7 +192,7 @@ describe('R-041: /plans/[planId]/* routes verify plan ∈ project', () => {
         userName: ownerA,
         body: { field: 'constraints', items: ['injected via cross-project'] },
       }),
-      { params: { projectId: projectAId, planId: planBDraftId } },
+      { params: Promise.resolve({ projectId: projectAId, planId: planBDraftId }) },
     );
     expect(res.status).toBe(404);
 
@@ -207,7 +207,7 @@ describe('R-041: /plans/[planId]/* routes verify plan ∈ project', () => {
         userName: ownerA,
         body: {},
       }),
-      { params: { projectId: projectAId, planId: planBDraftId } },
+      { params: Promise.resolve({ projectId: projectAId, planId: planBDraftId }) },
     );
     expect(res.status).toBe(404);
 
@@ -222,7 +222,7 @@ describe('R-041: /plans/[planId]/* routes verify plan ∈ project', () => {
         userName: ownerA,
         body: {},
       }),
-      { params: { projectId: projectAId, planId: planBDraftId } },
+      { params: Promise.resolve({ projectId: projectAId, planId: planBDraftId }) },
     );
     expect(res.status).toBe(404);
 
@@ -237,7 +237,7 @@ describe('R-041: /plans/[planId]/* routes verify plan ∈ project', () => {
         userName: ownerA,
         body: {},
       }),
-      { params: { projectId: projectAId, planId: planBSupersededId } },
+      { params: Promise.resolve({ projectId: projectAId, planId: planBSupersededId }) },
     );
     expect(res.status).toBe(404);
 
@@ -248,7 +248,7 @@ describe('R-041: /plans/[planId]/* routes verify plan ∈ project', () => {
   it('GET /plans/:planId/comments — cross-project access → 404', async () => {
     const res = await commentsGet(
       makeReq(`/api/projects/${projectAId}/plans/${planBActiveId}/comments`, { userName: ownerA }),
-      { params: { projectId: projectAId, planId: planBActiveId } },
+      { params: Promise.resolve({ projectId: projectAId, planId: planBActiveId }) },
     );
     expect(res.status).toBe(404);
   });
@@ -261,7 +261,7 @@ describe('R-041: /plans/[planId]/* routes verify plan ∈ project', () => {
         userName: ownerA,
         body: { content: 'should-not-appear' },
       }),
-      { params: { projectId: projectAId, planId: planBActiveId } },
+      { params: Promise.resolve({ projectId: projectAId, planId: planBActiveId }) },
     );
     expect(res.status).toBe(404);
 
@@ -274,7 +274,7 @@ describe('R-041: /plans/[planId]/* routes verify plan ∈ project', () => {
       makeReq(`/api/projects/${projectAId}/plans/${planBActiveId}/suggestions`, {
         userName: ownerA,
       }),
-      { params: { projectId: projectAId, planId: planBActiveId } },
+      { params: Promise.resolve({ projectId: projectAId, planId: planBActiveId }) },
     );
     expect(res.status).toBe(404);
   });
@@ -287,7 +287,7 @@ describe('R-041: /plans/[planId]/* routes verify plan ∈ project', () => {
         userName: ownerA,
         body: { field: 'goal', action: 'set', value: 'injected', reason: 'r041 cross-project' },
       }),
-      { params: { projectId: projectAId, planId: planBActiveId } },
+      { params: Promise.resolve({ projectId: projectAId, planId: planBActiveId }) },
     );
     expect(res.status).toBe(404);
 
@@ -300,7 +300,7 @@ describe('R-041: /plans/[planId]/* routes verify plan ∈ project', () => {
       makeReq(`/api/projects/${projectAId}/plans/${planBProposedId}/reviews`, {
         userName: ownerA,
       }),
-      { params: { projectId: projectAId, planId: planBProposedId } },
+      { params: Promise.resolve({ projectId: projectAId, planId: planBProposedId }) },
     );
     expect(res.status).toBe(404);
   });
@@ -313,7 +313,7 @@ describe('R-041: /plans/[planId]/* routes verify plan ∈ project', () => {
         userName: ownerA,
         body: { reviewer: memberA },
       }),
-      { params: { projectId: projectAId, planId: planBProposedId } },
+      { params: Promise.resolve({ projectId: projectAId, planId: planBProposedId }) },
     );
     expect(res.status).toBe(404);
 
@@ -324,7 +324,7 @@ describe('R-041: /plans/[planId]/* routes verify plan ∈ project', () => {
   it('GET /plans/:planId/diff — cross-project access → 404', async () => {
     const res = await diffGet(
       makeReq(`/api/projects/${projectAId}/plans/${planBActiveId}/diff`, { userName: ownerA }),
-      { params: { projectId: projectAId, planId: planBActiveId } },
+      { params: Promise.resolve({ projectId: projectAId, planId: planBActiveId }) },
     );
     expect(res.status).toBe(404);
   });
@@ -356,7 +356,7 @@ describe('R-041: /plans/[planId]/* routes verify plan ∈ project', () => {
         userName: ownerA,
         searchParams: { compareWith: planBActiveId },
       }),
-      { params: { projectId: projectAId, planId: planA.id } },
+      { params: Promise.resolve({ projectId: projectAId, planId: planA.id }) },
     );
     expect(res.status).toBe(404);
   });
@@ -364,7 +364,7 @@ describe('R-041: /plans/[planId]/* routes verify plan ∈ project', () => {
   it('legitimate GET /plans/:planId in the correct project still succeeds', async () => {
     const res = await planGet(
       makeReq(`/api/projects/${projectBId}/plans/${planBDraftId}`, { userName: ownerB }),
-      { params: { projectId: projectBId, planId: planBDraftId } },
+      { params: Promise.resolve({ projectId: projectBId, planId: planBDraftId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();

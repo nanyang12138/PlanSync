@@ -45,7 +45,8 @@ type HomeProject = Awaited<ReturnType<typeof getHomeProjects>>[number];
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default async function HomePage() {
-  const currentUser = cookies().get('plansync-user')?.value ?? 'anonymous';
+  // R-131 / G3 (Next.js 15): cookies() is now async.
+  const currentUser = (await cookies()).get('plansync-user')?.value ?? 'anonymous';
   const projects = await getHomeProjects(currentUser);
 
   const totalProjects = projects.length;

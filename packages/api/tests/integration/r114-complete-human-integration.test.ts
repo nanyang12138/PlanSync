@@ -70,7 +70,7 @@ describe('R-114: complete-human integration', () => {
           prUrl: 'https://github.com/example/repo/pull/42',
         },
       }),
-      { params: { projectId, taskId: task.id } },
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
     );
 
     expect(res.status).toBe(200);
@@ -118,7 +118,7 @@ describe('R-114: complete-human integration', () => {
         userName: assignee,
         body: { completionNote: 'done, PR already linked' },
       }),
-      { params: { projectId, taskId: task.id } },
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
     );
 
     expect(res.status).toBe(200);
@@ -136,7 +136,7 @@ describe('R-114: complete-human integration', () => {
         userName: assignee,
         body: { completionNote: 'trivial doc fix' },
       }),
-      { params: { projectId, taskId: task.id } },
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
     );
 
     expect(res.status).toBe(200);
@@ -157,7 +157,7 @@ describe('R-114: complete-human integration', () => {
         userName: owner,
         body: { completionNote: 'should be blocked' },
       }),
-      { params: { projectId, taskId: task.id } },
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
     );
 
     expect(res.status).toBe(403);
@@ -182,7 +182,7 @@ describe('R-114: complete-human integration', () => {
         userName: owner,
         body: { completionNote: 'attempt to complete unclaimed' },
       }),
-      { params: { projectId, taskId: task.id } },
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
     );
 
     expect(res.status).toBe(409);
@@ -200,7 +200,7 @@ describe('R-114: complete-human integration', () => {
         userName: assignee,
         body: { completionNote: 'second time' },
       }),
-      { params: { projectId, taskId: task.id } },
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
     );
 
     expect(res.status).toBe(409);
@@ -218,7 +218,7 @@ describe('R-114: complete-human integration', () => {
           userName: assignee,
           body: { completionNote: `tried while ${status}` },
         }),
-        { params: { projectId, taskId: task.id } },
+        { params: Promise.resolve({ projectId, taskId: task.id }) },
       );
       expect(res.status).toBe(409);
       const body = await res.json();
@@ -246,7 +246,7 @@ describe('R-114: complete-human integration', () => {
         userName: assignee,
         body: { completionNote: 'racing the run' },
       }),
-      { params: { projectId, taskId: task.id } },
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
     );
 
     expect(res.status).toBe(409);
@@ -264,7 +264,7 @@ describe('R-114: complete-human integration', () => {
         userName: stranger,
         body: { completionNote: 'sneaky complete' },
       }),
-      { params: { projectId, taskId: task.id } },
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
     );
 
     expect(res.status).toBe(403);
@@ -287,7 +287,7 @@ describe('R-114: complete-human integration', () => {
         userName: owner,
         body: { completionNote: 'closing on behalf of teammate' },
       }),
-      { params: { projectId, taskId: task.id } },
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
     );
 
     expect(res.status).toBe(200);
@@ -327,7 +327,7 @@ describe('R-114: complete-human integration', () => {
           userName: owner,
           body: { completionNote: 'attempt cross-project complete' },
         }),
-        { params: { projectId, taskId: otherTask.id } },
+        { params: Promise.resolve({ projectId, taskId: otherTask.id }) },
       );
 
       expect(res.status).toBe(404);
@@ -350,7 +350,7 @@ describe('R-114: complete-human integration', () => {
         userName: assignee,
         body: { completionNote: '' },
       }),
-      { params: { projectId, taskId: task.id } },
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
     );
     expect(empty.status).toBe(400);
 
@@ -360,7 +360,7 @@ describe('R-114: complete-human integration', () => {
         userName: assignee,
         body: { completionNote: 'x'.repeat(5001) },
       }),
-      { params: { projectId, taskId: task.id } },
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
     );
     expect(tooLong.status).toBe(400);
 
@@ -376,7 +376,7 @@ describe('R-114: complete-human integration', () => {
         userName: assignee,
         body: { completionNote: 'has bad url', prUrl: 'not-a-url' },
       }),
-      { params: { projectId, taskId: task.id } },
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
     );
 
     expect(res.status).toBe(400);

@@ -61,7 +61,7 @@ describe('R-046: complete-human open drift gate', () => {
         userName: owner,
         body: { completionNote: 'Trying to complete despite drift' },
       }),
-      { params: { projectId, taskId: task.id } },
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
     );
 
     expect(res.status).toBe(409);
@@ -118,7 +118,7 @@ describe('R-046: complete-human open drift gate', () => {
         userName: owner,
         body: { completionNote: 'All good now' },
       }),
-      { params: { projectId, taskId: task.id } },
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
     );
 
     expect(res.status).toBe(200);

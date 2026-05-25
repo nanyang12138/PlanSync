@@ -15,10 +15,12 @@ import { LiveExecutionBanner } from '@/components/task/live-execution-banner';
 import { ExecutionSummary } from '@/components/task/execution-summary';
 
 export default async function TaskDetailPage({
-  params,
+  params: paramsPromise,
 }: {
-  params: { id: string; taskId: string };
+  params: Promise<{ id: string; taskId: string }>;
 }) {
+  // R-131 / G3 (Next.js 15): page params are async.
+  const params = await paramsPromise;
   // R-190 / closes #780 #796: omit githubWebhookSecret from SSR payload.
   const project = await prisma.project.findUnique({
     where: { id: params.id },
@@ -59,7 +61,8 @@ export default async function TaskDetailPage({
     task.assigneeType !== 'agent' &&
     !runningRun;
 
-  const currentUser = cookies().get('plansync-user')?.value ?? 'anonymous';
+  // R-131 / G3 (Next.js 15): cookies() is now async.
+  const currentUser = (await cookies()).get('plansync-user')?.value ?? 'anonymous';
   const isOwner = project.members.some((m) => m.name === currentUser && m.role === 'owner');
 
   return (

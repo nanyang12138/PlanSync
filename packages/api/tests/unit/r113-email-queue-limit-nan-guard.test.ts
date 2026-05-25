@@ -39,7 +39,22 @@ function probeQueueLimit(envValue: string | undefined): {
         : `delete process.env.PLANSYNC_EMAIL_QUEUE_LIMIT;`
     }
     const child_process = require('child_process');
+    // F4: email.ts now uses async spawn(), not spawnSync. Stub both so the
+    // queue-limit probe doesn't actually shell out to sendmail.
     child_process.spawnSync = () => ({ status: 0, stdout: Buffer.from(''), stderr: Buffer.from('') });
+    const { EventEmitter } = require('events');
+    child_process.spawn = () => {
+      const child = new EventEmitter();
+      const stdin = new EventEmitter();
+      stdin.write = () => true;
+      stdin.end = () => {};
+      child.stdin = stdin;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = () => true;
+      setImmediate(() => child.emit('close', 0, null));
+      return child;
+    };
     const { sendMail } = require('${resolve(__dirname, '../../src/lib/email.ts').replace(
       /\\/g,
       '\\\\',

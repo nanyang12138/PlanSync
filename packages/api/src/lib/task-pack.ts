@@ -1,5 +1,6 @@
 import { prisma } from './prisma';
 import { auditCrossProjectTaskIfNeeded } from './task-scope';
+import { fetchLinkedDeliverables } from './task-deliverable-links';
 
 export async function buildTaskPack(taskId: string, projectId: string) {
   // R-135: Restrict the lookup to (id, projectId) so a caller authorized for
@@ -18,11 +19,25 @@ export async function buildTaskPack(taskId: string, projectId: string) {
     where: { projectId, version: task.boundPlanVersion },
   });
 
-  const project = await prisma.project.findUnique({ where: { id: projectId } });
+  // F2: defense-in-depth — only read the fields the pack response
+  // exposes. The full row would carry `githubWebhookSecret`, and
+  // task-pack is the canonical payload returned to MCP / CLI / agents.
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { id: true, name: true, phase: true },
+  });
 
   const openDrifts = await prisma.driftAlert.findMany({
     where: { taskId, status: 'open' },
   });
+
+  // R-153: join through the new link table. The legacy
+  // `planDeliverableRefs: String[]` column stays around as a derived slug
+  // mirror (computed from the live `deliverable.slug` values) so any caller
+  // still reading the old field keeps working — but the link rows are the
+  // source of truth and survive slug renames inside the same plan version.
+  const linkedDeliverables = await fetchLinkedDeliverables(undefined, task.id);
+  const linkedSlugs = linkedDeliverables.map((d) => d.slug);
 
   return {
     task: {
@@ -43,6 +58,19 @@ export async function buildTaskPack(taskId: string, projectId: string) {
       agentContext: task.agentContext,
       expectedOutput: task.expectedOutput,
       agentConstraints: task.agentConstraints,
+      // R-153: derive the slug list from the live link rows whenever any
+      // link exists. The slug rename test (verification) needs `task_pack`
+      // to surface the *current* slug, not the cached array, otherwise a
+      // post-rename read would still display the stale slug while drift
+      // would correctly use the renamed one (a confusing split).
+      //
+      // When there are no link rows at all we fall back to the legacy
+      // array so tasks that pre-date this migration (e.g. plan versions
+      // without `plan_deliverables` rows) keep their slugs visible.
+      planDeliverableRefs: linkedDeliverables.length > 0 ? linkedSlugs : task.planDeliverableRefs,
+      // Surface the structured link list so MCP / Web / CLI surfaces can
+      // render per-deliverable status without a second round-trip.
+      linkedDeliverables,
     },
     plan: plan
       ? {

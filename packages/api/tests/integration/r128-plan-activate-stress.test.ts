@@ -96,7 +96,7 @@ describe('R-128: concurrent plan activate stress', () => {
             method: 'POST',
             userName: owner,
           }),
-          { params: { projectId, planId } },
+          { params: Promise.resolve({ projectId, planId }) },
         ),
       ),
     );
@@ -172,7 +172,7 @@ describe('R-128: concurrent plan activate stress', () => {
               method: 'POST',
               userName: owner,
             }),
-            { params: { projectId, planId } },
+            { params: Promise.resolve({ projectId, planId }) },
           ),
         ),
       );

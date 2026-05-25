@@ -37,7 +37,7 @@ describe('R-110: project PATCH writes activity', () => {
         userName: owner,
         body: { description: 'r110 updated description' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(200);
 
@@ -74,7 +74,7 @@ describe('R-110: project PATCH writes activity', () => {
         userName: owner,
         body: { phase: 'active' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
