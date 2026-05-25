@@ -79,7 +79,7 @@ describe('R-109: comment edit/delete writes activity', () => {
         userName: opts.author,
         body: { content: opts.content },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(res.status).toBe(201);
     return (await res.json()).data.id;
@@ -100,7 +100,7 @@ describe('R-109: comment edit/delete writes activity', () => {
         userName: dev,
         body: { content: newContent },
       }),
-      { params: { projectId, planId, commentId } },
+      { params: Promise.resolve({ projectId, planId, commentId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -143,7 +143,7 @@ describe('R-109: comment edit/delete writes activity', () => {
         method: 'DELETE',
         userName: dev,
       }),
-      { params: { projectId, planId, commentId } },
+      { params: Promise.resolve({ projectId, planId, commentId }) },
     );
     expect(res.status).toBe(200);
 
@@ -186,7 +186,7 @@ describe('R-109: comment edit/delete writes activity', () => {
         method: 'DELETE',
         userName: owner,
       }),
-      { params: { projectId, planId, commentId } },
+      { params: Promise.resolve({ projectId, planId, commentId }) },
     );
     expect(res.status).toBe(200);
 
@@ -226,7 +226,7 @@ describe('R-109: comment edit/delete writes activity', () => {
         userName: owner,
         body: { content: 'hostile rewrite' },
       }),
-      { params: { projectId, planId, commentId } },
+      { params: Promise.resolve({ projectId, planId, commentId }) },
     );
     expect(res.status).toBe(403);
 
@@ -247,7 +247,7 @@ describe('R-109: comment edit/delete writes activity', () => {
         method: 'DELETE',
         userName: dev,
       }),
-      { params: { projectId, planId, commentId } },
+      { params: Promise.resolve({ projectId, planId, commentId }) },
     );
 
     const before = await testPrisma.activity.count({
@@ -260,7 +260,7 @@ describe('R-109: comment edit/delete writes activity', () => {
         userName: dev,
         body: { content: 'after delete' },
       }),
-      { params: { projectId, planId, commentId } },
+      { params: Promise.resolve({ projectId, planId, commentId }) },
     );
     expect(res.status).toBe(409);
 
@@ -280,7 +280,7 @@ describe('R-109: comment edit/delete writes activity', () => {
         method: 'DELETE',
         userName: owner,
       }),
-      { params: { projectId, planId, commentId: 'does-not-exist' } },
+      { params: Promise.resolve({ projectId, planId, commentId: 'does-not-exist' }) },
     );
     expect(res.status).toBe(404);
 

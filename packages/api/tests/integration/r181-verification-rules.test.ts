@@ -50,10 +50,7 @@ import {
   PATCH as patchRule,
   DELETE as deleteRule,
 } from '@/app/api/projects/[projectId]/verification-rules/[ruleId]/route';
-import {
-  evaluateRule,
-  evaluateProjectVerificationRules,
-} from '@/lib/verification-rules';
+import { evaluateRule, evaluateProjectVerificationRules } from '@/lib/verification-rules';
 import type { VerificationRule } from '@prisma/client';
 import {
   makeReq,
@@ -279,7 +276,7 @@ describe('R-181: verification rules gate', () => {
           deliverablesMet: ['Deliverable A: did it'],
         },
       }),
-      { params: { projectId, taskId, runId } },
+      { params: Promise.resolve({ projectId, taskId, runId }) },
     );
     expect(res.status).toBe(422);
     const json = await res.json();
@@ -308,7 +305,7 @@ describe('R-181: verification rules gate', () => {
         userName: owner,
         body: { kind: 'require_files_changed', scope: 'project' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(createRes.status).toBe(201);
     const createdJson = await createRes.json();
@@ -328,7 +325,7 @@ describe('R-181: verification rules gate', () => {
             deliverablesMet: ['Deliverable A: did it'],
           },
         }),
-        { params: { projectId, taskId, runId } },
+        { params: Promise.resolve({ projectId, taskId, runId }) },
       );
       expect(res.status).toBe(422);
     }
@@ -340,7 +337,7 @@ describe('R-181: verification rules gate', () => {
         userName: owner,
         body: { enabled: false },
       }),
-      { params: { projectId, ruleId } },
+      { params: Promise.resolve({ projectId, ruleId }) },
     );
     expect(disableRes.status).toBe(200);
 
@@ -359,7 +356,7 @@ describe('R-181: verification rules gate', () => {
           deliverablesMet: ['Deliverable A: did it'],
         },
       }),
-      { params: { projectId, taskId, runId } },
+      { params: Promise.resolve({ projectId, taskId, runId }) },
     );
     expect(res.status).toBe(200);
     const persisted = await testPrisma.executionRun.findUnique({ where: { id: runId } });
@@ -381,7 +378,7 @@ describe('R-181: verification rules gate', () => {
         method: 'GET',
         userName: owner,
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(listRes.status).toBe(200);
     const listJson = await listRes.json();
@@ -393,7 +390,7 @@ describe('R-181: verification rules gate', () => {
         method: 'DELETE',
         userName: owner,
       }),
-      { params: { projectId, ruleId } },
+      { params: Promise.resolve({ projectId, ruleId }) },
     );
     expect(delRes.status).toBe(200);
     const after = await testPrisma.verificationRule.count({ where: { projectId } });
@@ -407,7 +404,7 @@ describe('R-181: verification rules gate', () => {
         userName: developer,
         body: { kind: 'require_files_changed', scope: 'project' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(403);
   });
@@ -419,7 +416,7 @@ describe('R-181: verification rules gate', () => {
         userName: owner,
         body: { kind: 'not_a_real_kind', scope: 'project' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(400);
   });

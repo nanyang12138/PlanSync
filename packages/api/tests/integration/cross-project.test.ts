@@ -227,7 +227,7 @@ describe('X: Cross-Project Features', () => {
         userName: owner,
         body: { title: 'SSE cross-project task', type: 'code' },
       }),
-      { params: { projectId: projectBId } },
+      { params: Promise.resolve({ projectId: projectBId }) },
     );
 
     // Read the event emitted to the user-events stream
@@ -271,7 +271,7 @@ describe('X: Cross-Project Features', () => {
           requiredReviewers: [],
         },
       }),
-      { params: { projectId: projectAId } },
+      { params: Promise.resolve({ projectId: projectAId }) },
     );
     expect(createRes.status).toBe(201);
     const newPlanId = (await createRes.json()).data.id;
@@ -283,7 +283,7 @@ describe('X: Cross-Project Features', () => {
         userName: owner,
         body: { reviewers: [reviewer] },
       }),
-      { params: { projectId: projectAId, planId: newPlanId } },
+      { params: Promise.resolve({ projectId: projectAId, planId: newPlanId }) },
     );
     expect(propRes.status).toBe(200);
 
@@ -320,7 +320,7 @@ describe('X: Cross-Project Features', () => {
           requiredReviewers: [],
         },
       }),
-      { params: { projectId: projectAId } },
+      { params: Promise.resolve({ projectId: projectAId }) },
     );
     expect(createRes.status).toBe(201);
     const newPlanId = (await createRes.json()).data.id;
@@ -331,7 +331,7 @@ describe('X: Cross-Project Features', () => {
         userName: owner,
         body: { reviewers: [{ name: agentReviewerName, type: 'agent' }] },
       }),
-      { params: { projectId: projectAId, planId: newPlanId } },
+      { params: Promise.resolve({ projectId: projectAId, planId: newPlanId }) },
     );
     expect(propRes.status).toBe(200);
 
@@ -371,7 +371,7 @@ describe('X: Cross-Project Features', () => {
           requiredReviewers: [],
         },
       }),
-      { params: { projectId: projectAId } },
+      { params: Promise.resolve({ projectId: projectAId }) },
     );
     expect(createRes.status).toBe(201);
     const newPlanId = (await createRes.json()).data.id;
@@ -387,7 +387,7 @@ describe('X: Cross-Project Features', () => {
           ],
         },
       }),
-      { params: { projectId: projectAId, planId: newPlanId } },
+      { params: Promise.resolve({ projectId: projectAId, planId: newPlanId }) },
     );
     expect(propRes.status).toBe(200);
 
@@ -418,7 +418,7 @@ describe('X: Cross-Project Features', () => {
           requiredReviewers: [],
         },
       }),
-      { params: { projectId: projectBId } },
+      { params: Promise.resolve({ projectId: projectBId }) },
     );
     expect(createRes.status).toBe(201);
     const newPlanId = (await createRes.json()).data.id;
@@ -430,7 +430,7 @@ describe('X: Cross-Project Features', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId: projectBId, planId: newPlanId } },
+      { params: Promise.resolve({ projectId: projectBId, planId: newPlanId }) },
     );
     expect(actRes.status).toBe(200);
 

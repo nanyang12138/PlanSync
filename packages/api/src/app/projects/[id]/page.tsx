@@ -13,7 +13,14 @@ import { DeleteProjectButton } from '@/components/shared/delete-project-button';
 import { StatusBlock } from '@/components/shared/status-block';
 import { SectionShell } from '@/components/shared/section-shell';
 
-export default async function ProjectDashboard({ params }: { params: { id: string } }) {
+export default async function ProjectDashboard({
+  params: paramsPromise,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  // R-131 / G3 (Next.js 15): page params are async. Resolve once, then
+  // every later reference (where: { id: params.id }, …) is unchanged.
+  const params = await paramsPromise;
   // R-190 / closes #780 #796: never include the webhook secret in the
   // server-rendered HTML payload — switch from `include: {...}` to an
   // explicit `select` that pulls in the relations but omits the secret.
@@ -29,7 +36,8 @@ export default async function ProjectDashboard({ params }: { params: { id: strin
   if (!project) notFound();
 
   const activePlan = project.plans.find((p) => p.status === 'active');
-  const currentUser = cookies().get('plansync-user')?.value ?? 'anonymous';
+  // R-131 / G3 (Next.js 15): cookies() is now async.
+  const currentUser = (await cookies()).get('plansync-user')?.value ?? 'anonymous';
   const isOwner = project.members.some((m) => m.name === currentUser && m.role === 'owner');
   const driftAlerts = await prisma.driftAlert.findMany({
     where: { projectId: params.id, status: 'open' },

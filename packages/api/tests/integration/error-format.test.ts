@@ -36,7 +36,7 @@ describe('T: Error Format Consistency', () => {
         userName: owner,
         body: { title: 'Missing fields' }, // missing goal, scope
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(400);
     const body = await res.json();
@@ -48,7 +48,7 @@ describe('T: Error Format Consistency', () => {
   it('T2: resource not found → 404, NOT_FOUND', async () => {
     const res = await projectGet(
       makeReq('/api/projects/nonexistent-project-id', { userName: owner }),
-      { params: { projectId: 'nonexistent-project-id' } },
+      { params: Promise.resolve({ projectId: 'nonexistent-project-id' }) },
     );
     expect(res.status).toBe(404);
     const body = await res.json();
@@ -88,7 +88,7 @@ describe('T: Error Format Consistency', () => {
           requiredReviewers: [],
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const planId = (await createRes.json()).data.id;
 
@@ -98,7 +98,7 @@ describe('T: Error Format Consistency', () => {
         userName: owner,
         body: { reviewers: [dev] },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
 
     const res = await activatePost(
@@ -107,7 +107,7 @@ describe('T: Error Format Consistency', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(res.status).toBe(409);
     const body = await res.json();
@@ -121,7 +121,7 @@ describe('T: Error Format Consistency', () => {
         userName: dev,
         body: { name: 'Hacked' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(403);
     const body = await res.json();
@@ -137,11 +137,11 @@ describe('T: Error Format Consistency', () => {
           userName: owner,
           body: {},
         }),
-        { params: { projectId } },
+        { params: Promise.resolve({ projectId }) },
       ),
       // 404 NOT_FOUND
       projectGet(makeReq('/api/projects/no-such-id', { userName: owner }), {
-        params: { projectId: 'no-such-id' },
+        params: Promise.resolve({ projectId: 'no-such-id' }),
       }),
       // 403 FORBIDDEN
       projectPatch(
@@ -150,7 +150,7 @@ describe('T: Error Format Consistency', () => {
           userName: dev,
           body: { name: 'x' },
         }),
-        { params: { projectId } },
+        { params: Promise.resolve({ projectId }) },
       ),
     ];
 

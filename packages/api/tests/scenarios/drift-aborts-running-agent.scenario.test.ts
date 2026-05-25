@@ -83,7 +83,7 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
           userName: owner,
           body: { executorType: 'human', executorName: owner },
         }),
-        { params: { projectId, taskId } },
+        { params: Promise.resolve({ projectId, taskId }) },
       );
       expect(res.status).toBe(201);
       const body = await res.json();
@@ -98,7 +98,7 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
           userName: owner,
           body: {},
         }),
-        { params: { projectId, taskId, runId } },
+        { params: Promise.resolve({ projectId, taskId, runId }) },
       );
       expect(res.status).toBe(200);
     });
@@ -139,7 +139,7 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
           userName: owner,
           body: {},
         }),
-        { params: { projectId, taskId, runId } },
+        { params: Promise.resolve({ projectId, taskId, runId }) },
       );
       expect(res.status).toBe(409);
       const body = await res.json();
@@ -160,7 +160,7 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
             deliverablesMet: ['/healthz endpoint'],
           },
         }),
-        { params: { projectId, taskId, runId } },
+        { params: Promise.resolve({ projectId, taskId, runId }) },
       );
       expect(res.status).toBe(409);
       const body = await res.json();
@@ -213,7 +213,7 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
           userName: phaseOwner,
           body: { executorType: 'human', executorName: phaseOwner },
         }),
-        { params: { projectId: phaseProjectId, taskId: phaseTaskId } },
+        { params: Promise.resolve({ projectId: phaseProjectId, taskId: phaseTaskId }) },
       );
       expect(startRes.status).toBe(201);
       const startBody = await startRes.json();
@@ -245,7 +245,7 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
           userName: phaseOwner,
           body: {},
         }),
-        { params: { projectId: phaseProjectId, planId: phaseV2PlanId } },
+        { params: Promise.resolve({ projectId: phaseProjectId, planId: phaseV2PlanId }) },
       );
       expect(activateRes.status).toBe(200);
 
@@ -281,7 +281,13 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
             body: {},
           },
         ),
-        { params: { projectId: phaseProjectId, taskId: phaseTaskId, runId: phaseRunId } },
+        {
+          params: Promise.resolve({
+            projectId: phaseProjectId,
+            taskId: phaseTaskId,
+            runId: phaseRunId,
+          }),
+        },
       );
       expect(res.status).toBe(409);
       const body = await res.json();
@@ -306,7 +312,13 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
             },
           },
         ),
-        { params: { projectId: phaseProjectId, taskId: phaseTaskId, runId: phaseRunId } },
+        {
+          params: Promise.resolve({
+            projectId: phaseProjectId,
+            taskId: phaseTaskId,
+            runId: phaseRunId,
+          }),
+        },
       );
       expect(res.status).toBe(409);
       const body = await res.json();
@@ -329,7 +341,7 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
           userName: phaseOwner,
           body: { action: 'rebind' },
         }),
-        { params: { projectId: phaseProjectId, driftId: alert.id } },
+        { params: Promise.resolve({ projectId: phaseProjectId, driftId: alert.id }) },
       );
       expect(res.status).toBe(200);
 
@@ -372,7 +384,7 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
             userName: 'drift-v2-cancel-owner',
             body: { executorType: 'human', executorName: 'drift-v2-cancel-owner' },
           }),
-          { params: { projectId: pX, taskId: t.id } },
+          { params: Promise.resolve({ projectId: pX, taskId: t.id }) },
         );
         const runIdLocal = (await startRes.json()).data.id;
 
@@ -393,7 +405,7 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
             userName: 'drift-v2-cancel-owner',
             body: {},
           }),
-          { params: { projectId: pX, planId: v2.id } },
+          { params: Promise.resolve({ projectId: pX, planId: v2.id }) },
         );
 
         // Run is now paused; resolve drift with cancel.
@@ -406,7 +418,7 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
             userName: 'drift-v2-cancel-owner',
             body: { action: 'cancel' },
           }),
-          { params: { projectId: pX, driftId: alert.id } },
+          { params: Promise.resolve({ projectId: pX, driftId: alert.id }) },
         );
         expect(res.status).toBe(200);
 
@@ -443,7 +455,7 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
             userName: 'drift-v2-noimpact-owner',
             body: { executorType: 'human', executorName: 'drift-v2-noimpact-owner' },
           }),
-          { params: { projectId: pY, taskId: t.id } },
+          { params: Promise.resolve({ projectId: pY, taskId: t.id }) },
         );
         const runIdLocal = (await startRes.json()).data.id;
 
@@ -464,7 +476,7 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
             userName: 'drift-v2-noimpact-owner',
             body: {},
           }),
-          { params: { projectId: pY, planId: v2.id } },
+          { params: Promise.resolve({ projectId: pY, planId: v2.id }) },
         );
 
         const alert = await testPrisma.driftAlert.findFirstOrThrow({
@@ -476,7 +488,7 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
             userName: 'drift-v2-noimpact-owner',
             body: { action: 'no_impact' },
           }),
-          { params: { projectId: pY, driftId: alert.id } },
+          { params: Promise.resolve({ projectId: pY, driftId: alert.id }) },
         );
 
         // no_impact: task moves back to in_progress, task.boundPlanVersion is

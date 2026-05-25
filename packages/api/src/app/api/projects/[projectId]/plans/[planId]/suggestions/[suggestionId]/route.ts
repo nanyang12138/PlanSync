@@ -11,7 +11,7 @@ import { writeBoth, type SplitField } from '@/lib/plan-items';
 
 const SPLIT_FIELDS = new Set<SplitField>(['constraints', 'standards', 'deliverables']);
 
-type Params = { params: { projectId: string; planId: string; suggestionId: string } };
+type Params = { params: Promise<{ projectId: string; planId: string; suggestionId: string }> };
 
 type SuggestionTx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
 
@@ -85,7 +85,8 @@ async function applyArrayWrite(
   });
 }
 
-export async function POST(req: NextRequest, { params }: Params) {
+export async function POST(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const url = new URL(req.url);
     const action = url.searchParams.get('action');

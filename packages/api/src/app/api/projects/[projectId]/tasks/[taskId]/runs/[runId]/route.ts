@@ -18,9 +18,10 @@ import { COMPLETION_VERIFY_TOOL, completionVerifyResultZ } from '@/lib/ai/schema
 import { applyCompletionVerifyConsistency } from '@/lib/ai/completion-verify-consistency';
 import { evaluateProjectVerificationRules } from '@/lib/verification-rules';
 
-type Params = { params: { projectId: string; taskId: string; runId: string } };
+type Params = { params: Promise<{ projectId: string; taskId: string; runId: string }> };
 
-export async function POST(req: NextRequest, { params }: Params) {
+export async function POST(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const url = new URL(req.url);
     const action = url.searchParams.get('action');

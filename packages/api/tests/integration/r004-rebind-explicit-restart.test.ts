@@ -151,7 +151,7 @@ describe('R-004: rebind is an explicit restart', () => {
         userName: owner,
         body: { action: 'rebind' },
       }),
-      { params: { projectId, driftId } },
+      { params: Promise.resolve({ projectId, driftId }) },
     );
     expect(res.status).toBe(200);
 
@@ -178,7 +178,7 @@ describe('R-004: rebind is an explicit restart', () => {
         userName: owner,
         body: { action: 'rebind' },
       }),
-      { params: { projectId, driftId } },
+      { params: Promise.resolve({ projectId, driftId }) },
     );
     expect(res.status).toBe(200);
 
@@ -197,7 +197,7 @@ describe('R-004: rebind is an explicit restart', () => {
         userName: owner,
         body: { action: 'rebind' },
       }),
-      { params: { projectId, driftId } },
+      { params: Promise.resolve({ projectId, driftId }) },
     );
     expect(res.status).toBe(200);
 
@@ -230,7 +230,7 @@ describe('R-004: rebind is an explicit restart', () => {
         method: 'POST',
         userName: owner,
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
     expect(res.status).toBe(200);
 
@@ -262,7 +262,7 @@ describe('R-004: rebind is an explicit restart', () => {
         userName: owner,
         body: { action: 'rebind' },
       }),
-      { params: { projectId, driftId } },
+      { params: Promise.resolve({ projectId, driftId }) },
     );
     expect(rebindRes.status).toBe(200);
 
@@ -272,7 +272,7 @@ describe('R-004: rebind is an explicit restart', () => {
         userName: owner,
         body: { executorType: 'agent', executorName: 'r004-agent' },
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
     expect(startRes.status).toBe(201);
     const newRun = (await startRes.json()).data as {

@@ -31,7 +31,7 @@ describe('I: SSE (Server-Sent Events)', () => {
 
   async function connectSSE() {
     const res = await eventsGet(makeReq(`/api/projects/${projectId}/events`, { userName: owner }), {
-      params: { projectId },
+      params: Promise.resolve({ projectId }),
     });
     const reader = res.body!.getReader();
     // Read the initial connected chunk
@@ -47,7 +47,7 @@ describe('I: SSE (Server-Sent Events)', () => {
 
   it('I1: GET /events → 200, text/event-stream', async () => {
     const res = await eventsGet(makeReq(`/api/projects/${projectId}/events`, { userName: owner }), {
-      params: { projectId },
+      params: Promise.resolve({ projectId }),
     });
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/event-stream');
@@ -70,7 +70,7 @@ describe('I: SSE (Server-Sent Events)', () => {
         userName: owner,
         body: { title: 'SSE Task', type: 'code' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
 
     const eventText = await readNextEvent(reader);
@@ -95,7 +95,7 @@ describe('I: SSE (Server-Sent Events)', () => {
           requiredReviewers: [],
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const planId = (await createRes.json()).data.id;
 
@@ -108,7 +108,7 @@ describe('I: SSE (Server-Sent Events)', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
 
     // After commit b52e1d1 ("fix(drift): block task on drift detection;
@@ -136,7 +136,7 @@ describe('I: SSE (Server-Sent Events)', () => {
         userName: owner,
         body: { name: 'sse-new-member', role: 'developer', type: 'human' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
 
     const eventText = await readNextEvent(reader);
@@ -159,7 +159,7 @@ describe('I: SSE (Server-Sent Events)', () => {
       for (let i = 0; i < 2; i++) {
         const res = await eventsGet(
           makeReq(`/api/projects/${projAId}/events`, { userName: 'sse-cap-a-owner' }),
-          { params: { projectId: projAId } },
+          { params: Promise.resolve({ projectId: projAId }) },
         );
         expect(res.status).toBe(200);
         const reader = res.body!.getReader();
@@ -172,7 +172,7 @@ describe('I: SSE (Server-Sent Events)', () => {
       // The next connection to project A must be rejected with 503.
       const overflow = await eventsGet(
         makeReq(`/api/projects/${projAId}/events`, { userName: 'sse-cap-a-owner' }),
-        { params: { projectId: projAId } },
+        { params: Promise.resolve({ projectId: projAId }) },
       );
       expect(overflow.status).toBe(503);
       // Body should mention the per-project scope so operators can tell
@@ -183,7 +183,7 @@ describe('I: SSE (Server-Sent Events)', () => {
       // Project B is independent — saturating A must not block B.
       const bRes = await eventsGet(
         makeReq(`/api/projects/${projBId}/events`, { userName: 'sse-cap-b-owner' }),
-        { params: { projectId: projBId } },
+        { params: Promise.resolve({ projectId: projBId }) },
       );
       expect(bRes.status).toBe(200);
       await bRes.body!.cancel();
@@ -210,7 +210,7 @@ describe('I: SSE (Server-Sent Events)', () => {
         userName: 'sse-b-owner',
         body: { title: 'B Task', type: 'code' },
       }),
-      { params: { projectId: projBId } },
+      { params: Promise.resolve({ projectId: projBId }) },
     );
 
     // Project A stream should NOT receive this. We verify by checking the stream is not immediately ready.

@@ -17,11 +17,12 @@ import { handleApiError } from '@/lib/errors';
 import { AppError, ErrorCode } from '@plansync/shared';
 import { VERIFICATION_RULE_KINDS } from '@/lib/verification-rules';
 
-type Params = { params: { projectId: string; ruleId: string } };
+type Params = { params: Promise<{ projectId: string; ruleId: string }> };
 
 const SCOPES = ['project', 'task_type', 'task'] as const;
 
-export async function PATCH(req: NextRequest, { params }: Params) {
+export async function PATCH(req: NextRequest, ctx: Params) {
+  const params = await ctx.params;
   try {
     const auth = await authenticate(req);
     requireNotExecScoped(auth);
@@ -89,7 +90,8 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   }
 }
 
-export async function DELETE(req: NextRequest, { params }: Params) {
+export async function DELETE(req: NextRequest, ctx: Params) {
+  const params = await ctx.params;
   try {
     const auth = await authenticate(req);
     requireNotExecScoped(auth);
