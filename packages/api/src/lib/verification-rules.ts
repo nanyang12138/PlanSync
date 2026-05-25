@@ -91,7 +91,9 @@ function ruleApplies(rule: VerificationRule, task: VerificationContext['task']):
       // Unknown scope — fail closed at the evaluator (not the gate): skip
       // the rule but log so the owner can fix the row. We never want a
       // typo'd scope to silently 422 every run.
-      console.warn(`[verification-rules] rule ${rule.id} has unknown scope ${rule.scope}; skipping`);
+      console.warn(
+        `[verification-rules] rule ${rule.id} has unknown scope ${rule.scope}; skipping`,
+      );
       return false;
   }
 }
@@ -189,9 +191,7 @@ export function evaluateRule(rule: VerificationRule, ctx: VerificationContext): 
       // unknown scope: log so the owner notices, but never 422 the run
       // on a typo. New kinds should be added to VERIFICATION_RULE_KINDS
       // *and* this switch in the same commit.
-      console.warn(
-        `[verification-rules] rule ${rule.id} has unknown kind ${rule.kind}; skipping`,
-      );
+      console.warn(`[verification-rules] rule ${rule.id} has unknown kind ${rule.kind}; skipping`);
       return {
         ruleId: rule.id,
         kind: rule.kind,

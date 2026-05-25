@@ -233,7 +233,8 @@ export async function POST(req: NextRequest, { params }: Params) {
             {
               error: {
                 code: 'VERIFICATION_RULE_FAILED',
-                message: `Cannot complete: ${ruleResult.failed.length} verification rule(s) failed. ` +
+                message:
+                  `Cannot complete: ${ruleResult.failed.length} verification rule(s) failed. ` +
                   `Owner can edit rules under project settings.`,
                 gate: 'rule',
                 details: {
