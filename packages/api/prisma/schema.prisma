@@ -143,9 +143,19 @@ model PlanSuggestion {
   resolvedComment String?   @map("resolved_comment")
   createdAt       DateTime  @default(now()) @map("created_at")
   resolvedAt      DateTime? @map("resolved_at")
+  // R-155: optional pointer at the specific PlanDeliverable this suggestion
+  // is about. Useful when an agent wants to suggest a body / refUri / status
+  // change against one item rather than the whole field — UI can render the
+  // suggestion inline next to that deliverable's card. Nullable because the
+  // legacy "patch the array field" suggestions don't target a single row.
+  // SetNull on delete: if the deliverable goes away (e.g. plan rebuilt), the
+  // suggestion stays around as historical context but stops linking.
+  deliverableId String? @map("deliverable_id")
+  deliverable   PlanDeliverable? @relation(fields: [deliverableId], references: [id], onDelete: SetNull)
 
   plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
 
+  @@index([deliverableId])
   @@map("plan_suggestions")
 }
 
@@ -205,6 +215,10 @@ model PlanDeliverable {
   // as a derived/legacy column for backwards compatibility; the link rows
   // are the source of truth from now on.
   taskLinks    TaskDeliverableLink[]
+  // R-155: PlanSuggestion rows that target this specific deliverable (so the
+  // UI can render the suggestion thread inline next to the deliverable
+  // card). SetNull on delete on the suggestion side keeps history intact.
+  suggestions  PlanSuggestion[]
 
   @@unique([planId, slug])
   @@index([planId, status])
