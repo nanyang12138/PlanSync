@@ -187,3 +187,37 @@ describe('R6 / #923 — wrapToolHandler rolls back FSM when handler throws', () 
     expect(mgr.getState()).toBe('COMPLETED');
   });
 });
+
+// R6b / closes #997 — a handler that returns an isError envelope
+// (rather than throwing) must also trigger FSM rollback. The pattern
+// is common: tool handlers catch their own DB/API errors and return
+// `{ isError: true, content: [...] }` to surface a structured error
+// to the agent. Pre-fix, the FSM stayed advanced because no exception
+// reached the wrapper's catch branch.
+describe('R6b / #997 — wrapToolHandler rolls back FSM when handler returns isError envelope', () => {
+  it('rolls back on { isError: true } return value', async () => {
+    const mgr = new ExecStateManager({ enforceMode: 'enforce' });
+    mgr.recordToolCall('plansync_exec_context');
+    mgr.recordToolCall('plansync_task_pack');
+    expect(mgr.getState()).toBe('PACK_FETCHED');
+
+    const wrapped = wrapToolHandler(
+      'plansync_execution_complete',
+      async () => ({
+        isError: true,
+        content: [{ type: 'text', text: 'simulated DB write conflict' }],
+      }),
+      { ...noDelegation, execStateManager: mgr },
+    );
+
+    const out = await wrapped({});
+    expect((out as { isError?: boolean }).isError).toBe(true);
+    // FSM must be back at PACK_FETCHED (NOT stuck in COMPLETED).
+    expect(mgr.getState()).toBe('PACK_FETCHED');
+
+    // Retry must succeed.
+    const retry = mgr.recordToolCall('plansync_execution_complete');
+    expect(retry.ok).toBe(true);
+    expect(mgr.getState()).toBe('COMPLETED');
+  });
+});
