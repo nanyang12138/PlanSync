@@ -17,6 +17,7 @@ import {
 import { COMPLETION_VERIFY_TOOL, completionVerifyResultZ } from '@/lib/ai/schemas';
 import { applyCompletionVerifyConsistency } from '@/lib/ai/completion-verify-consistency';
 import { evaluateProjectVerificationRules } from '@/lib/verification-rules';
+import { deriveTaskCompletionState } from '@/lib/task-state-machine';
 
 type Params = { params: Promise<{ projectId: string; taskId: string; runId: string }> };
 
@@ -547,11 +548,29 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
         `;
       }
 
+      // R-192: derive task status from git + verification signals
+      // instead of unconditionally flipping to 'done'. The gate is
+      // OFF for tasks/projects without git wiring (see
+      // `deriveTaskCompletionState` for the opt-in matrix), so legacy
+      // flows keep their pre-R-192 "always done" behaviour. When the
+      // gate is ON but evidence is missing, the task lands in the new
+      // `awaiting_evidence` state and the response carries a
+      // `missing: [...]` payload enumerating the blocked signals; the
+      // run itself still finalizes so the agent's work isn't lost.
+      let r192State: Awaited<ReturnType<typeof deriveTaskCompletionState>> | null = null;
       if (body.status === 'completed') {
+        r192State = await deriveTaskCompletionState({
+          projectId: params.projectId,
+          task: {
+            id: run.task.id,
+            prUrl: run.task.prUrl,
+            planDeliverableRefs: run.task.planDeliverableRefs ?? [],
+          },
+        });
         await prisma.task.update({
           where: { id: params.taskId },
           data: {
-            status: 'done',
+            status: r192State.status,
             ...(body.branchName ? { branchName: body.branchName } : {}),
           },
         });
@@ -594,7 +613,18 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
         });
       }
 
-      return NextResponse.json({ data: updated });
+      // R-192: surface the derived task status + any missing evidence
+      // so the agent / CLI can render "awaiting evidence" instead of
+      // silently flipping into a `done` UI state the system did not
+      // actually grant. We only emit the fields when the gate was
+      // applied — otherwise the legacy response shape is preserved
+      // byte-for-byte for clients that never opted into git wiring.
+      const responseExtras: Record<string, unknown> = {};
+      if (r192State && r192State.gateApplied) {
+        responseExtras.taskStatus = r192State.status;
+        responseExtras.missing = r192State.missing;
+      }
+      return NextResponse.json({ data: { ...updated, ...responseExtras } });
     }
 
     throw new AppError(ErrorCode.BAD_REQUEST, 'Action must be "heartbeat" or "complete"');
