@@ -148,7 +148,7 @@ describe('R-143: completion-verify observability', () => {
           deliverablesMet: ['Deliverable A: implemented foo'],
         },
       }),
-      { params: { projectId, taskId, runId } },
+      { params: Promise.resolve({ projectId, taskId, runId }) },
     );
 
     // R-180 contract: complete always returns 200 even when the AI scored
@@ -217,7 +217,7 @@ describe('R-143: completion-verify observability', () => {
           deliverablesMet: ['Deliverable A: implemented foo with tests'],
         },
       }),
-      { params: { projectId, taskId, runId } },
+      { params: Promise.resolve({ projectId, taskId, runId }) },
     );
 
     expect(res.status).toBe(200);
@@ -266,7 +266,7 @@ describe('R-143: completion-verify observability', () => {
           deliverablesMet: ['Deliverable A: implemented foo'],
         },
       }),
-      { params: { projectId, taskId, runId } },
+      { params: Promise.resolve({ projectId, taskId, runId }) },
     );
 
     expect(res.status).toBe(200);
@@ -323,7 +323,7 @@ describe('R-143: completion-verify observability', () => {
             deliverablesMet: ['Deliverable A: implemented foo'],
           },
         }),
-        { params: { projectId, taskId, runId } },
+        { params: Promise.resolve({ projectId, taskId, runId }) },
       );
 
       // R-180: complete always returns 200, even when the verification
@@ -377,7 +377,7 @@ describe('R-143: completion-verify observability', () => {
           deliverablesMet: ['Deliverable A: implemented foo'],
         },
       }),
-      { params: { projectId, taskId, runId } },
+      { params: Promise.resolve({ projectId, taskId, runId }) },
     );
 
     // Soft-allow — verification could not run, so we let it through.
@@ -421,7 +421,7 @@ describe('R-143: completion-verify observability', () => {
           deliverablesMet: ['Deliverable A: implemented foo'],
         },
       }),
-      { params: { projectId, taskId, runId } },
+      { params: Promise.resolve({ projectId, taskId, runId }) },
     );
 
     expect(res.status).toBe(200);

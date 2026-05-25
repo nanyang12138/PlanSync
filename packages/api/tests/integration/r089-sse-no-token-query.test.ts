@@ -3,12 +3,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { GET as projectEventsGet } from '@/app/api/projects/[projectId]/events/route';
 import { GET as userEventsGet } from '@/app/api/user-events/route';
-import {
-  makeReq,
-  createTestProject,
-  createActivePlan,
-  cleanupProject,
-} from '../helpers/request';
+import { makeReq, createTestProject, createActivePlan, cleanupProject } from '../helpers/request';
 
 describe('R-089: SSE rejects ?token= query param', () => {
   const owner = 'r089-owner';
@@ -28,7 +23,7 @@ describe('R-089: SSE rejects ?token= query param', () => {
       userName: owner,
       searchParams: { token: 'leaked-secret-value' },
     });
-    const res = await projectEventsGet(req, { params: { projectId } });
+    const res = await projectEventsGet(req, { params: Promise.resolve({ projectId }) });
     expect(res.status).toBe(401);
     const body = await res.text();
     expect(body.toLowerCase()).toContain('token');
@@ -41,7 +36,7 @@ describe('R-089: SSE rejects ?token= query param', () => {
       userName: owner,
       searchParams: { token: '', user: owner },
     });
-    const res = await projectEventsGet(req, { params: { projectId } });
+    const res = await projectEventsGet(req, { params: Promise.resolve({ projectId }) });
     expect(res.status).toBe(401);
   });
 
@@ -59,7 +54,7 @@ describe('R-089: SSE rejects ?token= query param', () => {
     // still produces an open stream. This guards against an over-broad
     // rejection.
     const req = makeReq(`/api/projects/${projectId}/events`, { userName: owner });
-    const res = await projectEventsGet(req, { params: { projectId } });
+    const res = await projectEventsGet(req, { params: Promise.resolve({ projectId }) });
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/event-stream');
     await res.body!.cancel();
@@ -71,7 +66,7 @@ describe('R-089: SSE rejects ?token= query param', () => {
       userName: owner,
       searchParams: { user: owner },
     });
-    const res = await projectEventsGet(req, { params: { projectId } });
+    const res = await projectEventsGet(req, { params: Promise.resolve({ projectId }) });
     expect(res.status).toBe(200);
     await res.body!.cancel();
   });

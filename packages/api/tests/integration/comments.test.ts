@@ -55,7 +55,7 @@ describe('E: Comment System', () => {
         userName: owner,
         body: { content: 'First comment' },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(res.status).toBe(201);
     const body = await res.json();
@@ -71,7 +71,7 @@ describe('E: Comment System', () => {
         userName: dev,
         body: { content: 'Reply comment', parentId: parentCommentId },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(res.status).toBe(201);
     const body = await res.json();
@@ -81,7 +81,7 @@ describe('E: Comment System', () => {
   it('E3: GET /comments → 200, 含回复', async () => {
     const res = await GET(
       makeReq(`/api/projects/${projectId}/plans/${planId}/comments`, { userName: owner }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -96,7 +96,7 @@ describe('E: Comment System', () => {
         userName: owner,
         body: { content: 'Edited comment' },
       }),
-      { params: { projectId, planId, commentId } },
+      { params: Promise.resolve({ projectId, planId, commentId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -110,7 +110,7 @@ describe('E: Comment System', () => {
         userName: dev,
         body: { content: 'Hacked' },
       }),
-      { params: { projectId, planId, commentId } },
+      { params: Promise.resolve({ projectId, planId, commentId }) },
     );
     expect(res.status).toBe(403);
   });
@@ -123,7 +123,7 @@ describe('E: Comment System', () => {
         userName: dev,
         body: { content: "Dev's comment" },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     const devCommentId = (await devCommentRes.json()).data.id;
 
@@ -132,7 +132,7 @@ describe('E: Comment System', () => {
         method: 'DELETE',
         userName: owner,
       }),
-      { params: { projectId, planId, commentId: devCommentId } },
+      { params: Promise.resolve({ projectId, planId, commentId: devCommentId }) },
     );
     expect(res.status).toBe(200);
   });
@@ -144,7 +144,7 @@ describe('E: Comment System', () => {
         userName: owner,
         body: { content: "Owner's comment" },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     const ownerCommentId = (await ownerCommentRes.json()).data.id;
 
@@ -153,7 +153,7 @@ describe('E: Comment System', () => {
         method: 'DELETE',
         userName: dev,
       }),
-      { params: { projectId, planId, commentId: ownerCommentId } },
+      { params: Promise.resolve({ projectId, planId, commentId: ownerCommentId }) },
     );
     expect(res.status).toBe(403);
   });
@@ -165,7 +165,7 @@ describe('E: Comment System', () => {
         userName: owner,
         body: { content: 'To be deleted' },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     const toDeleteId = (await createRes.json()).data.id;
 
@@ -174,7 +174,7 @@ describe('E: Comment System', () => {
         method: 'DELETE',
         userName: owner,
       }),
-      { params: { projectId, planId, commentId: toDeleteId } },
+      { params: Promise.resolve({ projectId, planId, commentId: toDeleteId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -190,7 +190,7 @@ describe('E: Comment System', () => {
         userName: owner,
         body: { content: 'Parent to delete' },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     const newParentId = (await parentRes.json()).data.id;
 
@@ -201,7 +201,7 @@ describe('E: Comment System', () => {
         userName: dev,
         body: { content: 'Child reply', parentId: newParentId },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     const childId = (await childRes.json()).data.id;
 
@@ -211,7 +211,7 @@ describe('E: Comment System', () => {
         method: 'DELETE',
         userName: owner,
       }),
-      { params: { projectId, planId, commentId: newParentId } },
+      { params: Promise.resolve({ projectId, planId, commentId: newParentId }) },
     );
 
     // Child should still exist
@@ -231,7 +231,7 @@ describe('E: Comment System', () => {
         userName: owner,
         body: { content: 'x'.repeat(10001) },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(res.status).toBe(400);
   });
@@ -269,7 +269,7 @@ describe('E: Comment System', () => {
           // parentId targets a comment from a different plan in the same project.
           body: { content: 'cross-plan reply', parentId: otherPlanComment.id },
         }),
-        { params: { projectId, planId } },
+        { params: Promise.resolve({ projectId, planId }) },
       );
       expect(res.status).toBe(404);
       const body = await res.json();
@@ -294,7 +294,7 @@ describe('E: Comment System', () => {
         userName: owner,
         body: { content: 'reply to ghost', parentId: 'cmt_does_not_exist_123' },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(res.status).toBe(404);
     const body = await res.json();
@@ -325,7 +325,7 @@ describe('E: Comment System', () => {
           userName: dev,
           body: { content: 'reply', parentId: target.id },
         }),
-        { params: { projectId, planId } },
+        { params: Promise.resolve({ projectId, planId }) },
       );
       expect(res.status).toBe(400);
       const body = await res.json();

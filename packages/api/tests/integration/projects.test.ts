@@ -31,7 +31,7 @@ describe('A: Project Management', () => {
   it('A2: 重复创建同名项目 → 409 CONFLICT', async () => {
     // Get the existing project name
     const getRes = await projectGET(makeReq(`/api/projects/${projectId}`, { userName: owner }), {
-      params: { projectId },
+      params: Promise.resolve({ projectId }),
     });
     const { data: proj } = await getRes.json();
 
@@ -58,7 +58,7 @@ describe('A: Project Management', () => {
 
   it('A4: GET /projects/:id → 200', async () => {
     const res = await projectGET(makeReq(`/api/projects/${projectId}`, { userName: owner }), {
-      params: { projectId },
+      params: Promise.resolve({ projectId }),
     });
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -68,7 +68,7 @@ describe('A: Project Management', () => {
   it('A4边: GET /projects/:id → 不存在 → 404', async () => {
     const fakeId = 'nonexistent-project-id';
     const res = await projectGET(makeReq(`/api/projects/${fakeId}`, { userName: owner }), {
-      params: { projectId: fakeId },
+      params: Promise.resolve({ projectId: fakeId }),
     });
     expect(res.status).toBe(404);
     const body = await res.json();
@@ -82,7 +82,7 @@ describe('A: Project Management', () => {
         userName: owner,
         body: { description: 'updated description' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -97,7 +97,7 @@ describe('A: Project Management', () => {
         userName: dev,
         body: { description: 'hacked' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(403);
   });
@@ -105,7 +105,7 @@ describe('A: Project Management', () => {
   it('A6: GET /projects/:id/dashboard → 200, 含统计字段', async () => {
     const res = await dashboardGET(
       makeReq(`/api/projects/${projectId}/dashboard`, { userName: owner }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();

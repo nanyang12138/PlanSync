@@ -130,7 +130,7 @@ describe('R-015 — owner-only write routes reject exec-scoped keys', () => {
         authToken: scopedKey,
         body: { title: 'tampered' },
       }),
-      { params: { projectId, planId: draftPlanId } },
+      { params: Promise.resolve({ projectId, planId: draftPlanId }) },
     );
     const body = await res.json();
     expectExecScopedRejection(res.status, body.error?.message ?? '');
@@ -143,7 +143,7 @@ describe('R-015 — owner-only write routes reject exec-scoped keys', () => {
         userName: owner,
         authToken: scopedKey,
       }),
-      { params: { projectId, planId: draftPlanId } },
+      { params: Promise.resolve({ projectId, planId: draftPlanId }) },
     );
     const body = await res.json();
     expectExecScopedRejection(res.status, body.error?.message ?? '');
@@ -157,7 +157,7 @@ describe('R-015 — owner-only write routes reject exec-scoped keys', () => {
         authToken: scopedKey,
         body: { field: 'constraints', items: ['injected'] },
       }),
-      { params: { projectId, planId: draftPlanId } },
+      { params: Promise.resolve({ projectId, planId: draftPlanId }) },
     );
     const body = await res.json();
     expectExecScopedRejection(res.status, body.error?.message ?? '');
@@ -171,7 +171,7 @@ describe('R-015 — owner-only write routes reject exec-scoped keys', () => {
         authToken: scopedKey,
         body: { name: 'evil-rename' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const body = await res.json();
     expectExecScopedRejection(res.status, body.error?.message ?? '');
@@ -184,7 +184,7 @@ describe('R-015 — owner-only write routes reject exec-scoped keys', () => {
         userName: owner,
         authToken: scopedKey,
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const body = await res.json();
     expectExecScopedRejection(res.status, body.error?.message ?? '');
@@ -197,7 +197,7 @@ describe('R-015 — owner-only write routes reject exec-scoped keys', () => {
         userName: owner,
         authToken: scopedKey,
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
     const body = await res.json();
     expectExecScopedRejection(res.status, body.error?.message ?? '');
@@ -211,7 +211,7 @@ describe('R-015 — owner-only write routes reject exec-scoped keys', () => {
         authToken: scopedKey,
         body: { name: 'r015-injected', role: 'developer', type: 'human' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const body = await res.json();
     expectExecScopedRejection(res.status, body.error?.message ?? '');
@@ -225,7 +225,7 @@ describe('R-015 — owner-only write routes reject exec-scoped keys', () => {
         authToken: scopedKey,
         body: { role: 'owner' },
       }),
-      { params: { projectId, memberId } },
+      { params: Promise.resolve({ projectId, memberId }) },
     );
     const body = await res.json();
     expectExecScopedRejection(res.status, body.error?.message ?? '');
@@ -238,7 +238,7 @@ describe('R-015 — owner-only write routes reject exec-scoped keys', () => {
         userName: owner,
         authToken: scopedKey,
       }),
-      { params: { projectId, memberId } },
+      { params: Promise.resolve({ projectId, memberId }) },
     );
     const body = await res.json();
     expectExecScopedRejection(res.status, body.error?.message ?? '');
@@ -252,7 +252,7 @@ describe('R-015 — owner-only write routes reject exec-scoped keys', () => {
         authToken: scopedKey,
         body: { url: 'https://example.com/h', events: ['plan_activated'] },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const body = await res.json();
     expectExecScopedRejection(res.status, body.error?.message ?? '');
@@ -266,7 +266,7 @@ describe('R-015 — owner-only write routes reject exec-scoped keys', () => {
         authToken: scopedKey,
         body: { type: 'plan_owner', planId: activePlanId },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const body = await res.json();
     expectExecScopedRejection(res.status, body.error?.message ?? '');
@@ -282,7 +282,7 @@ describe('R-015 — owner-only write routes reject exec-scoped keys', () => {
         userName: owner,
         body: { title: 'owner-can-still-edit' },
       }),
-      { params: { projectId, planId: draftPlanId } },
+      { params: Promise.resolve({ projectId, planId: draftPlanId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();

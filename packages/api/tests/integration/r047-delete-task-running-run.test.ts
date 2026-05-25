@@ -37,7 +37,7 @@ describe('R-047: DELETE task rejects running execution run', () => {
         userName: owner,
         body: { title, type: 'code', priority: 'p1' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(createRes.status).toBe(201);
     const task = (await createRes.json()).data as { id: string };
@@ -66,7 +66,7 @@ describe('R-047: DELETE task rejects running execution run', () => {
         method: 'DELETE',
         userName: owner,
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
 
     expect(res.status).toBe(409);
@@ -91,7 +91,7 @@ describe('R-047: DELETE task rejects running execution run', () => {
         method: 'DELETE',
         userName: owner,
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
     expect(res.status).toBe(200);
 
@@ -112,7 +112,7 @@ describe('R-047: DELETE task rejects running execution run', () => {
         method: 'DELETE',
         userName: owner,
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
     expect(res.status).toBe(200);
   });

@@ -57,7 +57,7 @@ describe('R-205: plansync_plan_withdraw route', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
 
     const before = await testPrisma.planReview.count({ where: { planId } });
@@ -69,7 +69,7 @@ describe('R-205: plansync_plan_withdraw route', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(wRes.status).toBe(200);
     const wBody = await wRes.json();
@@ -95,7 +95,7 @@ describe('R-205: plansync_plan_withdraw route', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     await withdrawPost(
       makeReq(`/api/projects/${projectId}/plans/${planId}/withdraw`, {
@@ -103,7 +103,7 @@ describe('R-205: plansync_plan_withdraw route', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     const reproposeRes = await proposePost(
       makeReq(`/api/projects/${projectId}/plans/${planId}/propose`, {
@@ -111,7 +111,7 @@ describe('R-205: plansync_plan_withdraw route', () => {
         userName: owner,
         body: { reviewers: [newReviewer] },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(reproposeRes.status).toBe(200);
 
@@ -129,7 +129,7 @@ describe('R-205: plansync_plan_withdraw route', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(wRes.status).toBe(409);
     const body = await wRes.json();
@@ -148,7 +148,7 @@ describe('R-205: plansync_plan_withdraw route', () => {
         userName: 'not-the-owner',
         body: {},
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     // 403 forbidden (or 401 if header auth is missing). Either is fine here —
     // the contract is "not 200, plan untouched".

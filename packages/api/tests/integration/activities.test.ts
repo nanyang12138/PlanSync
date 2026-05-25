@@ -30,7 +30,7 @@ describe('Q: Activity Log', () => {
   it('Q4: GET /activities → 200, data array', async () => {
     const res = await activitiesGet(
       makeReq(`/api/projects/${projectId}/activities`, { userName: owner }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -53,7 +53,7 @@ describe('Q: Activity Log', () => {
           requiredReviewers: [],
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
 
     const activities = await testPrisma.activity.findMany({
@@ -84,7 +84,7 @@ describe('Q: Activity Log', () => {
           requiredReviewers: [],
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const planId = (await createRes.json()).data.id;
 
@@ -94,7 +94,7 @@ describe('Q: Activity Log', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
 
     const activities = await testPrisma.activity.findMany({
@@ -110,7 +110,7 @@ describe('Q: Activity Log', () => {
         userName: owner,
         body: { title: 'Activity Task', type: 'code' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
 
     const activities = await testPrisma.activity.findMany({
@@ -126,7 +126,7 @@ describe('Q: Activity Log', () => {
         userName: owner,
         body: { title: 'Decline Activity Task', type: 'code' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const taskId = (await taskRes.json()).data.id;
 
@@ -137,7 +137,7 @@ describe('Q: Activity Log', () => {
         userName: owner,
         body: { startImmediately: false, assigneeType: 'human' },
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
 
     await declinePost(
@@ -146,7 +146,7 @@ describe('Q: Activity Log', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
 
     const activities = await testPrisma.activity.findMany({
@@ -161,7 +161,7 @@ describe('Q: Activity Log', () => {
         userName: owner,
         searchParams: { pageSize: '2' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();

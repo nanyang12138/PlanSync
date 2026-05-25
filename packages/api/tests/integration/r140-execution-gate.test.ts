@@ -101,7 +101,7 @@ async function createAndActivateV2(
       userName: owner,
       body: {},
     }),
-    { params: { projectId, planId: draft.id } },
+    { params: Promise.resolve({ projectId, planId: draft.id }) },
   );
   expect(res.status).toBe(200);
   return draft.id;
@@ -189,7 +189,7 @@ describe('R-140: drift writes executionGate, never touches task.status', () => {
         userName: owner,
         body: { executorType: 'human', executorName: owner },
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
     expect(startRes.status).toBe(409);
     const body = await startRes.json();
@@ -219,7 +219,7 @@ describe('R-140: drift writes executionGate, never touches task.status', () => {
         userName: owner,
         body: { action: 'rebind' },
       }),
-      { params: { projectId, driftId: alert!.id } },
+      { params: Promise.resolve({ projectId, driftId: alert!.id }) },
     );
     expect(res.status).toBe(200);
 
@@ -240,7 +240,7 @@ describe('R-140: drift writes executionGate, never touches task.status', () => {
         userName: owner,
         body: { executorType: 'human', executorName: owner },
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
     expect(startRes.status).toBe(201);
   });
@@ -263,7 +263,7 @@ describe('R-140: drift writes executionGate, never touches task.status', () => {
         userName: owner,
         body: { action: 'no_impact' },
       }),
-      { params: { projectId, driftId: alert!.id } },
+      { params: Promise.resolve({ projectId, driftId: alert!.id }) },
     );
     expect(res.status).toBe(200);
 
@@ -294,7 +294,7 @@ describe('R-140: drift writes executionGate, never touches task.status', () => {
         userName: owner,
         body: { action: 'cancel' },
       }),
-      { params: { projectId, driftId: alert!.id } },
+      { params: Promise.resolve({ projectId, driftId: alert!.id }) },
     );
     expect(res.status).toBe(200);
 

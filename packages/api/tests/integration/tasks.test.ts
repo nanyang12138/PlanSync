@@ -45,7 +45,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { title: 'Task Alpha', type: 'code', priority: 'p1' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(201);
     const body = await res.json();
@@ -62,7 +62,7 @@ describe('F: Task Management', () => {
         userName: 'no-plan-owner',
         body: { title: 'Should Fail', type: 'code' },
       }),
-      { params: { projectId: freshProjId } },
+      { params: Promise.resolve({ projectId: freshProjId }) },
     );
     expect(res.status).toBe(409);
     await cleanupProject(freshProjId);
@@ -76,7 +76,7 @@ describe('F: Task Management', () => {
           userName: owner,
           body: { title: `Type ${type}`, type },
         }),
-        { params: { projectId } },
+        { params: Promise.resolve({ projectId }) },
       );
       expect(res.status).toBe(201);
     }
@@ -86,7 +86,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { title: 'Bad type', type: 'invalid_type' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(badRes.status).toBe(400);
   });
@@ -99,7 +99,7 @@ describe('F: Task Management', () => {
           userName: owner,
           body: { title: `Priority ${priority}`, type: 'code', priority },
         }),
-        { params: { projectId } },
+        { params: Promise.resolve({ projectId }) },
       );
       expect(res.status).toBe(201);
     }
@@ -109,14 +109,14 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { title: 'Bad priority', type: 'code', priority: 'p3' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(badRes.status).toBe(400);
   });
 
   it('F5: GET /tasks → 200, list', async () => {
     const res = await tasksGet(makeReq(`/api/projects/${projectId}/tasks`, { userName: owner }), {
-      params: { projectId },
+      params: Promise.resolve({ projectId }),
     });
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -137,7 +137,7 @@ describe('F: Task Management', () => {
           agentConstraints: ['no external deps'],
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(201);
     const body = await res.json();
@@ -151,7 +151,7 @@ describe('F: Task Management', () => {
         userName: owner,
         searchParams: { status: 'todo' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -173,7 +173,7 @@ describe('F: Task Management', () => {
           assigneeType: 'human',
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(400);
   });
@@ -185,7 +185,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { title: 'Assigned Task Valid', type: 'code', assignee: dev, assigneeType: 'human' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(201);
     const body = await res.json();
@@ -199,7 +199,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { title: 'Updated Title', priority: 'p0' },
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -214,7 +214,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { title: 'Bad assigneeType', type: 'code', assigneeType: 'robot' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(400);
   });
@@ -222,7 +222,7 @@ describe('F: Task Management', () => {
   it('F9: GET /tasks/:id/pack → 200, contains plan', async () => {
     const res = await packGet(
       makeReq(`/api/projects/${projectId}/tasks/${taskId}/pack`, { userName: owner }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -238,7 +238,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { title: 'Claimable Task', type: 'code' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const claimableId = (await createRes.json()).data.id;
 
@@ -248,7 +248,7 @@ describe('F: Task Management', () => {
         userName: dev,
         body: { assigneeType: 'human', startImmediately: true },
       }),
-      { params: { projectId, taskId: claimableId } },
+      { params: Promise.resolve({ projectId, taskId: claimableId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -264,7 +264,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { title: 'Already Claimed', type: 'code' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const alreadyClaimedId = (await createRes.json()).data.id;
     await claimPost(
@@ -273,7 +273,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, taskId: alreadyClaimedId } },
+      { params: Promise.resolve({ projectId, taskId: alreadyClaimedId }) },
     );
 
     // Try to claim again
@@ -283,7 +283,7 @@ describe('F: Task Management', () => {
         userName: dev,
         body: {},
       }),
-      { params: { projectId, taskId: alreadyClaimedId } },
+      { params: Promise.resolve({ projectId, taskId: alreadyClaimedId }) },
     );
     expect(res.status).toBe(409);
   });
@@ -295,7 +295,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { title: 'Concurrent Claim Race', type: 'code' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const raceTaskId = (await createRes.json()).data.id;
 
@@ -306,7 +306,7 @@ describe('F: Task Management', () => {
           userName: owner,
           body: { assigneeType: 'human', startImmediately: true },
         }),
-        { params: { projectId, taskId: raceTaskId } },
+        { params: Promise.resolve({ projectId, taskId: raceTaskId }) },
       ),
       claimPost(
         makeReq(`/api/projects/${projectId}/tasks/${raceTaskId}/claim`, {
@@ -314,7 +314,7 @@ describe('F: Task Management', () => {
           userName: dev,
           body: { assigneeType: 'human', startImmediately: true },
         }),
-        { params: { projectId, taskId: raceTaskId } },
+        { params: Promise.resolve({ projectId, taskId: raceTaskId }) },
       ),
     ]);
 
@@ -341,7 +341,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { title: 'Slow Claim', type: 'code' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const slowId = (await createRes.json()).data.id;
 
@@ -351,7 +351,7 @@ describe('F: Task Management', () => {
         userName: dev,
         body: { startImmediately: false, assigneeType: 'human' },
       }),
-      { params: { projectId, taskId: slowId } },
+      { params: Promise.resolve({ projectId, taskId: slowId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -366,7 +366,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { title: 'Task to Decline', type: 'code' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const declineTaskId = (await createRes.json()).data.id;
 
@@ -377,7 +377,7 @@ describe('F: Task Management', () => {
         userName: dev,
         body: { startImmediately: false, assigneeType: 'human' },
       }),
-      { params: { projectId, taskId: declineTaskId } },
+      { params: Promise.resolve({ projectId, taskId: declineTaskId }) },
     );
 
     const res = await declinePost(
@@ -386,7 +386,7 @@ describe('F: Task Management', () => {
         userName: dev,
         body: {},
       }),
-      { params: { projectId, taskId: declineTaskId } },
+      { params: Promise.resolve({ projectId, taskId: declineTaskId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -400,7 +400,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { title: 'Not Mine', type: 'code' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const ownedId = (await createRes.json()).data.id;
 
@@ -411,7 +411,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { startImmediately: false },
       }),
-      { params: { projectId, taskId: ownedId } },
+      { params: Promise.resolve({ projectId, taskId: ownedId }) },
     );
 
     // Dev tries to decline
@@ -421,7 +421,7 @@ describe('F: Task Management', () => {
         userName: dev,
         body: {},
       }),
-      { params: { projectId, taskId: ownedId } },
+      { params: Promise.resolve({ projectId, taskId: ownedId }) },
     );
     expect(res.status).toBe(403);
   });
@@ -433,7 +433,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { title: 'In Progress Task', type: 'code' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const inProgId = (await createRes.json()).data.id;
 
@@ -444,7 +444,7 @@ describe('F: Task Management', () => {
         userName: dev,
         body: { assigneeType: 'human', startImmediately: true },
       }),
-      { params: { projectId, taskId: inProgId } },
+      { params: Promise.resolve({ projectId, taskId: inProgId }) },
     );
 
     // Try to decline while in_progress
@@ -454,7 +454,7 @@ describe('F: Task Management', () => {
         userName: dev,
         body: {},
       }),
-      { params: { projectId, taskId: inProgId } },
+      { params: Promise.resolve({ projectId, taskId: inProgId }) },
     );
     expect(res.status).toBe(409);
   });
@@ -492,7 +492,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
     expect(res.status).toBe(200);
     const task = await testPrisma.task.findUnique({ where: { id: taskId } });
@@ -506,7 +506,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { title: 'State Machine Task', type: 'code' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const smId = (await createRes.json()).data.id;
 
@@ -517,7 +517,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { executorType: 'human', executorName: owner },
       }),
-      { params: { projectId, taskId: smId } },
+      { params: Promise.resolve({ projectId, taskId: smId }) },
     );
     expect(runRes.status).toBe(201);
     const runId = (await runRes.json()).data.id;
@@ -536,7 +536,7 @@ describe('F: Task Management', () => {
           deliverablesMet: ['completed the required task work'],
         },
       }),
-      { params: { projectId, taskId: smId, runId } },
+      { params: Promise.resolve({ projectId, taskId: smId, runId }) },
     );
     expect(completeRes.status).toBe(200);
 
@@ -551,7 +551,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { title: 'Skip State Task', type: 'code' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const skipId = (await createRes.json()).data.id;
 
@@ -561,7 +561,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { status: 'done' },
       }),
-      { params: { projectId, taskId: skipId } },
+      { params: Promise.resolve({ projectId, taskId: skipId }) },
     );
     expect(res.status).toBe(409);
     const body = await res.json();
@@ -575,7 +575,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { title: 'Reassign Task', type: 'code' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const reassignId = (await createRes.json()).data.id;
 
@@ -585,7 +585,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { assignee: dev, assigneeType: 'human' },
       }),
-      { params: { projectId, taskId: reassignId } },
+      { params: Promise.resolve({ projectId, taskId: reassignId }) },
     );
     expect(res.status).toBe(200);
     expect((await res.json()).data.assignee).toBe(dev);
@@ -598,7 +598,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { title: 'Unassign Task', type: 'code', assignee: dev, assigneeType: 'human' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const unassignId = (await createRes.json()).data.id;
 
@@ -608,7 +608,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { assignee: null, assigneeType: 'unassigned' },
       }),
-      { params: { projectId, taskId: unassignId } },
+      { params: Promise.resolve({ projectId, taskId: unassignId }) },
     );
     expect(res.status).toBe(200);
     expect((await res.json()).data.assignee).toBeNull();
@@ -621,7 +621,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { title: 'Refs guard task', type: 'code' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const refsTaskId = (await createRes.json()).data.id;
 
@@ -635,7 +635,7 @@ describe('F: Task Management', () => {
         userName: dev,
         body: { planConstraintRefs: ['use postgres'] },
       }),
-      { params: { projectId, taskId: refsTaskId } },
+      { params: Promise.resolve({ projectId, taskId: refsTaskId }) },
     );
     expect(resConstraint.status).toBe(403);
 
@@ -645,7 +645,7 @@ describe('F: Task Management', () => {
         userName: dev,
         body: { planStandardRefs: ['eslint'] },
       }),
-      { params: { projectId, taskId: refsTaskId } },
+      { params: Promise.resolve({ projectId, taskId: refsTaskId }) },
     );
     expect(resStandard.status).toBe(403);
 
@@ -659,7 +659,7 @@ describe('F: Task Management', () => {
           planStandardRefs: ['eslint'],
         },
       }),
-      { params: { projectId, taskId: refsTaskId } },
+      { params: Promise.resolve({ projectId, taskId: refsTaskId }) },
     );
     expect(resOwner.status).toBe(200);
     const persisted = await testPrisma.task.findUnique({ where: { id: refsTaskId } });
@@ -682,7 +682,7 @@ describe('F: Task Management', () => {
           assigneeType: 'human',
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const id = (await createRes.json()).data.id;
     await testPrisma.task.update({
@@ -704,7 +704,7 @@ describe('F: Task Management', () => {
         userName: otherDev,
         body: { status: 'done' },
       }),
-      { params: { projectId, taskId: id } },
+      { params: Promise.resolve({ projectId, taskId: id }) },
     );
     expect(res.status).toBe(403);
   });
@@ -718,7 +718,7 @@ describe('F: Task Management', () => {
         userName: dev,
         body: { status: 'done' },
       }),
-      { params: { projectId, taskId: id } },
+      { params: Promise.resolve({ projectId, taskId: id }) },
     );
     expect(res.status).toBe(200);
     const t = await testPrisma.task.findUnique({ where: { id } });
@@ -734,7 +734,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { status: 'done' },
       }),
-      { params: { projectId, taskId: id } },
+      { params: Promise.resolve({ projectId, taskId: id }) },
     );
     expect(res.status).toBe(200);
   });
@@ -756,7 +756,7 @@ describe('F: Task Management', () => {
           assigneeType: 'agent',
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const id = (await createRes.json()).data.id;
     await testPrisma.task.update({
@@ -772,7 +772,7 @@ describe('F: Task Management', () => {
         userName: agentMember,
         body: { status: 'done' },
       }),
-      { params: { projectId, taskId: id } },
+      { params: Promise.resolve({ projectId, taskId: id }) },
     );
     expect(res.status).toBe(409);
     const body = await res.json();
@@ -805,7 +805,7 @@ describe('F: Task Management', () => {
         userName: otherDev,
         body: { status: 'done' },
       }),
-      { params: { projectId, taskId: id } },
+      { params: Promise.resolve({ projectId, taskId: id }) },
     );
     expect(res.status).toBe(200);
   });
@@ -817,7 +817,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { title: 'To Delete', type: 'code' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const deleteId = (await createRes.json()).data.id;
 
@@ -826,7 +826,7 @@ describe('F: Task Management', () => {
         method: 'DELETE',
         userName: owner,
       }),
-      { params: { projectId, taskId: deleteId } },
+      { params: Promise.resolve({ projectId, taskId: deleteId }) },
     );
     expect(res.status).toBe(200);
   });
@@ -838,7 +838,7 @@ describe('F: Task Management', () => {
         userName: owner,
         body: { title: 'Not Delete', type: 'code' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     const nodeId = (await createRes.json()).data.id;
 
@@ -847,7 +847,7 @@ describe('F: Task Management', () => {
         method: 'DELETE',
         userName: dev,
       }),
-      { params: { projectId, taskId: nodeId } },
+      { params: Promise.resolve({ projectId, taskId: nodeId }) },
     );
     expect(res.status).toBe(403);
   });

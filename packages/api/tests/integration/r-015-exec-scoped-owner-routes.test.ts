@@ -139,7 +139,7 @@ describe('R-015: exec-scoped key blocked on owner-only write routes', () => {
         authToken: scopedKey,
         body: { name: 'renamed-by-scoped-key' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     await expectExecScopedDenial(res);
   });
@@ -151,7 +151,7 @@ describe('R-015: exec-scoped key blocked on owner-only write routes', () => {
         userName: owner,
         authToken: scopedKey,
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     await expectExecScopedDenial(res);
   });
@@ -164,7 +164,7 @@ describe('R-015: exec-scoped key blocked on owner-only write routes', () => {
         authToken: scopedKey,
         body: { title: 'renamed-draft' },
       }),
-      { params: { projectId, planId: draftPlanId } },
+      { params: Promise.resolve({ projectId, planId: draftPlanId }) },
     );
     await expectExecScopedDenial(res);
   });
@@ -176,7 +176,7 @@ describe('R-015: exec-scoped key blocked on owner-only write routes', () => {
         userName: owner,
         authToken: scopedKey,
       }),
-      { params: { projectId, planId: draftPlanId } },
+      { params: Promise.resolve({ projectId, planId: draftPlanId }) },
     );
     await expectExecScopedDenial(res);
   });
@@ -189,7 +189,7 @@ describe('R-015: exec-scoped key blocked on owner-only write routes', () => {
         authToken: scopedKey,
         body: { field: 'constraints', items: ['sneaky-constraint'] },
       }),
-      { params: { projectId, planId: draftPlanId } },
+      { params: Promise.resolve({ projectId, planId: draftPlanId }) },
     );
     await expectExecScopedDenial(res);
   });
@@ -201,7 +201,7 @@ describe('R-015: exec-scoped key blocked on owner-only write routes', () => {
         userName: owner,
         authToken: scopedKey,
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
     await expectExecScopedDenial(res);
   });
@@ -214,7 +214,7 @@ describe('R-015: exec-scoped key blocked on owner-only write routes', () => {
         authToken: scopedKey,
         body: { name: 'sneaky-new-member', role: 'developer', type: 'human' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     await expectExecScopedDenial(res);
   });
@@ -227,7 +227,7 @@ describe('R-015: exec-scoped key blocked on owner-only write routes', () => {
         authToken: scopedKey,
         body: { role: 'owner' },
       }),
-      { params: { projectId, memberId: extraMemberId } },
+      { params: Promise.resolve({ projectId, memberId: extraMemberId }) },
     );
     await expectExecScopedDenial(res);
   });
@@ -239,7 +239,7 @@ describe('R-015: exec-scoped key blocked on owner-only write routes', () => {
         userName: owner,
         authToken: scopedKey,
       }),
-      { params: { projectId, memberId: extraMemberId } },
+      { params: Promise.resolve({ projectId, memberId: extraMemberId }) },
     );
     await expectExecScopedDenial(res);
   });
@@ -252,7 +252,7 @@ describe('R-015: exec-scoped key blocked on owner-only write routes', () => {
         authToken: scopedKey,
         body: { url: 'https://example.com/hook', events: ['task_done'] },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     await expectExecScopedDenial(res);
   });
@@ -265,7 +265,7 @@ describe('R-015: exec-scoped key blocked on owner-only write routes', () => {
         authToken: scopedKey,
         body: { type: 'plan_owner', planId },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     await expectExecScopedDenial(res);
   });
@@ -280,7 +280,7 @@ describe('R-015: exec-scoped key blocked on owner-only write routes', () => {
         userName: owner,
         body: { name: `t-rename-${Date.now()}` },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(200);
   });

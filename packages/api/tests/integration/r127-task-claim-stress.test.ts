@@ -65,7 +65,7 @@ describe('R-127: concurrent task claim stress', () => {
         userName: owner,
         body: { title, type: 'code' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(created.status).toBe(201);
     return (await created.json()).data.id;
@@ -82,7 +82,7 @@ describe('R-127: concurrent task claim stress', () => {
             userName,
             body: { assigneeType: 'human', startImmediately: true },
           }),
-          { params: { projectId, taskId } },
+          { params: Promise.resolve({ projectId, taskId }) },
         ),
       ),
     );
@@ -144,7 +144,7 @@ describe('R-127: concurrent task claim stress', () => {
               userName,
               body: { assigneeType: 'human', startImmediately: true },
             }),
-            { params: { projectId, taskId } },
+            { params: Promise.resolve({ projectId, taskId }) },
           ),
         ),
       );
