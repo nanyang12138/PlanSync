@@ -4,6 +4,7 @@ import { POST as apiKeysPost, GET as apiKeysGet } from '@/app/api/auth/api-keys/
 import { DELETE as apiKeyDelete } from '@/app/api/auth/api-keys/[keyId]/route';
 import { GET as projectsGet } from '@/app/api/projects/route';
 import { makeReq, createTestProject, cleanupProject, testPrisma } from '../helpers/request';
+import { _authCacheSizeForTests, _resetAuthCacheForTests } from '@/lib/auth';
 
 describe('K: API Key Management', () => {
   const owner = 'apikey-owner';
@@ -110,5 +111,55 @@ describe('K: API Key Management', () => {
       { params: Promise.resolve({ keyId: toDeleteId }) },
     );
     expect(res.status).toBe(200);
+  });
+
+  it('K8 / closes #741: revoking a cached API key 401s on the very next request', async () => {
+    // Reset the cache so we can assert "exactly one entry was added,
+    // then exactly that entry was dropped" without interference from
+    // earlier test cases.
+    _resetAuthCacheForTests();
+
+    // Create a fresh key.
+    const createRes = await apiKeysPost(
+      makeReq('/api/auth/api-keys', {
+        method: 'POST',
+        userName: owner,
+        body: { projectId, name: 'Revoke Cache Test' },
+      }),
+    );
+    const created = (await createRes.json()).data;
+    const cacheKey = created.key;
+    const cacheKeyId = created.id;
+
+    // Use the key once so it lands in the auth cache. Pre-fix, the
+    // cache then keeps the principal alive for AUTH_CACHE_TTL_MS
+    // (5 min) regardless of subsequent revocation.
+    const useRes1 = await projectsGet(
+      makeReq('/api/projects', { userName: owner, authToken: cacheKey }),
+    );
+    expect(useRes1.status).toBe(200);
+    expect(_authCacheSizeForTests()).toBe(1);
+
+    // Revoke the key.
+    const delRes = await apiKeyDelete(
+      makeReq(`/api/auth/api-keys/${cacheKeyId}`, {
+        method: 'DELETE',
+        userName: owner,
+      }),
+      { params: Promise.resolve({ keyId: cacheKeyId }) },
+    );
+    expect(delRes.status).toBe(200);
+
+    // Cache must have been invalidated synchronously by the DELETE
+    // handler — the entry that was added by useRes1 is gone.
+    expect(_authCacheSizeForTests()).toBe(0);
+
+    // The next request with the just-revoked key must 401, NOT
+    // continue to authenticate off a stale cache hit. Pre-fix this
+    // would have returned 200 for up to 5 minutes.
+    const useRes2 = await projectsGet(
+      makeReq('/api/projects', { userName: owner, authToken: cacheKey }),
+    );
+    expect(useRes2.status).toBe(401);
   });
 });
