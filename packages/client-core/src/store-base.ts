@@ -129,9 +129,11 @@ export class Store<S extends BaseState> {
     try {
       const result = await opts.action();
       if (seq !== this.latestActionSeq) {
-        // A newer action superseded us. Don't touch state — its handler
-        // will own the next status flip. Still return the result so
-        // direct callers (e.g. an immediate `.then`) can use it.
+        // R5 / R5b — A newer action superseded us. Don't roll back
+        // (a snapshot revert would erase the newer action's
+        // optimistic changes too) and don't flip status (the newer
+        // action owns that). The newer action's onSuccess/onFailure
+        // is responsible for whatever cleanup is needed.
         return result;
       }
       // Closes #783: a previous failed action left state.status === 'error'.
@@ -150,7 +152,21 @@ export class Store<S extends BaseState> {
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       if (seq !== this.latestActionSeq) {
-        // A newer action superseded us. Don't roll back its progress.
+        // R5b / closes #996: pre-fix the stale-failure branch
+        // returned without ANY cleanup, so a stale action's
+        // optimistic mutation lingered in state until the newer
+        // action happened to overwrite it. If the newer action was
+        // a different operation (e.g. a refresh), the phantom row
+        // could survive forever.
+        //
+        // Fix: still call the caller-supplied onFailure so the
+        // optimistic delta is rolled back via the same code path
+        // that handles non-stale failures. We do NOT touch status —
+        // the newer in-flight action owns that, and we'd otherwise
+        // race with its eventual onSuccess/onFailure write.
+        if (opts.onFailure) {
+          this.setState((state) => opts.onFailure!(state, error));
+        }
         throw error;
       }
       // Roll back optimistic changes, then apply caller-supplied failure
