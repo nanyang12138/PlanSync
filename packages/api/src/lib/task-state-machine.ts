@@ -49,10 +49,7 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { prisma as defaultPrisma } from './prisma';
 
-export type TaskCompletionMissingCode =
-  | 'pr_merged'
-  | 'deliverable_evidence'
-  | 'drift_open';
+export type TaskCompletionMissingCode = 'pr_merged' | 'deliverable_evidence' | 'drift_open';
 
 export interface TaskCompletionMissing {
   /** Stable machine-readable code; matches the verification fixture. */
@@ -294,9 +291,7 @@ async function deliverableRefsWithoutEvidence(
   });
   const withEvidence = new Set(linkCounts.map((row) => row.deliverableId));
 
-  const missingResolved = deliverables
-    .filter((d) => !withEvidence.has(d.id))
-    .map((d) => d.slug);
+  const missingResolved = deliverables.filter((d) => !withEvidence.has(d.id)).map((d) => d.slug);
 
   return [...unresolved, ...missingResolved];
 }
