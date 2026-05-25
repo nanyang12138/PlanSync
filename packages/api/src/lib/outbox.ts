@@ -70,25 +70,44 @@ export async function emit(
  * R-161 escape hatch: when a producer absolutely cannot wrap its work in a
  * transaction (today: instrumentation startup hooks, dev-only seed scripts)
  * we still want the event in the outbox so the worker can pick it up. This
- * starts a 1-row transaction internally; do NOT use this from request
- * handlers — those should always emit inside the same tx as the state
- * change they describe.
+ * starts a 1-row transaction internally.
+ *
+ * Best-effort by design: the failure is logged but **swallowed**. Use this
+ * ONLY when the call site has no recovery path — instrumentation hooks,
+ * dev seeds. **Never** use it from request handlers; those must use either
+ * `emit(tx, ...)` inside an existing transaction OR
+ * {@link emitOutOfTxStrict} which surfaces failures so the HTTP response
+ * accurately reports persistence success/failure.
+ *
+ * Closes #781 / #793 / #797 / #806 — the GitHub webhook receiver
+ * previously called this helper and ended up returning 200 to GitHub even
+ * when the outbox INSERT failed, silently dropping events that GitHub then
+ * never retried. The receiver now uses `emitOutOfTxStrict`.
  */
 export async function emitOutOfTx(type: DomainEventType, input: EmitInput = {}): Promise<void> {
   try {
-    await prisma.$transaction(async (tx) => {
-      await emit(tx, type, input);
-    });
+    await emitOutOfTxStrict(type, input);
   } catch (err) {
-    // emitOutOfTx is best-effort by definition; we surface the failure to
-    // logs so it shows up in observability, but we do not rethrow because
-    // the call site (e.g. an instrumentation startup hook) has no useful
-    // recovery path.
     logger.error({ err, type }, 'outbox.emitOutOfTx failed');
   }
+}
+
+/**
+ * Same as {@link emitOutOfTx} but rethrows on failure so the caller can
+ * propagate the failure to its own response (e.g. webhook handlers
+ * returning 5xx so GitHub retries; CLI seed scripts exiting non-zero).
+ */
+export async function emitOutOfTxStrict(
+  type: DomainEventType,
+  input: EmitInput = {},
+): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await emit(tx, type, input);
+  });
 }
 
 export const outbox = {
   emit,
   emitOutOfTx,
+  emitOutOfTxStrict,
 };

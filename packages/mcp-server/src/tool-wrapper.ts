@@ -224,6 +224,14 @@ export function wrapToolHandler<TArgs, TResult>(
   options: ToolWrapperOptions,
 ): (args: TArgs) => Promise<TResult | ToolErrorEnvelope | ToolDelegationEnvelope> {
   return async (args: TArgs) => {
+    // R6 / closes #923: capture the FSM state BEFORE preflight so we
+    // can roll back if the handler throws. Pre-fix, evaluatePreflight
+    // (via recordToolCall) advanced the FSM eagerly; a thrown handler
+    // then left the agent stuck in a "completed" state that no longer
+    // permitted the recovery tool calls. Wrapping rollbackTo around
+    // the catch keeps the FSM honest: it advances only when the
+    // handler succeeds.
+    const preFsmState = options.execStateManager?.getState();
     const preflight = evaluatePreflight(toolName, options);
     if (preflight.kind === 'short-circuit') {
       return preflight.response;
@@ -231,6 +239,9 @@ export function wrapToolHandler<TArgs, TResult>(
     try {
       return await handler(args);
     } catch (err) {
+      if (preFsmState !== undefined && options.execStateManager) {
+        options.execStateManager.rollbackTo(preFsmState);
+      }
       return buildErrorEnvelope(err, toolName);
     }
   };
