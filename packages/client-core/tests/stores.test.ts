@@ -282,6 +282,72 @@ describe('RunStore', () => {
     expect(store.getState().activeIds).toEqual([]);
     expect(store.getState().byId['run-1'].status).toBe('completed');
   });
+
+  // Closes #785: API publishes 'task_started' (not 'execution_started').
+  // The lightweight payload is just {taskId, executorName, executorType}.
+  // The store must claim the event so the registry treats it as a hit
+  // and the UI can refetch.
+  it("handleEvent claims 'task_started' even with the API's lightweight payload (#785, #784)", () => {
+    const api = new MockApiClient();
+    const store = new RunStore(api);
+    const claimed = store.handleEvent({
+      eventId: 'evt-1',
+      type: 'task_started',
+      projectId: 'proj_1',
+      data: {
+        taskId: 'task-1',
+        executorName: 'alice',
+        executorType: 'human',
+      },
+    });
+    expect(claimed).toBe(true);
+  });
+
+  it("handleEvent merges full ExecutionRun when it's present in the payload (#784)", () => {
+    const api = new MockApiClient();
+    const store = new RunStore(api);
+    const run = makeRun({ id: 'run-evt', status: 'running' });
+    const claimed = store.handleEvent({
+      eventId: 'evt-2',
+      type: 'task_started',
+      projectId: 'proj_1',
+      data: { run },
+    });
+    expect(claimed).toBe(true);
+    expect(store.getState().byId['run-evt']?.id).toBe('run-evt');
+  });
+});
+
+// Closes #783: a successful runAction after a previous failure used to
+// leave state.status === 'error' because the success path only patched
+// `error: undefined`. The retry path now flips status back to 'ready'.
+describe('Store.runAction status recovery (#783)', () => {
+  it('flips status from error → ready on a successful retry', async () => {
+    const api = new MockApiClient();
+    const store = new RunStore(api);
+    api.queue.runsList = [];
+    await store.load('proj_1');
+    expect(store.getState().status).toBe('ready');
+
+    // Fail once → status becomes 'error'. Queue a function that throws —
+    // the mock's `unwrap` invokes function-typed queue values, so the
+    // thrown error propagates back to runAction's catch branch.
+    api.queue.runsStart = (() => {
+      throw new Error('simulated 5xx');
+    }) as unknown as () => ReturnType<typeof makeRun>;
+    await expect(
+      store.start('proj_1', 'task-1', { executorType: 'agent', executorName: 'a' }),
+    ).rejects.toThrow();
+    expect(store.getState().status).toBe('error');
+    expect(store.getState().error).toBe('simulated 5xx');
+
+    // Retry succeeds → status MUST be back to 'ready' AND error cleared.
+    api.queue.runsStart = makeRun({ id: 'run-retry', status: 'running' });
+    await store.start('proj_1', 'task-1', { executorType: 'agent', executorName: 'a' });
+    expect(store.getState().status).toBe('ready');
+    expect(store.getState().error).toBeUndefined();
+    expect(store.getState().byId['run-retry']?.status).toBe('running');
+  });
 });
 
 describe('StoreRegistry', () => {
@@ -337,5 +403,72 @@ describe('StoreRegistry', () => {
 
     unsubscribe();
     expect(api.subscriberCount).toBe(0);
+  });
+});
+
+// R5 (closes #918 #939 #954 #940) — RunStore lightweight-event refetch
+// + stale-action guard.
+describe('R5: RunStore lightweight task_started triggers refetch', () => {
+  it('schedules api.runs.list when task_started arrives without a full run', async () => {
+    const api = new MockApiClient();
+    const store = new RunStore(api);
+    api.queue.runsList = [];
+    await store.load('proj_1');
+
+    api.calls.runs.list.length = 0;
+    api.queue.runsList = [makeRun({ id: 'run-evt', status: 'running' })];
+
+    const claimed = store.handleEvent({
+      eventId: 'evt-light',
+      type: 'task_started',
+      projectId: 'proj_1',
+      data: { taskId: 'task-1', executorName: 'a', executorType: 'agent' },
+    });
+    expect(claimed).toBe(true);
+    // Wait one microtask + immediate for the void-load() to settle.
+    await new Promise((r) => setImmediate(r));
+    expect(api.calls.runs.list.length).toBeGreaterThan(0);
+    expect(store.getState().byId['run-evt']?.status).toBe('running');
+  });
+});
+
+describe('R5: runAction stale-success guard (#940)', () => {
+  it('does NOT overwrite a newer error with a late-arriving stale success', async () => {
+    const api = new MockApiClient();
+    const store = new RunStore(api);
+    api.queue.runsList = [];
+    await store.load('proj_1');
+
+    // Action A: slow success that resolves AFTER B's failure.
+    let resolveA: (r: ReturnType<typeof makeRun>) => void = () => {};
+    const slowA = new Promise<ReturnType<typeof makeRun>>((res) => {
+      resolveA = res;
+    });
+    api.queue.runsStart = (() => slowA) as unknown as () => ReturnType<typeof makeRun>;
+    const aPromise = store
+      .start('proj_1', 'task-1', { executorType: 'agent', executorName: 'a' })
+      .catch(() => undefined);
+
+    // Wait for A to be in-flight.
+    await new Promise((r) => setImmediate(r));
+
+    // Action B: synchronous failure → status='error'.
+    api.queue.runsStart = (() => {
+      throw new Error('B failed');
+    }) as unknown as () => ReturnType<typeof makeRun>;
+    await expect(
+      store.start('proj_1', 'task-1', { executorType: 'agent', executorName: 'b' }),
+    ).rejects.toThrow('B failed');
+    expect(store.getState().status).toBe('error');
+    expect(store.getState().error).toBe('B failed');
+
+    // Now resolve A. Pre-fix this would flip status back to 'ready' and
+    // clear the error; post-fix the stale-seq check skips the success
+    // patch entirely, so B's error wins.
+    resolveA(makeRun({ id: 'run-A', status: 'running' }));
+    await aPromise;
+
+    expect(store.getState().status).toBe('error');
+    expect(store.getState().error).toBe('B failed');
   });
 });

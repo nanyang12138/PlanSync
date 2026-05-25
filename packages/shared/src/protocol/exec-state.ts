@@ -145,58 +145,96 @@ export const EXEC_STATE_MACHINE: Readonly<Record<ExecState, ExecStateNode>> = {
     },
   },
   CONTEXT_LOADED: {
-    description: 'Exec context loaded — call plansync_task_pack to receive the task brief.',
-    allowedTools: ['plansync_task_pack', 'plansync_exec_context'],
-    requiredNextOneOf: ['plansync_task_pack'],
+    description:
+      'Exec context loaded — call plansync_task_pack to receive the task brief, then plansync_execution_complete (or, in /exec sub-sessions where the parent has already registered the run AND the task pack is already in the agent prompt, plansync_execution_complete directly).',
+    // R6 / closes #957 #941: in /exec sub-sessions the parent CLI
+    // pre-registers the run AND embeds the task pack into the agent's
+    // system prompt. The agent's LAST visible MCP call is therefore
+    // execution_complete — task_pack is sometimes skipped because the
+    // agent already has the brief in context. Allow that legitimate
+    // collapse (CONTEXT_LOADED → COMPLETED) so the FSM doesn't reject
+    // a working /exec flow with OUT_OF_SEQUENCE.
+    allowedTools: ['plansync_task_pack', 'plansync_execution_complete', 'plansync_exec_context'],
+    requiredNextOneOf: ['plansync_task_pack', 'plansync_execution_complete'],
     transitions: {
       plansync_task_pack: 'PACK_FETCHED',
+      plansync_execution_complete: 'COMPLETED',
     },
   },
   PACK_FETCHED: {
     description:
-      'Task pack received — resolve any drift alerts and then call plansync_execution_start.',
+      'Task pack received — resolve any drift alerts and then call plansync_execution_start (or, for /exec sub-sessions where the run is pre-registered, plansync_execution_complete).',
     allowedTools: [
       'plansync_task_pack',
       'plansync_execution_start',
+      // Closes #765-class — /exec sub-sessions get a pre-registered run
+      // from plansync_exec_context (execMode: true, runId in the
+      // response). The agent then loads the task pack and is supposed
+      // to call plansync_execution_complete directly without a
+      // separate plansync_execution_start. Without this entry, the
+      // FSM rejects the legitimate /exec collapse with
+      // OUT_OF_SEQUENCE.
+      'plansync_execution_complete',
       'plansync_drift_resolve',
       'plansync_task_rebind',
       'plansync_comment_create',
+      // Closes #765-class — comment_edit / comment_delete are in the
+      // exec-mode whitelist (packages/mcp-server/src/index.ts EXEC_ALLOWED)
+      // but were missing from the FSM, so legitimate edits / deletes
+      // were rejected as OUT_OF_SEQUENCE.
+      'plansync_comment_edit',
+      'plansync_comment_delete',
       'plansync_plan_suggest',
     ],
-    requiredNextOneOf: ['plansync_execution_start'],
+    requiredNextOneOf: ['plansync_execution_start', 'plansync_execution_complete'],
     transitions: {
       plansync_execution_start: 'RUN_STARTED',
+      // /exec collapse path: PACK_FETCHED → COMPLETED directly.
+      plansync_execution_complete: 'COMPLETED',
     },
   },
   RUN_STARTED: {
-    description:
-      'Execution running — heartbeat, then call plansync_execution_complete (or abort) when done.',
+    description: 'Execution running — heartbeat, then call plansync_execution_complete when done.',
     allowedTools: [
       'plansync_execution_heartbeat',
       'plansync_execution_complete',
-      'plansync_execution_abort',
+      // Note: plansync_execution_abort was previously listed here, but
+      // no such MCP tool exists (it isn't in mcp-server/src/index.ts's
+      // EXEC_ALLOWED nor anywhere else in the surface). To exit early,
+      // call plansync_execution_complete with status='cancelled' /
+      // 'failed' instead. (Closes #765-class — phantom-tool reference.)
       'plansync_drift_resolve',
       'plansync_task_rebind',
       'plansync_comment_create',
+      'plansync_comment_edit',
+      'plansync_comment_delete',
       'plansync_plan_suggest',
     ],
     requiredNextOneOf: ['plansync_execution_heartbeat', 'plansync_execution_complete'],
     transitions: {
       plansync_execution_complete: 'COMPLETED',
-      plansync_execution_abort: 'ABORTED',
     },
   },
   COMPLETED: {
-    description: 'Run completed — open a new exec_context for the next task.',
-    allowedTools: [],
-    requiredNextOneOf: [],
-    transitions: {},
+    description:
+      'Run completed — open a new exec_context for the next task (FSM resets to CONTEXT_LOADED).',
+    // Closes #765-class — the agent must be able to start the next
+    // /exec session via plansync_exec_context. Empty allowedTools
+    // forced the wrapper to reject every recovery call.
+    allowedTools: ['plansync_exec_context'],
+    requiredNextOneOf: ['plansync_exec_context'],
+    transitions: {
+      plansync_exec_context: 'CONTEXT_LOADED',
+    },
   },
   ABORTED: {
-    description: 'Run aborted — open a new exec_context for the next task.',
-    allowedTools: [],
-    requiredNextOneOf: [],
-    transitions: {},
+    description:
+      'Run aborted — open a new exec_context for the next task (FSM resets to CONTEXT_LOADED).',
+    allowedTools: ['plansync_exec_context'],
+    requiredNextOneOf: ['plansync_exec_context'],
+    transitions: {
+      plansync_exec_context: 'CONTEXT_LOADED',
+    },
   },
 } as const;
 
