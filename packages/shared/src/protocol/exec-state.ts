@@ -185,8 +185,7 @@ export const EXEC_STATE_MACHINE: Readonly<Record<ExecState, ExecStateNode>> = {
     },
   },
   RUN_STARTED: {
-    description:
-      'Execution running — heartbeat, then call plansync_execution_complete when done.',
+    description: 'Execution running — heartbeat, then call plansync_execution_complete when done.',
     allowedTools: [
       'plansync_execution_heartbeat',
       'plansync_execution_complete',
