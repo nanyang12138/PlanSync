@@ -33,10 +33,12 @@ function resolveBuildUser() {
 const nextConfig = {
   output: 'standalone',
   distDir: path.join('tmp', 'ps-next-build-' + resolveBuildUser()),
-  experimental: {
-    serverComponentsExternalPackages: ['pino', 'pino-pretty', '@prisma/client', '.prisma/client'],
-    instrumentationHook: true,
-  },
+  // R-131 / G3 (Next.js 15 migration):
+  //   - `experimental.serverComponentsExternalPackages` was promoted to
+  //     the top-level `serverExternalPackages` in Next 15.
+  //   - `experimental.instrumentationHook` is no longer needed because
+  //     `instrumentation.js` is enabled by default in Next 15+.
+  serverExternalPackages: ['pino', 'pino-pretty', '@prisma/client', '.prisma/client'],
 };
 
 module.exports = nextConfig;

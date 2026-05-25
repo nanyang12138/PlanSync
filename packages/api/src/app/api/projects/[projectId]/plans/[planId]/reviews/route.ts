@@ -8,9 +8,10 @@ import { sendMail, userEmail } from '@/lib/email';
 import { logger } from '@/lib/logger';
 import { requirePlanInProject } from '@/lib/plan-scope';
 
-type Params = { params: { projectId: string; planId: string } };
+type Params = { params: Promise<{ projectId: string; planId: string }> };
 
-export async function GET(req: NextRequest, { params }: Params) {
+export async function GET(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);
@@ -28,7 +29,8 @@ export async function GET(req: NextRequest, { params }: Params) {
 }
 
 /** Add a reviewer to a plan that is in proposed status. */
-export async function POST(req: NextRequest, { params }: Params) {
+export async function POST(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId, 'owner');

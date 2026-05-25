@@ -48,7 +48,9 @@ function resolveBufferLimit(): number {
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-export async function GET(req: NextRequest, { params }: { params: { projectId: string } }) {
+export async function GET(req: NextRequest, ctx: { params: Promise<{ projectId: string }> }) {
+  // R-131 / G3 (Next.js 15): params is async.
+  const params = await ctx.params;
   // R-089: SSE no longer accepts `?token=` in the URL. Tokens leaked into
   // browser history, server access logs, and referrer headers. Browser
   // clients must authenticate via the `plansync-apikey` cookie (set by the

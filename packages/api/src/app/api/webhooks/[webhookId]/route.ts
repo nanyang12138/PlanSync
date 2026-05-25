@@ -4,9 +4,10 @@ import { authenticate, requireProjectRole } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { AppError, ErrorCode } from '@plansync/shared';
 
-type Params = { params: { webhookId: string } };
+type Params = { params: Promise<{ webhookId: string }> };
 
-export async function DELETE(req: NextRequest, { params }: Params) {
+export async function DELETE(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     const webhook = await prisma.webhook.findUnique({ where: { id: params.webhookId } });

@@ -7,9 +7,10 @@ import { updateCommentSchema, AppError, ErrorCode } from '@plansync/shared';
 import { eventBus } from '@/lib/event-bus';
 import { createActivity } from '@/lib/activity';
 
-type Params = { params: { projectId: string; planId: string; commentId: string } };
+type Params = { params: Promise<{ projectId: string; planId: string; commentId: string }> };
 
-export async function PATCH(req: NextRequest, { params }: Params) {
+export async function PATCH(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);
@@ -69,7 +70,8 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   }
 }
 
-export async function DELETE(req: NextRequest, { params }: Params) {
+export async function DELETE(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     const authCtx = await requireProjectRole(auth, params.projectId);

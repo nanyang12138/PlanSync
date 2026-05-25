@@ -1,5 +1,22 @@
-import { Client } from 'pg';
+// G3 / R-131 (Next.js 15) — same bug class P0-2 (#845) fixed for Next 14:
+// `import { Client } from 'pg'` lets webpack treat the entire dependent
+// module chain as an async ESM module (because pg ships dual ESM+CJS
+// exports), and route handlers that synchronously call `new EventBusPG()`
+// see the unresolved async-module symbol. Result at runtime is
+// `TypeError: a is not a constructor` (variable name varies by Next minor;
+// pre-15 it was `e`). Loading pg via `createRequire` keeps the resolution
+// synchronous + outside webpack bundling, restoring the constructor.
+import { createRequire } from 'node:module';
+import type { Client as PgClient } from 'pg';
 import { createHash, randomUUID } from 'crypto';
+
+// Type and value share the same name on purpose: `Client` is the runtime
+// constructor and the type that callers expect. ESLint can't see the
+// type-only declaration so we silence no-redeclare on the value line.
+type Client = PgClient;
+const requireFromHere = createRequire(__filename);
+// eslint-disable-next-line no-redeclare
+const Client = requireFromHere('pg').Client as typeof PgClient;
 import { logger } from './logger';
 import { MemoryEventBus } from './event-bus-memory';
 import type {

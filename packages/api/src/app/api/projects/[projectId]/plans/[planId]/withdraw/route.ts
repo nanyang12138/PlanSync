@@ -7,7 +7,7 @@ import { createActivity } from '@/lib/activity';
 import { eventBus } from '@/lib/event-bus';
 import { requirePlanInProject } from '@/lib/plan-scope';
 
-type Params = { params: { projectId: string; planId: string } };
+type Params = { params: Promise<{ projectId: string; planId: string }> };
 
 /**
  * R-205: withdraw a `proposed` plan back to `draft`.
@@ -29,7 +29,8 @@ type Params = { params: { projectId: string; planId: string } };
  * Idempotency: a plan that is already a draft 409s rather than silently
  * succeeding, so callers see the state-machine boundary clearly.
  */
-export async function POST(req: NextRequest, { params }: Params) {
+export async function POST(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     requireNotExecScoped(auth);

@@ -11,9 +11,10 @@ import { logger } from '@/lib/logger';
 import { auditCrossProjectTaskIfNeeded } from '@/lib/task-scope';
 import { createActivity } from '@/lib/activity';
 
-type Params = { params: { projectId: string; taskId: string } };
+type Params = { params: Promise<{ projectId: string; taskId: string }> };
 
-export async function GET(req: NextRequest, { params }: Params) {
+export async function GET(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);
@@ -42,7 +43,8 @@ const VALID_STATUS_TRANSITIONS: Record<string, string[]> = {
   blocked: ['in_progress'],
 };
 
-export async function PATCH(req: NextRequest, { params }: Params) {
+export async function PATCH(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     const authed = await requireProjectRole(auth, params.projectId);
@@ -218,7 +220,8 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   }
 }
 
-export async function DELETE(req: NextRequest, { params }: Params) {
+export async function DELETE(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     requireNotExecScoped(auth);
