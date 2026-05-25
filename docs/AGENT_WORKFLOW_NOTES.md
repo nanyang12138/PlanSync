@@ -19,14 +19,28 @@ in master.
 
 **What to do instead.**
 
-- Put the closes refs in the PR body (use `ManagePullRequest`
-  `update_pr` to amend before merge).
+- Put the closes refs in the PR BODY. Use the `Closes` section that
+  `.github/PULL_REQUEST_TEMPLATE.md` pre-fills for every new PR.
+  When you call `ManagePullRequest` `create_pr` / `update_pr`, the
+  body you supply must contain `closes #N` lines BEFORE merge.
 - Or, after the parent PR is merged, manually close the issue with
   a "fixed at commit `abc1234`" comment. Cloud Agents have
   read-only `gh`, so this is something a maintainer has to do.
 - Easier: only commit round-2 fixes on a branch whose PR is **still
   open**. Once the PR is merged, the branch is dead — the next
   round-2 review-finding requires a fresh PR off master.
+
+**Recognised closes-keywords** (case-insensitive, equivalent):
+`close` `closes` `closed` `fix` `fixes` `fixed` `resolve`
+`resolves` `resolved`. Format: `<keyword> #N`. Avoid markdown
+formatting around the issue ref (`**closes #918**` may NOT
+trigger; plain `closes #918` always does).
+
+**Bulk-close trick.** When earlier merged PRs left issues
+auto-close didn't fire on (commit-only refs), pile their numbers
+into the next PR's body under a `## Closes (housekeeping)` heading
+and reference the original commit SHA. When that PR merges,
+GitHub closes them all in one shot. PR #1038 is the worked example.
 
 ## 2. Squash-merge can race past your in-flight follow-up commits
 
