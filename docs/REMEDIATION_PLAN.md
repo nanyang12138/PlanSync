@@ -2560,8 +2560,9 @@
 
 #### R-144 [MEDIUM] 新增 `ai_calls` 表，所有 LLM 调用全链路记录
 
-- **status**: blocked
-- **blocked_reason**: superseded by R-182 (status: done); `ai_calls` 表与 `/api/ai-usage` 已由 R-182 实现，本条 fix_steps 全部为 no-op，实质已完成且无可独立实施的工作。条目自带 `superseded_by: R-182` 与"cron 必跳过本条"语义；标 blocked 防止后续 cron run 反复挑出此条。
+- **status**: cancelled
+- **cancelled_by**: R-182
+- **cancellation_reason**: superseded by R-182 (status: done); `ai_calls` 表与 `/api/ai-usage` 已由 R-182 实现，本条 fix_steps 全部为 no-op。Per §"给 cron job 的解析约定" line 115: 被 supersedes 取代的旧条目应 `status: cancelled` + `cancelled_by:` 指向取代者，而不是 `blocked`。`cancelled` 是 supersedes 链的机读完成态，cron 把它视作依赖满足；`blocked` 不视作依赖满足，会让任何 `depends_on: R-144` 的下游永久阻塞（虽然此处无下游，但保持文档机读语义正确）。PR#833 误标为 blocked，本次按规范回正。
 - **batch**: B11
 - **depends_on**: —
 - **superseded_by**: R-182
@@ -2955,9 +2956,9 @@
 
 #### R-175 [HIGH] MCP tool surface 收敛到 ≤ 12 个
 
-- **status**: done
-- **closed_in**: PR#664
-- **note**: Sliced into 3 PRs by fix*step number. step 1 (plan*_*append → plan_patch) is in flight in PR#664; steps 2 (execution*_ → run) and 3 (task\_\* → task) will each ship as separate follow-up PRs to keep merge-conflict surface bounded.
+- **status**: in_progress
+- **closed_in**: PR#664 (step 1 only)
+- **note**: Sliced into 3 PRs by fix*step number. **Step 1 only** (`plan*_*append`→`plan_patch`) shipped in PR#664. Steps 2 (`execution*_`→`run`) and 3 (`task\_\*`→`task`) are still pending and tracked as follow-up entries R-175a / R-175b. Setting `status: done`prematurely (PR#839 backfill) caused issue #840 — downstream entries with`depends_on: R-175`(e.g. R-176) became schedulable before the surface was actually collapsed. Revert to`in_progress` until R-175a + R-175b both close.
 - **batch**: B15
 - **depends_on**: R-027, R-030
 - **effort**: large
