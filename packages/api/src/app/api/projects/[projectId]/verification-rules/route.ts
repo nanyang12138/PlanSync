@@ -17,7 +17,7 @@ import { handleApiError } from '@/lib/errors';
 import { AppError, ErrorCode } from '@plansync/shared';
 import { VERIFICATION_RULE_KINDS } from '@/lib/verification-rules';
 
-type Params = { params: { projectId: string } };
+type Params = { params: Promise<{ projectId: string }> };
 
 const SCOPES = ['project', 'task_type', 'task'] as const;
 
@@ -60,7 +60,8 @@ function validatePayload(body: unknown): {
   return { kind, scope, scopeValue, params, enabled };
 }
 
-export async function GET(req: NextRequest, { params }: Params) {
+export async function GET(req: NextRequest, ctx: Params) {
+  const params = await ctx.params;
   try {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId, 'owner');
@@ -75,7 +76,8 @@ export async function GET(req: NextRequest, { params }: Params) {
   }
 }
 
-export async function POST(req: NextRequest, { params }: Params) {
+export async function POST(req: NextRequest, ctx: Params) {
+  const params = await ctx.params;
   try {
     const auth = await authenticate(req);
     requireNotExecScoped(auth);
