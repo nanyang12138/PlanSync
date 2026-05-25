@@ -218,6 +218,23 @@ export function evaluatePreflight(toolName: string, options: ToolWrapperOptions)
  * Wrap a raw tool handler with preflight checks + error translation. Used
  * by both production code (via `patchServerToolRegistration`) and tests.
  */
+/**
+ * R6b / closes #997 — a handler that doesn't throw but returns an
+ * MCP error envelope (`{ isError: true, content: [...] }`) is just
+ * as much a failure as a thrown exception. We have to roll back the
+ * FSM in BOTH cases, otherwise a handler that catches its own DB
+ * error and returns `{ isError: true, content: [...] }` leaves the
+ * agent stuck in the advanced state with no recovery path.
+ *
+ * The shape check is intentionally loose: we treat anything with a
+ * truthy `.isError` as a failure. Tool handlers in this codebase that
+ * succeed never set `.isError`, so false positives are not a concern.
+ */
+function isErrorEnvelopeReturn(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  return (value as { isError?: unknown }).isError === true;
+}
+
 export function wrapToolHandler<TArgs, TResult>(
   toolName: string,
   handler: (args: TArgs) => Promise<TResult> | TResult,
@@ -228,16 +245,22 @@ export function wrapToolHandler<TArgs, TResult>(
     // can roll back if the handler throws. Pre-fix, evaluatePreflight
     // (via recordToolCall) advanced the FSM eagerly; a thrown handler
     // then left the agent stuck in a "completed" state that no longer
-    // permitted the recovery tool calls. Wrapping rollbackTo around
-    // the catch keeps the FSM honest: it advances only when the
-    // handler succeeds.
+    // permitted the recovery tool calls.
     const preFsmState = options.execStateManager?.getState();
     const preflight = evaluatePreflight(toolName, options);
     if (preflight.kind === 'short-circuit') {
       return preflight.response;
     }
     try {
-      return await handler(args);
+      const result = await handler(args);
+      // R6b / closes #997 — also roll back when the handler returned
+      // an isError envelope rather than throwing. This is the common
+      // pattern for tool handlers that catch their own DB / API
+      // failures and surface a structured error to the agent.
+      if (isErrorEnvelopeReturn(result) && preFsmState !== undefined && options.execStateManager) {
+        options.execStateManager.rollbackTo(preFsmState);
+      }
+      return result;
     } catch (err) {
       if (preFsmState !== undefined && options.execStateManager) {
         options.execStateManager.rollbackTo(preFsmState);

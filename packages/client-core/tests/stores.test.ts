@@ -472,3 +472,75 @@ describe('R5: runAction stale-success guard (#940)', () => {
     expect(store.getState().error).toBe('B failed');
   });
 });
+
+// R5b / closes #996 — stale-failure must still invoke onFailure so
+// the caller's rollback runs. Pre-fix, a stale failure just `throw`'d,
+// leaving its optimistic delta in state indefinitely. Probe via a
+// custom store with explicit optimistic + onFailure + a slow action,
+// rather than relying on TaskStore semantics that may evolve.
+describe('R5b: stale-failure invokes onFailure rollback (#996)', () => {
+  it('runs onFailure even when the failed action was superseded by a newer one', async () => {
+    interface ProbeState {
+      status: 'idle' | 'loading' | 'ready' | 'error';
+      error?: string;
+      tag: string[];
+    }
+    class ProbeStore extends ProjectStore {
+      // ProbeStore reuses ProjectStore for boilerplate but exposes a
+      // public `runProbe(...)` so the test can drive runAction directly.
+      async runProbe(args: {
+        action: () => Promise<string>;
+        optimistic: (s: unknown) => unknown;
+        onSuccess?: (s: unknown, r: string) => unknown;
+        onFailure: (s: unknown, e: Error) => unknown;
+      }): Promise<string> {
+        // @ts-expect-error — testing protected runAction
+        return this.runAction({
+          action: args.action,
+          optimistic: args.optimistic,
+          onSuccess: args.onSuccess ?? ((s) => s),
+          onFailure: args.onFailure,
+        });
+      }
+    }
+
+    const api = new MockApiClient();
+    const store = new ProbeStore(api);
+    api.queue.projectsList = [];
+    await store.load();
+
+    let onFailureCalled = false;
+
+    // Action A: slow + will fail after B starts.
+    let rejectA: (err: Error) => void = () => {};
+    const slowA = new Promise<string>((_, rej) => {
+      rejectA = rej;
+    });
+    const aPromise = store
+      .runProbe({
+        action: () => slowA,
+        optimistic: (s) => ({ ...(s as object) }),
+        onFailure: (s, _e) => {
+          onFailureCalled = true;
+          return s;
+        },
+      })
+      .catch(() => undefined);
+
+    // Yield so A's optimistic + scheduling lands.
+    await new Promise((r) => setImmediate(r));
+
+    // Action B: synchronous success bumps latestActionSeq above A's.
+    await store.runProbe({
+      action: async () => 'B',
+      optimistic: (s) => s,
+      onFailure: (s) => s,
+    });
+
+    // Now A fails — stale.
+    rejectA(new Error('A failed late'));
+    await aPromise;
+
+    expect(onFailureCalled).toBe(true);
+  });
+});
