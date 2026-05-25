@@ -268,7 +268,10 @@ describe('R-113: sendMail asynchronous queue', () => {
 // uncaughtException and crashed the API process. Post-fix, the
 // listener calls settle({ok:false,…}) and processQueue continues.
 describe('R8 child.stdin EPIPE handler (#920)', () => {
+  // Local list; the outer describe's `spawnedChildren` is out of scope.
+  const localSpawnedChildren: FakeChild[] = [];
   it('settles the delivery with ok=false instead of throwing when stdin emits error', async () => {
+    localSpawnedChildren.length = 0;
     spawnMock.mockReset();
     spawnMock.mockImplementation(() => {
       const child = new EventEmitter() as FakeChild;
@@ -284,7 +287,7 @@ describe('R8 child.stdin EPIPE handler (#920)', () => {
       child.stdin = stdin;
       child.stderr = new EventEmitter();
       child.kill = () => true;
-      spawnedChildren.push(child);
+      localSpawnedChildren.push(child);
       return child;
     });
 
