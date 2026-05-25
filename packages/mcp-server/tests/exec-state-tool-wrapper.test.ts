@@ -151,3 +151,39 @@ describe('R-171: wrapToolHandler honours FSM short-circuit', () => {
     expect(mgr.getState()).toBe('CONTEXT_LOADED');
   });
 });
+
+// R6 / closes #923: when the handler throws, the FSM must NOT remain
+// in the advanced state. Pre-fix, recordToolCall eagerly transitioned
+// before the handler ran; a thrown handler left the FSM stuck in
+// COMPLETED / ABORTED with no recovery path. wrapToolHandler now
+// captures the pre-transition state and calls rollbackTo() in the
+// catch branch.
+describe('R6 / #923 — wrapToolHandler rolls back FSM when handler throws', () => {
+  it('rolls back to the pre-transition state on throw', async () => {
+    const mgr = new ExecStateManager({ enforceMode: 'enforce' });
+    // Walk to PACK_FETCHED via two legal calls.
+    mgr.recordToolCall('plansync_exec_context');
+    mgr.recordToolCall('plansync_task_pack');
+    expect(mgr.getState()).toBe('PACK_FETCHED');
+
+    // Wrap a handler that throws AFTER the FSM advances.
+    const wrapped = wrapToolHandler(
+      'plansync_execution_complete',
+      async () => {
+        throw new Error('simulated db failure inside handler');
+      },
+      { ...noDelegation, execStateManager: mgr },
+    );
+
+    const out = await wrapped({});
+    // Handler threw → wrapped returns an error envelope.
+    expect((out as { isError?: boolean }).isError).toBe(true);
+    // Critical: FSM is back to PACK_FETCHED, NOT stuck in COMPLETED.
+    expect(mgr.getState()).toBe('PACK_FETCHED');
+
+    // And the agent can retry (e.g. after fixing the underlying issue).
+    const retry = mgr.recordToolCall('plansync_execution_complete');
+    expect(retry.ok).toBe(true);
+    expect(mgr.getState()).toBe('COMPLETED');
+  });
+});
