@@ -159,6 +159,15 @@ describe('checkTransition', () => {
     if (r.ok) expect(r.nextState).toBe('COMPLETED');
   });
 
+  // R6 / closes #957 #941: /exec parents that bake the task pack into
+  // the agent prompt (so the sub-agent never makes a task_pack MCP
+  // call) must be allowed to go CONTEXT_LOADED → COMPLETED directly.
+  it('accepts plansync_execution_complete from CONTEXT_LOADED (R6 / closes #957 #941)', () => {
+    const r = checkTransition('CONTEXT_LOADED', 'plansync_execution_complete');
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.nextState).toBe('COMPLETED');
+  });
+
   it('rejects gated WRITE tools once the run is COMPLETED but allows plansync_exec_context (P0-14)', () => {
     for (const t of [
       'plansync_execution_heartbeat',

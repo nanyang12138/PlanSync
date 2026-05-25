@@ -145,11 +145,20 @@ export const EXEC_STATE_MACHINE: Readonly<Record<ExecState, ExecStateNode>> = {
     },
   },
   CONTEXT_LOADED: {
-    description: 'Exec context loaded — call plansync_task_pack to receive the task brief.',
-    allowedTools: ['plansync_task_pack', 'plansync_exec_context'],
-    requiredNextOneOf: ['plansync_task_pack'],
+    description:
+      'Exec context loaded — call plansync_task_pack to receive the task brief, then plansync_execution_complete (or, in /exec sub-sessions where the parent has already registered the run AND the task pack is already in the agent prompt, plansync_execution_complete directly).',
+    // R6 / closes #957 #941: in /exec sub-sessions the parent CLI
+    // pre-registers the run AND embeds the task pack into the agent's
+    // system prompt. The agent's LAST visible MCP call is therefore
+    // execution_complete — task_pack is sometimes skipped because the
+    // agent already has the brief in context. Allow that legitimate
+    // collapse (CONTEXT_LOADED → COMPLETED) so the FSM doesn't reject
+    // a working /exec flow with OUT_OF_SEQUENCE.
+    allowedTools: ['plansync_task_pack', 'plansync_execution_complete', 'plansync_exec_context'],
+    requiredNextOneOf: ['plansync_task_pack', 'plansync_execution_complete'],
     transitions: {
       plansync_task_pack: 'PACK_FETCHED',
+      plansync_execution_complete: 'COMPLETED',
     },
   },
   PACK_FETCHED: {
