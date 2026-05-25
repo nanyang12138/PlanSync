@@ -71,12 +71,58 @@ export function resolveExecAssignee(task, currentUser) {
 }
 
 /**
+ * Unwrap the `{ data: ... }` envelope that every PlanSync REST route
+ * applies to its successful responses. Closes #725 / #735 / #737 / #739
+ * — the `/api/projects/:projectId/tasks/:taskId/pack` route does
+ * `return NextResponse.json({ data: taskPack })`, but both `/exec`
+ * entry points (CLI `/exec` slash command and `bin/plansync --exec`)
+ * used the response object directly. The wrapper has no `.task`,
+ * `.driftAlerts`, etc., so:
+ *
+ *   - `openDriftAlerts(response).length === 0` was always true →
+ *     drift gate silently failed even on a high-severity drift.
+ *   - `response.task.assignee` was undefined → assignee gating ran
+ *     against an empty record and rejected every legitimate task.
+ *   - `buildExecPrompt({ taskPack: response, … })` dumped the
+ *     wrapper as JSON, so the LLM saw `{"data":{…}}` instead of the
+ *     actual pack.
+ *
+ * Be defensive about both shapes: a future API contract that drops
+ * the envelope, or a test fixture that hand-rolls a bare pack, must
+ * still work. We treat anything with a `data` field that is itself
+ * an object as wrapped, otherwise we pass the input through.
+ *
+ * @param {unknown} response
+ * @returns {unknown}
+ */
+export function unwrapTaskPack(response) {
+  if (!response || typeof response !== 'object') return response;
+  const wrapper = /** @type {{data?: unknown}} */ (response);
+  if (
+    'data' in wrapper &&
+    wrapper.data !== null &&
+    wrapper.data !== undefined &&
+    typeof wrapper.data === 'object'
+  ) {
+    return wrapper.data;
+  }
+  return response;
+}
+
+/**
  * Return the open drift alerts of a task pack.
  *
- * @param {unknown} taskPack
+ * Accepts EITHER the bare pack OR the `{ data: pack }` envelope and
+ * unwraps internally so callers don't have to remember which shape
+ * they're holding (closes #725 — the drift gate was silently
+ * empty in both `/exec` entry points because the envelope wasn't
+ * unwrapped).
+ *
+ * @param {unknown} taskPackOrEnvelope
  * @returns {Array<{ status?: string, reason?: string }>}
  */
-export function openDriftAlerts(taskPack) {
+export function openDriftAlerts(taskPackOrEnvelope) {
+  const taskPack = unwrapTaskPack(taskPackOrEnvelope);
   if (!taskPack || typeof taskPack !== 'object') return [];
   const alerts = /** @type {{driftAlerts?: unknown}} */ (taskPack).driftAlerts;
   if (!Array.isArray(alerts)) return [];
@@ -97,6 +143,11 @@ export function openDriftAlerts(taskPack) {
  * @returns {string}
  */
 export function buildExecPrompt({ taskId, taskPack }) {
+  // Closes #725 / #735 / #737 / #739 — accept either the bare pack
+  // or the API envelope. Pre-fix the LLM saw `{"data":{…}}` because
+  // callers passed the wrapper through verbatim, which made drift /
+  // deliverable references one level too deep for the prompt.
+  const unwrapped = unwrapTaskPack(taskPack);
   return [
     `You are about to execute PlanSync task ${taskId}.`,
     '',
@@ -116,7 +167,7 @@ export function buildExecPrompt({ taskId, taskPack }) {
     'A plan already exists. You are here to EXECUTE a task within the existing plan, not to create a new one.',
     '',
     'Task Pack:',
-    JSON.stringify(taskPack, null, 2),
+    JSON.stringify(unwrapped, null, 2),
   ].join('\n');
 }
 

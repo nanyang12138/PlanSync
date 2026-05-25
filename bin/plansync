@@ -509,10 +509,38 @@ Output a summary when all work is done, then exit."
       exec "$LOCAL_NODE_BIN" "$EXEC_CLI"
     fi
 
+    # Closes #726 / #736 — the legacy fallback below skips every R-062
+    # security control: no assignee gating, no run pre-registration, no
+    # exec-scoped API key. We leave the implementation in place for
+    # operators who deliberately set `PLANSYNC_ALLOW_LEGACY_EXEC=1` (e.g.
+    # diagnosing a corrupted unified orchestrator on a stripped-down
+    # install), but the default path now fails loud instead of silently
+    # bypassing the controls.
+    if [ "${PLANSYNC_ALLOW_LEGACY_EXEC:-}" != "1" ]; then
+      echo "" >&2
+      echo "❌ PlanSync /exec orchestrator missing: $EXEC_CLI" >&2
+      echo "" >&2
+      echo "   The unified R-062 orchestrator is required so that:" >&2
+      echo "     - the assignee can be validated against the current user," >&2
+      echo "     - the execution run can be pre-registered before the LLM is launched," >&2
+      echo "     - an exec-scoped API key is issued (and revoked on completion)." >&2
+      echo "" >&2
+      echo "   Likely fix: rebuild the CLI with" >&2
+      echo "     bash $PROJECT_DIR/scripts/build.sh" >&2
+      echo "" >&2
+      echo "   To bypass and use the pre-R-062 legacy path explicitly," >&2
+      echo "   set PLANSYNC_ALLOW_LEGACY_EXEC=1 — but be aware that the" >&2
+      echo "   fallback skips assignee gating, run pre-registration, and" >&2
+      echo "   the exec-scoped key issuance." >&2
+      exit 1
+    fi
+
     # Legacy path (kept for environments where the unified orchestrator
-    # is missing — e.g. partial checkouts). Should be unreachable in a
-    # normal install.
+    # is missing — e.g. partial checkouts). Reaching this point requires
+    # PLANSYNC_ALLOW_LEGACY_EXEC=1 (closes #736).
     echo "" >&2
+    echo "⚠️  PLANSYNC_ALLOW_LEGACY_EXEC=1 — running pre-R-062 legacy /exec path." >&2
+    echo "    Skipping assignee gating, run pre-registration, scoped-key issuance." >&2
     echo "📋 Fetching task pack for $EXEC_TASK_ID..." >&2
 
     # Fetch task pack via API using env vars to avoid shell injection
@@ -542,11 +570,18 @@ Output a summary when all work is done, then exit."
       }).on("error", e => { process.stderr.write("ERROR: " + e.message + "\n"); process.exit(1); });
     ' 2>&1)" || die "Failed to fetch task pack. Check task ID and project."
 
-    # Check for drift alerts in the response
+    # Check for drift alerts in the response. The /pack route returns
+    # `{ data: pack }`; pre-fix this looked at `d.driftAlerts` directly
+    # so a drift on the wrapped envelope was always invisible
+    # (closes #739). Unwrap defensively — if the response shape ever
+    # changes back to bare, this still works.
     HAS_DRIFT="$("$LOCAL_NODE_BIN" -e '
       try {
-        const d = JSON.parse(process.argv[1] || "{}");
-        const alerts = (d.driftAlerts || []).filter(a => a.status === "open");
+        const wrapper = JSON.parse(process.argv[1] || "{}");
+        const pack = (wrapper && typeof wrapper === "object" && wrapper.data && typeof wrapper.data === "object")
+          ? wrapper.data
+          : wrapper;
+        const alerts = (pack.driftAlerts || []).filter(a => a && a.status === "open");
         process.stdout.write(alerts.length > 0 ? "yes" : "no");
       } catch { process.stdout.write("no"); }
     ' "$TASK_PACK_JSON" 2>/dev/null || echo "no")"
