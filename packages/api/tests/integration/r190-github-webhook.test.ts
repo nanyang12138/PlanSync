@@ -354,4 +354,70 @@ describe('R-190 GitHub webhook receiver', () => {
       await prisma.project.delete({ where: { id: proj2.id } }).catch(() => {});
     }
   });
+
+  // R-new3 (closes #1005): GitHub redelivers a webhook on every non-2xx
+  // response, AND on its own retry schedule for "uncertain" deliveries.
+  // Without explicit dedup, each redelivery wrote a fresh outbox row
+  // (same X-GitHub-Delivery → duplicate downstream events). The fix
+  // inserts into inbound_webhook_deliveries inside the same tx; the
+  // unique(source, deliveryId) constraint catches the redelivery and
+  // we short-circuit with 200.
+  it('dedupes a redelivered X-GitHub-Delivery (closes #1005)', async () => {
+    const body = {
+      ref: 'refs/heads/main',
+      after: '0123456789abcdef0123456789abcdef01234567',
+      repository: { full_name: repoSlug },
+      commits: [{ id: '0123456789abcdef0123456789abcdef01234567', message: 'feat: dedup' }],
+    };
+    const raw = JSON.stringify(body);
+    const deliveryId = `r190-dedup-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const sig = signBody(secret, raw);
+
+    const fire = (): Promise<Response> =>
+      webhookPost(
+        new NextRequest('http://localhost/api/integrations/github/webhook', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-github-event': 'push',
+            'x-github-delivery': deliveryId,
+            'x-hub-signature-256': sig,
+          },
+          body: raw,
+        }),
+      );
+
+    // First delivery — normal success path, 1 outbox row written.
+    const first = await fire();
+    expect(first.status).toBe(200);
+    const firstJson = await first.json();
+    expect(firstJson.data?.deduped).not.toBe(true);
+
+    const rowsAfterFirst = await prisma.domainEvent.findMany({
+      where: { projectId, eventType: 'github_push' },
+    });
+    const firstHits = rowsAfterFirst.filter((r) => {
+      const data = r.payload as { data?: { deliveryId?: string } } | null;
+      return data?.data?.deliveryId === deliveryId;
+    });
+    expect(firstHits).toHaveLength(1);
+
+    // SECOND delivery — same delivery ID. Pre-fix this would write a
+    // SECOND outbox row. Post-fix the unique(source, deliveryId)
+    // constraint trips P2002, the route returns 200 + deduped=true,
+    // and no new outbox row appears.
+    const second = await fire();
+    expect(second.status).toBe(200);
+    const secondJson = await second.json();
+    expect(secondJson.data?.deduped).toBe(true);
+
+    const rowsAfterSecond = await prisma.domainEvent.findMany({
+      where: { projectId, eventType: 'github_push' },
+    });
+    const secondHits = rowsAfterSecond.filter((r) => {
+      const data = r.payload as { data?: { deliveryId?: string } } | null;
+      return data?.data?.deliveryId === deliveryId;
+    });
+    expect(secondHits).toHaveLength(1);
+  });
 });

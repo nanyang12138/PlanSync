@@ -655,6 +655,24 @@ model WebhookDelivery {
   @@map("webhook_deliveries")
 }
 
+/// R-new3 / closes #1005 — idempotency record for INBOUND webhook
+/// deliveries (e.g. GitHub's X-GitHub-Delivery). The webhook route
+/// inserts a row in the same transaction as the outbox writes; the
+/// unique([source, deliveryId]) constraint causes a P2002 on the
+/// SECOND attempt with the same delivery, letting the receiver
+/// short-circuit with 200 rather than producing duplicate outbox
+/// rows on a retried delivery.
+model InboundWebhookDelivery {
+  id         String   @id @default(cuid())
+  source     String
+  deliveryId String   @map("delivery_id")
+  receivedAt DateTime @default(now()) @map("received_at")
+
+  @@unique([source, deliveryId])
+  @@index([receivedAt])
+  @@map("inbound_webhook_deliveries")
+}
+
 model PlanDiff {
   id          String   @id @default(cuid())
   // R-085: snake_case `@map` for every column.
