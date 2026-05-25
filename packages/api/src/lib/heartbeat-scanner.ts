@@ -98,28 +98,37 @@ export async function scanStaleExecutions(): Promise<void> {
           // owner-facing feed shows execution_started → execution_stale
           // and then the run silently disappears from the active board,
           // matching the audit gap R-104/R-105/R-106/R-107 closed for
-          // other terminal transitions. We route through `createActivity`
-          // (not tx.activity.create) to keep the zod type-validation
-          // R-033 enforces, mirroring the existing paused→superseded
-          // branch below — the activity write is technically a separate
-          // transaction, but the status flip is the authoritative source
-          // of truth and a missing audit row on a scanner crash is
-          // recoverable by re-emitting on the next sweep.
-          await createActivity({
-            projectId: run.task.projectId,
-            type: 'execution_failed',
-            actorName: 'system',
-            actorType: 'system',
-            summary: `Execution on "${run.task.title}" marked failed (heartbeat timeout 30min)`,
-            metadata: {
-              runId: run.id,
-              taskId: run.taskId,
-              executorName: run.executorName,
-              reason: 'heartbeat_timeout_failed',
-              thresholdMs: FAILED_THRESHOLD_MS,
-              lastHeartbeatAt: run.lastHeartbeatAt?.toISOString() ?? null,
-            },
-          });
+          // other terminal transitions.
+          //
+          // Closes #759: createActivity uses the global `prisma` client
+          // (not the surrounding `tx`), but a thrown error from inside
+          // this async callback still rolls back the entire scanner
+          // transaction — including the just-applied heartbeat-timeout
+          // status flips. Wrap in best-effort try/catch so a transient
+          // audit-write failure logs and continues; the status flip
+          // remains authoritative.
+          try {
+            await createActivity({
+              projectId: run.task.projectId,
+              type: 'execution_failed',
+              actorName: 'system',
+              actorType: 'system',
+              summary: `Execution on "${run.task.title}" marked failed (heartbeat timeout 30min)`,
+              metadata: {
+                runId: run.id,
+                taskId: run.taskId,
+                executorName: run.executorName,
+                reason: 'heartbeat_timeout_failed',
+                thresholdMs: FAILED_THRESHOLD_MS,
+                lastHeartbeatAt: run.lastHeartbeatAt?.toISOString() ?? null,
+              },
+            });
+          } catch (err) {
+            logger.warn(
+              { err, runId: run.id, taskId: run.taskId, type: 'execution_failed' },
+              'heartbeat-scanner: audit write failed; status flip preserved',
+            );
+          }
 
           logger.warn(
             { runId: run.id, taskId: run.taskId },
@@ -166,11 +175,21 @@ export async function scanStaleExecutions(): Promise<void> {
               id: { not: run.id },
             },
           });
+          // Closes #760: the `taskBlocked` metadata recorded below was
+          // previously derived solely from `otherRunningCount === 0`.
+          // That over-claims when the task was already in some status
+          // other than `in_progress` (e.g. `blocked`, `completed`,
+          // `cancelled` from a prior sweep) — `updateMany` returns
+          // count=0, the task is NOT blocked by us, but the metadata
+          // still said `taskBlocked: true`. Use the actual updateMany
+          // count to record only what this sweep changed.
+          let taskBlockedByThisSweep = false;
           if (otherRunningCount === 0) {
-            await tx.task.updateMany({
+            const taskFlip = await tx.task.updateMany({
               where: { id: run.taskId, status: 'in_progress' },
               data: { status: 'blocked' },
             });
+            taskBlockedByThisSweep = taskFlip.count > 0;
           }
 
           // R-057: the matching exec-scoped API key is identified by
@@ -199,31 +218,42 @@ export async function scanStaleExecutions(): Promise<void> {
           // whether the task itself was demoted to `blocked` and how
           // many exec-scoped keys were revoked, so an owner reading the
           // audit feed can reconstruct R-057's side effects without
-          // cross-referencing the API key table. Same separate-tx
-          // tradeoff as the failed branch above.
-          await createActivity({
-            projectId: run.task.projectId,
-            type: 'execution_stale',
-            actorName: 'system',
-            actorType: 'system',
-            summary: `Execution on "${run.task.title}" marked stale (heartbeat timeout 5min)`,
-            metadata: {
-              runId: run.id,
-              taskId: run.taskId,
-              executorName: run.executorName,
-              reason: 'heartbeat_timeout_stale',
-              thresholdMs: STALE_THRESHOLD_MS,
-              lastHeartbeatAt: run.lastHeartbeatAt?.toISOString() ?? null,
-              taskBlocked: otherRunningCount === 0,
-              execKeysRevoked: keyDelete.count,
-            },
-          });
+          // cross-referencing the API key table.
+          // Closes #759 — best-effort audit write so a transient PG
+          // hiccup cannot roll back the scanner's status flips.
+          try {
+            await createActivity({
+              projectId: run.task.projectId,
+              type: 'execution_stale',
+              actorName: 'system',
+              actorType: 'system',
+              summary: `Execution on "${run.task.title}" marked stale (heartbeat timeout 5min)`,
+              metadata: {
+                runId: run.id,
+                taskId: run.taskId,
+                executorName: run.executorName,
+                reason: 'heartbeat_timeout_stale',
+                thresholdMs: STALE_THRESHOLD_MS,
+                lastHeartbeatAt: run.lastHeartbeatAt?.toISOString() ?? null,
+                // Closes #760: `taskBlocked` reflects what THIS sweep
+                // actually changed (updateMany.count > 0), not the
+                // pre-update intent.
+                taskBlocked: taskBlockedByThisSweep,
+                execKeysRevoked: keyDelete.count,
+              },
+            });
+          } catch (err) {
+            logger.warn(
+              { err, runId: run.id, taskId: run.taskId, type: 'execution_stale' },
+              'heartbeat-scanner: audit write failed; status flip preserved',
+            );
+          }
 
           logger.warn(
             {
               runId: run.id,
               taskId: run.taskId,
-              taskBlocked: otherRunningCount === 0,
+              taskBlocked: taskBlockedByThisSweep,
               execKeysRevoked: keyDelete.count,
             },
             'Execution marked stale (heartbeat timeout 5min); task + exec key released',
@@ -280,14 +310,24 @@ export async function scanStaleExecutions(): Promise<void> {
             reason: 'pause_timeout',
             pauseTimeoutMs,
           });
-          await createActivity({
-            projectId: run.task.projectId,
-            type: 'execution_superseded',
-            actorName: 'system',
-            actorType: 'system',
-            summary: `Execution on "${run.task.title}" auto-superseded (pause-ack-timeout, ${pauseTimeoutMs}ms)`,
-            metadata: { runId: run.id, taskId: run.taskId, reason: 'pause_timeout' },
-          });
+          // Closes #759 — same best-effort wrapper as the failed/stale
+          // branches; an audit-write failure must not roll back the
+          // status flip we just committed.
+          try {
+            await createActivity({
+              projectId: run.task.projectId,
+              type: 'execution_superseded',
+              actorName: 'system',
+              actorType: 'system',
+              summary: `Execution on "${run.task.title}" auto-superseded (pause-ack-timeout, ${pauseTimeoutMs}ms)`,
+              metadata: { runId: run.id, taskId: run.taskId, reason: 'pause_timeout' },
+            });
+          } catch (err) {
+            logger.warn(
+              { err, runId: run.id, taskId: run.taskId, type: 'execution_superseded' },
+              'heartbeat-scanner: audit write failed; status flip preserved',
+            );
+          }
 
           logger.warn(
             { runId: run.id, taskId: run.taskId, pauseTimeoutMs },

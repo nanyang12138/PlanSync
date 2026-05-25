@@ -1,0 +1,313 @@
+/**
+ * R-191: commit ↔ deliverable linker.
+ *
+ * Given a GitHub `push` payload (as emitted into the outbox by
+ * `packages/api/src/app/api/integrations/github/webhook/route.ts`),
+ * inspect every commit in the push and write a `commit_deliverable_links`
+ * row for each (commit, deliverable) pair where either:
+ *
+ *   1. A file changed in the commit matches a `PlanDeliverable.refUri`
+ *      glob (only when `refType = 'file_glob'`). Recorded with
+ *      `matched_by = 'glob'`, `matched_ref` = the actual file path.
+ *
+ *   2. The commit message contains `[deliverable:<slug>]` and the slug
+ *      resolves to an active deliverable for the same project.
+ *      Recorded with `matched_by = 'message'`, `matched_ref` = the slug.
+ *      Message links take priority in downstream consumers — when both
+ *      reasons fire for the same (sha, deliverable) the message row is
+ *      treated as the dominant signal — but both rows are persisted so
+ *      the audit trail keeps every signal.
+ *
+ * The function is idempotent: re-delivery of the same GitHub event hits
+ * the `(sha, deliverable_id, matched_by)` unique constraint and the
+ * conflicting row is skipped via `skipDuplicates`.
+ *
+ * Consumers:
+ *   - The worker (R-162) will dispatch `github_push` outbox rows to this
+ *     function once the outbox→fan-out pipeline lands. Until then it is
+ *     callable directly from the webhook route (or in tests) by handing
+ *     it the parsed payload.
+ *   - R-192 reads `commit_deliverable_links` to derive task completion
+ *     state ("commit linked ∧ PR merged ∧ no drift → done").
+ *
+ * What this function does NOT do:
+ *   - It does not look at PR file lists; only `push` payload commits.
+ *     PRs are recorded by R-190 as their own outbox events (`github_pull_request`)
+ *     and a separate (future) helper will link them via merge commit SHAs.
+ *   - It does not consider commit author or branch. The link is a
+ *     pure-content statement ("this sha touches these deliverables");
+ *     R-192 layers branch/PR/state semantics on top.
+ */
+import type { Prisma, PrismaClient } from '@prisma/client';
+import { prisma as defaultPrisma } from '../prisma';
+import { logger } from '../logger';
+
+/** Subset of a GitHub `push` payload commit object we rely on. */
+export interface GithubPushCommit {
+  id?: string;
+  message?: string;
+  added?: string[];
+  removed?: string[];
+  modified?: string[];
+}
+
+/** Subset of a GitHub `push` payload we rely on. */
+export interface GithubPushPayload {
+  ref?: string;
+  commits?: GithubPushCommit[];
+  head_commit?: GithubPushCommit | null;
+}
+
+export interface LinkCommitsInput {
+  /** PlanSync project id (from the outbox row, NOT from the payload). */
+  projectId: string;
+  /** Parsed GitHub push payload. */
+  payload: GithubPushPayload;
+  /**
+   * Optional Prisma client / transaction client for tests. Defaults to
+   * the shared singleton so production callers don't have to thread it
+   * through.
+   */
+  prismaClient?: Prisma.TransactionClient | PrismaClient;
+}
+
+export interface LinkCommitsResult {
+  /** Number of (sha, deliverable, matchedBy) rows newly written. */
+  created: number;
+  /** Number of commits examined (head_commit + commits[]). */
+  commitsExamined: number;
+  /** Per-commit breakdown, useful for tests and logs. */
+  byCommit: Array<{
+    sha: string;
+    globMatches: number;
+    messageMatches: number;
+  }>;
+}
+
+const DELIVERABLE_TAG_REGEX = /\[deliverable:([A-Za-z0-9_\-./]+)\]/g;
+
+/**
+ * Translate a glob like `src/**\u002F*.ts` or `docs/api/*.md` into an
+ * anchored RegExp matching a single file path. Supports `*`, `**`, `?`
+ * and treats every other regex meta-char as literal. Intentionally
+ * minimal — full minimatch semantics (brace expansion, character
+ * classes, `!` negation) are not needed for the deliverable.refUri
+ * surface we control and would add a dependency for no current win.
+ */
+export function globToRegExp(glob: string): RegExp {
+  let re = '^';
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === '*') {
+      const isDouble = glob[i + 1] === '*';
+      if (isDouble) {
+        // `**/foo` matches `foo` and `a/b/foo`; `foo/**` matches `foo`
+        // and `foo/bar`. `**` on its own matches anything (incl. `/`).
+        const next = glob[i + 2];
+        if (next === '/') {
+          re += '(?:.*/)?';
+          i += 2;
+        } else {
+          re += '.*';
+          i += 1;
+        }
+      } else {
+        re += '[^/]*';
+      }
+    } else if (c === '?') {
+      re += '[^/]';
+    } else if ('.+^$|()[]{}\\'.indexOf(c) !== -1) {
+      re += '\\' + c;
+    } else {
+      re += c;
+    }
+  }
+  re += '$';
+  return new RegExp(re);
+}
+
+interface LoadedDeliverable {
+  id: string;
+  slug: string;
+  refUri: string | null;
+  globRe: RegExp | null;
+}
+
+/**
+ * Load every active deliverable visible to the project across all of its
+ * plan versions. We deliberately don't restrict to the active plan: a
+ * commit landing today may close out a deliverable defined in plan v2
+ * even if plan v3 is now active and renamed/dropped it — the link is a
+ * statement about the commit, not about the current plan version, and
+ * `PlanDeliverable.supersededById` is the right place to walk the
+ * version chain at read time.
+ */
+async function loadProjectDeliverables(
+  client: Prisma.TransactionClient | PrismaClient,
+  projectId: string,
+): Promise<LoadedDeliverable[]> {
+  const rows = await client.planDeliverable.findMany({
+    where: {
+      status: { not: 'deprecated' },
+      plan: { projectId },
+    },
+    select: { id: true, slug: true, refUri: true, refType: true },
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    slug: r.slug,
+    refUri: r.refUri,
+    globRe: r.refType === 'file_glob' && r.refUri ? globToRegExp(r.refUri) : null,
+  }));
+}
+
+function uniq(strs: Iterable<string>): string[] {
+  return Array.from(new Set(strs));
+}
+
+function commitFiles(commit: GithubPushCommit): string[] {
+  return uniq([...(commit.added ?? []), ...(commit.modified ?? []), ...(commit.removed ?? [])]);
+}
+
+function extractMessageSlugs(message: string | undefined | null): string[] {
+  if (!message) return [];
+  const out = new Set<string>();
+  // `String.matchAll` requires the `g` flag; the regex above carries it.
+  for (const m of message.matchAll(DELIVERABLE_TAG_REGEX)) {
+    if (m[1]) out.add(m[1]);
+  }
+  return Array.from(out);
+}
+
+interface PendingRow {
+  projectId: string;
+  sha: string;
+  deliverableId: string;
+  matchedBy: 'glob' | 'message';
+  matchedRef: string | null;
+}
+
+/**
+ * Main entry point.
+ *
+ * Returns { created } so callers (worker, tests) can log a per-event
+ * summary. The result also includes a per-commit breakdown so tests can
+ * assert that a commit hit both a glob and a message rule without having
+ * to re-query the DB.
+ */
+export async function linkCommitsFromPushPayload(
+  input: LinkCommitsInput,
+): Promise<LinkCommitsResult> {
+  const client = input.prismaClient ?? defaultPrisma;
+  const commits: GithubPushCommit[] = [];
+  // `head_commit` is GitHub's pre-extracted top-of-push commit; `commits`
+  // is the full list. They overlap, so we dedupe by sha below.
+  if (input.payload.head_commit?.id) commits.push(input.payload.head_commit);
+  if (Array.isArray(input.payload.commits)) commits.push(...input.payload.commits);
+
+  const seenSha = new Set<string>();
+  const dedupedCommits = commits.filter((c) => {
+    if (!c.id) return false;
+    if (seenSha.has(c.id)) return false;
+    seenSha.add(c.id);
+    return true;
+  });
+
+  if (dedupedCommits.length === 0) {
+    return { created: 0, commitsExamined: 0, byCommit: [] };
+  }
+
+  const deliverables = await loadProjectDeliverables(client, input.projectId);
+  // O(deliverables) lookup keyed by slug for the message-tag path.
+  const bySlug = new Map<string, LoadedDeliverable>();
+  for (const d of deliverables) bySlug.set(d.slug, d);
+
+  const pending: PendingRow[] = [];
+  const byCommit: LinkCommitsResult['byCommit'] = [];
+
+  for (const commit of dedupedCommits) {
+    const sha = commit.id!;
+    let globHits = 0;
+    let messageHits = 0;
+
+    // 1) Glob match — iterate (deliverables × files). Both lists are
+    //    short in practice (single-digit deliverables, double-digit
+    //    files per commit) so the nested loop is fine; if either side
+    //    grows we can index files by extension first.
+    const files = commitFiles(commit);
+    for (const d of deliverables) {
+      if (!d.globRe) continue;
+      for (const file of files) {
+        if (d.globRe.test(file)) {
+          pending.push({
+            projectId: input.projectId,
+            sha,
+            deliverableId: d.id,
+            matchedBy: 'glob',
+            matchedRef: file,
+          });
+          globHits += 1;
+          // Don't break — different files might hit the same
+          // deliverable; the unique constraint dedupes (sha, deliv,
+          // 'glob') so only the first file's row survives. We still
+          // record the count for the breakdown.
+        }
+      }
+    }
+
+    // 2) Message tag match — `[deliverable:<slug>]` wins over glob in
+    //    downstream consumers, but we emit both rows so the audit trail
+    //    keeps every signal.
+    for (const slug of extractMessageSlugs(commit.message)) {
+      const d = bySlug.get(slug);
+      if (!d) continue;
+      pending.push({
+        projectId: input.projectId,
+        sha,
+        deliverableId: d.id,
+        matchedBy: 'message',
+        matchedRef: slug,
+      });
+      messageHits += 1;
+    }
+
+    byCommit.push({ sha, globMatches: globHits, messageMatches: messageHits });
+  }
+
+  if (pending.length === 0) {
+    return { created: 0, commitsExamined: dedupedCommits.length, byCommit };
+  }
+
+  // Deduplicate within this batch first so `createMany` doesn't reject
+  // before it gets a chance to honour `skipDuplicates` (Postgres treats
+  // intra-statement duplicates the same as cross-statement collisions).
+  const seen = new Set<string>();
+  const distinct = pending.filter((row) => {
+    const key = `${row.sha}\u0000${row.deliverableId}\u0000${row.matchedBy}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  const result = await client.commitDeliverableLink.createMany({
+    data: distinct,
+    skipDuplicates: true,
+  });
+
+  if (result.count > 0) {
+    logger.info(
+      {
+        projectId: input.projectId,
+        commits: dedupedCommits.length,
+        linksCreated: result.count,
+      },
+      'R-191: linked commits to deliverables',
+    );
+  }
+
+  return {
+    created: result.count,
+    commitsExamined: dedupedCommits.length,
+    byCommit,
+  };
+}
