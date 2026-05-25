@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { prisma, PROJECT_PUBLIC_SELECT } from '@/lib/prisma';
 import { authenticate, requireProjectRole } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 
@@ -12,7 +12,12 @@ export async function GET(req: NextRequest, __nextCtx: Params) {
     await requireProjectRole(auth, params.projectId);
 
     const [project, activePlan, tasks, driftAlerts, members, activities] = await Promise.all([
-      prisma.project.findUnique({ where: { id: params.projectId } }),
+      // R-190 / closes #780 #796: never include githubWebhookSecret in the
+      // dashboard payload — it is sent to every project member.
+      prisma.project.findUnique({
+        where: { id: params.projectId },
+        select: PROJECT_PUBLIC_SELECT,
+      }),
       prisma.plan.findFirst({ where: { projectId: params.projectId, status: 'active' } }),
       prisma.task.findMany({
         where: { projectId: params.projectId },

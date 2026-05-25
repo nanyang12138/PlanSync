@@ -144,8 +144,14 @@ describe('R-136: isMasterRouteAllowed (pure)', () => {
     expect(isMasterRouteAllowed('POST', '/api/projects/p1/plans/pl1/suggestions')).toBe(true);
   });
 
-  it('allows drift resolve', () => {
-    expect(isMasterRouteAllowed('POST', '/api/projects/p1/drift-alerts/d1/resolve')).toBe(true);
+  it('allows drift resolve at the actual route path', () => {
+    // Closes #765-class — the real route is `/drifts/{driftId}` (see
+    // packages/api/src/app/api/projects/[projectId]/drifts/[driftId]/route.ts).
+    // The previous regex looked for a non-existent
+    // `/drift-alerts/.../resolve` so master-driven drift resolution
+    // silently 403'd in production.
+    expect(isMasterRouteAllowed('POST', '/api/projects/p1/drifts/d1')).toBe(true);
+    expect(isMasterRouteAllowed('POST', '/api/projects/p1/drift-alerts/d1/resolve')).toBe(false);
   });
 
   it('rejects plan / task / member / project / key mutations (default-deny)', () => {
@@ -484,5 +490,80 @@ describe('R-136: gcExpiredMasterDelegations', () => {
 
   it('reuse window constant matches spec (5 minutes)', () => {
     expect(MASTER_DELEGATION_REUSE_WINDOW_MS).toBe(5 * 60 * 1000);
+  });
+
+  // Closes #770s — recordMasterDelegation must honour the documented
+  // 5-minute reuse window. Previously it reused any row whose
+  // expiresAt was still in the future, which (with the default 60-min
+  // TTL) collapsed an entire hour of distinct activity bursts into a
+  // single audit row.
+  it('inserts a fresh row once the 5-min reuse window has elapsed even if the previous row is still unexpired', async () => {
+    await prisma.masterDelegation.deleteMany({ where: { targetUser: 'reuse-window-target' } });
+
+    const now = Date.now();
+    const ttlMs = 60 * 60 * 1000; // 60-min default
+
+    // First hit at t=0 — insert.
+    const r1 = await recordMasterDelegation({
+      callerIp: '10.0.0.99',
+      callerUa: 'reuse-window-test',
+      targetUser: 'reuse-window-target',
+      routeMethod: 'GET',
+      routePath: '/api/p',
+      ttlMs,
+      nowMs: now,
+    });
+    expect(r1.reused).toBe(false);
+
+    // Second hit at t=2min — within reuse window → REUSE same row.
+    const r2 = await recordMasterDelegation({
+      callerIp: '10.0.0.99',
+      callerUa: 'reuse-window-test',
+      targetUser: 'reuse-window-target',
+      routeMethod: 'GET',
+      routePath: '/api/p',
+      ttlMs,
+      nowMs: now + 2 * 60 * 1000,
+    });
+    expect(r2.reused).toBe(true);
+    expect(r2.id).toBe(r1.id);
+
+    // Third hit at t=6min — outside 5-min reuse window but the
+    // previous row is STILL unexpired (expires at t=60min). Spec says
+    // insert a fresh row.
+    const r3 = await recordMasterDelegation({
+      callerIp: '10.0.0.99',
+      callerUa: 'reuse-window-test',
+      targetUser: 'reuse-window-target',
+      routeMethod: 'GET',
+      routePath: '/api/p',
+      ttlMs,
+      nowMs: now + 6 * 60 * 1000,
+    });
+    expect(r3.reused).toBe(false);
+    expect(r3.id).not.toBe(r1.id);
+
+    const rows = await prisma.masterDelegation.findMany({
+      where: { targetUser: 'reuse-window-target' },
+      orderBy: { occurredAt: 'asc' },
+    });
+    expect(rows).toHaveLength(2);
+  });
+
+  // Closes #765-class — MASTER_ROUTE_ALLOWLIST regression coverage:
+  //   - drift resolution endpoint is `/drifts/{driftId}` (not `/drift-alerts/.../resolve`)
+  //   - execution_start / heartbeat / complete / task_rebind must be reachable.
+  it('master route allowlist matches the actual app routes', () => {
+    expect(isMasterRouteAllowed('POST', '/api/projects/p1/drifts/d1')).toBe(true);
+    expect(isMasterRouteAllowed('POST', '/api/projects/p1/drift-alerts/d1/resolve')).toBe(false);
+
+    expect(isMasterRouteAllowed('POST', '/api/projects/p1/tasks/t1/runs')).toBe(true);
+    expect(isMasterRouteAllowed('PATCH', '/api/projects/p1/tasks/t1/runs/r1')).toBe(true);
+    expect(isMasterRouteAllowed('POST', '/api/projects/p1/tasks/t1/rebind')).toBe(true);
+
+    // Sanity: write paths that should still be rejected.
+    expect(isMasterRouteAllowed('POST', '/api/projects/p1/tasks')).toBe(false);
+    expect(isMasterRouteAllowed('PATCH', '/api/projects/p1')).toBe(false);
+    expect(isMasterRouteAllowed('DELETE', '/api/projects/p1')).toBe(false);
   });
 });

@@ -152,23 +152,32 @@ describe('R-141: ApiKey verify cache (auth hot-path)', () => {
     });
     createdKeyIds.push(row.id);
 
+    // Poll for the async lastUsedAt write to land. Fixed `setTimeout(30)`
+    // proved flaky on slower CI runners (the I/O write can take 100ms+).
+    async function waitForLastUsedAt(after?: number): Promise<Date> {
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        const r = await testPrisma.apiKey.findUnique({ where: { id: row.id } });
+        if (r?.lastUsedAt && (after === undefined || r.lastUsedAt.getTime() >= after)) {
+          return r.lastUsedAt;
+        }
+        await new Promise((res) => setTimeout(res, 25));
+      }
+      throw new Error(`lastUsedAt did not update within 2s (after=${after})`);
+    }
+
     // First call: cache miss → scrypt verify + lastUsedAt write.
     await authenticate(makeReq('/', { userName, authToken: rawKey }));
-    // Drain the async lastUsedAt update before reading the row back.
-    await new Promise((r) => setTimeout(r, 30));
-    const afterMiss = await testPrisma.apiKey.findUnique({ where: { id: row.id } });
-    expect(afterMiss?.lastUsedAt).toBeTruthy();
-    const t1 = afterMiss!.lastUsedAt!.getTime();
+    const firstStamp = await waitForLastUsedAt();
+    const t1 = firstStamp.getTime();
 
     // Wait long enough that a second update produces a different timestamp.
     await new Promise((r) => setTimeout(r, 25));
 
     // Second call: cache hit → must still bump lastUsedAt (asynchronously).
     await authenticate(makeReq('/', { userName, authToken: rawKey }));
-    await new Promise((r) => setTimeout(r, 30));
-    const afterHit = await testPrisma.apiKey.findUnique({ where: { id: row.id } });
-    expect(afterHit?.lastUsedAt).toBeTruthy();
-    expect(afterHit!.lastUsedAt!.getTime()).toBeGreaterThanOrEqual(t1);
+    const secondStamp = await waitForLastUsedAt(t1);
+    expect(secondStamp.getTime()).toBeGreaterThanOrEqual(t1);
   });
 
   it('1000 sequential cache hits complete well under the 100ms budget', async () => {

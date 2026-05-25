@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { cookies } from 'next/headers';
 import { ArrowLeft, ClipboardList, Home } from 'lucide-react';
-import { prisma } from '@/lib/prisma';
+import { prisma, PROJECT_PUBLIC_SELECT } from '@/lib/prisma';
 import { TaskDetail } from '@/components/task/task-detail';
 import { TaskEditor } from '@/components/task/task-editor';
 import { TaskDatesEditor } from '@/components/task/task-dates-editor';
@@ -21,9 +21,13 @@ export default async function TaskDetailPage({
 }) {
   // R-131 / G3 (Next.js 15): page params are async.
   const params = await paramsPromise;
+  // R-190 / closes #780 #796: omit githubWebhookSecret from SSR payload.
   const project = await prisma.project.findUnique({
     where: { id: params.id },
-    include: { members: { select: { name: true, role: true } } },
+    select: {
+      ...PROJECT_PUBLIC_SELECT,
+      members: { select: { name: true, role: true } },
+    },
   });
   if (!project) notFound();
 

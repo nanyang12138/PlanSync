@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { cookies } from 'next/headers';
-import { prisma } from '@/lib/prisma';
+import { prisma, PROJECT_PUBLIC_SELECT } from '@/lib/prisma';
 import { DriftAlertCard } from '@/components/dashboard/drift-alert-card';
 import { TaskViewToggle } from '@/components/dashboard/task-view-toggle';
 import { NewTaskButton } from '@/components/dashboard/new-task-button';
@@ -21,9 +21,13 @@ export default async function ProjectDashboard({
   // R-131 / G3 (Next.js 15): page params are async. Resolve once, then
   // every later reference (where: { id: params.id }, …) is unchanged.
   const params = await paramsPromise;
+  // R-190 / closes #780 #796: never include the webhook secret in the
+  // server-rendered HTML payload — switch from `include: {...}` to an
+  // explicit `select` that pulls in the relations but omits the secret.
   const project = await prisma.project.findUnique({
     where: { id: params.id },
-    include: {
+    select: {
+      ...PROJECT_PUBLIC_SELECT,
       members: { orderBy: { createdAt: 'asc' } },
       plans: { orderBy: { version: 'desc' } },
       tasks: { orderBy: { createdAt: 'desc' } },
