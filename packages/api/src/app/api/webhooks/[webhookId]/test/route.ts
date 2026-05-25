@@ -6,9 +6,10 @@ import { AppError, ErrorCode } from '@plansync/shared';
 import { deliverWithRetry } from '@/lib/webhook';
 import { formatSlackMessage, isSlackUrl } from '@/lib/slack-formatter';
 
-type Params = { params: { webhookId: string } };
+type Params = { params: Promise<{ webhookId: string }> };
 
-export async function POST(req: NextRequest, { params }: Params) {
+export async function POST(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     const webhook = await prisma.webhook.findUnique({

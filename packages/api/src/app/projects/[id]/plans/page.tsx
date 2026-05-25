@@ -14,12 +14,15 @@ import { getOrCreatePlanDiff, type PlanDiffResult } from '@/lib/ai/plan-diff';
 import { Alert } from '@/components/ui/alert';
 
 export default async function ProjectPlansPage({
-  params,
-  searchParams,
+  params: paramsPromise,
+  searchParams: searchParamsPromise,
 }: {
-  params: { id: string };
-  searchParams: { plan?: string };
+  // R-131 / G3 (Next.js 15): page params + searchParams are both async.
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ plan?: string }>;
 }) {
+  const params = await paramsPromise;
+  const searchParams = await searchParamsPromise;
   const project = await prisma.project.findUnique({
     where: { id: params.id },
     select: {
@@ -58,7 +61,8 @@ export default async function ProjectPlansPage({
       : null;
 
   const timelinePlans = [...plans].sort((a, b) => a.version - b.version);
-  const currentUser = cookies().get('plansync-user')?.value ?? 'anonymous';
+  // R-131 / G3 (Next.js 15): cookies() is now async.
+  const currentUser = (await cookies()).get('plansync-user')?.value ?? 'anonymous';
   const currentMember = project.members.find((member) => member.name === currentUser);
   const isOwner = currentMember?.role === 'owner';
   const memberNames = project.members.map((member) => member.name);

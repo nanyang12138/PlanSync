@@ -1,12 +1,12 @@
-// We deliberately avoid `import { Client } from 'pg'` here because Next.js
-// 14's webpack treats `pg` as an async ESM-interop module (its `exports`
-// field declares both ESM and CJS entry points), which makes the entire
-// importing chain async. When `EventBusPG` is then constructed synchronously
-// from a route handler the `new EventBusPG()` site reads the unresolved
-// async module and throws `TypeError: e is not a constructor` at runtime
-// (root cause of nightly e2e failure #143). A runtime-resolved
-// `createRequire` keeps the load synchronous and outside webpack's bundling,
-// so the real `pg.Client` constructor is what we end up using.
+// G3 / R-131 (Next.js 15) — same bug class P0-2 (#845, root cause of
+// nightly e2e #143) fixed for Next 14:
+// `import { Client } from 'pg'` lets webpack treat the entire dependent
+// module chain as an async ESM module (because pg ships dual ESM+CJS
+// exports), and route handlers that synchronously call `new EventBusPG()`
+// see the unresolved async-module symbol. Result at runtime is
+// `TypeError: a is not a constructor` (variable name varies by Next minor;
+// pre-15 it was `e`). Loading pg via `createRequire` keeps the resolution
+// synchronous + outside webpack bundling, restoring the constructor.
 import { createRequire } from 'node:module';
 import type { Client as PgClient } from 'pg';
 import { createHash, randomUUID } from 'crypto';

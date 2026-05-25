@@ -26,14 +26,15 @@ model Project {
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
 
-  members     ProjectMember[]
-  plans       Plan[]
-  tasks       Task[]
-  driftAlerts DriftAlert[]
-  activities  Activity[]
-  apiKeys     ApiKey[]
-  webhooks    Webhook[]
-  planDiffs   PlanDiff[]
+  members           ProjectMember[]
+  plans             Plan[]
+  tasks             Task[]
+  driftAlerts       DriftAlert[]
+  activities        Activity[]
+  apiKeys           ApiKey[]
+  webhooks          Webhook[]
+  planDiffs         PlanDiff[]
+  verificationRules VerificationRule[]
 
   @@map("projects")
 }
@@ -187,13 +188,105 @@ model PlanDeliverable {
   supersededById String?  @map("superseded_by_id")
   createdAt      DateTime @default(now()) @map("created_at")
 
-  plan         Plan              @relation(fields: [planId], references: [id], onDelete: Cascade)
-  supersededBy PlanDeliverable?  @relation("PlanDeliverableSupersedes", fields: [supersededById], references: [id], onDelete: SetNull)
-  supersedes   PlanDeliverable[] @relation("PlanDeliverableSupersedes")
+  plan         Plan                    @relation(fields: [planId], references: [id], onDelete: Cascade)
+  supersededBy PlanDeliverable?        @relation("PlanDeliverableSupersedes", fields: [supersededById], references: [id], onDelete: SetNull)
+  supersedes   PlanDeliverable[]       @relation("PlanDeliverableSupersedes")
+  // R-191: back-reference for commit ↔ deliverable links derived from
+  // `github_push` events. Each row records that a commit `sha` touched
+  // files matched by this deliverable's `refUri` glob, or that the commit
+  // message named this deliverable's `slug` explicitly. The link is the
+  // foundation for R-192 auto-status (PR merged ∧ commit linked ∧ no
+  // drift → done) and the R-193 PR template injection.
+  commitLinks  CommitDeliverableLink[]
+  // R-153: tasks that explicitly reference this deliverable. Linked by row id
+  // (not slug) so renaming `slug` in a future plan version does not silently
+  // break drift attribution — the join survives the rename because it is
+  // anchored on `id`. The old `Task.planDeliverableRefs` slug array is kept
+  // as a derived/legacy column for backwards compatibility; the link rows
+  // are the source of truth from now on.
+  taskLinks    TaskDeliverableLink[]
 
   @@unique([planId, slug])
   @@index([planId, status])
   @@map("plan_deliverables")
+}
+
+// R-191: commit ↔ deliverable links derived from GitHub `push` events.
+//
+// Each row records that commit `sha` is associated with deliverable
+// `deliverableId`, either because a file in the push matched the
+// deliverable's `refUri` glob (`matched_by = 'glob'`) or because the
+// commit message contained an explicit `[deliverable:<slug>]` marker
+// (`matched_by = 'message'`). The two reasons live as separate rows
+// (different `matched_by` values) so the audit trail keeps both
+// signals; downstream code reads `match_by='message' OR glob` and
+// treats the message form as the stronger signal when ranking.
+//
+// Lifecycle: the worker (R-162; until that lands, the link function is
+// also callable directly from the github webhook route for tests / dev)
+// consumes `github_push` outbox events and calls
+// `linkCommitsFromPushPayload`, which inserts rows here via the unique
+// (sha, deliverable_id, matched_by) constraint so re-delivery of the
+// same GitHub event is idempotent. R-192 reads this table to auto-derive
+// per-task completion state without trusting agent self-reports.
+//
+// Project id is denormalised onto the row (instead of joining through
+// `plan_deliverables → plans → projects`) so the worker can scope its
+// fan-out and the (project_id, sha) index can answer "what touched this
+// commit?" in one B-tree hop.
+model CommitDeliverableLink {
+  id            String   @id @default(cuid())
+  projectId     String   @map("project_id")
+  sha           String
+  deliverableId String   @map("deliverable_id")
+  // matchedBy ∈ ('glob' | 'message'). Enforced by a CHECK constraint in
+  // the migration; kept as String here so adding a new match reason is
+  // a one-migration change without a Prisma enum.
+  matchedBy     String   @map("matched_by")
+  // The actual evidence: the file path that hit the glob (`matched_by =
+  // 'glob'`) or the slug pulled from the commit message (`matched_by =
+  // 'message'`). Nullable so future match reasons that have no obvious
+  // single-string evidence (e.g. AI semantic similarity) can still land
+  // without a schema change.
+  matchedRef    String?  @map("matched_ref")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  deliverable PlanDeliverable @relation(fields: [deliverableId], references: [id], onDelete: Cascade)
+
+  @@unique([sha, deliverableId, matchedBy])
+  @@index([projectId, sha])
+  @@index([deliverableId])
+  @@map("commit_deliverable_links")
+}
+
+// R-153: Task → PlanDeliverable many-to-many link.
+//
+// Why a middle table instead of the existing `Task.planDeliverableRefs:
+// String[]` slug list?
+//   1. **Rename survives.** PlanDeliverable.slug can be renamed by the owner
+//      (or migrated to a new plan version). Linking on `deliverableId` keeps
+//      the relationship stable across slug renames, which is exactly the
+//      semantics drift-engine needs.
+//   2. **Drift severity precision.** R-154 will compute drift severity as
+//      "is the linked deliverable present in the new plan version?" — that
+//      requires a row-id link, not a free-text slug.
+//   3. **Cascade on delete.** Hard-deleting a deliverable should evict the
+//      stale link without manual cleanup.
+//
+// The legacy `Task.planDeliverableRefs` slug array stays around as a
+// human-friendly mirror; task_pack derives it from the link rows on read,
+// and the write paths sync the link rows whenever the slug list changes.
+model TaskDeliverableLink {
+  taskId        String   @map("task_id")
+  deliverableId String   @map("deliverable_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  task        Task            @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  deliverable PlanDeliverable @relation(fields: [deliverableId], references: [id], onDelete: Cascade)
+
+  @@id([taskId, deliverableId])
+  @@index([deliverableId])
+  @@map("task_deliverable_links")
 }
 
 model PlanConstraint {
@@ -292,7 +385,7 @@ model Task {
   createdAt           DateTime  @default(now()) @map("created_at")
   updatedAt           DateTime  @updatedAt @map("updated_at")
 
-  project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project          Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
   // R-083: composite FK to plans(projectId, version). The same `projectId`
   // column participates in two relations (Project + Plan); Prisma allows this
   // as long as the relations are otherwise unambiguous. The relation is named
@@ -301,9 +394,14 @@ model Task {
   // project is deleted, its plans and tasks cascade independently, and adding
   // a plan-side cascade here keeps the constraint satisfied regardless of the
   // (undefined) order Postgres evaluates the two cascades.
-  boundPlan     Plan           @relation("TaskBoundPlan", fields: [projectId, boundPlanVersion], references: [projectId, version], onDelete: Cascade, onUpdate: Cascade)
-  executionRuns ExecutionRun[]
-  driftAlerts   DriftAlert[]
+  boundPlan        Plan                  @relation("TaskBoundPlan", fields: [projectId, boundPlanVersion], references: [projectId, version], onDelete: Cascade, onUpdate: Cascade)
+  executionRuns    ExecutionRun[]
+  driftAlerts      DriftAlert[]
+  // R-153: many-to-many link to PlanDeliverable. The legacy
+  // `planDeliverableRefs: String[]` column above is kept as a derived
+  // (denormalised) projection for backwards compatibility — read paths now
+  // join through this relation and write paths sync both sides atomically.
+  deliverableLinks TaskDeliverableLink[]
 
   // R-075: composite indexes to back hot task-list queries
   // (listing tasks by status, my-work / assignee lookups).
@@ -624,6 +722,56 @@ model AiCall {
   @@index([inputHash, purpose])
   @@index([createdAt(sort: Desc)])
   @@map("ai_calls")
+}
+
+// R-181: declarative, owner-configurable verification rules that act as a
+// HARD gate at `complete` time. R-180 demoted the AI scoring path to an
+// advisory (no more 422 from the AI), and this table now holds the rule
+// engine that *can* 422 a complete — but only on deterministic, owner-
+// editable conditions instead of "the LLM gave you a B-".
+//
+// Scope semantics:
+//   - scope = 'project'         — applies to every run in the project.
+//   - scope = 'task_type'       — applies only when task.type === scopeValue
+//                                  (e.g. enforce `require_files_changed`
+//                                  for code tasks but not research tasks).
+//   - scope = 'task'            — applies only when run.taskId === scopeValue
+//                                  (rare; useful for one-off escalations).
+//
+// `kind` is a String (not a Prisma enum) so a new rule kind is a one-file
+// evaluator change without a schema migration. Today the evaluator supports:
+//   - require_files_changed             — body.filesChanged must be non-empty
+//   - require_commits_on_branch         — body.branchName must be set + non-empty
+//   - require_pr_merged                 — body.prUrl must be set + non-empty
+//   - require_deliverable_evidence_for_each_ref
+//                                       — every plan deliverable ref on the
+//                                         task must appear as a substring of
+//                                         at least one deliverablesMet entry
+//   - min_output_summary_chars          — body.outputSummary length ≥ params.min
+//
+// `enabled` lets owners temporarily disable a rule without deleting it;
+// the evaluator skips disabled rows. `params` is the per-kind bag (e.g.
+// `{ min: 40 }` for min_output_summary_chars).
+model VerificationRule {
+  id         String   @id @default(cuid())
+  projectId  String   @map("project_id")
+  scope      String   @default("project") // project | task_type | task
+  scopeValue String?  @map("scope_value")
+  kind       String
+  params     Json     @default("{}")
+  enabled    Boolean  @default(true)
+  createdBy  String   @map("created_by")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  // Hot read path: "list all enabled rules for this project on complete".
+  // The evaluator filters by scope/scopeValue in memory after this fetch
+  // because the projectId,enabled index keeps the candidate set small
+  // (typical owner configures < 20 rules per project).
+  @@index([projectId, enabled])
+  @@map("verification_rules")
 }
 
 // R-160: transactional outbox. Every state-changing event is written to this

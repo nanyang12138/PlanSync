@@ -103,7 +103,7 @@ describe('Scenario: planConstraintRefs narrows drift severity per task', () => {
         userName: owner,
         body: { executorType: 'human', executorName: owner },
       }),
-      { params: { projectId, taskId: narrowTaskId } },
+      { params: Promise.resolve({ projectId, taskId: narrowTaskId }) },
     );
     expect(startNarrow.status).toBe(201);
     narrowRunId = (await startNarrow.json()).data.id;
@@ -114,7 +114,7 @@ describe('Scenario: planConstraintRefs narrows drift severity per task', () => {
         userName: owner,
         body: { executorType: 'human', executorName: owner },
       }),
-      { params: { projectId, taskId: legacyTaskId } },
+      { params: Promise.resolve({ projectId, taskId: legacyTaskId }) },
     );
     expect(startLegacy.status).toBe(201);
     legacyRunId = (await startLegacy.json()).data.id;
@@ -143,7 +143,7 @@ describe('Scenario: planConstraintRefs narrows drift severity per task', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId: v2.id } },
+      { params: Promise.resolve({ projectId, planId: v2.id }) },
     );
     expect(activateRes.status).toBe(200);
   });

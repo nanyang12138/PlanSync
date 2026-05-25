@@ -74,7 +74,7 @@ describe('R-152: plan write routes route through writeBoth + supersede chain', (
           openQuestions: [],
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(201);
     const body = await res.json();
@@ -123,7 +123,7 @@ describe('R-152: plan write routes route through writeBoth + supersede chain', (
           constraints: ['c-after-patch'],
         },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(res.status).toBe(200);
 
@@ -151,7 +151,7 @@ describe('R-152: plan write routes route through writeBoth + supersede chain', (
         method: 'GET',
         userName: owner,
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     const getBody = await getRes.json();
     expect(getBody.data.deliverables).toEqual(['new-d-only']);
@@ -169,7 +169,7 @@ describe('R-152: plan write routes route through writeBoth + supersede chain', (
         userName: owner,
         body: { field: 'deliverables', items: ['added-1', 'added-2'] },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(res.status).toBe(200);
 
@@ -194,7 +194,7 @@ describe('R-152: plan write routes route through writeBoth + supersede chain', (
         userName: owner,
         body: { field: 'openQuestions', items: ['Why?', 'How?'] },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(res.status).toBe(200);
 
@@ -233,7 +233,7 @@ describe('R-152: plan write routes route through writeBoth + supersede chain', (
         body: {},
         searchParams: { action: 'accept' },
       }),
-      { params: { projectId, planId, suggestionId: sugg.id } },
+      { params: Promise.resolve({ projectId, planId, suggestionId: sugg.id }) },
     );
     expect(res.status).toBe(200);
 
@@ -260,7 +260,7 @@ describe('R-152: plan write routes route through writeBoth + supersede chain', (
         userName: owner,
         body: { reviewers: [owner] },
       }),
-      { params: { projectId, planId: v1.planId } },
+      { params: Promise.resolve({ projectId, planId: v1.planId }) },
     );
     expect(propV1.status).toBe(200);
     const v1Reviews = await prisma.planReview.findMany({ where: { planId: v1.planId } });
@@ -270,7 +270,7 @@ describe('R-152: plan write routes route through writeBoth + supersede chain', (
         `/api/projects/${projectId}/plans/${v1.planId}/reviews/${v1Reviews[0].id}?action=approve`,
         { method: 'POST', userName: owner, body: {}, searchParams: { action: 'approve' } },
       ),
-      { params: { projectId, planId: v1.planId, reviewId: v1Reviews[0].id } },
+      { params: Promise.resolve({ projectId, planId: v1.planId, reviewId: v1Reviews[0].id }) },
     );
     expect(approveV1.status).toBe(200);
     const actV1 = await activatePost(
@@ -279,7 +279,7 @@ describe('R-152: plan write routes route through writeBoth + supersede chain', (
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId: v1.planId } },
+      { params: Promise.resolve({ projectId, planId: v1.planId }) },
     );
     expect(actV1.status).toBe(200);
 
@@ -299,7 +299,7 @@ describe('R-152: plan write routes route through writeBoth + supersede chain', (
         userName: owner,
         body: { reviewers: [owner] },
       }),
-      { params: { projectId, planId: v2.planId } },
+      { params: Promise.resolve({ projectId, planId: v2.planId }) },
     );
     expect(propV2.status).toBe(200);
     const v2Reviews = await prisma.planReview.findMany({ where: { planId: v2.planId } });
@@ -308,7 +308,7 @@ describe('R-152: plan write routes route through writeBoth + supersede chain', (
         `/api/projects/${projectId}/plans/${v2.planId}/reviews/${v2Reviews[0].id}?action=approve`,
         { method: 'POST', userName: owner, body: {}, searchParams: { action: 'approve' } },
       ),
-      { params: { projectId, planId: v2.planId, reviewId: v2Reviews[0].id } },
+      { params: Promise.resolve({ projectId, planId: v2.planId, reviewId: v2Reviews[0].id }) },
     );
     expect(approveV2.status).toBe(200);
     const actV2 = await activatePost(
@@ -317,7 +317,7 @@ describe('R-152: plan write routes route through writeBoth + supersede chain', (
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId: v2.planId } },
+      { params: Promise.resolve({ projectId, planId: v2.planId }) },
     );
     expect(actV2.status).toBe(200);
 

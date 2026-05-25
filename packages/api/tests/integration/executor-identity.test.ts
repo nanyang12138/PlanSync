@@ -75,7 +75,7 @@ describe('R-009: executor identity gate on /runs/[runId]', () => {
         userName: intruder,
         body: {},
       }),
-      { params: { projectId, taskId, runId } },
+      { params: Promise.resolve({ projectId, taskId, runId }) },
     );
     expect(res.status).toBe(403);
     const body = await res.json();
@@ -94,7 +94,7 @@ describe('R-009: executor identity gate on /runs/[runId]', () => {
           deliverablesMet: ['hijacked the run'],
         },
       }),
-      { params: { projectId, taskId, runId } },
+      { params: Promise.resolve({ projectId, taskId, runId }) },
     );
     expect(res.status).toBe(403);
     const body = await res.json();
@@ -108,7 +108,7 @@ describe('R-009: executor identity gate on /runs/[runId]', () => {
         userName: executor,
         body: {},
       }),
-      { params: { projectId, taskId, runId } },
+      { params: Promise.resolve({ projectId, taskId, runId }) },
     );
     expect(res.status).toBe(200);
   });
@@ -120,7 +120,7 @@ describe('R-009: executor identity gate on /runs/[runId]', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, taskId, runId } },
+      { params: Promise.resolve({ projectId, taskId, runId }) },
     );
     expect(res.status).toBe(200);
   });

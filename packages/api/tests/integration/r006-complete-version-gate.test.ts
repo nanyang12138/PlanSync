@@ -117,7 +117,7 @@ describe('R-006: complete-gate cross-checks run vs task plan version', () => {
           deliverablesMet: ['completed the required task work'],
         },
       }),
-      { params: { projectId, taskId: task.id, runId: run.id } },
+      { params: Promise.resolve({ projectId, taskId: task.id, runId: run.id }) },
     );
 
     expect(res.status).toBe(409);

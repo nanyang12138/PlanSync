@@ -33,27 +33,22 @@ function resolveBuildUser() {
 const nextConfig = {
   output: 'standalone',
   distDir: path.join('tmp', 'ps-next-build-' + resolveBuildUser()),
-  experimental: {
-    serverComponentsExternalPackages: [
-      'pino',
-      'pino-pretty',
-      '@prisma/client',
-      '.prisma/client',
-      'pg',
-      'pg-native',
-    ],
-    instrumentationHook: true,
-  },
-  // `pg`'s `Client` class is loaded through route handlers (event bus, prisma,
-  // health) — NOT through React Server Components. In Next.js 14
-  // `experimental.serverComponentsExternalPackages` only covers RSCs, so for
-  // route-handler Node runtime we additionally tell webpack to keep `pg`
-  // (and its optional native peer `pg-native`) as runtime require()s.
-  // Without this, webpack's production minifier mangles the `Client` export
-  // into `e`, causing `new pg.Client()` inside `EventBusPG` to throw
-  // `TypeError: e is not a constructor` (root cause of nightly e2e
-  // failure #143 — `EventBusPG failed to initialise and fallback is forbidden
-  // in this configuration`).
+  // R-131 / G3 (Next.js 15 migration):
+  //   - `experimental.serverComponentsExternalPackages` was promoted to
+  //     the top-level `serverExternalPackages` in Next 15.
+  //   - `experimental.instrumentationHook` is removed because
+  //     `instrumentation.js` is enabled by default in Next 15+.
+  // #143 (preserved from master): `pg` + `pg-native` must also be marked
+  // external for route-handler Node runtime so webpack's production
+  // minifier doesn't mangle `Client` -> `e` and break EventBusPG.
+  serverExternalPackages: [
+    'pino',
+    'pino-pretty',
+    '@prisma/client',
+    '.prisma/client',
+    'pg',
+    'pg-native',
+  ],
   webpack: (config, { isServer }) => {
     if (isServer) {
       const existing = Array.isArray(config.externals)

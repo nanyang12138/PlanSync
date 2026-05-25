@@ -2260,18 +2260,15 @@
 
 #### R-131 [HIGH] 升级 Next.js 14 → 16（修复残留 high CVE）
 
-- **status**: blocked
-- **blocked_reason**: F5 (2026-05-24) 在分支 `cursor/f5-nextjs-15-upgrade-attempt-f191` 实测了 Next 14 → 15.5.18 + React 18 → 19 升级，`npm install` 通过，但**类型检查阶段碰到 monorepo 级别的 React 18/19 类型双版本冲突**（CLI 用 ink@^4 → React 18 → 拉根 hoist 的 `@types/react@18.3.29`；api 升级后用 `@types/react@19.0.14`；Radix 组件经 `@types/react@18` 解析，但 api 业务代码经 `@types/react@19` 解析；两边 `ReactNode` 不兼容，`bigint` 类型差异在每个 Slot 渲染处爆炸）。完整修复需要：
-
-  1. CLI 同时升级 `ink` 到 7.x（peer: `react@>=19.2.0`）+ 升级 `react`/`@types/react` 到 19.2+
-  2. CLI 端测试 mock 重写（ink 7 与 4 的渲染 API 差异）
-  3. 全 monorepo `@types/react` 通过 root `overrides` 强制统一（已验证 npm overrides 不会下沉到 workspace 子包，需用 [npm@9+ pkg-pnp 风格](https://docs.npmjs.com/cli/v10/configuring-npm/package-json#overrides) 或 `package-lock.json` 手动 dedup）
-  4. 业务代码每处 `cookies()` / `headers()` 加 `await`（共 5 处页面已在 F5 分支实测改完）
-  5. `next.config.js` `experimental.serverComponentsExternalPackages` 重命名为顶层 `serverExternalPackages`
-  6. validate.yml 的 audit-level 恢复为 `high`（autonomous Cloud Agent 不改 `.github/workflows/*`）
-
-  范围跨 4 个 workspace 包 + 22 个测试文件 + e2e 套件。不适合 autonomous run 一次完成；F5 的探索分支已保留具体编译错误链路与修复尝试，可作为后续人工 PR 的起点。
-
+- **status**: in_progress
+- **closed_in**: TBD (G3 PR — Next.js 15.5.18 + React 19 baseline; Next 16 follow-up tracked separately)
+- **note**: G3 (cursor/g3-nextjs-15-upgrade-r131-f191) shipped the
+  Next.js 14→15.5.18 + React 18→19 migration on top of G2's CLI
+  ink upgrade. `npm audit --omit=dev` now reports 0 critical / 0
+  high (was 0 critical / 2 high — both Next.js GHSAs fixed at
+  `15.5.16+`). Bumping further to Next 16 is no longer
+  CVE-driven and can ship as a separate routine bump.
+- **blocked_reason**: 当前剩余 blocker 是 fix_step 6 要求修改 `.github/workflows/validate.yml`（恢复 audit-level=high），autonomous Cloud Agent 硬约束禁止改动 `.github/workflows/*`，需人工跟进。历史 F5 探索分支 `cursor/f5-nextjs-15-upgrade-attempt-f191` 曾实测 Next 14 → 15.5.18 + React 18 → 19，`npm install` 通过但类型检查卡在 monorepo React 18/19 类型双版本冲突：CLI 当时仍用 ink@^4 → React 18 → hoist `@types/react@18.3.29`，api 升级后用 `@types/react@19.0.14`，Radix 组件经 `@types/react@18` 解析而 api 业务代码经 `@types/react@19` 解析，导致两边 `ReactNode` 不兼容、`bigint` 类型差异在 Slot 渲染处爆炸。该 F5 blocker 后续由 G2/G3 通过 CLI ink 升级、React 19 baseline、`cookies()` / `headers()` await 化、`serverExternalPackages` config 迁移解除；F5 的编译错误链路仍作为后续 Next 16 routine bump 的风险参考。
 - **batch**: B10
 - **depends_on**: —
 - **effort**: large
@@ -2700,7 +2697,7 @@
 
 #### R-153 [HIGH] Task→Deliverable FK 中间表
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B13
 - **depends_on**: R-151
 - **effort**: large
@@ -3031,7 +3028,7 @@
 
 #### R-181 [HIGH] 声明式 `verification_rules` 表 + 评估器
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B16
 - **depends_on**: R-180
 - **effort**: large
@@ -3126,7 +3123,7 @@
 
 #### R-191 [HIGH] commit↔deliverable 关联表 + 自动推导
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B17
 - **depends_on**: R-190, R-150
 - **effort**: medium

@@ -4,9 +4,10 @@ import { prisma } from '@/lib/prisma';
 import { authenticate } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 
-type Params = { params: { keyId: string } };
+type Params = { params: Promise<{ keyId: string }> };
 
-export async function DELETE(req: NextRequest, { params }: Params) {
+export async function DELETE(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     const key = await prisma.apiKey.findUnique({ where: { id: params.keyId } });

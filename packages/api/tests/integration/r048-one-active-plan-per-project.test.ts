@@ -55,7 +55,7 @@ describe('R-048: at most one active plan per project', () => {
           requiredReviewers: [],
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(created.status).toBe(201);
     const plan = (await created.json()).data as { id: string; version: number };
@@ -66,7 +66,7 @@ describe('R-048: at most one active plan per project', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId: plan.id } },
+      { params: Promise.resolve({ projectId, planId: plan.id }) },
     );
     expect(proposed.status).toBe(200);
 
@@ -159,14 +159,14 @@ describe('R-048: at most one active plan per project', () => {
           method: 'POST',
           userName: owner,
         }),
-        { params: { projectId, planId: a.id } },
+        { params: Promise.resolve({ projectId, planId: a.id }) },
       ),
       activatePost(
         makeReq(`/api/projects/${projectId}/plans/${b.id}/activate`, {
           method: 'POST',
           userName: owner,
         }),
-        { params: { projectId, planId: b.id } },
+        { params: Promise.resolve({ projectId, planId: b.id }) },
       ),
     ]);
 

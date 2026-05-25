@@ -55,7 +55,7 @@ describe('G: Execution Management', () => {
         userName: owner,
         body: { executorType: 'human', executorName: owner },
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
     expect(res.status).toBe(201);
     const body = await res.json();
@@ -74,7 +74,7 @@ describe('G: Execution Management', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, taskId, runId } },
+      { params: Promise.resolve({ projectId, taskId, runId }) },
     );
     expect(res.status).toBe(200);
     const after = await testPrisma.executionRun.findUnique({ where: { id: runId } });
@@ -86,7 +86,7 @@ describe('G: Execution Management', () => {
   it('G5: GET /tasks/:id/runs → 200, 分页', async () => {
     const res = await runsGet(
       makeReq(`/api/projects/${projectId}/tasks/${taskId}/runs`, { userName: owner }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -106,7 +106,7 @@ describe('G: Execution Management', () => {
           deliverablesMet: ['completed the required task work'],
         },
       }),
-      { params: { projectId, taskId, runId } },
+      { params: Promise.resolve({ projectId, taskId, runId }) },
     );
 
     // Reset task back to in_progress so a new run can be started for the next assertions
@@ -118,7 +118,7 @@ describe('G: Execution Management', () => {
         userName: owner,
         body: { executorType: 'human', executorName: owner },
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
     const run2Id = (await res2.json()).data.id;
 
@@ -129,7 +129,7 @@ describe('G: Execution Management', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, taskId, runId } },
+      { params: Promise.resolve({ projectId, taskId, runId }) },
     );
     expect(hbRes.status).toBe(409);
     const body = await hbRes.json();
@@ -142,7 +142,7 @@ describe('G: Execution Management', () => {
         userName: owner,
         body: { status: 'completed', outputSummary: 'done again' },
       }),
-      { params: { projectId, taskId, runId } },
+      { params: Promise.resolve({ projectId, taskId, runId }) },
     );
     expect(completeRes.status).toBe(409);
 
@@ -163,7 +163,7 @@ describe('G: Execution Management', () => {
           deliverablesMet: ['completed the required task work'],
         },
       }),
-      { params: { projectId, taskId, runId } },
+      { params: Promise.resolve({ projectId, taskId, runId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -182,7 +182,7 @@ describe('G: Execution Management', () => {
         userName: owner,
         body: { executorType: 'human', executorName: owner },
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
     const run3Id = (await res3.json()).data.id;
 
@@ -192,7 +192,7 @@ describe('G: Execution Management', () => {
         userName: owner,
         body: { status: 'failed', outputSummary: 'failed' },
       }),
-      { params: { projectId, taskId, runId: run3Id } },
+      { params: Promise.resolve({ projectId, taskId, runId: run3Id }) },
     );
     expect(failRes.status).toBe(200);
     expect((await failRes.json()).data.status).toBe('failed');
@@ -304,7 +304,7 @@ describe('G: Execution Management', () => {
         userName: owner,
         body: { executorType: 'agent', executorName: 'claude' },
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
     expect(res.status).toBe(201);
     const body = await res.json();
@@ -339,7 +339,7 @@ describe('G: Execution Management', () => {
         userName: owner,
         body: { executorType: 'agent', executorName: 'ai' },
       }),
-      { params: { projectId, taskId: todoTask.id } },
+      { params: Promise.resolve({ projectId, taskId: todoTask.id }) },
     );
     expect(claimRes.status).toBe(201);
     const claimed = await testPrisma.task.findUnique({ where: { id: todoTask.id } });
@@ -387,7 +387,7 @@ describe('G: Execution Management', () => {
         userName: 'r012-dev',
         body: { executorType: 'agent', executorName: 'ghost-agent' },
       }),
-      { params: { projectId: pid, taskId: t.id } },
+      { params: Promise.resolve({ projectId: pid, taskId: t.id }) },
     );
     expect(denied.status).toBe(404);
     const deniedBody = await denied.json();
@@ -405,7 +405,7 @@ describe('G: Execution Management', () => {
         userName: 'r012-owner',
         body: { executorType: 'agent', executorName: 'newbot' },
       }),
-      { params: { projectId: pid, taskId: t.id } },
+      { params: Promise.resolve({ projectId: pid, taskId: t.id }) },
     );
     expect(ownerNoFlag.status).toBe(404);
     const stillMissing = await testPrisma.projectMember.findUnique({
@@ -421,7 +421,7 @@ describe('G: Execution Management', () => {
         body: { executorType: 'agent', executorName: 'newbot' },
         searchParams: { auto_register: 'true' },
       }),
-      { params: { projectId: pid, taskId: t.id } },
+      { params: Promise.resolve({ projectId: pid, taskId: t.id }) },
     );
     expect(ownerWithFlag.status).toBe(201);
     const created = await testPrisma.projectMember.findUnique({
@@ -445,7 +445,7 @@ describe('G: Execution Management', () => {
         body: { executorType: 'agent', executorName: 'sneaky-agent' },
         searchParams: { auto_register: 'true' },
       }),
-      { params: { projectId: pid, taskId: t.id } },
+      { params: Promise.resolve({ projectId: pid, taskId: t.id }) },
     );
     expect(devTriesAutoReg.status).toBe(404);
     const sneaky = await testPrisma.projectMember.findUnique({
@@ -485,7 +485,7 @@ describe('G: Execution Management', () => {
           userName: 'r054-owner',
           body: { executorType: 'human', executorName: 'r054-owner' },
         }),
-        { params: { projectId: pid, taskId: t.id } },
+        { params: Promise.resolve({ projectId: pid, taskId: t.id }) },
       );
       expect(res.status).toBe(409);
       const body = await res.json();
@@ -511,7 +511,7 @@ describe('G: Execution Management', () => {
         userName: 'r054-owner',
         body: { executorType: 'human', executorName: 'r054-owner' },
       }),
-      { params: { projectId: pid, taskId: okTask.id } },
+      { params: Promise.resolve({ projectId: pid, taskId: okTask.id }) },
     );
     expect(okRes.status).toBe(201);
 
@@ -549,7 +549,7 @@ describe('G: Execution Management', () => {
         userName: owner,
         body: { executorType: 'human', executorName: owner },
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
     expect(blockedRes.status).toBe(409);
     const blockedBody = await blockedRes.json();
@@ -564,7 +564,7 @@ describe('G: Execution Management', () => {
         userName: owner,
         body: { action: 'no_impact' },
       }),
-      { params: { projectId, driftId: drift.id } },
+      { params: Promise.resolve({ projectId, driftId: drift.id }) },
     );
     expect(resolveRes.status).toBe(200);
 
@@ -575,7 +575,7 @@ describe('G: Execution Management', () => {
         userName: owner,
         body: { executorType: 'human', executorName: owner },
       }),
-      { params: { projectId, taskId } },
+      { params: Promise.resolve({ projectId, taskId }) },
     );
     expect(successRes.status).toBe(201);
   });

@@ -86,7 +86,7 @@ async function buildSetup(opts: {
       userName: opts.owner,
       body: { executorType: 'human', executorName: opts.owner },
     }),
-    { params: { projectId, taskId: task.id } },
+    { params: Promise.resolve({ projectId, taskId: task.id }) },
   );
   expect(startRes.status).toBe(201);
   const runId = (await startRes.json()).data.id;
@@ -114,7 +114,7 @@ async function buildSetup(opts: {
       userName: opts.owner,
       body: {},
     }),
-    { params: { projectId, planId: v2.id } },
+    { params: Promise.resolve({ projectId, planId: v2.id }) },
   );
   expect(activateRes.status).toBe(200);
 
@@ -247,7 +247,11 @@ describe('Scenario: structural severity decides what gets paused', () => {
           },
         ),
         {
-          params: { projectId: setup.projectId, taskId: setup.taskId, runId: setup.runId },
+          params: Promise.resolve({
+            projectId: setup.projectId,
+            taskId: setup.taskId,
+            runId: setup.runId,
+          }),
         },
       );
       // task.boundPlanVersion is still v1 (no rebind happened), run was

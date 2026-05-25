@@ -81,9 +81,17 @@ function refsFromTask(task: {
   planDeliverableRefs: string[];
   planConstraintRefs?: string[] | null;
   planStandardRefs?: string[] | null;
+  // R-153: link rows shipped via Prisma `include` from runDriftScan. When
+  // present (length > 0), the linked deliverables' *current* slugs win over
+  // the legacy `planDeliverableRefs: String[]` column — that's the whole
+  // point of the link table, surviving slug renames inside the same plan
+  // version. Tasks that pre-date the migration (no links yet) fall through
+  // to the legacy slug array unchanged.
+  deliverableLinks?: Array<{ deliverable: { slug: string } }> | null;
 }): TaskRefs {
+  const linkedSlugs = task.deliverableLinks?.map((l) => l.deliverable.slug) ?? [];
   return {
-    planDeliverableRefs: task.planDeliverableRefs,
+    planDeliverableRefs: linkedSlugs.length > 0 ? linkedSlugs : task.planDeliverableRefs,
     // The schema columns default to `[]`; the classifier treats both `[]`
     // and `null` as the conservative "depends on all" sentinel so tasks
     // that pre-date the migration (or whose owner has not explicitly
@@ -142,6 +150,10 @@ export async function runDriftScan(
       executionRuns: {
         where: { status: 'running' },
       },
+      // R-153: pull link rows alongside the task so `refsFromTask` can prefer
+      // the linked deliverable slugs (which reflect the *current* slug after
+      // any owner rename) over the cached `planDeliverableRefs` column.
+      deliverableLinks: { include: { deliverable: { select: { slug: true } } } },
     },
   });
 
