@@ -265,14 +265,11 @@ jobs:
       - name: Build @plansync/cli
         run: npm run build --workspace=@plansync/cli
 
-      - name: Verify cli build output (yoga.wasm critical for Ink)
+      - name: Verify cli build output
         run: |
           set -e
           test -f packages/cli/dist/index.js  || { echo "::error::missing cli/dist/index.js"; exit 1; }
-          test -f packages/cli/dist/yoga.wasm || { echo "::error::missing cli/dist/yoga.wasm — cp step in build script failed (see commit 874296b)"; exit 1; }
-          # wasm sanity check: starts with magic bytes \x00asm
-          head -c 4 packages/cli/dist/yoga.wasm | xxd | grep -q '0061 736d' \
-            || { echo "::error::cli/dist/yoga.wasm header is not a valid wasm magic"; exit 1; }
+          # G2 (ink 4 -> 6): ink 6 ships JS-native yoga-layout, no wasm needed.
 
       - name: Build @plansync/api
         run: npm run build --workspace=@plansync/api
