@@ -170,9 +170,15 @@ describe('R-182: aggregateAiUsage groups by purpose', () => {
 
   it('returns per-purpose buckets with count / latency / token totals / cache ratio', async () => {
     // Vitest runs test files in parallel forks against a shared DB, and any
-    // other test that exercises aiClient.complete writes to ai_calls. Scope
-    // the aggregation window to "after we started inserting fixtures" so the
-    // assertion is robust to concurrent inserts from other suites.
+    // other test that exercises aiClient.complete writes to ai_calls. To
+    // isolate this test from concurrent writers, namespace our purposes
+    // with a per-run unique tag. `aggregateAiUsage` groups by purpose, so
+    // our buckets are guaranteed to contain only our fixtures regardless
+    // of what other suites insert in the same window.
+    const tag = `r182_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const planPurpose = `plan_diff_${tag}`;
+    const impactPurpose = `drift_impact_${tag}`;
+
     const since = new Date();
     // Make sure `since` is strictly less than every fixture's createdAt
     // (Postgres timestamp resolution can match wall-clock at millisecond
@@ -180,10 +186,10 @@ describe('R-182: aggregateAiUsage groups by purpose', () => {
     await new Promise((resolve) => setTimeout(resolve, 5));
 
     const fixtures = [
-      { purpose: 'plan_diff', latencyMs: 100, ok: true, cacheHit: false, in: 10, out: 5 },
-      { purpose: 'plan_diff', latencyMs: 200, ok: true, cacheHit: true, in: 0, out: 0 },
-      { purpose: 'plan_diff', latencyMs: 300, ok: false, cacheHit: false, in: 0, out: 0 },
-      { purpose: 'drift_impact', latencyMs: 50, ok: true, cacheHit: false, in: 3, out: 2 },
+      { purpose: planPurpose, latencyMs: 100, ok: true, cacheHit: false, in: 10, out: 5 },
+      { purpose: planPurpose, latencyMs: 200, ok: true, cacheHit: true, in: 0, out: 0 },
+      { purpose: planPurpose, latencyMs: 300, ok: false, cacheHit: false, in: 0, out: 0 },
+      { purpose: impactPurpose, latencyMs: 50, ok: true, cacheHit: false, in: 3, out: 2 },
     ];
     for (const f of fixtures) {
       await recordAiCall({
@@ -204,9 +210,11 @@ describe('R-182: aggregateAiUsage groups by purpose', () => {
     }
 
     const usage = await aggregateAiUsage({ since });
-    expect(usage.totalCalls).toBe(4);
+    // totalCalls includes all concurrent writers — assert it covers at
+    // least our 4 fixtures.
+    expect(usage.totalCalls).toBeGreaterThanOrEqual(4);
 
-    const plan = usage.buckets.find((b) => b.purpose === 'plan_diff')!;
+    const plan = usage.buckets.find((b) => b.purpose === planPurpose)!;
     expect(plan).toBeDefined();
     expect(plan.count).toBe(3);
     expect(plan.okCount).toBe(2);
@@ -218,7 +226,7 @@ describe('R-182: aggregateAiUsage groups by purpose', () => {
     // p50 of [100,200,300] sorted = index floor(2 * 0.5) = 1 → 200
     expect(plan.p50LatencyMs).toBe(200);
 
-    const impact = usage.buckets.find((b) => b.purpose === 'drift_impact')!;
+    const impact = usage.buckets.find((b) => b.purpose === impactPurpose)!;
     expect(impact.count).toBe(1);
     expect(impact.okCount).toBe(1);
     expect(impact.cacheHits).toBe(0);
@@ -285,14 +293,7 @@ describe('R-182: /api/ai-usage is owner-gated', () => {
       data: Array<{ purpose: string; count: number; p50LatencyMs: number }>;
       totalCalls: number;
     };
-    // Vitest runs test files in parallel forks against the same DB. Even
-    // though we filter by `since = new Date()` set 5ms before our insert,
-    // a concurrent suite can write its own ai_calls row inside that
-    // window and inflate totalCalls above 1 (observed: 3). The contract
-    // we actually want to assert is "at least our row landed and is
-    // visible to the owner-gated aggregator" — use >=1 + the purpose
-    // find() that already proves our specific insert is present.
-    expect(body.totalCalls).toBeGreaterThanOrEqual(1);
+    expect(body.totalCalls).toBe(1);
     expect(body.data.find((b) => b.purpose === 'plan_diff')).toBeDefined();
   });
 
