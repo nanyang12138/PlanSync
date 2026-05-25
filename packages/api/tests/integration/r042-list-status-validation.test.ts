@@ -55,7 +55,7 @@ describe('R-042: list query param zod validation', () => {
         userName: owner,
         searchParams: { status: 'foo' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(400);
     const body = await res.json();
@@ -70,7 +70,7 @@ describe('R-042: list query param zod validation', () => {
         userName: owner,
         searchParams: { status: 'todo' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -79,10 +79,9 @@ describe('R-042: list query param zod validation', () => {
   });
 
   it('GET /tasks (no status filter) → 200', async () => {
-    const res = await tasksGet(
-      makeReq(`/api/projects/${projectId}/tasks`, { userName: owner }),
-      { params: { projectId } },
-    );
+    const res = await tasksGet(makeReq(`/api/projects/${projectId}/tasks`, { userName: owner }), {
+      params: Promise.resolve({ projectId }),
+    });
     expect(res.status).toBe(200);
   });
 
@@ -92,7 +91,7 @@ describe('R-042: list query param zod validation', () => {
         userName: owner,
         searchParams: { assignee: '   ' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(400);
   });
@@ -103,7 +102,7 @@ describe('R-042: list query param zod validation', () => {
         userName: owner,
         searchParams: { status: 'foo' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(400);
     const body = await res.json();
@@ -117,7 +116,7 @@ describe('R-042: list query param zod validation', () => {
         userName: owner,
         searchParams: { status: 'open' },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(res.status).toBe(200);
   });

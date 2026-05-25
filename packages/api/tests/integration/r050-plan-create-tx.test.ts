@@ -51,10 +51,13 @@ describe('R-050: plan create version race', () => {
     const spy = vi.spyOn(prisma, '$transaction').mockImplementation(((...args: unknown[]) => {
       calls += 1;
       if (calls === 1) {
-        const err = Object.assign(new Error('Unique constraint failed on plans_projectId_version_key'), {
-          code: 'P2002',
-          meta: { target: ['projectId', 'version'] },
-        });
+        const err = Object.assign(
+          new Error('Unique constraint failed on plans_projectId_version_key'),
+          {
+            code: 'P2002',
+            meta: { target: ['projectId', 'version'] },
+          },
+        );
         return Promise.reject(err);
       }
       return (realTx as (...a: unknown[]) => unknown)(...args);
@@ -66,7 +69,7 @@ describe('R-050: plan create version race', () => {
         userName: owner,
         body: planBody('R050 retry succeeds'),
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
 
     expect(spy).toHaveBeenCalledTimes(2);
@@ -95,7 +98,7 @@ describe('R-050: plan create version race', () => {
         userName: owner,
         body: planBody('R050 non-p2002 no retry'),
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
 
     expect(spy).toHaveBeenCalledTimes(1);
@@ -148,7 +151,7 @@ describe('R-050: plan create version race', () => {
           userName: 'r050-owner-isolated',
           body: planBody('R050 losing draft'),
         }),
-        { params: { projectId: isolatedProjectId } },
+        { params: Promise.resolve({ projectId: isolatedProjectId }) },
       );
 
       expect(calls).toBe(2);

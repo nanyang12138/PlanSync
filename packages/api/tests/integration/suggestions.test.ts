@@ -52,7 +52,7 @@ describe('D: Suggestion System', () => {
         userName: owner,
         body: { field: 'goal', action: 'set', value: 'new goal', reason: 'better' },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(res.status).toBe(201);
     const body = await res.json();
@@ -67,7 +67,7 @@ describe('D: Suggestion System', () => {
         userName: owner,
         body: { field: 'constraints', action: 'append', value: 'new-constraint', reason: 'needed' },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(res.status).toBe(201);
     const body = await res.json();
@@ -81,7 +81,7 @@ describe('D: Suggestion System', () => {
         userName: owner,
         body: { field: 'deliverables', action: 'remove', value: 'd1', reason: 'no longer needed' },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(res.status).toBe(201);
   });
@@ -94,7 +94,7 @@ describe('D: Suggestion System', () => {
         userName: owner,
         body: { field: 'goal', action: 'set', value: 'x', reason: 'y' },
       }),
-      { params: { projectId, planId: activePlanId } },
+      { params: Promise.resolve({ projectId, planId: activePlanId }) },
     );
     expect(res.status).toBe(201);
   });
@@ -111,7 +111,7 @@ describe('D: Suggestion System', () => {
         userName: owner,
         body: { field: 'goal', action: 'set', value: 'x', reason: 'y' },
       }),
-      { params: { projectId, planId: activePlanId } },
+      { params: Promise.resolve({ projectId, planId: activePlanId }) },
     );
     expect(res.status).toBe(409);
     const body = await res.json();
@@ -125,7 +125,7 @@ describe('D: Suggestion System', () => {
         userName: owner,
         body: { field: 'title', action: 'set', value: 'x', reason: 'y' },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(res.status).toBe(400);
   });
@@ -137,7 +137,7 @@ describe('D: Suggestion System', () => {
         userName: owner,
         body: { field: 'goal', action: 'set', value: 'x' },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(res.status).toBe(400);
   });
@@ -150,7 +150,7 @@ describe('D: Suggestion System', () => {
         userName: owner,
         body: { field: 'goal', action: 'set', value: 'accepted goal', reason: 'better' },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     const suggestionId = (await createRes.json()).data.id;
 
@@ -163,7 +163,7 @@ describe('D: Suggestion System', () => {
           body: {},
         },
       ),
-      { params: { projectId, planId, suggestionId } },
+      { params: Promise.resolve({ projectId, planId, suggestionId }) },
     );
     expect(res.status).toBe(200);
 
@@ -179,7 +179,7 @@ describe('D: Suggestion System', () => {
         userName: owner,
         body: { field: 'scope', action: 'set', value: 'rejected scope', reason: 'test' },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     const suggestionId = (await createRes.json()).data.id;
 
@@ -192,7 +192,7 @@ describe('D: Suggestion System', () => {
           body: {},
         },
       ),
-      { params: { projectId, planId, suggestionId } },
+      { params: Promise.resolve({ projectId, planId, suggestionId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -209,7 +209,7 @@ describe('D: Suggestion System', () => {
         userName: owner,
         body: { field: 'constraints', action: 'append', value: 'appended-item', reason: 'test' },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     const suggestionId = (await createRes.json()).data.id;
 
@@ -222,7 +222,7 @@ describe('D: Suggestion System', () => {
           body: {},
         },
       ),
-      { params: { projectId, planId, suggestionId } },
+      { params: Promise.resolve({ projectId, planId, suggestionId }) },
     );
 
     const planAfter = await testPrisma.plan.findUnique({ where: { id: planId } });
@@ -236,7 +236,7 @@ describe('D: Suggestion System', () => {
         userName: owner,
         body: { field: 'scope', action: 'set', value: 'new scope', reason: 'test' },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     const suggestionId = (await createRes.json()).data.id;
 
@@ -249,7 +249,7 @@ describe('D: Suggestion System', () => {
           body: { comment: 'looks good to me' },
         },
       ),
-      { params: { projectId, planId, suggestionId } },
+      { params: Promise.resolve({ projectId, planId, suggestionId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -263,7 +263,7 @@ describe('D: Suggestion System', () => {
         userName: owner,
         body: { field: 'goal', action: 'set', value: 'should-not-persist', reason: 'r' },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     const suggestionId = (await createRes.json()).data.id;
 
@@ -294,7 +294,7 @@ describe('D: Suggestion System', () => {
           `/api/projects/${projectId}/plans/${planId}/suggestions/${suggestionId}?action=accept`,
           { method: 'POST', userName: owner, body: {} },
         ),
-        { params: { projectId, planId, suggestionId } },
+        { params: Promise.resolve({ projectId, planId, suggestionId }) },
       );
       // Route catches the error via handleApiError → 500
       expect(res.status).toBeGreaterThanOrEqual(500);
@@ -318,7 +318,7 @@ describe('D: Suggestion System', () => {
         userName: owner,
         body: { field: 'scope', action: 'set', value: 'scope A', reason: 'r' },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     const s1Id = (await s1Res.json()).data.id;
 
@@ -328,7 +328,7 @@ describe('D: Suggestion System', () => {
         userName: owner,
         body: { field: 'scope', action: 'set', value: 'scope B', reason: 'r' },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     const s2Id = (await s2Res.json()).data.id;
 
@@ -339,7 +339,7 @@ describe('D: Suggestion System', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId, suggestionId: s1Id } },
+      { params: Promise.resolve({ projectId, planId, suggestionId: s1Id }) },
     );
 
     // Second should now be conflict

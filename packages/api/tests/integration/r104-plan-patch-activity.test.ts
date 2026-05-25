@@ -53,7 +53,7 @@ describe('R-104: plan PATCH writes activity', () => {
           requiredReviewers: [],
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(createRes.status).toBe(201);
     const planId = (await createRes.json()).data.id;
@@ -68,7 +68,7 @@ describe('R-104: plan PATCH writes activity', () => {
         userName: owner,
         body: { goal: 'updated goal', scope: 'updated scope' },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(patchRes.status).toBe(200);
 
@@ -112,7 +112,7 @@ describe('R-104: plan PATCH writes activity', () => {
           requiredReviewers: [reviewer1],
         },
       }),
-      { params: { projectId } },
+      { params: Promise.resolve({ projectId }) },
     );
     expect(createRes.status).toBe(201);
     const planId = (await createRes.json()).data.id;
@@ -123,7 +123,7 @@ describe('R-104: plan PATCH writes activity', () => {
         userName: owner,
         body: { reviewers: [reviewer1] },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(propRes.status).toBe(200);
 
@@ -138,7 +138,7 @@ describe('R-104: plan PATCH writes activity', () => {
         userName: owner,
         body: { requiredReviewers: [reviewer1, reviewer2] },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(patchRes.status).toBe(200);
 

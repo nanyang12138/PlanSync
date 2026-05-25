@@ -7,9 +7,10 @@ import { AppError, ErrorCode } from '@plansync/shared';
 import { logger } from '@/lib/logger';
 import { checkNotifyRateLimit } from '@/lib/notify-rate-limit';
 
-type Params = { params: { projectId: string } };
+type Params = { params: Promise<{ projectId: string }> };
 
-export async function POST(req: NextRequest, { params }: Params) {
+export async function POST(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     requireNotExecScoped(auth);

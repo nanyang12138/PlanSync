@@ -102,7 +102,7 @@ describe('R-135: task-pack cross-project isolation', () => {
   it('GET /projects/A/tasks/{taskB}/pack → 404, no payload leaks', async () => {
     const res = await packGet(
       makeReq(`/api/projects/${projectAId}/tasks/${taskBId}/pack`, { userName: ownerA }),
-      { params: { projectId: projectAId, taskId: taskBId } },
+      { params: Promise.resolve({ projectId: projectAId, taskId: taskBId }) },
     );
     expect(res.status).toBe(404);
     const body = await res.json();
@@ -117,7 +117,7 @@ describe('R-135: task-pack cross-project isolation', () => {
   it('GET /projects/A/tasks/{taskB} → 404', async () => {
     const res = await taskGet(
       makeReq(`/api/projects/${projectAId}/tasks/${taskBId}`, { userName: ownerA }),
-      { params: { projectId: projectAId, taskId: taskBId } },
+      { params: Promise.resolve({ projectId: projectAId, taskId: taskBId }) },
     );
     expect(res.status).toBe(404);
   });
@@ -130,7 +130,7 @@ describe('R-135: task-pack cross-project isolation', () => {
         userName: ownerA,
         body: { executorType: 'human', executorName: ownerA },
       }),
-      { params: { projectId: projectAId, taskId: taskBId } },
+      { params: Promise.resolve({ projectId: projectAId, taskId: taskBId }) },
     );
     expect(res.status).toBe(404);
   });
@@ -139,7 +139,7 @@ describe('R-135: task-pack cross-project isolation', () => {
   it('GET /projects/B/tasks/{taskB}/pack → 200 with full payload', async () => {
     const res = await packGet(
       makeReq(`/api/projects/${projectBId}/tasks/${taskBId}/pack`, { userName: ownerB }),
-      { params: { projectId: projectBId, taskId: taskBId } },
+      { params: Promise.resolve({ projectId: projectBId, taskId: taskBId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -173,7 +173,7 @@ describe('R-135: task-pack cross-project isolation', () => {
     clearWarn();
     await packGet(
       makeReq(`/api/projects/${projectAId}/tasks/${taskBId}/pack`, { userName: ownerA }),
-      { params: { projectId: projectAId, taskId: taskBId } },
+      { params: Promise.resolve({ projectId: projectAId, taskId: taskBId }) },
     );
     const audit = lastSuspectCrossProjectCall();
     expect(audit?.suspectCrossProject).toBe(true);
@@ -195,7 +195,7 @@ describe('R-135: task-pack cross-project isolation', () => {
             userName: ownerA,
             body: { description: 'leak attempt' },
           }),
-          { params: { projectId: projectAId, taskId: taskBId } },
+          { params: Promise.resolve({ projectId: projectAId, taskId: taskBId }) },
         ),
     },
     {
@@ -207,7 +207,7 @@ describe('R-135: task-pack cross-project isolation', () => {
             method: 'DELETE',
             userName: ownerA,
           }),
-          { params: { projectId: projectAId, taskId: taskBId } },
+          { params: Promise.resolve({ projectId: projectAId, taskId: taskBId }) },
         ),
     },
     {
@@ -220,7 +220,7 @@ describe('R-135: task-pack cross-project isolation', () => {
             userName: ownerA,
             body: { assignee: ownerA },
           }),
-          { params: { projectId: projectAId, taskId: taskBId } },
+          { params: Promise.resolve({ projectId: projectAId, taskId: taskBId }) },
         ),
     },
     {
@@ -232,7 +232,7 @@ describe('R-135: task-pack cross-project isolation', () => {
             method: 'POST',
             userName: ownerA,
           }),
-          { params: { projectId: projectAId, taskId: taskBId } },
+          { params: Promise.resolve({ projectId: projectAId, taskId: taskBId }) },
         ),
     },
     {
@@ -244,7 +244,7 @@ describe('R-135: task-pack cross-project isolation', () => {
             method: 'POST',
             userName: ownerA,
           }),
-          { params: { projectId: projectAId, taskId: taskBId } },
+          { params: Promise.resolve({ projectId: projectAId, taskId: taskBId }) },
         ),
     },
     {
@@ -257,7 +257,7 @@ describe('R-135: task-pack cross-project isolation', () => {
             userName: ownerA,
             body: { completionNote: 'try' },
           }),
-          { params: { projectId: projectAId, taskId: taskBId } },
+          { params: Promise.resolve({ projectId: projectAId, taskId: taskBId }) },
         ),
     },
     {
@@ -270,7 +270,7 @@ describe('R-135: task-pack cross-project isolation', () => {
             userName: ownerA,
             body: { executorType: 'human', executorName: ownerA },
           }),
-          { params: { projectId: projectAId, taskId: taskBId } },
+          { params: Promise.resolve({ projectId: projectAId, taskId: taskBId }) },
         ),
     },
   ];

@@ -1,5 +1,19 @@
-import { spawnSync } from 'child_process';
+import { spawn } from 'child_process';
 import { logger } from './logger';
+
+// F4 / closes the deeper concern in the P0-7 instrumentation cluster
+// (#541-cls): the previous `spawnSync(..., { timeout: 10_000 })` blocked
+// the entire JS thread for up to 10s while the sendmail child ran.
+// During a SIGTERM drain that meant our 5s `Promise.race` timeout
+// could not fire (timer can't run while spawnSync holds the thread),
+// so the drain effectively waited the full sendmail timeout per
+// in-flight message — often exceeding the orchestrator grace period
+// and ending in SIGKILL with mail lost.
+//
+// `spawn` (async) lets the timer fire on schedule, lets
+// `flushSendMailQueue` see in-flight Promises through the `inFlight`
+// set, and gives `getPendingMailTotal()` (P0-7) accurate accounting.
+// The 10s child-side budget is preserved via setTimeout + child.kill.
 
 const SENDMAIL = process.env.EMAIL_SENDMAIL ?? '/usr/sbin/sendmail';
 const FROM = process.env.EMAIL_FROM ?? 'plansync@amd.com';
@@ -78,21 +92,61 @@ function buildMessage(to: string[], subject: string, body: string): string {
   ].join('\n');
 }
 
-function deliverOnce(message: string): { ok: boolean; err?: string } {
-  try {
-    const result = spawnSync(SENDMAIL, ['-t'], {
-      input: message,
-      timeout: 10000,
-    });
-    if (result.status !== 0) {
-      const err = result.stderr?.toString().slice(0, 200) ?? `exit=${result.status}`;
-      return { ok: false, err };
+function deliverOnce(message: string): Promise<{ ok: boolean; err?: string }> {
+  return new Promise((resolve) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(SENDMAIL, ['-t'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    } catch (err) {
+      resolve({ ok: false, err: err instanceof Error ? err.message : String(err) });
+      return;
     }
-    return { ok: true };
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return { ok: false, err: msg };
-  }
+    let stderrBuf = '';
+    let settled = false;
+    const settle = (result: { ok: boolean; err?: string }): void => {
+      if (settled) return;
+      settled = true;
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // child already exited; nothing to do.
+      }
+      resolve(result);
+    };
+    const timer = setTimeout(() => settle({ ok: false, err: 'timeout' }), 10_000);
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderrBuf += chunk.toString();
+      if (stderrBuf.length > 200) stderrBuf = stderrBuf.slice(0, 200);
+    });
+    child.on('error', (err: Error) => {
+      clearTimeout(timer);
+      settle({ ok: false, err: err.message });
+    });
+    child.on('close', (code: number | null) => {
+      clearTimeout(timer);
+      if (code === 0) settle({ ok: true });
+      else settle({ ok: false, err: stderrBuf || `exit=${code ?? 'null'}` });
+    });
+    // R8 / closes #920 — child.stdin EPIPE/ECONNRESET is emitted
+    // asynchronously when sendmail closes its read side before we
+    // finish writing (typical when sendmail rejects fast — bad
+    // recipient, queue full, etc.). Without an 'error' listener on
+    // stdin, Node lifts the EPIPE to a process-level uncaughtException
+    // and the API process crashes. Wire a settle-with-error so the
+    // delivery is reported as failed and processQueue continues with
+    // the next message.
+    child.stdin?.on('error', (err: Error) => {
+      clearTimeout(timer);
+      settle({ ok: false, err: err.message });
+    });
+    try {
+      child.stdin?.write(message);
+      child.stdin?.end();
+    } catch (err) {
+      clearTimeout(timer);
+      settle({ ok: false, err: err instanceof Error ? err.message : String(err) });
+    }
+  });
 }
 
 function sleep(ms: number): Promise<void> {
@@ -105,7 +159,7 @@ async function processQueue(): Promise<void> {
   try {
     while (queue.length > 0) {
       const item = queue.shift()!;
-      const result = deliverOnce(item.message);
+      const result = await deliverOnce(item.message);
       if (result.ok) continue;
 
       item.attempts += 1;
@@ -212,25 +266,22 @@ export async function flushSendMailQueue(): Promise<void> {
 export const flushSendMailQueueForTests = flushSendMailQueue;
 
 /**
- * Test-only: read the current pending queue length (waiting messages
- * only, not in-flight). Most call sites should use
- * {@link getPendingMailTotal} instead — this helper exists for tests
- * that specifically want to assert the queue rejection path.
+ * Test-only: read the current pending queue length.
  */
 export function _sendMailQueueLengthForTests(): number {
   return queue.length;
 }
 
 /**
- * P0-7 / closes #541-cls: the SIGTERM drain reports 'queue drained' on
- * timeout if and only if `pending === 0`. The previous implementation
- * read `queue.length` only, which excludes in-flight `spawn` children
- * and the `processing` worker. A 5s drain that fired while a
- * sendmail child was still running would then misreport "drained" and
- * `process.exit(0)` would SIGKILL the in-flight child mid-write.
+ * R8 / closes #919: aggregate pending mail count for the SIGTERM drain
+ * path. The drain in instrumentation.ts decides "are we done?" by
+ * reading this. Pre-fix, drain code only saw `queue.length`, so a
+ * sendmail child that was mid-spawn (in-flight Promise but no queue
+ * entry) made the drain misreport "done" and process.exit terminated
+ * the in-flight delivery mid-write.
  *
- * `getPendingMailTotal` aggregates all three signals so the drain
- * accurately reports residual messages.
+ * (Mirrors the helper that lands in P0-7 #859 — wired here too so F4
+ * is independently complete.)
  */
 export function getPendingMailTotal(): number {
   return queue.length + inFlight.size + (processing ? 1 : 0);

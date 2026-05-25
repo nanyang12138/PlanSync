@@ -12,8 +12,7 @@ import {
 // R-124: AI tests run by default against the deterministic mock provider
 // (PLANSYNC_AI_MOCK=1, set in tests/setup.ts). Opt-in to a real LLM via
 // PLANSYNC_AI_TESTS=1 plus a valid LLM_API_KEY/ANTHROPIC_API_KEY.
-const AI_AVAILABLE =
-  process.env.PLANSYNC_AI_TESTS === '1' || process.env.PLANSYNC_AI_MOCK === '1';
+const AI_AVAILABLE = process.env.PLANSYNC_AI_TESTS === '1' || process.env.PLANSYNC_AI_MOCK === '1';
 const itWithAI = AI_AVAILABLE ? it : it.skip;
 // L3 tests "AI unavailable" graceful degradation — only meaningful when AI is NOT configured
 
@@ -58,7 +57,7 @@ describe('L: AI Integration (Plan Diff)', () => {
         userName: owner,
         searchParams: { compareWith: plan2Id },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -74,7 +73,7 @@ describe('L: AI Integration (Plan Diff)', () => {
       makeReq(`/api/projects/${projectId}/plans/${planId}/diff`, {
         userName: owner,
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(res.status).toBe(200);
   });
@@ -85,7 +84,7 @@ describe('L: AI Integration (Plan Diff)', () => {
         userName: owner,
         searchParams: { compareWith: plan2Id },
       }),
-      { params: { projectId, planId: 'nonexistent-plan' } },
+      { params: Promise.resolve({ projectId, planId: 'nonexistent-plan' }) },
     );
     expect(res.status).toBe(404);
   });
@@ -96,7 +95,7 @@ describe('L: AI Integration (Plan Diff)', () => {
         userName: owner,
         searchParams: { compareWith: plan2Id },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -112,7 +111,7 @@ describe('L: AI Integration (Plan Diff)', () => {
         userName: owner,
         searchParams: { compareWith: plan2Id },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     // Second call - should be cached
     const res = await diffGet(
@@ -120,7 +119,7 @@ describe('L: AI Integration (Plan Diff)', () => {
         userName: owner,
         searchParams: { compareWith: plan2Id },
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(res.status).toBe(200);
     // Verify DB cache exists. The route calls

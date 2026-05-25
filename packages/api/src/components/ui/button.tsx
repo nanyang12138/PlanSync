@@ -41,7 +41,12 @@ export interface ButtonProps
 
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant, size, asChild = false, ...props }, ref) => {
-    const Comp = asChild ? Slot : 'button';
+    // React 19 / Radix Slot: the SlotProps type narrowed and no longer
+    // structurally accepts a full HTMLButton spread. Cast the rendered
+    // component to a generic `any` so the same props pipeline works for
+    // both the native button and Radix Slot branches.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const Comp: any = asChild ? Slot : 'button';
     return (
       <Comp className={cn(buttonVariants({ variant, size, className }))} ref={ref} {...props} />
     );

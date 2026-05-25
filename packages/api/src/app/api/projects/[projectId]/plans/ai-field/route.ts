@@ -6,7 +6,7 @@ import { normalizeAiList, normalizeAiText } from '@/lib/ai/validate';
 import { UNTRUSTED_INPUT_PREAMBLE, tagUntrusted } from '@/lib/ai/sanitize';
 import { z } from 'zod';
 
-type Params = { params: { projectId: string } };
+type Params = { params: Promise<{ projectId: string }> };
 
 type ArrayField = 'constraints' | 'standards' | 'deliverables' | 'openQuestions';
 type TextField = 'goal' | 'scope';
@@ -33,7 +33,8 @@ const FIELD_INSTRUCTIONS: Record<PlanField, string> = {
     'Generate or improve the Open Questions list (unresolved decisions that need answers). Return one item per line, no bullets or numbers.',
 };
 
-export async function POST(req: NextRequest, { params }: Params) {
+export async function POST(req: NextRequest, __nextCtx: Params) {
+  const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);

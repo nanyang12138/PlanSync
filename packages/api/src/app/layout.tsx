@@ -11,13 +11,16 @@ export const metadata: Metadata = {
 
 type Theme = 'light' | 'dark';
 
-function readTheme(): Theme {
-  const v = cookies().get('plansync-theme')?.value;
+// R-131 / G3 (Next.js 15): cookies() returns Promise<ReadonlyRequestCookies>
+// — every call site must await; the consumer becomes async too.
+async function readTheme(): Promise<Theme> {
+  const c = await cookies();
+  const v = c.get('plansync-theme')?.value;
   return v === 'dark' ? 'dark' : 'light';
 }
 
-export default function RootLayout({ children }: { children: ReactNode }) {
-  const theme = readTheme();
+export default async function RootLayout({ children }: { children: ReactNode }) {
+  const theme = await readTheme();
   return (
     <html lang="en" className={`scroll-smooth ${theme === 'dark' ? 'dark' : ''}`}>
       <body className="min-h-screen bg-background text-fg antialiased">
