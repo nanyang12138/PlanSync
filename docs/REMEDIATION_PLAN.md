@@ -2261,7 +2261,17 @@
 #### R-131 [HIGH] 升级 Next.js 14 → 16（修复残留 high CVE）
 
 - **status**: blocked
-- **blocked_reason**: fix_step 5 要求修改 `.github/workflows/validate.yml`（恢复 audit-level=high），autonomous Cloud Agent 硬约束禁止改动 `.github/workflows/*`；此外 fix_step 3 "处理 App Router、middleware、Pages Router compatibility" 范围开放（涉及 Next 14→15→16 两个大版本跨越、React 18→19 升级，rollback 注释也明示"大 PR，建议单独 feature branch + 灰度 + revert plan"），不适合 autonomous run 一次完成，需人工分批分发后再 unblock。
+- **blocked_reason**: F5 (2026-05-24) 在分支 `cursor/f5-nextjs-15-upgrade-attempt-f191` 实测了 Next 14 → 15.5.18 + React 18 → 19 升级，`npm install` 通过，但**类型检查阶段碰到 monorepo 级别的 React 18/19 类型双版本冲突**（CLI 用 ink@^4 → React 18 → 拉根 hoist 的 `@types/react@18.3.29`；api 升级后用 `@types/react@19.0.14`；Radix 组件经 `@types/react@18` 解析，但 api 业务代码经 `@types/react@19` 解析；两边 `ReactNode` 不兼容，`bigint` 类型差异在每个 Slot 渲染处爆炸）。完整修复需要：
+
+  1. CLI 同时升级 `ink` 到 7.x（peer: `react@>=19.2.0`）+ 升级 `react`/`@types/react` 到 19.2+
+  2. CLI 端测试 mock 重写（ink 7 与 4 的渲染 API 差异）
+  3. 全 monorepo `@types/react` 通过 root `overrides` 强制统一（已验证 npm overrides 不会下沉到 workspace 子包，需用 [npm@9+ pkg-pnp 风格](https://docs.npmjs.com/cli/v10/configuring-npm/package-json#overrides) 或 `package-lock.json` 手动 dedup）
+  4. 业务代码每处 `cookies()` / `headers()` 加 `await`（共 5 处页面已在 F5 分支实测改完）
+  5. `next.config.js` `experimental.serverComponentsExternalPackages` 重命名为顶层 `serverExternalPackages`
+  6. validate.yml 的 audit-level 恢复为 `high`（autonomous Cloud Agent 不改 `.github/workflows/*`）
+
+  范围跨 4 个 workspace 包 + 22 个测试文件 + e2e 套件。不适合 autonomous run 一次完成；F5 的探索分支已保留具体编译错误链路与修复尝试，可作为后续人工 PR 的起点。
+
 - **batch**: B10
 - **depends_on**: —
 - **effort**: large
@@ -2272,10 +2282,11 @@
 - **root_cause**: Next.js 14.2.x 仅维护到 14.2.35，2 个 CVE 仅在 16.x 修复
 - **fix_steps**:
   1. 阅读 [Next 14 → 15 → 16 migration guide](https://nextjs.org/docs/app/building-your-application/upgrading)
-  2. 升级 `next` 到 `~16.2.x`、`react` / `react-dom` 到对应版本
-  3. 处理 App Router、middleware、Pages Router compatibility
-  4. 重跑所有集成 + e2e 测试
-  5. 升级后 validate.yml 的 audit-level 改回 `high`
+  2. 升级 `next` 到 `~16.2.x`（中间过 15.5.18 一站，所有 high CVE 已修），`react` / `react-dom` 到 `~19.2.x`
+  3. **同步升级 `packages/cli` 的 `ink` 到 7.x + `react` 到 19.2.x**（peer 依赖；此步是 F5 卡点）
+  4. 处理 App Router、middleware、Pages Router compatibility（cookies/headers 全部 await，next.config.js serverExternalPackages 重命名）
+  5. 重跑所有集成 + e2e 测试
+  6. 升级后 validate.yml 的 audit-level 改回 `high`
 - **verification**: `npm audit --omit=dev --audit-level=high` 通过 + 所有 e2e 通过
 - **rollback**: 大 PR，建议单独 feature branch + 灰度 + revert plan
 - **temporary_mitigation**: validate.yml 用 `--audit-level=critical`；nightly.yml 仍跑 high+ 严扫，发现就开 issue
