@@ -2113,7 +2113,7 @@
 
 #### R-117 [HIGH] auth login/password/verify/logout 集成测试（不走 AUTH_DISABLED）
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B12
 - **depends_on**: R-013, R-014
 - **effort**: medium
