@@ -187,7 +187,7 @@ describe('R-205: plansync_plan_withdraw route', () => {
         userName: owner,
         body: {},
       }),
-      { params: { projectId, planId } },
+      { params: Promise.resolve({ projectId, planId }) },
     );
     expect(wRes.status).toBe(409);
 
