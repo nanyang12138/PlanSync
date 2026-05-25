@@ -49,8 +49,13 @@ interface ChildBehaviour {
   delayMs?: number;
 }
 
+interface FakeStdin extends EventEmitter {
+  write: (s: string) => boolean;
+  end: () => void;
+}
+
 interface FakeChild extends EventEmitter {
-  stdin: { write: (s: string) => boolean; end: () => void };
+  stdin: FakeStdin;
   stderr: EventEmitter;
   kill: (signal?: string) => boolean;
   /** Captured stdin payload so tests can inspect the rendered message. */
@@ -60,23 +65,23 @@ interface FakeChild extends EventEmitter {
 function makeFakeChild(b: ChildBehaviour): FakeChild {
   const child = new EventEmitter() as FakeChild;
   child.receivedInput = '';
-  child.stdin = {
-    write: (s: string) => {
-      child.receivedInput += s;
-      return true;
-    },
-    end: () => {
-      // Schedule the close + (optional) stderr emission. Using
-      // setImmediate (or setTimeout(_, delayMs)) keeps the lifecycle
-      // genuinely async, mirroring real spawn behaviour.
-      const fire = () => {
-        if (b.stderr) child.stderr.emit('data', Buffer.from(b.stderr));
-        child.emit('close', b.exitCode);
-      };
-      if (b.delayMs && b.delayMs > 0) setTimeout(fire, b.delayMs);
-      else setImmediate(fire);
-    },
+  // R8: real `child.stdin` is a Writable, an EventEmitter — production
+  // code now subscribes 'error' on it (closes #920 EPIPE handler), so
+  // the fake must be an EventEmitter too.
+  const stdin = new EventEmitter() as FakeStdin;
+  stdin.write = (s: string) => {
+    child.receivedInput += s;
+    return true;
   };
+  stdin.end = () => {
+    const fire = () => {
+      if (b.stderr) child.stderr.emit('data', Buffer.from(b.stderr));
+      child.emit('close', b.exitCode);
+    };
+    if (b.delayMs && b.delayMs > 0) setTimeout(fire, b.delayMs);
+    else setImmediate(fire);
+  };
+  child.stdin = stdin;
   child.stderr = new EventEmitter();
   child.kill = () => true;
   return child;
@@ -253,5 +258,47 @@ describe('R-113: sendMail asynchronous queue', () => {
 
     await flushSendMailQueueForTests();
     expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// R8 / closes #920 — child.stdin EPIPE / ECONNRESET is async-emitted
+// when sendmail closes its read side before we finish writing
+// (typical when sendmail rejects fast). Pre-fix, no 'error' listener
+// was on child.stdin, so Node lifted the error to a process-level
+// uncaughtException and crashed the API process. Post-fix, the
+// listener calls settle({ok:false,…}) and processQueue continues.
+describe('R8 child.stdin EPIPE handler (#920)', () => {
+  it('settles the delivery with ok=false instead of throwing when stdin emits error', async () => {
+    spawnMock.mockReset();
+    spawnMock.mockImplementation(() => {
+      const child = new EventEmitter() as FakeChild;
+      child.receivedInput = '';
+      const stdin = new EventEmitter() as FakeStdin;
+      stdin.write = () => {
+        // Simulate sendmail closing stdin before we finished — emit
+        // the EPIPE asynchronously, the way Node's real Writable does.
+        setImmediate(() => stdin.emit('error', new Error('EPIPE')));
+        return false;
+      };
+      stdin.end = () => {};
+      child.stdin = stdin;
+      child.stderr = new EventEmitter();
+      child.kill = () => true;
+      spawnedChildren.push(child);
+      return child;
+    });
+
+    sendMail(['user@example.com'], 'subj', 'body');
+    // If the EPIPE were unhandled, this await would never resolve
+    // (uncaughtException would crash the test runner before drain
+    // finished). Reaching the assertion at all proves the handler
+    // wired the error into the normal failure path.
+    await flushSendMailQueueForTests();
+
+    // The delivery was retried up to MAX_ATTEMPTS, all failing with
+    // EPIPE; logger.error is called once at give-up. We don't assert
+    // exact spawn count here (3 attempts is the contract elsewhere) —
+    // just that the test completed without an unhandled rejection.
+    expect(loggerError.mock.calls.length).toBeGreaterThan(0);
   });
 });

@@ -127,6 +127,18 @@ function deliverOnce(message: string): Promise<{ ok: boolean; err?: string }> {
       if (code === 0) settle({ ok: true });
       else settle({ ok: false, err: stderrBuf || `exit=${code ?? 'null'}` });
     });
+    // R8 / closes #920 — child.stdin EPIPE/ECONNRESET is emitted
+    // asynchronously when sendmail closes its read side before we
+    // finish writing (typical when sendmail rejects fast — bad
+    // recipient, queue full, etc.). Without an 'error' listener on
+    // stdin, Node lifts the EPIPE to a process-level uncaughtException
+    // and the API process crashes. Wire a settle-with-error so the
+    // delivery is reported as failed and processQueue continues with
+    // the next message.
+    child.stdin?.on('error', (err: Error) => {
+      clearTimeout(timer);
+      settle({ ok: false, err: err.message });
+    });
     try {
       child.stdin?.write(message);
       child.stdin?.end();
@@ -258,4 +270,19 @@ export const flushSendMailQueueForTests = flushSendMailQueue;
  */
 export function _sendMailQueueLengthForTests(): number {
   return queue.length;
+}
+
+/**
+ * R8 / closes #919: aggregate pending mail count for the SIGTERM drain
+ * path. The drain in instrumentation.ts decides "are we done?" by
+ * reading this. Pre-fix, drain code only saw `queue.length`, so a
+ * sendmail child that was mid-spawn (in-flight Promise but no queue
+ * entry) made the drain misreport "done" and process.exit terminated
+ * the in-flight delivery mid-write.
+ *
+ * (Mirrors the helper that lands in P0-7 #859 — wired here too so F4
+ * is independently complete.)
+ */
+export function getPendingMailTotal(): number {
+  return queue.length + inFlight.size + (processing ? 1 : 0);
 }
