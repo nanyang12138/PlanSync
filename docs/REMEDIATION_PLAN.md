@@ -2279,14 +2279,25 @@
 - **symptom**: `npm audit --omit=dev --audit-level=high` 报 2 个 high CVE
   ([GHSA-wfc6-r584-vfw7](https://github.com/advisories/GHSA-wfc6-r584-vfw7) cache poisoning,
   [GHSA-36qx-fr4f-26g5](https://github.com/advisories/GHSA-36qx-fr4f-26g5) middleware bypass）
-- **root_cause**: Next.js 14.2.x 仅维护到 14.2.35，2 个 CVE 仅在 16.x 修复
+- **root_cause**: Next.js 14.2.x 仅维护到 14.2.35。两个 high CVE 都在
+  **`next >= 15.5.16`** 修复（验证：G3 / PR #967 实测 `next@~15.5.18`
+  → `npm audit --omit=dev` 显示 `0 critical / 0 high`）。条目标题里
+  "升级到 16" 是早期范围的保守估计；实际只需要走到 15.5.x 就闭合了
+  CVE 部分，而 16.x 是后续的常规依赖更新（无 CVE 驱动）。R10 #927
+  根据 G3 的实测结果改正了原 root_cause 与 fix_steps 之间的措辞矛盾。
 - **fix_steps**:
   1. 阅读 [Next 14 → 15 → 16 migration guide](https://nextjs.org/docs/app/building-your-application/upgrading)
-  2. 升级 `next` 到 `~16.2.x`（中间过 15.5.18 一站，所有 high CVE 已修），`react` / `react-dom` 到 `~19.2.x`
-  3. **同步升级 `packages/cli` 的 `ink` 到 7.x + `react` 到 19.2.x**（peer 依赖；此步是 F5 卡点）
-  4. 处理 App Router、middleware、Pages Router compatibility（cookies/headers 全部 await，next.config.js serverExternalPackages 重命名）
+  2. 升级 `next` 到 `~15.5.18` —— 这一步关闭两条 high CVE 已经足够。
+     如果同时想跟最新主线，可以一次升到 `~16.2.x`，但属于 routine 维护，
+     不再是 CVE 闭合工作。`react` / `react-dom` 升到 `~19.2.x`。
+  3. **同步升级 `packages/cli` 的 `ink` 到 6.8+ / 7.x + `react` 到
+     19.2.x**（peer 依赖；F5 当时卡在 ink@^4 锁住的 React 18 类型；
+     G2 / PR #947 已解锁）。
+  4. 处理 App Router、middleware、Pages Router compatibility
+     （cookies/headers 全部 await，next.config.js serverExternalPackages 重命名）
   5. 重跑所有集成 + e2e 测试
-  6. 升级后 validate.yml 的 audit-level 改回 `high`
+  6. 升级后 validate.yml 的 audit-level 改回 `high`（autonomous
+     Cloud Agent 不改 `.github/workflows/*`，留给人工跟进）
 - **verification**: `npm audit --omit=dev --audit-level=high` 通过 + 所有 e2e 通过
 - **rollback**: 大 PR，建议单独 feature branch + 灰度 + revert plan
 - **temporary_mitigation**: validate.yml 用 `--audit-level=critical`；nightly.yml 仍跑 high+ 严扫，发现就开 issue
