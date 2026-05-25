@@ -1,9 +1,20 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { EventEmitter } from 'node:events';
 
-// child_process must be mocked before email.ts is imported, because email.ts
-// captures spawnSync at import time only when called.
+// F4 / closes the deeper concern in P0-7 (#541-cls):
+//   email.ts now uses `child_process.spawn` (async) instead of
+//   `spawnSync` so the SIGTERM drain timer can actually fire while a
+//   sendmail child is in flight. The test mock therefore needs to
+//   simulate the async lifecycle: a Writable stdin, an EventEmitter
+//   stderr, and `error` / `close` events on the child itself.
+//
+// We expose a `setNextChildBehaviour` helper so individual tests
+// stay short — they describe a sequence of (exit code, stderr) for
+// the next N spawn() invocations, then assert how many were
+// consumed.
+
 vi.mock('child_process', () => ({
-  spawnSync: vi.fn(),
+  spawn: vi.fn(),
 }));
 
 // Hoisted logger mock so the email module's structured-error path is
@@ -22,26 +33,71 @@ vi.mock('../../src/lib/logger', () => ({
   },
 }));
 
-import { spawnSync } from 'child_process';
+import { spawn } from 'child_process';
 import {
   sendMail,
   flushSendMailQueueForTests,
   _sendMailQueueLengthForTests,
 } from '../../src/lib/email';
 
-const spawnSyncMock = spawnSync as unknown as ReturnType<typeof vi.fn>;
+const spawnMock = spawn as unknown as ReturnType<typeof vi.fn>;
 
-function ok() {
-  return { status: 0, stdout: Buffer.from(''), stderr: Buffer.from('') };
+interface ChildBehaviour {
+  exitCode: number;
+  stderr?: string;
+  /** Total ms before close fires (default 0 → next tick). */
+  delayMs?: number;
 }
 
-function fail() {
-  return { status: 1, stdout: Buffer.from(''), stderr: Buffer.from('rejected') };
+interface FakeChild extends EventEmitter {
+  stdin: { write: (s: string) => boolean; end: () => void };
+  stderr: EventEmitter;
+  kill: (signal?: string) => boolean;
+  /** Captured stdin payload so tests can inspect the rendered message. */
+  receivedInput: string;
+}
+
+function makeFakeChild(b: ChildBehaviour): FakeChild {
+  const child = new EventEmitter() as FakeChild;
+  child.receivedInput = '';
+  child.stdin = {
+    write: (s: string) => {
+      child.receivedInput += s;
+      return true;
+    },
+    end: () => {
+      // Schedule the close + (optional) stderr emission. Using
+      // setImmediate (or setTimeout(_, delayMs)) keeps the lifecycle
+      // genuinely async, mirroring real spawn behaviour.
+      const fire = () => {
+        if (b.stderr) child.stderr.emit('data', Buffer.from(b.stderr));
+        child.emit('close', b.exitCode);
+      };
+      if (b.delayMs && b.delayMs > 0) setTimeout(fire, b.delayMs);
+      else setImmediate(fire);
+    },
+  };
+  child.stderr = new EventEmitter();
+  child.kill = () => true;
+  return child;
+}
+
+function ok(): ChildBehaviour {
+  return { exitCode: 0 };
+}
+
+function fail(): ChildBehaviour {
+  return { exitCode: 1, stderr: 'rejected' };
 }
 
 describe('R-113: sendMail asynchronous queue', () => {
+  /** Per-test capture of the children we hand back so we can assert
+   * call count + per-call rendered input. */
+  let spawnedChildren: FakeChild[];
+
   beforeEach(() => {
-    spawnSyncMock.mockReset();
+    spawnedChildren = [];
+    spawnMock.mockReset();
     loggerWarn.mockReset();
     loggerError.mockReset();
   });
@@ -50,57 +106,62 @@ describe('R-113: sendMail asynchronous queue', () => {
     await flushSendMailQueueForTests();
   });
 
+  /** Configure spawn() to return a fixed sequence of behaviours; once
+   * the sequence runs out, every subsequent call returns the LAST
+   * behaviour (so a "succeed forever" test queues a single ok()). */
+  function setSpawnSequence(seq: ChildBehaviour[]): void {
+    let idx = 0;
+    spawnMock.mockImplementation(() => {
+      const beh = seq[Math.min(idx, seq.length - 1)] ?? ok();
+      idx += 1;
+      const child = makeFakeChild(beh);
+      spawnedChildren.push(child);
+      return child;
+    });
+  }
+
   it('returns synchronously without invoking sendmail in the same tick', async () => {
-    spawnSyncMock.mockImplementation(ok);
+    setSpawnSequence([ok()]);
 
     const accepted = sendMail(['alice@example.com'], 'hi', 'body');
 
     expect(accepted).toBe(true);
-    // spawnSync must NOT have been called synchronously — the queue worker
+    // spawn must NOT have been called synchronously — the queue worker
     // runs via setImmediate, so the request handler returns first.
-    expect(spawnSyncMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
 
     await flushSendMailQueueForTests();
 
-    expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
   });
 
   it('drops messages with no deliverable recipients without queueing', async () => {
-    spawnSyncMock.mockImplementation(ok);
+    setSpawnSequence([ok()]);
 
-    // Long numeric suffix marks an auto-generated demo address; should be filtered.
     const accepted = sendMail(['bob-demo-1776932148306@example.com'], 'hi', 'body');
 
     expect(accepted).toBe(false);
     expect(_sendMailQueueLengthForTests()).toBe(0);
     await flushSendMailQueueForTests();
-    expect(spawnSyncMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 
   it('retries on transient sendmail failure (eventual success)', async () => {
-    let calls = 0;
-    spawnSyncMock.mockImplementation(() => {
-      calls += 1;
-      if (calls < 2) return fail();
-      return ok();
-    });
+    setSpawnSequence([fail(), ok()]);
 
     sendMail(['carol@example.com'], 'subj', 'body');
     await flushSendMailQueueForTests();
 
-    expect(spawnSyncMock).toHaveBeenCalledTimes(2);
+    expect(spawnMock).toHaveBeenCalledTimes(2);
   });
 
   it('gives up after MAX_ATTEMPTS (3) and logs via logger.error (#316 / #350)', async () => {
-    spawnSyncMock.mockImplementation(fail);
+    setSpawnSequence([fail()]);
 
     sendMail(['dave@example.com'], 'subj', 'body');
     await flushSendMailQueueForTests();
 
-    expect(spawnSyncMock).toHaveBeenCalledTimes(3);
-    // Structured logger.error so downstream observability sees this —
-    // the legacy console.warn made delivery failures invisible to pino
-    // subscribers and to drift-engine's error-budget surface.
+    expect(spawnMock).toHaveBeenCalledTimes(3);
     expect(loggerError).toHaveBeenCalled();
     const errCall = loggerError.mock.calls.find(
       (c) => typeof c[1] === 'string' && /giving up/.test(c[1] as string),
@@ -113,14 +174,13 @@ describe('R-113: sendMail asynchronous queue', () => {
   });
 
   it('escapes header-injection attempts in the To/Subject fields', async () => {
-    spawnSyncMock.mockImplementation(ok);
+    setSpawnSequence([ok()]);
 
     sendMail(['eve@example.com\nBcc: leaked@evil.com'], 'normal\r\nX-Injected: yes', 'body');
     await flushSendMailQueueForTests();
 
-    expect(spawnSyncMock).toHaveBeenCalledTimes(1);
-    const opts = spawnSyncMock.mock.calls[0][2] as { input: string };
-    const message = opts.input;
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    const message = spawnedChildren[0]!.receivedInput;
     expect(message).not.toMatch(/^Bcc:/m);
     expect(message).not.toMatch(/^X-Injected:/m);
   });
@@ -128,25 +188,8 @@ describe('R-113: sendMail asynchronous queue', () => {
   // ---- #318 / #352: synchronous backpressure cap -------------------------
 
   it('#318/#352: rejects synchronously and logs warn when the queue is at the limit', async () => {
-    // Block sendmail so the worker doesn't drain while we fill the queue.
-    let resolveSendmail: () => void = () => {};
-    const sendmailGate = new Promise<void>((r) => {
-      resolveSendmail = r;
-    });
-    spawnSyncMock.mockImplementation(() => {
-      // The sync mock cannot await, but we can spin until the gate is
-      // released by polling; since processQueue runs in a microtask, we
-      // simulate a slow sendmail by returning ok() AFTER the test pushes
-      // through enough mail to hit the cap. Simpler: just succeed (so
-      // the worker drains) and instead saturate the queue BEFORE
-      // setImmediate fires. We achieve that by stuffing the queue
-      // synchronously with sendMail() calls, all of which run on the
-      // same microtask before the first setImmediate.
-      return ok();
-    });
+    setSpawnSequence([ok()]);
 
-    // Default QUEUE_LIMIT is 1000; pushing 1000 messages fills it. The
-    // 1001st must reject synchronously.
     let acceptedCount = 0;
     let rejectedCount = 0;
     for (let i = 0; i < 1001; i += 1) {
@@ -157,9 +200,6 @@ describe('R-113: sendMail asynchronous queue', () => {
     expect(acceptedCount).toBe(1000);
     expect(rejectedCount).toBe(1);
 
-    // logger.warn was called for the rejected message, with diagnostic
-    // context (queueLength, limit) — without that the operator cannot
-    // tell a queue-full reject from a no-recipients reject.
     const warnCall = loggerWarn.mock.calls.find(
       (c) => typeof c[1] === 'string' && /queue full/i.test(c[1] as string),
     );
@@ -168,28 +208,50 @@ describe('R-113: sendMail asynchronous queue', () => {
     expect(ctx.queueLength).toBe(1000);
     expect(ctx.limit).toBe(1000);
 
-    // Drain so afterEach is fast.
-    resolveSendmail();
     await flushSendMailQueueForTests();
   });
 
   it('processes multiple queued messages in order', async () => {
-    spawnSyncMock.mockImplementation(ok);
+    setSpawnSequence([ok()]);
 
     sendMail(['a@example.com'], 's1', 'b');
     sendMail(['b@example.com'], 's2', 'b');
     sendMail(['c@example.com'], 's3', 'b');
 
-    expect(spawnSyncMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
 
     await flushSendMailQueueForTests();
 
-    expect(spawnSyncMock).toHaveBeenCalledTimes(3);
-    const subjects = spawnSyncMock.mock.calls.map((c) => {
-      const inp = (c[2] as { input: string }).input;
-      const m = inp.match(/^Subject: (.*)$/m);
+    expect(spawnMock).toHaveBeenCalledTimes(3);
+    const subjects = spawnedChildren.map((child) => {
+      const m = child.receivedInput.match(/^Subject: (.*)$/m);
       return m ? m[1] : '';
     });
     expect(subjects).toEqual(['s1', 's2', 's3']);
+  });
+
+  // F4 net-new: prove the drain does NOT block while a sendmail child
+  // is in flight. Under the old spawnSync impl this test would have
+  // hung the entire event loop for delayMs.
+  it('F4: in-flight delivery does not block the event loop (async spawn)', async () => {
+    setSpawnSequence([{ exitCode: 0, delayMs: 30 }]);
+
+    sendMail(['slow@example.com'], 's', 'b');
+
+    // Schedule a microtask BEFORE the close event would fire. Under
+    // spawnSync this microtask would never run until close completed
+    // because spawnSync owned the JS thread. Under spawn it runs
+    // immediately.
+    let timerFired = false;
+    setTimeout(() => {
+      timerFired = true;
+    }, 5);
+
+    // Yield so the timer has a chance to land.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(timerFired).toBe(true);
+
+    await flushSendMailQueueForTests();
+    expect(spawnMock).toHaveBeenCalledTimes(1);
   });
 });
