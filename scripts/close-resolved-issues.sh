@@ -70,6 +70,28 @@ declare -a CLUSTERS=(
   "open|250|251 252 309|Cluster: Web SSE consumer missing bus_resync_required listener"
   "open|240|175 215|Same finding as #154 — review on in-flight PR #151 (PR-E #240 supersedes)"
   "open|240|177|Same finding as #155 — review on in-flight PR #151 (PR-E #240 supersedes)"
+  # ---- 2026-05-25 triage additions (see docs/MUST_TRIAGE_2026-05-25.md) ----
+  # Cluster K — PR #846 already shipped the AI verifier untrusted-input
+  # sandbox + ai-draft/ai-field tagUntrusted + client.ts 4xx text-mode
+  # fallback. Auto-close didn't fire because:
+  #   - #854's body wrote `Closes #819` ~ `Closes #832` inside backticks
+  #     (GitHub closing-keyword parser ignores code spans).
+  #   - #846's "Closes #819 #820 ... #838" 18-issue line was partially
+  #     processed by GitHub (10 closed, 8 stayed open).
+  # Verified on master: grep -c 'tagUntrusted\|UNTRUSTED_INPUT_PREAMBLE'
+  # packages/api/src/lib/ai/verifier.ts returns 19.
+  "merged|846|820 821 824 825 827 828 831 837|Cluster K: AI verifier untrusted-input sandbox + ai-draft/ai-field + client.ts 4xx fallback (PR #846 / #854 partial-auto-close)"
+  # Cluster L — PR #862 (single-quoted .env literal preservation +
+  # bare \$VAR no longer flagged as unresolved template + redactDbUrl on
+  # all error paths) already shipped on master.
+  # Verified:
+  #   - packages/api/scripts/load-dotenv.ts L82-97 — 'single' quoted
+  #     values bypass expandRefs (closes #863 #910).
+  #   - packages/api/scripts/run-worker.ts L60-80 redactDbUrl WHATWG
+  #     URL parse for all log paths (closes #864 #911 #978).
+  #   - validateDatabaseUrl regex only matches \${VAR} curly form, not
+  #     bare \$VAR (closes #979).
+  "merged|862|863 864 910 911 978 979|Cluster L: load-dotenv single-quote literal + run-worker redactDbUrl + bare \$VAR validation (PR #862, partial #1038)"
 )
 
 close_one() {
