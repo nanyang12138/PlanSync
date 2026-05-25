@@ -2678,7 +2678,7 @@
 
 #### R-153 [HIGH] Task→Deliverable FK 中间表
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B13
 - **depends_on**: R-151
 - **effort**: large
