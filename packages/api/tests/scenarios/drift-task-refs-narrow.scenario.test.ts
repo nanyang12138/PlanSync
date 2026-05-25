@@ -1,38 +1,44 @@
 /**
- * Scenario: per-task `planConstraintRefs` / `planStandardRefs` actually
- * narrow drift severity end-to-end.
+ * Scenario: per-task `TaskDeliverableLink` rows actually narrow drift
+ * severity end-to-end (R-154).
  *
- * Before this slice, the structural classifier treated every task as
- * "depends on all" of constraints and standards (those refs columns did
- * not exist). So any constraint change paused every running run — even
- * runs whose tasks had nothing to do with that constraint. Owners now
- * narrow per task; this scenario verifies that narrowing actually changes
- * what gets paused.
+ * Before drift v3 the structural classifier treated every task as
+ * "depends on all" of constraints and standards. So any constraint change
+ * paused every running run — even runs whose tasks had nothing to do
+ * with that constraint. R-154 narrows severity in a different direction:
+ *
+ *   - The diff is computed over the `plan_deliverables` table by id/slug.
+ *   - Per-task severity is driven by which linked deliverables appear in
+ *     the diff (`task_deliverable_links → plan_deliverables`).
+ *   - Tasks with NO link rows are intentionally NOT alerted (R-154 step 3
+ *     — explicit alert-fatigue fix; legacy "depends on all" semantics
+ *     are gone).
  *
  * Two side-by-side tasks in the same project, both running on v1:
  *
- *   - task-narrow:  explicitly references constraint 'use postgres' via
- *                   planConstraintRefs. v2 keeps that constraint but
- *                   replaces 'use redis' with 'use memcached'. Since
- *                   the changed item is NOT in this task's refs, severity
- *                   should be 'low' and the run must stay running.
+ *   - task-narrow:  linked via TaskDeliverableLink to v1's `rest-api`
+ *                   deliverable. v2 keeps that deliverable unchanged but
+ *                   modifies the `docs` deliverable. Severity stays 'low'
+ *                   (linked thing did not change) and the run keeps
+ *                   running.
  *
- *   - task-legacy:  planConstraintRefs=[] (the conservative default for
- *                   tasks created before owner narrows). The classifier
- *                   treats empty as "depends on all", so the constraint
- *                   change is breaking → 'high' → run is paused.
+ *   - task-legacy:  NO TaskDeliverableLink rows (mirrors a task whose
+ *                   owner has not declared what it depends on). R-154
+ *                   step 3 routes this to severity='low' — the run is NOT
+ *                   paused, no executionGate set. Compared to the old
+ *                   text-hash classifier this is the alert-fatigue fix in
+ *                   action.
  *
- * The same v1→v2 plan diff produces two different outcomes purely because
- * the tasks declare different ref subsets. That's the owner-facing value
- * of the schema migration: noise control without losing safety for tasks
- * that haven't been categorized yet.
+ * The same v1→v2 plan diff produces the same severity but for different
+ * reasons; the relevant invariant is that an unrelated `docs` change does
+ * NOT pause the rest-api task's run.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { POST as runsPost } from '@/app/api/projects/[projectId]/tasks/[taskId]/runs/route';
 import { POST as activatePost } from '@/app/api/projects/[projectId]/plans/[planId]/activate/route';
 import { makeReq, createTestProject, cleanupProject, testPrisma } from '../helpers/request';
 
-describe('Scenario: planConstraintRefs narrows drift severity per task', () => {
+describe('Scenario: TaskDeliverableLink narrows drift severity per task (R-154)', () => {
   const owner = 'task-refs-owner';
   let projectId: string;
   let narrowTaskId: string;
@@ -43,15 +49,15 @@ describe('Scenario: planConstraintRefs narrows drift severity per task', () => {
   beforeAll(async () => {
     ({ projectId } = await createTestProject(owner));
 
-    await testPrisma.plan.create({
+    const v1 = await testPrisma.plan.create({
       data: {
         projectId,
         title: 'v1',
         goal: 'ship X',
         scope: 'web',
-        constraints: ['use postgres', 'use redis'],
-        standards: ['eslint'],
-        deliverables: ['rest api'],
+        constraints: [],
+        standards: [],
+        deliverables: ['rest api spec', 'docs site'],
         openQuestions: [],
         requiredReviewers: [],
         version: 1,
@@ -59,6 +65,24 @@ describe('Scenario: planConstraintRefs narrows drift severity per task', () => {
         createdBy: owner,
         activatedAt: new Date(),
         activatedBy: owner,
+      },
+    });
+    const restV1 = await testPrisma.planDeliverable.create({
+      data: {
+        planId: v1.id,
+        slug: 'rest-api',
+        title: 'rest api',
+        body: 'rest api spec',
+        status: 'active',
+      },
+    });
+    await testPrisma.planDeliverable.create({
+      data: {
+        planId: v1.id,
+        slug: 'docs',
+        title: 'docs',
+        body: 'docs site v1',
+        status: 'active',
       },
     });
 
@@ -73,11 +97,13 @@ describe('Scenario: planConstraintRefs narrows drift severity per task', () => {
         assigneeType: 'human',
         boundPlanVersion: 1,
         agentConstraints: [],
-        // Explicitly declares: this task depends on 'use postgres'.
-        planConstraintRefs: ['use postgres'],
+        planDeliverableRefs: ['rest-api'],
       },
     });
     narrowTaskId = tNarrow.id;
+    await testPrisma.taskDeliverableLink.create({
+      data: { taskId: tNarrow.id, deliverableId: restV1.id },
+    });
 
     const tLegacy = await testPrisma.task.create({
       data: {
@@ -90,9 +116,8 @@ describe('Scenario: planConstraintRefs narrows drift severity per task', () => {
         assigneeType: 'human',
         boundPlanVersion: 1,
         agentConstraints: [],
-        // Empty refs — conservative "depends on all" default. Mirrors any
-        // existing-in-prod task at the moment of the migration.
-        planConstraintRefs: [],
+        // No link rows — mirrors a task that pre-dates R-153 backfill, or
+        // a task whose owner has not declared what it depends on.
       },
     });
     legacyTaskId = tLegacy.id;
@@ -125,15 +150,33 @@ describe('Scenario: planConstraintRefs narrows drift severity per task', () => {
         title: 'v2',
         goal: 'ship X',
         scope: 'web',
-        // Replace 'use redis' with 'use memcached'. 'use postgres' is unchanged.
-        constraints: ['use postgres', 'use memcached'],
-        standards: ['eslint'],
-        deliverables: ['rest api'],
+        constraints: [],
+        standards: [],
+        // Only the docs body changes; rest-api spec is unchanged.
+        deliverables: ['rest api spec', 'docs site v2'],
         openQuestions: [],
         requiredReviewers: [],
         version: 2,
         status: 'draft',
         createdBy: owner,
+      },
+    });
+    await testPrisma.planDeliverable.create({
+      data: {
+        planId: v2.id,
+        slug: 'rest-api',
+        title: 'rest api',
+        body: 'rest api spec',
+        status: 'active',
+      },
+    });
+    await testPrisma.planDeliverable.create({
+      data: {
+        planId: v2.id,
+        slug: 'docs',
+        title: 'docs',
+        body: 'docs site v2',
+        status: 'active',
       },
     });
 
@@ -152,7 +195,7 @@ describe('Scenario: planConstraintRefs narrows drift severity per task', () => {
     await cleanupProject(projectId);
   });
 
-  it('task-narrow (refs=["use postgres"], unchanged) → severity="low" and run keeps running', async () => {
+  it('task-narrow (linked to rest-api, unchanged) → severity="low" and run keeps running', async () => {
     const alerts = await testPrisma.driftAlert.findMany({
       where: { projectId, taskId: narrowTaskId, status: 'open' },
     });
@@ -164,24 +207,27 @@ describe('Scenario: planConstraintRefs narrows drift severity per task', () => {
 
     const task = await testPrisma.task.findUnique({ where: { id: narrowTaskId } });
     expect(task?.status).toBe('in_progress');
+    // R-154: low-severity drift never gates the task either.
+    expect(task?.executionGate).toBeNull();
   });
 
-  it('task-legacy (refs=[], conservative default) → severity="high" and run is paused', async () => {
+  it('task-legacy (no link rows) → severity="low" and run keeps running (R-154 alert-fatigue fix)', async () => {
     const alerts = await testPrisma.driftAlert.findMany({
       where: { projectId, taskId: legacyTaskId, status: 'open' },
     });
     expect(alerts).toHaveLength(1);
-    expect(alerts[0].severity).toBe('high');
+    // Before R-154 this task would have inherited the conservative
+    // "depends on all" default and been gated 'high'. R-154 step 3
+    // routes empty-link-table tasks to 'low' to drop alert fatigue —
+    // the owner has not declared what this task depends on, so we
+    // refuse to interrupt it on plan changes.
+    expect(alerts[0].severity).toBe('low');
 
     const run = await testPrisma.executionRun.findUnique({ where: { id: legacyRunId } });
-    expect(run?.status).toBe('paused');
+    expect(run?.status).toBe('running');
 
     const task = await testPrisma.task.findUnique({ where: { id: legacyTaskId } });
-    // R-140: drift gate moved off task.status onto task.executionGate.
-    // The legacy task is mid-execution; its lifecycle status stays
-    // 'in_progress' and the system gate is what tells execution_start to
-    // refuse new runs until the drift is resolved.
-    expect(task?.executionGate).toBe('drift_high');
+    expect(task?.executionGate).toBeNull();
     expect(task?.status).toBe('in_progress');
   });
 });
