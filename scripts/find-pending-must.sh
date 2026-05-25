@@ -64,7 +64,7 @@ gh pr list --state open --limit 100 \
 jq -r '
   .[] |
   (.body // "") + " " + (.title // "") |
-  scan("(?i)\\b(?:close[ds]?|fixe[ds]?|resolve[ds]?)\\s*[:#]?\\s*#(\\d+)") |
+  scan("(?i)\\b(?:close[ds]?|fix(?:es|ed)?|resolve[ds]?)\\s*[:#]?\\s*#(\\d+)") |
   .[0]
 ' "$tmpdir/open-prs.json" | sort -u > "$tmpdir/inflight-issues.txt"
 
@@ -108,7 +108,7 @@ if [ "$inflight" -gt 0 ]; then
     title=$(gh issue view "$n" --json title -q .title 2>/dev/null || echo "(unknown)")
     pr=$(jq -r --arg n "$n" '
       .[] | select((.body // "") + " " + (.title // "") |
-        test("(?i)\\b(close[ds]?|fixe[ds]?|resolve[ds]?)\\s*[:#]?\\s*#" + $n + "\\b")) |
+        test("(?i)\\b(close[ds]?|fix(?:es|ed)?|resolve[ds]?)\\s*[:#]?\\s*#" + $n + "\\b")) |
       "#\(.number) \(.headRefName)"
     ' "$tmpdir/open-prs.json" | head -1)
     printf "  #%s  %s   ← %s\n" "$n" "${title:0:60}" "$pr"
