@@ -245,6 +245,24 @@ export class ExecStateManager {
     };
   }
 
+  /**
+   * R6 / closes #923 — when a handler fails AFTER `recordToolCall`
+   * advanced the FSM, we need a way to put the state back. The
+   * pre-fix implementation never rewound, so a thrown
+   * `execution_complete` left the FSM in COMPLETED with no surviving
+   * run; subsequent recovery attempts hit terminal-state rejection.
+   *
+   * Callers that wrap their handler in try/catch should call
+   * {@link rollbackTo} from the catch branch with the state value
+   * they captured BEFORE invoking `recordToolCall`. The method is
+   * a no-op when the FSM hasn't moved (idempotent), so tool-wrapper
+   * code can call it unconditionally without a state diff check.
+   */
+  rollbackTo(previousState: ExecState): void {
+    if (this.state === previousState) return;
+    this.state = previousState;
+  }
+
   /** Mint a fresh token if we have the bits we need; returns undefined
    *  otherwise so callers can omit the field. */
   private maybeMintToken(): string | undefined {
