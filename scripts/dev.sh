@@ -49,19 +49,24 @@ fi
 # differs from the one stored alongside the cache directory.
 # shellcheck source=scripts/next-cache-helper.sh
 . "$SCRIPT_DIR/next-cache-helper.sh"
-# #287/#289 + #366/#540/#567: BUILD_DIR must use the same identity that
-# next.config.js sees in `process.env.USER`. Two earlier fixes only got
-# us halfway:
-#   1. PR-J #353 made dev.sh fall back to whoami when USER was unset, but
-#      next.config.js still falls back to the literal 'dev'. Different
-#      values → dev.sh's marker / clear logic operated on a directory
-#      Next was not actually using.
-#   2. The reviewer-pinned fix is to EXPORT the resolved value so the
-#      child Node process (next start) reads the same string we used to
-#      compute BUILD_DIR. `${USER:-$(whoami)}` resolves once into the
-#      shell variable; `export USER=...` propagates it to next.config.js.
-export USER="${USER:-$(whoami)}"
-BUILD_DIR="$PROJECT_DIR/packages/api/tmp/ps-next-build-$USER"
+# F1 / closes #287 #289 #366 #540 #567 + 3 sibling findings on
+# dev.sh ↔ next.config.js identity drift.
+#
+# next.config.js now reads `PLANSYNC_BUILD_USER` (with fallbacks
+# `USER` → `'shared'`). We resolve once here and export it so:
+#   1. The build directory we compute below matches exactly what
+#      Next.js writes to (no more "we cleared one path, Next wrote
+#      to another").
+#   2. Any subprocess (`next start`, build worker, cron build) that
+#      inherits this shell's env will agree on the same identity.
+#   3. The fallback chain is the same in every entry point — dev.sh,
+#      build.sh, ad-hoc npm run, cron — so a missing USER never
+#      silently splits the cache anymore.
+export PLANSYNC_BUILD_USER="${PLANSYNC_BUILD_USER:-${USER:-$(whoami)}}"
+# Keep USER exported too so older tooling that still reads it sees
+# the same resolved value.
+export USER="$PLANSYNC_BUILD_USER"
+BUILD_DIR="$PROJECT_DIR/packages/api/tmp/ps-next-build-$PLANSYNC_BUILD_USER"
 # #286/#288: package-lock.json drives every transitive dep version Next
 # bakes into the build (and SDK upgrades like @modelcontextprotocol/sdk
 # change the bundle). Without including it, `npm install` of a new
