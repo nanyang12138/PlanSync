@@ -11,6 +11,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { prisma } from '@/lib/prisma';
+import { requireProjectMembershipOrNotFound } from '@/lib/ssr-auth';
 import { ArrowLeft, Layers } from 'lucide-react';
 import { PageHeader } from '@/components/shared/page-header';
 import { SectionShell } from '@/components/shared/section-shell';
@@ -30,6 +31,12 @@ export default async function ProjectDeliverablesPage({
 }) {
   const params = await paramsPromise;
   const searchParams = await searchParamsPromise;
+  // Closes #1258: deliverables, task titles and per-deliverable comments
+  // are project-confidential. Refuse to render to anyone who is not a
+  // member, using `notFound()` (404) instead of 403 so we don't leak
+  // project existence to outsiders who only know the projectId.
+  await requireProjectMembershipOrNotFound(params.id);
+
   const project = await prisma.project.findUnique({
     where: { id: params.id },
     select: { id: true, name: true },

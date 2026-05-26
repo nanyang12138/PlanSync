@@ -15,6 +15,14 @@ dist/
 .next/
 out/
 
+# Exception: the GitHub Action bundle MUST be checked in. `action.yml` runs
+# `dist/index.js` directly on the consumer's runner — there is no install step,
+# so the committed bundle is the deployable artifact. `scripts/build.sh`
+# rebuilds it on every release; the dist-staleness guard in the same script
+# fails CI if the committed bundle drifts from `index.ts`.
+!packages/integrations/github-action/dist/
+!packages/integrations/github-action/dist/**
+
 # Environment
 .env
 .env.local
