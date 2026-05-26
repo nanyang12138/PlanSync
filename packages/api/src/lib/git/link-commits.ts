@@ -145,11 +145,11 @@ interface LoadedDeliverable {
 }
 
 /**
- * Load every active deliverable visible to the project across plan
- * versions that have been ratified at some point — i.e. parent plan
- * status ∈ ('active', 'superseded'). We deliberately do not restrict to
- * just the currently-active plan: a commit landing today may close out
- * a deliverable defined in plan v2 even if plan v3 is now active and
+ * Load every deliverable visible to the project across plan versions
+ * that have been ratified at some point — i.e. parent plan status ∈
+ * ('active', 'superseded'). We deliberately do not restrict to just the
+ * currently-active plan: a commit landing today may close out a
+ * deliverable defined in plan v2 even if plan v3 is now active and
  * renamed/dropped it — the link is a statement about the commit, not
  * about the current plan version, and `PlanDeliverable.supersededById`
  * is the right place to walk the version chain at read time.
@@ -162,6 +162,13 @@ interface LoadedDeliverable {
  * happens to share the slug `foo`, including a draft plan v3 whose
  * deliverable card has not been agreed on yet — producing misleading
  * evidence the moment plan v3 is activated. See review finding for #1286.
+ *
+ * Deliverable rows with `status='deprecated'` are NOT filtered out: when
+ * `supersedeDeliverables` flips an old same-slug row to deprecated and
+ * points its `supersededById` at the successor, R-192 still scopes its
+ * evidence query by the task's `boundPlanVersion`. Tasks pinned to the
+ * old version need the deprecated row's id to appear in
+ * `commit_deliverable_links` to satisfy their gate — see #1326.
  */
 async function loadProjectDeliverables(
   client: Prisma.TransactionClient | PrismaClient,
@@ -169,7 +176,6 @@ async function loadProjectDeliverables(
 ): Promise<LoadedDeliverable[]> {
   const rows = await client.planDeliverable.findMany({
     where: {
-      status: { not: 'deprecated' },
       plan: {
         projectId,
         status: { in: ['active', 'superseded'] },
