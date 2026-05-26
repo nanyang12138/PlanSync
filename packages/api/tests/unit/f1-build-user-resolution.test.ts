@@ -80,15 +80,22 @@ describe('F1 shell entry points export PLANSYNC_BUILD_USER consistently', () => 
     return fs.readFileSync(path.resolve(__dirname, '../../../../', rel), 'utf8');
   }
 
-  it('dev.sh resolves PLANSYNC_BUILD_USER → USER → whoami and exports both', () => {
+  it('dev.sh resolves PLANSYNC_BUILD_USER via resolve_build_user() and exports both', () => {
     const src = readShellSource('scripts/dev.sh');
-    expect(src).toMatch(/export PLANSYNC_BUILD_USER="\$\{PLANSYNC_BUILD_USER:-\$\{USER:-\$\(whoami\)\}\}"/);
+    // PR cluster B23 (#287/#466/#510/#526/#901) replaced the inline
+    //   ${PLANSYNC_BUILD_USER:-${USER:-$(whoami)}}
+    // form with a sourced helper `resolve_build_user` from
+    // scripts/build-user.sh that trims whitespace to match
+    // next.config.js's `(env || '').trim()` semantics.
+    expect(src).toMatch(/\.\s+["'][^"']*build-user\.sh["']/);
+    expect(src).toMatch(/export PLANSYNC_BUILD_USER="\$\(resolve_build_user\)"/);
     expect(src).toMatch(/export USER="\$PLANSYNC_BUILD_USER"/);
   });
 
-  it('build.sh resolves PLANSYNC_BUILD_USER → USER → whoami and exports both', () => {
+  it('build.sh resolves PLANSYNC_BUILD_USER via resolve_build_user() and exports both', () => {
     const src = readShellSource('scripts/build.sh');
-    expect(src).toMatch(/export PLANSYNC_BUILD_USER="\$\{PLANSYNC_BUILD_USER:-\$\{USER:-\$\(whoami\)\}\}"/);
+    expect(src).toMatch(/\.\s+["'][^"']*build-user\.sh["']/);
+    expect(src).toMatch(/export PLANSYNC_BUILD_USER="\$\(resolve_build_user\)"/);
     expect(src).toMatch(/export USER="\$PLANSYNC_BUILD_USER"/);
   });
 });
