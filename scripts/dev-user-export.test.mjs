@@ -79,16 +79,21 @@ test('static guard: dev.sh exports both PLANSYNC_BUILD_USER and USER (F1 refacto
   const text = readFileSync(DEV_SH, 'utf-8');
   // F1 (#899) replaced the single `export USER="${USER:-$(whoami)}"` line with
   // a canonical PLANSYNC_BUILD_USER chain that next.config.js, build.sh, and
-  // dev.sh all share. Both exports must be present so the resolved
-  // identity propagates to every consumer (Next process, cache marker,
-  // distDir).
-  const buildUserExport =
+  // dev.sh all share. B23 (#287 #466 #510 #526 #901) further factored the
+  // resolution out into scripts/build-user.sh so the trim semantics
+  // match next.config.js's `(env || '').trim()`. Either form is
+  // acceptable so this test survives both the inline expansion and
+  // the helper call form.
+  const buildUserViaHelper =
+    /^\s*export\s+PLANSYNC_BUILD_USER\s*=\s*["']?\$\(resolve_build_user\)["']?/m;
+  const buildUserViaInline =
     /^\s*export\s+PLANSYNC_BUILD_USER\s*=\s*["']\$\{PLANSYNC_BUILD_USER:-\$\{USER:-\$\(whoami\)\}\}["']/m;
   const userExport = /^\s*export\s+USER\s*=\s*["']\$PLANSYNC_BUILD_USER["']/m;
-  assert.match(
-    text,
-    buildUserExport,
-    `dev.sh missing canonical PLANSYNC_BUILD_USER export (F1 chain: PLANSYNC_BUILD_USER → USER → whoami)`,
+  assert.ok(
+    buildUserViaHelper.test(text) || buildUserViaInline.test(text),
+    `dev.sh missing canonical PLANSYNC_BUILD_USER export — neither` +
+      ` $(resolve_build_user) helper nor the inline ` +
+      `\${PLANSYNC_BUILD_USER:-\${USER:-$(whoami)}} form was found.`,
   );
   assert.match(
     text,
