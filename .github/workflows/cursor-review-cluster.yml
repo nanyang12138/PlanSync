@@ -40,6 +40,13 @@ permissions:
   contents: read
   issues: write
 
+# Opt into Node 24 for actions/checkout@v4 + actions/setup-node@v4
+# (they still ship Node 20 today; GitHub forces Node 24 on
+# 2026-06-02 and removes Node 20 on 2026-09-16). Mirrors the
+# cursor-review.yml precedent already established in this repo.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   cluster:
     runs-on: ubuntu-latest
