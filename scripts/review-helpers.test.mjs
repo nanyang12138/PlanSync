@@ -298,6 +298,175 @@ test('consumeSse', async (t) => {
 // instead we lock the contract by static-source assertion: the
 // agent-create body shape must NEVER list `branchName` as a top-
 // level key.
+// ---------------------------------------------------------------------
+// review-dispatch.mjs dispatch-lock race detection — #1253
+// ---------------------------------------------------------------------
+//
+// Regression guard for the race that opened when PR #1252 removed the
+// deterministic `branchName` field from the Cursor v1/agents body: two
+// concurrent dispatch runs that both passed the in-script
+// `labelSet.has('dispatched')` check would both call `createCursorAgent`,
+// and without a per-issue branch collision at Cursor's side they'd both
+// succeed — spawning duplicate agents / opening duplicate PRs for the
+// same issue. The fix re-verifies lock ownership by reading the issue
+// events API after `addLabels` and comparing the most recent `labeled`
+// event's `created_at` to the local pre-call timestamp. This block
+// exercises the pure decision helper that drives that check.
+test('didWeAcquireDispatchLock', async (t) => {
+  const { didWeAcquireDispatchLock } = await import('./review-dispatch.mjs');
+  const LOCK = 'dispatched';
+  const baseIso = (ts) => new Date(ts).toISOString();
+
+  await t.test('no events ⇒ assume win (propagation lag tolerated)', () => {
+    assert.equal(
+      didWeAcquireDispatchLock({
+        events: [],
+        lockLabel: LOCK,
+        preAddLabelsAtMs: Date.now(),
+      }),
+      true,
+    );
+  });
+
+  await t.test('no labeled events for the lock ⇒ assume win', () => {
+    const now = Date.now();
+    assert.equal(
+      didWeAcquireDispatchLock({
+        events: [
+          { event: 'labeled', label: { name: 'review-finding' }, created_at: baseIso(now - 60_000) },
+          { event: 'commented', created_at: baseIso(now - 30_000) },
+        ],
+        lockLabel: LOCK,
+        preAddLabelsAtMs: now,
+      }),
+      true,
+    );
+  });
+
+  await t.test('our own labeled event (after pre-call ts) ⇒ win', () => {
+    const preCall = Date.now();
+    assert.equal(
+      didWeAcquireDispatchLock({
+        events: [
+          { event: 'labeled', label: { name: LOCK }, created_at: baseIso(preCall + 300) },
+        ],
+        lockLabel: LOCK,
+        preAddLabelsAtMs: preCall,
+      }),
+      true,
+    );
+  });
+
+  await t.test('peer labeled event well before pre-call ts ⇒ lose', () => {
+    const preCall = Date.now();
+    assert.equal(
+      didWeAcquireDispatchLock({
+        events: [
+          { event: 'labeled', label: { name: LOCK }, created_at: baseIso(preCall - 30_000) },
+        ],
+        lockLabel: LOCK,
+        preAddLabelsAtMs: preCall,
+      }),
+      false,
+    );
+  });
+
+  await t.test('peer labeled event within tolerance ⇒ win (treated as us)', () => {
+    // Clock skew between local Node clock and GitHub server clock is
+    // expected to be sub-second on NTP-synced runners; the default
+    // toleranceMs (1500) covers normal drift.
+    const preCall = Date.now();
+    assert.equal(
+      didWeAcquireDispatchLock({
+        events: [
+          { event: 'labeled', label: { name: LOCK }, created_at: baseIso(preCall - 500) },
+        ],
+        lockLabel: LOCK,
+        preAddLabelsAtMs: preCall,
+      }),
+      true,
+    );
+  });
+
+  await t.test('uses MOST RECENT labeled event (label removed and re-added)', () => {
+    const preCall = Date.now();
+    // Historic: label was added long ago (peer), removed, then re-added by us
+    // just now. The most-recent labeled event is ours → we win.
+    assert.equal(
+      didWeAcquireDispatchLock({
+        events: [
+          { event: 'labeled', label: { name: LOCK }, created_at: baseIso(preCall - 3_600_000) },
+          { event: 'unlabeled', label: { name: LOCK }, created_at: baseIso(preCall - 1_800_000) },
+          { event: 'labeled', label: { name: LOCK }, created_at: baseIso(preCall + 200) },
+        ],
+        lockLabel: LOCK,
+        preAddLabelsAtMs: preCall,
+      }),
+      true,
+    );
+  });
+
+  await t.test('ignores other-label events that share createdAt', () => {
+    const preCall = Date.now();
+    assert.equal(
+      didWeAcquireDispatchLock({
+        events: [
+          { event: 'labeled', label: { name: 'auto-triaged' }, created_at: baseIso(preCall - 60_000) },
+          { event: 'labeled', label: { name: 'review-finding' }, created_at: baseIso(preCall - 60_000) },
+        ],
+        lockLabel: LOCK,
+        preAddLabelsAtMs: preCall,
+      }),
+      // No labeled event for the lock found → propagation lag fallback → win.
+      true,
+    );
+  });
+
+  await t.test('respects custom toleranceMs (tight window catches sub-second races)', () => {
+    const preCall = Date.now();
+    // Peer added the label 800ms before us. With tight tolerance (250ms),
+    // we correctly detect the loss.
+    assert.equal(
+      didWeAcquireDispatchLock({
+        events: [
+          { event: 'labeled', label: { name: LOCK }, created_at: baseIso(preCall - 800) },
+        ],
+        lockLabel: LOCK,
+        preAddLabelsAtMs: preCall,
+        toleranceMs: 250,
+      }),
+      false,
+    );
+  });
+
+  await t.test('malformed event entries are skipped, not crashed on', () => {
+    const preCall = Date.now();
+    assert.equal(
+      didWeAcquireDispatchLock({
+        events: [
+          null,
+          { event: 'labeled' },
+          { event: 'labeled', label: null, created_at: baseIso(preCall) },
+          { event: 'labeled', label: { name: LOCK }, created_at: 'not-a-date' },
+          { event: 'labeled', label: { name: LOCK }, created_at: baseIso(preCall + 100) },
+        ],
+        lockLabel: LOCK,
+        preAddLabelsAtMs: preCall,
+      }),
+      true,
+    );
+  });
+
+  await t.test('missing required args ⇒ default to win (defensive)', () => {
+    assert.equal(didWeAcquireDispatchLock(), true);
+    assert.equal(didWeAcquireDispatchLock({}), true);
+    assert.equal(
+      didWeAcquireDispatchLock({ events: [{ event: 'labeled', label: { name: 'x' } }] }),
+      true,
+    );
+  });
+});
+
 test('review-dispatch.mjs does not send the removed `branchName` field to Cursor v1/agents', async () => {
   const { readFileSync } = await import('node:fs');
   const { resolve } = await import('node:path');
@@ -320,5 +489,16 @@ test('review-dispatch.mjs does not send the removed `branchName` field to Cursor
   assert.ok(
     !/\bbranchName\s*[,:]/.test(bodyMatch[0]),
     'createCursorAgent body must NOT include `branchName` (Cursor v1/agents removed the field; sending it returns 400). Cursor auto-generates a `cursor/...` branch from startingRef.',
+  );
+
+  // #1253 race-detection: with `branchName` gone, the previous implicit
+  // dedup at Cursor's side (branch-collision 400) is also gone. main()
+  // MUST re-verify lock ownership via the issue events API after
+  // addLabels, otherwise two concurrent dispatch runs can both reach
+  // createCursorAgent and spawn duplicate agents/PRs for the same issue.
+  assert.match(
+    src,
+    /didWeAcquireDispatchLock\s*\(\s*\{[\s\S]*?lockLabel:\s*LOCK_LABEL/m,
+    'main() must invoke didWeAcquireDispatchLock({ ..., lockLabel: LOCK_LABEL, ... }) between addLabels(LOCK_LABEL) and createCursorAgent — required by #1253 (the removal of `branchName` lost the implicit Cursor-side dedup).',
   );
 });
