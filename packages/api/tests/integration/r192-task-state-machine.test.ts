@@ -584,6 +584,65 @@ describe('R-192: deriveTaskCompletionState', () => {
       await cleanupProject(bareProjectId);
     }
   });
+
+  it('short-circuits with gateApplied=false when the project has no githubRepo, even if the task carries planDeliverableRefs (closes #1331)', async () => {
+    // Regression for #1331: plan authors routinely populate
+    // `planDeliverableRefs` on tasks for scope/coverage tracking,
+    // independent of any GitHub wiring. If the project has not
+    // opted into GitHub integration (`project.githubRepo` is null)
+    // the webhook + commit-linker plumbing isn't running at all, so
+    // neither `pr_merged` nor `deliverable_evidence` can ever be
+    // satisfied — firing the gate would lock the task in
+    // `awaiting_evidence` with no recovery path. The gate must stay
+    // silent.
+    const { projectId: bareProjectId } = await createTestProject('r1331-bare-owner');
+    try {
+      const { planId: barePlanId, version: bareVersion } = await createActivePlan(
+        bareProjectId,
+        'r1331-bare-owner',
+      );
+      const bareDeliverable = await testPrisma.planDeliverable.create({
+        data: {
+          planId: barePlanId,
+          slug: 'r1331-feature',
+          title: 'R-1331 feature',
+          body: 'no-github-integration scope item',
+          refType: 'file_glob',
+          refUri: 'src/r1331/**/*.ts',
+          status: 'active',
+        },
+      });
+      const t = await testPrisma.task.create({
+        data: {
+          projectId: bareProjectId,
+          title: 't-refs-no-github',
+          type: 'code',
+          priority: 'p1',
+          status: 'in_progress',
+          boundPlanVersion: bareVersion,
+          agentConstraints: [],
+          // Task IS bound to a deliverable via the plan, but the
+          // project has no githubRepo — the gate must NOT fire.
+          planDeliverableRefs: [bareDeliverable.slug],
+          prUrl: null,
+        },
+      });
+      const result = await deriveTaskCompletionState({
+        projectId: bareProjectId,
+        task: {
+          id: t.id,
+          prUrl: null,
+          planDeliverableRefs: [bareDeliverable.slug],
+          boundPlanVersion: bareVersion,
+        },
+      });
+      expect(result.gateApplied).toBe(false);
+      expect(result.status).toBe('done');
+      expect(result.missing).toEqual([]);
+    } finally {
+      await cleanupProject(bareProjectId);
+    }
+  });
 });
 
 // ---------------------------------------------------------------
