@@ -318,11 +318,26 @@ export async function deriveTaskCompletionState(
  *      when the linker has indexed the head commit of a feature
  *      branch (e.g. a `push` event arrived before the PR closed).
  *   3. Every commit in any `github_push` event whose `head_commit.id`
- *      equals `merge_commit_sha`. That push is what GitHub sent to
- *      the base branch when the PR merged, so its `commits[]` are
- *      precisely the constituent commits of this PR (covers the
- *      "merge commit" case where only the constituents carry file
- *      changes — the merge commit itself is empty).
+ *      equals `merge_commit_sha` AND whose `ref` matches the PR's
+ *      base branch (`refs/heads/<pull_request.base.ref>`). That push
+ *      is what GitHub sent to the base branch when the PR merged, so
+ *      its `commits[]` are precisely the constituent commits of this
+ *      PR (covers the "merge commit" case where only the constituents
+ *      carry file changes — the merge commit itself is empty).
+ *
+ *      The `ref` filter (closes #1420) prevents an unrelated push
+ *      whose `head_commit.id` happens to equal `merge_commit_sha`
+ *      (e.g. a developer first pushed the eventual merge commit to a
+ *      feature branch, or someone cherry-picked it onto another
+ *      branch) from injecting unrelated commits into `allowedShas`.
+ *      Without the ref filter, those stray pushes could satisfy the
+ *      R-192 deliverable-evidence gate for an unrelated task — the
+ *      exact attribution defect #1189 / PR #1394 set out to close.
+ *      If `base.ref` is missing from the PR payload we skip the push
+ *      expansion entirely (fail-closed); the merge SHA + head SHA
+ *      still satisfy the gate for squash / rebase merges (where only
+ *      those SHAs carry file changes), only "merge commit"-style
+ *      merges with empty merge commits are affected.
  *
  * When the PR is closed-without-merge (or never merged), `merged` is
  * false and `shas` is empty; the caller treats this the same as
@@ -344,14 +359,15 @@ async function findPrMergeInfo(
   // variant into the task — strip trailing extras so the comparison is
   // robust without doing a full URL canonicalisation pass.
   const normalized = normalizePrUrl(prUrl);
-  type PrRow = { merge_sha: string | null; head_sha: string | null };
+  type PrRow = { merge_sha: string | null; head_sha: string | null; base_ref: string | null };
   // We can't use Prisma's typed query here because `payload` is a free
   // Json column; a raw query keeps the Postgres-side JSON walk while
   // staying parameterised against SQL injection.
   const prRows = await client.$queryRaw<PrRow[]>`
     SELECT
       payload -> 'data' -> 'payload' -> 'pull_request' ->> 'merge_commit_sha' AS merge_sha,
-      payload -> 'data' -> 'payload' -> 'pull_request' -> 'head' ->> 'sha'    AS head_sha
+      payload -> 'data' -> 'payload' -> 'pull_request' -> 'head' ->> 'sha'    AS head_sha,
+      payload -> 'data' -> 'payload' -> 'pull_request' -> 'base' ->> 'ref'    AS base_ref
     FROM domain_events
     WHERE event_type = 'github_pull_request'
       AND project_id = ${projectId}
@@ -367,6 +383,7 @@ async function findPrMergeInfo(
   const shas = new Set<string>();
   const mergeSha = prRows[0].merge_sha?.trim() || null;
   const headSha = prRows[0].head_sha?.trim() || null;
+  const baseRef = prRows[0].base_ref?.trim() || null;
   if (mergeSha) shas.add(mergeSha);
   if (headSha) shas.add(headSha);
 
@@ -377,14 +394,30 @@ async function findPrMergeInfo(
   // `commits[]` array on that push is the list of commits added to
   // the base branch — i.e. the PR's commits (after squash / rebase /
   // merge, depending on the merge strategy).
-  if (mergeSha) {
+  //
+  // We additionally constrain on `payload.ref` matching the PR's
+  // base branch (`refs/heads/<pull_request.base.ref>`). Without this
+  // constraint a push to ANY ref whose head_commit happens to share
+  // the merge SHA (a feature branch the developer first pushed the
+  // commit to, a cherry-pick onto another branch, a tag-creation
+  // push event, etc.) would inject unrelated commits into the
+  // allowed-shas set and let them satisfy the deliverable_evidence
+  // gate for an unrelated task. The `pull_request.base.ref` field
+  // is the short branch name (e.g. `main`); the push payload's
+  // `ref` is the full git ref (`refs/heads/main`) so we construct
+  // the full form for comparison. If `base.ref` is missing on the
+  // PR payload (malformed webhook) we skip the push expansion
+  // entirely — fail-closed for the attribution gate (closes #1420).
+  if (mergeSha && baseRef) {
     type PushRow = { commits: unknown };
+    const baseRefFull = `refs/heads/${baseRef}`;
     const pushRows = await client.$queryRaw<PushRow[]>`
       SELECT payload -> 'data' -> 'payload' -> 'commits' AS commits
       FROM domain_events
       WHERE event_type = 'github_push'
         AND project_id = ${projectId}
         AND payload -> 'data' -> 'payload' -> 'head_commit' ->> 'id' = ${mergeSha}
+        AND payload -> 'data' -> 'payload' ->> 'ref' = ${baseRefFull}
     `;
     for (const row of pushRows) {
       if (Array.isArray(row.commits)) {

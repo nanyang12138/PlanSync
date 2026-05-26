@@ -157,7 +157,7 @@ async function startRun(taskId: string) {
 
 async function emitMergedPrEvent(
   prUrl: string,
-  opts: { mergeCommitSha?: string; headSha?: string } = {},
+  opts: { mergeCommitSha?: string; headSha?: string; baseRef?: string } = {},
 ) {
   // Match the shape that R-190 writes when GitHub delivers a merged
   // pull_request webhook. The outer envelope is the `domainEventPayloadSchema`
@@ -167,8 +167,12 @@ async function emitMergedPrEvent(
   // can bind commit links to *this PR* — without it the gate falls
   // back to "no SHAs" and every deliverable ref is reported missing,
   // which is fail-closed but trivially flunks every assertion below.
+  // `base.ref` is required so the push-expansion lookup can scope to
+  // the PR's base branch and reject pushes on other refs that happen
+  // to share the merge SHA (closes #1420).
   const mergeCommitSha = opts.mergeCommitSha ?? defaultMergeShaFor(prUrl);
   const headSha = opts.headSha ?? defaultHeadShaFor(prUrl);
+  const baseRef = opts.baseRef ?? 'main';
   await testPrisma.domainEvent.create({
     data: {
       eventType: 'github_pull_request',
@@ -186,13 +190,14 @@ async function emitMergedPrEvent(
               merged: true,
               merge_commit_sha: mergeCommitSha,
               head: { sha: headSha },
+              base: { ref: baseRef },
             },
           },
         },
       },
     },
   });
-  return { mergeCommitSha, headSha };
+  return { mergeCommitSha, headSha, baseRef };
 }
 
 /**
@@ -372,6 +377,68 @@ describe('R-192: deriveTaskCompletionState', () => {
     });
     expect(result.status).toBe('done');
     expect(result.missing).toEqual([]);
+  });
+
+  it('rejects push-event commits whose ref does not match the PR base branch even when head_commit.id equals merge_commit_sha (closes #1420)', async () => {
+    // Pre-fix: the push-expansion lookup matched on `head_commit.id =
+    // mergeSha` alone. A push to ANY ref (a feature branch the
+    // developer first pushed the merge commit onto, a cherry-pick that
+    // re-landed the same SHA on another branch, a tag push, etc.)
+    // whose head commit happened to share the merge SHA would inject
+    // its `commits[]` into `allowedShas`. A commit in that stray push
+    // that was linked to the deliverable would then silently satisfy
+    // the deliverable_evidence gate for an unrelated task — the exact
+    // attribution defect #1189 / PR #1394 set out to close.
+    //
+    // Setup: PR is merged to `main`. A second push event exists with
+    // the same `head_commit.id` (the merge SHA) but targets
+    // `refs/heads/feature-branch`. Its `commits[]` carries a stray
+    // commit that IS linked to the deliverable. The gate must
+    // surface deliverable_evidence as missing because the ref filter
+    // excludes that push entirely.
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/1420';
+    const task = await newTask({ prUrl });
+    const mergeCommitSha = defaultMergeShaFor(prUrl);
+    // 40-char hex, distinct from any PR-attributable SHA.
+    const strayCommitSha = 'feedbeef'.repeat(5);
+    await emitMergedPrEvent(prUrl, { mergeCommitSha, baseRef: 'main' });
+    await testPrisma.domainEvent.create({
+      data: {
+        eventType: 'github_push',
+        projectId,
+        payload: {
+          type: 'github_push',
+          projectId,
+          data: {
+            deliveryId: `delivery-${Math.random().toString(36).slice(2)}`,
+            repository: repoSlug,
+            payload: {
+              ref: 'refs/heads/feature-branch',
+              head_commit: { id: mergeCommitSha },
+              commits: [{ id: strayCommitSha, message: 'stray commit on unrelated ref' }],
+            },
+          },
+        },
+      },
+    });
+    // Link the stray commit to the deliverable. Pre-fix this would
+    // satisfy the gate via the polluted allowedShas; post-fix the
+    // ref filter rejects the stray push so the link is invisible.
+    await linkCommitToDeliverable(deliverableA.id, strayCommitSha);
+
+    const result = await deriveTaskCompletionState({
+      projectId,
+      task: {
+        id: task.id,
+        prUrl: task.prUrl,
+        planDeliverableRefs: task.planDeliverableRefs,
+        boundPlanVersion: planVersion,
+      },
+    });
+    expect(result.status).toBe('awaiting_evidence');
+    const codes = result.missing.map((m) => m.code);
+    expect(codes).toContain('deliverable_evidence');
+    expect(codes).not.toContain('pr_merged');
   });
 
   it('flags drift_open when an open drift alert is present', async () => {
