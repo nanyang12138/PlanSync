@@ -89,9 +89,53 @@ if (APPLY && (!REPO || !TOKEN)) {
 // `gh` is the cleanest GitHub client in CI (already installed on
 // ubuntu-latest). Using it via spawnSync keeps the script free of npm
 // deps so the workflow doesn't need an install step.
+//
+// Token selection.
+//   The default GITHUB_TOKEN granted to a workflow CANNOT trigger other
+//   workflow runs — when you create/label an issue using GITHUB_TOKEN,
+//   the resulting `issues: labeled` event is silently dropped to prevent
+//   recursive workflow loops. This script's whole purpose is to add the
+//   `cursor:dispatch` label so the existing cursor-review-dispatch.yml
+//   workflow picks the issue up; that label MUST be applied with a
+//   token that GitHub treats as a real user / App identity (a PAT or a
+//   GitHub App installation token).
+//
+//   `gh()` keeps using GITHUB_TOKEN for the read-heavy and close-issue
+//   paths (cheap, no downstream workflow side effects). `ghAsUser()` is
+//   the explicit "I need this to trigger another workflow" helper; it
+//   uses TRIGGER_TOKEN (`CURSOR_REVIEW_PAT` in the workflow env) and
+//   falls back to GITHUB_TOKEN with a warning so a misconfigured repo
+//   still does *something* visible instead of silently failing.
 function gh(args, { allowFail = false } = {}) {
   const env = { ...process.env };
   if (TOKEN) env.GH_TOKEN = TOKEN;
+  const r = spawnSync('gh', args, { encoding: 'utf-8', env });
+  if (r.status !== 0 && !allowFail) {
+    throw new Error(`gh ${args.join(' ')} -> exit ${r.status}: ${r.stderr}`);
+  }
+  return { stdout: r.stdout, stderr: r.stderr, status: r.status };
+}
+
+const TRIGGER_TOKEN = process.env.TRIGGER_TOKEN || '';
+let triggerTokenWarned = false;
+
+function ghAsUser(args, { allowFail = false } = {}) {
+  const env = { ...process.env };
+  if (TRIGGER_TOKEN) {
+    env.GH_TOKEN = TRIGGER_TOKEN;
+  } else {
+    if (!triggerTokenWarned) {
+      console.warn(
+        '[warn] TRIGGER_TOKEN is not set (workflow forgot to wire CURSOR_REVIEW_PAT). ' +
+          'Falling back to GITHUB_TOKEN — label adds will succeed but the resulting ' +
+          'issues: labeled event will NOT trigger cursor-review-dispatch.yml, so no ' +
+          'Cursor Cloud Agent will be spawned. Add a CURSOR_REVIEW_PAT repo secret ' +
+          '(fine-grained PAT with issues:write) to fix this.',
+      );
+      triggerTokenWarned = true;
+    }
+    if (TOKEN) env.GH_TOKEN = TOKEN;
+  }
   const r = spawnSync('gh', args, { encoding: 'utf-8', env });
   if (r.status !== 0 && !allowFail) {
     throw new Error(`gh ${args.join(' ')} -> exit ${r.status}: ${r.stderr}`);
@@ -179,10 +223,20 @@ function ensureRequiredLabels() {
 // label in the list is missing, even if the others exist. This
 // helper retries the add label-by-label and lets the caller log
 // partial failures without aborting the batch.
-function addLabelsToIssue(issueNumber, labels) {
+//
+// `triggersDownstreamWorkflow` is the load-bearing knob: when true,
+// every label add is routed through ghAsUser() so a downstream
+// workflow listening on `issues: labeled` will actually fire. The
+// default (false) uses the standard gh() helper because most label
+// adds (auto-triaged, wontfix) are pure bookkeeping that doesn't
+// need to trigger anything.
+function addLabelsToIssue(issueNumber, labels, { triggersDownstreamWorkflow = false } = {}) {
   const failed = [];
+  const runner = triggersDownstreamWorkflow ? ghAsUser : gh;
   for (const label of labels) {
-    const r = gh(['issue', 'edit', String(issueNumber), '--add-label', label], { allowFail: true });
+    const r = runner(['issue', 'edit', String(issueNumber), '--add-label', label], {
+      allowFail: true,
+    });
     if (r.status !== 0) {
       failed.push({ label, stderr: r.stderr.trim() });
     }
@@ -398,7 +452,17 @@ async function dispatchIssue(issue) {
   // cursor:dispatch landed but auto-triaged didn't, the next cron
   // run will see the cursor:dispatch label in SKIP_LABELS and
   // skip the issue anyway, so no duplicate dispatch is possible.
-  const failed = addLabelsToIssue(issue.number, ['cursor:dispatch', 'auto-triaged']);
+  //
+  // triggersDownstreamWorkflow=true routes the label-add through
+  // CURSOR_REVIEW_PAT (when configured). GitHub's recursion-guard
+  // silently drops the `issues: labeled` event when GITHUB_TOKEN is
+  // the actor, so without the PAT the dispatch chain dies on
+  // arrival even though the label visibly lands on the issue —
+  // exactly the failure mode caught on 2026-05-26 (28 issues acted
+  // on, cursor-review-dispatch.yml never ran once).
+  const failed = addLabelsToIssue(issue.number, ['cursor:dispatch', 'auto-triaged'], {
+    triggersDownstreamWorkflow: true,
+  });
   const dispatchFailed = failed.find((f) => f.label === 'cursor:dispatch');
   if (dispatchFailed) {
     console.warn(`[warn] failed to dispatch #${issue.number}: ${dispatchFailed.stderr}`);

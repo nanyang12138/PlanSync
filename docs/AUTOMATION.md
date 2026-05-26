@@ -150,6 +150,12 @@
 | `dispatch`         | 既没在飞，也没被任何 probe 命中 → 真的需要人/agent 处理                                                                                                                       | 加 `cursor:dispatch` label（已有 `cursor-review-dispatch.yml` 接管）+ `auto-triaged` label。受 `TRIAGE_MAX_DISPATCH`（默认 3）限流 |
 | `skip`             | 已有 `cursor:dispatch` / `dispatched` / `umbrella` / `wontfix` / `auto-triaged` / `needs-human` / `do-not-merge` 任一 label，或被某个**仍打开**的 PR body 用 `closes #N` 引用 | 什么都不做                                                                                                                         |
 
+**配置要求（重要 — 否则 dispatch 段会哑火）**：
+
+仓库 Secrets 必须有 `CURSOR_REVIEW_PAT`（fine-grained PAT，scope = `issues: write` on this repo）。原因：GitHub 默认 `GITHUB_TOKEN` 加 label 触发的 `issues: labeled` 事件**会被 GitHub 静默丢弃**（防 workflow 递归），导致下游 `cursor-review-dispatch.yml` 看不到事件、不会启动 Cursor Cloud Agent。脚本里 `dispatchIssue` 用 `triggersDownstreamWorkflow: true` 把 `cursor:dispatch` 这一步路由到 `ghAsUser()` helper，再注入 PAT 写 label —— PAT 会被认为是真实用户身份，事件会正常派发。
+
+没有 PAT 时脚本仍然能跑（fallback 到 GITHUB_TOKEN + 一行 warning），表面上 label 也加上了，但 **Cursor agent 永远不会被 spawn**。生产事故现场：2026-05-26 第一次 apply run 关了 25 个 issue、派出 3 个 dispatch label，但 `cursor-review-dispatch` workflow 一次都没跑过。
+
 **为什么这层有意义**：
 
 - review-finding 流水线每天会新开 10-30 个 `severity:must` issue，绝大部分都是同一个 finding 被不同 PR 的 review pass 反复举报。这个 workflow 在不需要 LLM 的情况下，通过两个确定性信号（**closes-keyword 扫描** + **静态代码 probe**）就能把可关掉的关掉、需要 agent 修的派出去，把剩下的留给人工。

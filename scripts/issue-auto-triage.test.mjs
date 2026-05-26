@@ -92,6 +92,26 @@ test('static guard: issue-auto-triage.mjs still defines the canonical helpers', 
   assert.match(src, /dispatch/);
 });
 
+test('static guard: cursor:dispatch is added with triggersDownstreamWorkflow=true (closes the GITHUB_TOKEN recursion-guard footgun)', () => {
+  // Production hit on 2026-05-26: the script added cursor:dispatch
+  // labels successfully with GITHUB_TOKEN, but GitHub silently
+  // suppressed the resulting `issues: labeled` event so
+  // cursor-review-dispatch.yml never spawned an agent. Fix: route
+  // the dispatch label add through ghAsUser() (CURSOR_REVIEW_PAT)
+  // by passing triggersDownstreamWorkflow=true. This guard fails
+  // if a future refactor drops the flag.
+  const src = readFileSync(SCRIPT_PATH, 'utf-8');
+  assert.match(src, /function ghAsUser\s*\(/);
+  // dispatchIssue must call addLabelsToIssue with the trigger flag.
+  // We match the multi-line call shape (prettier may wrap).
+  const dispatchCallRe =
+    /addLabelsToIssue\([^)]*'cursor:dispatch'[\s\S]*?triggersDownstreamWorkflow:\s*true/m;
+  assert.ok(
+    dispatchCallRe.test(src),
+    'dispatchIssue must call addLabelsToIssue with triggersDownstreamWorkflow:true — without it, GitHub drops the labeled event and the downstream agent dispatch never fires.',
+  );
+});
+
 test('static guard: every label used in actions is bootstrapped via ensureRequiredLabels', () => {
   // Crash on 2026-05-26 was "'auto-triaged' not found" — the script
   // tried to apply a label that did not exist in the repo, gh
@@ -109,17 +129,21 @@ test('static guard: every label used in actions is bootstrapped via ensureRequir
       `REQUIRED_LABELS must include '${label}' so the script bootstraps it on first run`,
     );
   }
-  // There must be exactly ONE `gh issue edit ... --add-label` call
-  // in the source — the chokepoint inside addLabelsToIssue(). Any
-  // additional occurrence would mean commentAndClose / dispatchIssue
-  // started bypassing the best-effort wrapper, re-introducing the
-  // 2026-05-26 crash mode.
-  const directCallRe = /gh\(\s*\[\s*'issue',\s*'edit'[\s\S]*?'--add-label'/gm;
-  const directCalls = src.match(directCallRe) || [];
+  // There must be exactly ONE `'issue', 'edit', ..., '--add-label'`
+  // shell-call shape in the source — the chokepoint inside
+  // addLabelsToIssue(). Any additional occurrence would mean
+  // commentAndClose / dispatchIssue started bypassing the
+  // best-effort wrapper, re-introducing the 2026-05-26 crash mode.
+  // We deliberately match the args-array rather than the helper
+  // name (gh / ghAsUser) so the guard survives the trigger-token
+  // refactor: whatever runner the wrapper picks, the actual gh
+  // CLI invocation lives in exactly one place.
+  const editAddLabelRe = /\[\s*'issue',\s*'edit'[\s\S]*?'--add-label'/gm;
+  const editAddLabelCalls = src.match(editAddLabelRe) || [];
   assert.equal(
-    directCalls.length,
+    editAddLabelCalls.length,
     1,
-    `expected exactly one 'gh issue edit ... --add-label' (inside addLabelsToIssue) but found ${directCalls.length}. ` +
+    `expected exactly one 'gh issue edit ... --add-label' shell-call (inside addLabelsToIssue) but found ${editAddLabelCalls.length}. ` +
       `commentAndClose / dispatchIssue must route label writes through addLabelsToIssue() so a missing label degrades to a warning.`,
   );
 });

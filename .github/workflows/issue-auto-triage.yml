@@ -103,7 +103,19 @@ jobs:
 
       - name: Run triage
         env:
+          # Cheap read-heavy + close-issue calls go through the
+          # default workflow token.
           GITHUB_TOKEN: ${{ github.token }}
+          # Label adds that need to TRIGGER a downstream workflow
+          # (cursor-review-dispatch.yml, which listens on `issues:
+          # labeled` for `cursor:dispatch`) must use a PAT — GitHub
+          # silently drops issue events created by GITHUB_TOKEN to
+          # prevent recursive workflow loops. Configure
+          # `CURSOR_REVIEW_PAT` (fine-grained PAT with issues:write
+          # on this repo). If unset, the script logs a warning and
+          # falls back to GITHUB_TOKEN — labels still land on the
+          # issue but cursor-review-dispatch.yml will never run.
+          TRIGGER_TOKEN: ${{ secrets.CURSOR_REVIEW_PAT }}
           GH_REPO: ${{ github.repository }}
           TRIAGE_MAX_DISPATCH: ${{ github.event.inputs.max_dispatch || '3' }}
           TRIAGE_MAX_CLOSE: ${{ github.event.inputs.max_close || '25' }}
