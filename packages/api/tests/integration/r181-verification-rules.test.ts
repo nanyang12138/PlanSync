@@ -409,6 +409,63 @@ describe('R-181: verification rules gate', () => {
     expect(res.status).toBe(403);
   });
 
+  // Closes #1220: the CLI's `/explain rule <id>` (R-184) calls GET
+  // /verification-rules to look up the rule that the complete route's
+  // gate=rule 422 envelope points at. Non-owner agents/developers are
+  // the primary audience for that 422 envelope, so GET must NOT be
+  // owner-only — otherwise the entire R-184 self-serve path 403s for
+  // exactly the people it was built for. Mutations stay owner-only
+  // (covered by 'non-owner cannot create rules' above).
+  it('#1220: non-owner project members can GET the rules list (R-184 self-serve)', async () => {
+    await testPrisma.verificationRule.create({
+      data: {
+        projectId,
+        kind: 'require_files_changed',
+        scope: 'project',
+        enabled: true,
+        createdBy: owner,
+      },
+    });
+
+    // Human developer
+    const devRes = await listRulesGet(
+      makeReq(`/api/projects/${projectId}/verification-rules`, {
+        method: 'GET',
+        userName: developer,
+      }),
+      { params: Promise.resolve({ projectId }) },
+    );
+    expect(devRes.status).toBe(200);
+    const devJson = await devRes.json();
+    expect(Array.isArray(devJson.data)).toBe(true);
+    expect(devJson.data).toHaveLength(1);
+    expect(devJson.data[0].kind).toBe('require_files_changed');
+
+    // Agent (the actual /explain rule caller during /exec sub-sessions)
+    const agentRes = await listRulesGet(
+      makeReq(`/api/projects/${projectId}/verification-rules`, {
+        method: 'GET',
+        userName: agentName,
+      }),
+      { params: Promise.resolve({ projectId }) },
+    );
+    expect(agentRes.status).toBe(200);
+    const agentJson = await agentRes.json();
+    expect(agentJson.data).toHaveLength(1);
+  });
+
+  it('#1220: a non-member of the project still gets 403 on GET (membership gate stays on)', async () => {
+    const stranger = 'r181-stranger';
+    const res = await listRulesGet(
+      makeReq(`/api/projects/${projectId}/verification-rules`, {
+        method: 'GET',
+        userName: stranger,
+      }),
+      { params: Promise.resolve({ projectId }) },
+    );
+    expect(res.status).toBe(403);
+  });
+
   it('POST rejects unknown kind', async () => {
     const res = await createRulePost(
       makeReq(`/api/projects/${projectId}/verification-rules`, {
