@@ -292,6 +292,119 @@ jobs:
             fi
           fi
 
+      # The GitHub Action under packages/integrations/github-action/ runs
+      # `dist/index.js` directly via `action.yml` — there is no install step
+      # on the consumer's runner, so the committed bundle IS the deployable
+      # artifact. If it drifts from `index.ts`, or worse, is missing entirely,
+      # consumers ship stale / broken code (root cause of issue #1265).
+      #
+      # Why `git status --porcelain` and NOT `git diff --exit-code` (closes
+      # finding #1269):
+      #   `git diff` only compares **tracked** files. If a PR forgets to
+      #   `git add` the freshly rebuilt `dist/index.js`, the file lives on
+      #   disk as untracked and `git diff` sees nothing — the staleness
+      #   check would silently pass. `git status --porcelain` surfaces
+      #   modified-tracked, untracked, AND deleted files in one shot, so
+      #   none of those failure modes slip through.
+      #
+      # Why the dual gate (base-tracked check + porcelain check):
+      #   We must also defend against a PR that **deletes** the tracked
+      #   bundle to bypass the check. We probe whether `dist/index.js` is
+      #   tracked in the merge base; if it was, the PR is required to keep
+      #   it tracked. Without this, "untracked = skip" would re-open the
+      #   exact hole #1269 reports, just via the delete path.
+      #
+      # Pre-#1268 transitional state:
+      #   On a base branch where the bundle has never been committed,
+      #   `BASE_HAS_DIST=false` and we emit a notice + skip. This avoids
+      #   reddening master before the dist is first committed. Once #1268
+      #   lands and `dist/index.js` is in the base tree, the gate becomes
+      #   mandatory automatically — no follow-up edit to this workflow.
+      - name: Rebuild GitHub Action bundle
+        run: npm run build:action --workspace=@plansync/integrations
+
+      - name: Verify GitHub Action bundle is committed and up-to-date
+        env:
+          # On pull_request events GitHub sets these to the PR base/head; on
+          # push-to-master they are empty, and we fall back to HEAD~1.
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          REL='packages/integrations/github-action/dist/index.js'
+          DIST_DIR='packages/integrations/github-action/dist'
+
+          # 1) Determine the base-branch tracking state. If the bundle was
+          #    tracked at the base of this change, the PR/push must keep it
+          #    tracked — otherwise an adversarial delete would silently pass.
+          #
+          # IMPORTANT (closes finding #1283): the `build` job's
+          # `actions/checkout@v4` uses the default shallow clone
+          # (`fetch-depth: 1`), so `$BASE_SHA` is NOT in the local object
+          # store. Without an explicit fetch, `git cat-file -e $BASE_SHA:$REL`
+          # silently fails and we'd treat the base as "bundle not tracked",
+          # bypassing the delete-protection gate added by #1277. We therefore
+          # fetch the base commit on demand and, for the PR path, fail loud
+          # if the fetch does not succeed — silently degrading to
+          # `BASE_HAS_DIST=false` would re-open the exact attack surface this
+          # gate exists to close.
+          if [ -n "${BASE_SHA:-}" ]; then
+            REF="$BASE_SHA"
+            if ! git cat-file -e "$REF" 2>/dev/null; then
+              if ! git fetch --no-tags --depth=1 origin "$REF" 2>/dev/null; then
+                echo "::error::Could not fetch PR base commit $REF into the local object store; refusing to skip the bundle base-tracking probe. Re-run the job, or configure the build job's checkout with 'fetch-depth: 0' if this persists."
+                exit 1
+              fi
+            fi
+          else
+            # push-to-master fallback. Shallow clones don't include HEAD~1
+            # either; deepen by one commit. If that still fails (e.g. initial
+            # commit, no parent exists), skip with a notice — push events are
+            # post-merge and already gated by the PR path above.
+            REF="HEAD~1"
+            if ! git cat-file -e "$REF" 2>/dev/null; then
+              git fetch --no-tags --deepen=1 2>/dev/null || true
+            fi
+          fi
+          if [ -n "$REF" ] && git cat-file -e "$REF":"$REL" 2>/dev/null; then
+            BASE_HAS_DIST=true
+          else
+            BASE_HAS_DIST=false
+          fi
+
+          # 2) Determine the head-branch tracking state.
+          if git ls-files --error-unmatch "$REL" >/dev/null 2>&1; then
+            HEAD_HAS_DIST=true
+          else
+            HEAD_HAS_DIST=false
+          fi
+
+          # 3) Hard-fail: PR removed a previously-tracked bundle.
+          if [ "$BASE_HAS_DIST" = "true" ] && [ "$HEAD_HAS_DIST" = "false" ]; then
+            echo "::error::$REL was tracked at the base ref ($REF) but is no longer tracked in this change. The bundle is the deployable artifact for the GitHub Action and must remain committed — run 'npm run build:action --workspace=@plansync/integrations' and 'git add $DIST_DIR/' before pushing."
+            exit 1
+          fi
+
+          # 4) Transitional skip: bundle has never been committed yet (pre-#1268).
+          if [ "$BASE_HAS_DIST" = "false" ] && [ "$HEAD_HAS_DIST" = "false" ]; then
+            echo "::notice::$REL is not tracked at base ($REF) and not tracked in HEAD — skipping bundle staleness check (transitional state; will become mandatory once the bundle is first committed)."
+            exit 0
+          fi
+
+          # 5) Staleness gate. `git status --porcelain` catches:
+          #      - tracked file modified (rebuild produced different bytes)
+          #      - tracked file deleted   (working tree missing files)
+          #      - new files appeared     (esbuild emitted extra outputs)
+          #    `git diff` would miss the third category, which is the
+          #    finding called out in #1269.
+          STATUS=$(git status --porcelain -- "$DIST_DIR")
+          if [ -n "$STATUS" ]; then
+            echo "::error::Committed GitHub Action bundle is stale or incomplete. Run 'bash scripts/build.sh' (or 'npm run build:action --workspace=@plansync/integrations') and commit the regenerated '$DIST_DIR/' files."
+            echo 'Affected paths:'
+            echo "$STATUS" | sed 's/^/  /'
+            exit 1
+          fi
+
   # ─────────────────────────── Test ───────────────────────────
 
   test:
