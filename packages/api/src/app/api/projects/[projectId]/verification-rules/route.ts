@@ -1,12 +1,21 @@
 /**
- * R-181: owner CRUD endpoints for declarative verification rules.
+ * R-181: declarative verification rule endpoints.
  *
  * Routes:
  *   GET   /api/projects/[projectId]/verification-rules
  *   POST  /api/projects/[projectId]/verification-rules
  *
- * Auth: owner-only (mutations also blocked for exec-scoped keys). The
- * complete route reads the same table without an auth check because it
+ * Auth:
+ *   - GET   any project member (developer / agent / owner, including
+ *           exec-scoped API keys). Fix for #1207: the executor-facing
+ *           `/explain rule <id>` CLI command in R-184 needs to read rule
+ *           definitions after hitting a 422 rule gate, so restricting
+ *           reads to owners broke the primary user path. Mutations stay
+ *           owner-only; rule rows contain no per-user secrets, only the
+ *           project's own gate policy.
+ *   - POST  owner-only and blocked for exec-scoped keys.
+ *
+ * The complete route reads the same table without an auth check because it
  * runs after `requireProjectRole` for the project already.
  */
 import { NextRequest, NextResponse } from 'next/server';
@@ -64,7 +73,12 @@ export async function GET(req: NextRequest, ctx: Params) {
   const params = await ctx.params;
   try {
     const auth = await authenticate(req);
-    await requireProjectRole(auth, params.projectId, 'owner');
+    // #1207: any project member can read the rule list. The CLI's
+    // `/explain rule <id>` (R-184) is invoked by executors / agents
+    // reacting to a 422 rule-gate failure, who are almost never owners.
+    // requireProjectRole without a role argument still enforces project
+    // membership and the cross-project / exec-key bindings.
+    await requireProjectRole(auth, params.projectId);
 
     const rules = await prisma.verificationRule.findMany({
       where: { projectId: params.projectId },

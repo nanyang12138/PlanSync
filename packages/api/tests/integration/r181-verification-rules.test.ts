@@ -397,6 +397,51 @@ describe('R-181: verification rules gate', () => {
     expect(after).toBe(0);
   });
 
+  it('#1207: non-owner project member can list rules (powers /explain rule <id>)', async () => {
+    // Setup: owner creates a rule; the agent executor and the human
+    // developer must both be able to GET it so the R-184 CLI command
+    // `/explain rule <id>` works on the primary user path (executors
+    // reacting to a 422 rule-gate failure are almost never owners).
+    await testPrisma.verificationRule.create({
+      data: {
+        projectId,
+        kind: 'require_files_changed',
+        scope: 'project',
+        enabled: true,
+        createdBy: owner,
+      },
+    });
+
+    for (const asUser of [developer, agentName]) {
+      const res = await listRulesGet(
+        makeReq(`/api/projects/${projectId}/verification-rules`, {
+          method: 'GET',
+          userName: asUser,
+        }),
+        { params: Promise.resolve({ projectId }) },
+      );
+      expect(res.status, `expected ${asUser} to read rules, got ${res.status}`).toBe(200);
+      const json = await res.json();
+      expect(Array.isArray(json.data)).toBe(true);
+      expect(json.data.length).toBeGreaterThanOrEqual(1);
+      expect(json.data[0].kind).toBe('require_files_changed');
+    }
+  });
+
+  it('#1207: non-member still gets 403 on GET rules', async () => {
+    // Membership is still enforced — only the role check was relaxed.
+    // A user who isn't on the project's member list must not see this
+    // project's gate policy.
+    const res = await listRulesGet(
+      makeReq(`/api/projects/${projectId}/verification-rules`, {
+        method: 'GET',
+        userName: 'r181-outsider',
+      }),
+      { params: Promise.resolve({ projectId }) },
+    );
+    expect(res.status).toBe(403);
+  });
+
   it('non-owner cannot create rules', async () => {
     const res = await createRulePost(
       makeReq(`/api/projects/${projectId}/verification-rules`, {
