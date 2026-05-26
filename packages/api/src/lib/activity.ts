@@ -6,14 +6,29 @@ import { prisma } from './prisma';
 export type ActivityType = z.infer<typeof activityTypeSchema>;
 export type ActorType = z.infer<typeof actorTypeSchema>;
 
-export async function createActivity(params: {
-  projectId: string;
-  type: ActivityType;
-  actorName: string;
-  actorType: ActorType;
-  summary: string;
-  metadata?: Prisma.InputJsonValue;
-}) {
+export async function createActivity(
+  params: {
+    projectId: string;
+    type: ActivityType;
+    actorName: string;
+    actorType: ActorType;
+    summary: string;
+    metadata?: Prisma.InputJsonValue;
+  },
+  // Closes #753 — owner-write routes (e.g. PATCH /plans/:id) need
+  // the activity row to commit atomically with the underlying state
+  // change. Pre-fix this helper always wrote via the global prisma
+  // client AFTER the route's $transaction had already committed; if
+  // the activity insert then failed (DB connection drop, FK race,
+  // etc.), the audit log lost a row but the plan was already
+  // mutated, breaking the every-owner-write-is-audited invariant.
+  // Pass the enclosing $transaction's `tx` to write inside the same
+  // atomic envelope. Existing call-sites that don't care about
+  // atomicity (mid-tx writes are sometimes intentionally deferred so
+  // the activity reflects post-commit state) keep working unchanged
+  // because the parameter is optional.
+  tx?: Prisma.TransactionClient,
+) {
   // R-033: enforce zod validation on type/actorType so typos like
   // 'task_complted' or 'agentt' fail loudly instead of silently writing
   // garbage to the audit log.
@@ -33,5 +48,6 @@ export async function createActivity(params: {
       { invalidActorType: params.actorType },
     );
   }
-  return prisma.activity.create({ data: params });
+  const client = tx ?? prisma;
+  return client.activity.create({ data: params });
 }
