@@ -2734,7 +2734,8 @@
 
 #### R-155 [HIGH] 新增 `plansync_deliverable_*` MCP 工具集（list / show / create / update / supersede）
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#1070, PR#1121
 - **batch**: B13
 - **depends_on**: R-152
 - **effort**: medium
@@ -3002,10 +3003,10 @@
 
 - **status**: pending
 - **batch**: B15
-- **depends_on**: R-175
+- **depends_on**: —
 - **effort**: medium
 - **files**: `packages/mcp-server/src/tools/execution.ts` (deprecate), `packages/mcp-server/src/tools/run.ts` (new), `packages/cli/src/ai-loop.ts`, `docs/PROTOCOL.md`
-- **note**: R11 (#929) split — R-175 was originally one entry covering 3 fix_steps, but only step 1 (plan\_\*\_append → plan_patch) shipped in PR#664. R-204 tracks step 2 (formerly informally referenced as R-175a) as a real, schedulable cron entry so the dependency graph has a concrete follow-up to point at.
+- **note**: R11 (#929) split — R-175 was originally one entry covering 3 fix_steps, but only step 1 (plan\_\*\_append → plan_patch) shipped in PR#664. R-204 tracks step 2 (formerly informally referenced as R-175a) as a real, schedulable cron entry so the dependency graph has a concrete follow-up to point at. **2026-05-26: dropped `depends_on: R-175` to break a hard circular dependency** — R-175's own note states it stays `in_progress` until R-204 + R-205 both close, so listing R-175 as R-204's prerequisite created a permanent deadlock under the cron's `depends_on=done` selection rule. R-204's real prerequisite (PR#664 = R-175 step 1) is already merged on master.
 - **fix_steps**:
   1. Add `plansync_run(runId, action)` tool with `action ∈ {start, heartbeat, complete}`.
   2. Migrate all internal callers (web UI client, ai-loop, github-action) to the new tool.
