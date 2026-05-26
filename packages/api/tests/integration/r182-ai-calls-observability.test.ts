@@ -75,14 +75,10 @@ describe('R-182: ai_calls observability persists provider + purpose', () => {
     const { aiClient } = await import('@/lib/ai/client');
     const { PLAN_DIFF_SYSTEM } = await import('@/lib/ai/prompts/plan-diff.prompt');
 
-    const purpose = `plan_diff_dup_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    await aiClient.complete(PLAN_DIFF_SYSTEM, 'same-user', { purpose });
-    await aiClient.complete(PLAN_DIFF_SYSTEM, 'same-user', { purpose });
+    await aiClient.complete(PLAN_DIFF_SYSTEM, 'same-user', { purpose: 'plan_diff' });
+    await aiClient.complete(PLAN_DIFF_SYSTEM, 'same-user', { purpose: 'plan_diff' });
 
-    const rows = await prisma.aiCall.findMany({
-      where: { purpose },
-      orderBy: { createdAt: 'asc' },
-    });
+    const rows = await prisma.aiCall.findMany({ orderBy: { createdAt: 'asc' } });
     expect(rows.length).toBe(2);
     expect(rows[0].inputHash).toBe(rows[1].inputHash);
     expect(rows[0].outputHash).toBe(rows[1].outputHash);
@@ -93,16 +89,10 @@ describe('R-182: ai_calls observability persists provider + purpose', () => {
     const { PLAN_DIFF_SYSTEM } = await import('@/lib/ai/prompts/plan-diff.prompt');
     const { IMPACT_ANALYSIS_SYSTEM } = await import('@/lib/ai/prompts/impact-analysis.prompt');
 
-    const tag = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const planPurpose = `plan_diff_diff_${tag}`;
-    const impactPurpose = `drift_impact_diff_${tag}`;
-    await aiClient.complete(PLAN_DIFF_SYSTEM, 'same-user', { purpose: planPurpose });
-    await aiClient.complete(IMPACT_ANALYSIS_SYSTEM, 'same-user', { purpose: impactPurpose });
+    await aiClient.complete(PLAN_DIFF_SYSTEM, 'same-user', { purpose: 'plan_diff' });
+    await aiClient.complete(IMPACT_ANALYSIS_SYSTEM, 'same-user', { purpose: 'drift_impact' });
 
-    const rows = await prisma.aiCall.findMany({
-      where: { purpose: { in: [planPurpose, impactPurpose] } },
-      orderBy: { createdAt: 'asc' },
-    });
+    const rows = await prisma.aiCall.findMany({ orderBy: { createdAt: 'asc' } });
     expect(rows[0].inputHash).not.toBe(rows[1].inputHash);
     expect(rows[0].promptHash).not.toBe(rows[1].promptHash);
   });
@@ -312,11 +302,16 @@ describe('R-182: PLANSYNC_AI_OBSERVABILITY=false suppresses INSERT', () => {
   });
 
   it('skips the ai_calls write when the flag is off, but still returns AI output', async () => {
-    const before = await prisma.aiCall.count();
+    // Per-run unique purpose so concurrent vitest forks can't insert
+    // rows that we mis-attribute to our recordAiCall call. The contract
+    // we're proving is "when the flag is off, NO row with our purpose
+    // shows up" — count globally was racy.
+    const purpose = `plan_diff_obs_off_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const before = await prisma.aiCall.count({ where: { purpose } });
     process.env.PLANSYNC_AI_OBSERVABILITY = 'false';
     try {
       await recordAiCall({
-        purpose: 'plan_diff',
+        purpose,
         provider: 'mock',
         model: 'mock-model',
         promptHash: 'h',
@@ -333,7 +328,7 @@ describe('R-182: PLANSYNC_AI_OBSERVABILITY=false suppresses INSERT', () => {
     } finally {
       delete process.env.PLANSYNC_AI_OBSERVABILITY;
     }
-    const after = await prisma.aiCall.count();
+    const after = await prisma.aiCall.count({ where: { purpose } });
     expect(after).toBe(before);
   });
 });

@@ -127,33 +127,32 @@ describe('H: Drift Engine', () => {
     expect(body.data.length).toBeGreaterThan(0);
   });
 
-  // Severity is now derived from the structural plan diff, not the task's
-  // status. The shared test plans here change goal+scope between v1 and v2,
-  // and the tasks declare no explicit `planDeliverableRefs` (treated as
-  // "depends on all"). A goal change is ALWAYS breaking → 'high'. So both
-  // the todo and the done task — and any task in this setup — get
-  // severity='high'. The previous heuristic that returned 'medium' for
-  // todo and 'low' for done was an alert-fatigue source (severity reflected
-  // task state, not whether the plan change actually affected the task).
-  // Comprehensive coverage of the structural classifier lives in
-  // `packages/shared/tests/drift/severity.test.ts`; the per-class semantics
-  // end-to-end are exercised in
-  // `packages/api/tests/scenarios/drift-severity-structural.scenario.test.ts`.
+  // R-154 (drift v3): severity is driven by the deliverable-id-based diff
+  // over the `plan_deliverables` table, joined to each task through
+  // `task_deliverable_links`. The shared test plans here change goal+scope
+  // between v1 and v2, and the tasks have NO TaskDeliverableLink rows —
+  // R-154 step 3 explicitly classifies that case as severity='low' to drop
+  // alert fatigue (a goal-text edit no longer pauses every task in the
+  // project). H3 and H4 pin down that the engine still emits an alert (so
+  // the activity log shows the version bump) but at the non-blocking 'low'
+  // tier. Comprehensive deliverable-driven severity coverage lives in
+  // `packages/shared/tests/drift/deliverable-diff.test.ts` and the
+  // scenario `drift-severity-structural.scenario.test.ts`.
 
-  it('H3: task bound to old plan version → goal change yields severity=high (breaking)', async () => {
+  it('H3: task without deliverableLinks → goal change yields severity="low" (R-154 alert-fatigue fix)', async () => {
     const alerts = await testPrisma.driftAlert.findMany({
       where: { projectId, taskId, status: 'open' },
     });
     expect(alerts.length).toBeGreaterThan(0);
-    expect(alerts[0].severity).toBe('high');
+    expect(alerts[0].severity).toBe('low');
   });
 
-  it('H4: same plan diff classifies done tasks the same way — severity now reflects structural impact, not task lifecycle', async () => {
+  it('H4: done task without deliverableLinks → severity="low" same as todo (still no link rows)', async () => {
     const alerts = await testPrisma.driftAlert.findMany({
       where: { projectId, taskId: taskDoneId, status: 'open' },
     });
     expect(alerts.length).toBeGreaterThan(0);
-    expect(alerts[0].severity).toBe('high');
+    expect(alerts[0].severity).toBe('low');
   });
 
   it('H5: task status=cancelled → 无 alert', async () => {

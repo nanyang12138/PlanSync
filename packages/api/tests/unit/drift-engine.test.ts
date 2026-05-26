@@ -1,16 +1,19 @@
 /**
- * Drift engine unit tests — drift v2 (structural severity).
+ * Drift engine unit tests — drift v3 (deliverable-id-based severity, R-154).
  *
- * Previously this file contained an inlined copy of the old "severity by task
- * status" heuristic and tested *that* copy, not the engine. Once the engine
- * adopted structural diffing, the inline copy became dishonest — the tests
- * passed but did not constrain real behaviour.
+ * Before R-154 the engine used the text-hash structural diff in
+ * `@plansync/shared/drift/structural-diff.ts` over Plan.* String[] columns
+ * and treated every plan change (goal, scope, constraints, standards) as a
+ * potential severity driver. After R-154 severity is computed from the
+ * PlanDeliverable diff (by `id`/`slug`), with the explicit "no link rows →
+ * severity=low" opt-out that drops alert fatigue from unrelated changes.
  *
- * The exhaustive coverage of the pure classifier lives in
- * `packages/shared/tests/drift/severity.test.ts` (deterministic, no DB).
- * This file covers what only the engine can: mapping the structural severity
- * onto the persisted `DriftAlert.severity` enum and carrying the
- * "has-running-execution" signal through to `persistDriftAlerts`.
+ * The exhaustive coverage of the new pure classifier lives in
+ * `packages/shared/tests/drift/deliverable-diff.test.ts` (deterministic, no
+ * DB). This file covers what only the engine can: stitching the per-version
+ * deliverable diff with each task's link rows, mapping severity onto the
+ * persisted enum, and carrying the "has-running-execution" signal through
+ * to `persistDriftAlerts`.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -20,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   taskFindMany: vi.fn(),
   planFindFirst: vi.fn(),
   planFindMany: vi.fn(),
+  planDeliverableFindMany: vi.fn(),
   driftAlertCreateManyAndReturn: vi.fn(),
   executionRunUpdateMany: vi.fn(),
 }));
@@ -28,6 +32,7 @@ vi.mock('@/lib/prisma', () => ({
   prisma: {
     task: { findMany: mocks.taskFindMany },
     plan: { findFirst: mocks.planFindFirst, findMany: mocks.planFindMany },
+    planDeliverable: { findMany: mocks.planDeliverableFindMany },
     driftAlert: { createManyAndReturn: mocks.driftAlertCreateManyAndReturn },
     executionRun: { updateMany: mocks.executionRunUpdateMany },
   },
@@ -46,106 +51,228 @@ vi.mock('@/lib/ai/impact-analysis', () => ({ analyzeTaskImpact: vi.fn() }));
 const tx = {
   task: { findMany: mocks.taskFindMany },
   plan: { findFirst: mocks.planFindFirst, findMany: mocks.planFindMany },
+  planDeliverable: { findMany: mocks.planDeliverableFindMany },
   driftAlert: { createManyAndReturn: mocks.driftAlertCreateManyAndReturn },
   executionRun: { updateMany: mocks.executionRunUpdateMany },
 } as const;
 
 import { runDriftScan, persistDriftAlerts } from '@/lib/drift-engine';
 
-function planRow(version: number, partial: Partial<Record<string, unknown>> = {}) {
+interface PlanRowOpts {
+  goal?: string;
+  scope?: string;
+  constraints?: string[];
+  standards?: string[];
+  deliverables?: string[];
+}
+
+function planRow(version: number, partial: PlanRowOpts = {}) {
   return {
     id: `plan-${version}`,
     projectId: 'p1',
     version,
     title: `v${version}`,
-    goal: 'ship it',
-    scope: 'web',
-    constraints: [] as string[],
-    standards: [] as string[],
-    deliverables: [] as string[],
+    goal: partial.goal ?? 'ship it',
+    scope: partial.scope ?? 'web',
+    constraints: partial.constraints ?? [],
+    standards: partial.standards ?? [],
+    deliverables: partial.deliverables ?? [],
     openQuestions: [] as string[],
     requiredReviewers: [] as string[],
-    ...partial,
   };
 }
 
-function taskRow(
-  id: string,
-  partial: {
-    boundPlanVersion: number;
-    status?: string;
-    planDeliverableRefs?: string[];
-    planConstraintRefs?: string[];
-    planStandardRefs?: string[];
-    running?: boolean;
-  },
-) {
+interface DeliverableInput {
+  id: string;
+  planId: string;
+  slug: string;
+  title?: string;
+  body?: string;
+  refUri?: string | null;
+}
+
+/**
+ * Convenience: build a PlanDeliverable row with sensible defaults so each
+ * test only has to spell out the columns it cares about (typically just
+ * id + slug + body).
+ */
+function deliv(d: DeliverableInput) {
+  return {
+    id: d.id,
+    planId: d.planId,
+    slug: d.slug,
+    title: d.title ?? d.slug,
+    body: d.body ?? d.slug,
+    refUri: d.refUri ?? null,
+  };
+}
+
+interface TaskRowOpts {
+  boundPlanVersion: number;
+  status?: string;
+  running?: boolean;
+  // Deliverable ids the task is linked to via `task_deliverable_links`.
+  // Empty array (the default) means "no link rows" — R-154 step 3 paths
+  // through severity=low.
+  linkedDeliverableIds?: string[];
+}
+
+function taskRow(id: string, partial: TaskRowOpts) {
   return {
     id,
     projectId: 'p1',
     title: `Task ${id}`,
     status: partial.status ?? 'todo',
     boundPlanVersion: partial.boundPlanVersion,
-    planDeliverableRefs: partial.planDeliverableRefs ?? [],
-    planConstraintRefs: partial.planConstraintRefs ?? [],
-    planStandardRefs: partial.planStandardRefs ?? [],
+    // Legacy columns are kept around so the Prisma `include` shape stays
+    // honest; the R-154 engine ignores them. Setting them to `[]` ensures
+    // a regression that re-reads from the legacy column would fail to
+    // produce 'high' (instead of silently relying on the legacy default).
+    planDeliverableRefs: [] as string[],
+    planConstraintRefs: [] as string[],
+    planStandardRefs: [] as string[],
     executionRuns: partial.running ? [{ status: 'running' }] : [],
+    deliverableLinks: (partial.linkedDeliverableIds ?? []).map((id) => ({
+      deliverable: { id, slug: `slug-${id}` },
+    })),
   };
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // R-154 default: no PlanDeliverable rows. Tests that exercise the
+  // deliverable diff override this with mockResolvedValueOnce.
+  mocks.planDeliverableFindMany.mockResolvedValue([]);
 });
 
-describe('runDriftScan — structural severity is mapped onto the persisted enum', () => {
-  it('goal change → severity="high" for every task regardless of status', async () => {
+describe('runDriftScan — R-154 deliverable-id-based severity', () => {
+  it('removed deliverable → severity="high" for the task linked to it; other tasks → "low"', async () => {
     tx.task.findMany.mockResolvedValueOnce([
-      taskRow('t-todo', { boundPlanVersion: 1, status: 'todo' }),
-      taskRow('t-done', { boundPlanVersion: 1, status: 'done' }),
+      taskRow('t-linked', { boundPlanVersion: 1, linkedDeliverableIds: ['d-rest'] }),
+      taskRow('t-unrelated', { boundPlanVersion: 1, linkedDeliverableIds: ['d-docs'] }),
     ]);
-    tx.plan.findFirst.mockResolvedValueOnce(planRow(2, { goal: 'ship it BIGGER' }));
+    tx.plan.findFirst.mockResolvedValueOnce(planRow(2));
     tx.plan.findMany.mockResolvedValueOnce([planRow(1)]);
+    // v1 had two deliverables; v2 dropped 'rest-api' → 'd-rest' is removed.
+    mocks.planDeliverableFindMany.mockResolvedValueOnce([
+      deliv({ id: 'd-rest', planId: 'plan-1', slug: 'rest-api', body: 'rest api spec' }),
+      deliv({ id: 'd-docs', planId: 'plan-1', slug: 'docs', body: 'docs site' }),
+      deliv({ id: 'd-docs-2', planId: 'plan-2', slug: 'docs', body: 'docs site' }),
+    ]);
 
-    // Cast to any so we can hand the same mock surface where the engine
-    // expects a Prisma client / TransactionClient. The shape we use is
-    // narrower than either type so the cast is safe at the test boundary.
     const { alerts } = await runDriftScan(tx as unknown as never, 'p1', 2);
-
-    expect(alerts).toHaveLength(2);
-    for (const a of alerts) {
-      expect(a.severity).toBe('high');
-      expect(a.structuralSeverity).toBe('breaking');
-    }
+    const byId = new Map(alerts.map((a) => [a.taskId, a]));
+    expect(byId.get('t-linked')?.severity).toBe('high');
+    expect(byId.get('t-linked')?.structuralSeverity).toBe('breaking');
+    expect(byId.get('t-linked')?.reason).toMatch(/removed: rest-api/);
+    // The other task's linked deliverable is unchanged → low.
+    expect(byId.get('t-unrelated')?.severity).toBe('low');
+    expect(byId.get('t-unrelated')?.structuralSeverity).toBe('low');
   });
 
-  it('only-scope change → severity="medium" for tasks not referencing changed deliverables', async () => {
+  it('modified body of a linked deliverable → severity="high"', async () => {
     tx.task.findMany.mockResolvedValueOnce([
-      taskRow('t1', { boundPlanVersion: 1, status: 'in_progress' }),
+      taskRow('t1', { boundPlanVersion: 1, linkedDeliverableIds: ['d-rest'] }),
     ]);
-    tx.plan.findFirst.mockResolvedValueOnce(planRow(2, { scope: 'web + mobile' }));
+    tx.plan.findFirst.mockResolvedValueOnce(planRow(2));
     tx.plan.findMany.mockResolvedValueOnce([planRow(1)]);
+    mocks.planDeliverableFindMany.mockResolvedValueOnce([
+      deliv({ id: 'd-rest', planId: 'plan-1', slug: 'rest-api', body: 'OpenAPI v1' }),
+      deliv({ id: 'd-rest-2', planId: 'plan-2', slug: 'rest-api', body: 'OpenAPI v2' }),
+    ]);
 
     const { alerts } = await runDriftScan(tx as unknown as never, 'p1', 2);
-    expect(alerts).toHaveLength(1);
+    expect(alerts[0].severity).toBe('high');
+    expect(alerts[0].structuralSeverity).toBe('breaking');
+    expect(alerts[0].reason).toMatch(/modified body: rest-api/);
+  });
+
+  it('modified refUri only → severity="medium"', async () => {
+    tx.task.findMany.mockResolvedValueOnce([
+      taskRow('t1', { boundPlanVersion: 1, linkedDeliverableIds: ['d-fig'] }),
+    ]);
+    tx.plan.findFirst.mockResolvedValueOnce(planRow(2));
+    tx.plan.findMany.mockResolvedValueOnce([planRow(1)]);
+    mocks.planDeliverableFindMany.mockResolvedValueOnce([
+      deliv({
+        id: 'd-fig',
+        planId: 'plan-1',
+        slug: 'mock-figma',
+        body: 'sign-in screen',
+        refUri: 'https://figma.com/file/AAA',
+      }),
+      deliv({
+        id: 'd-fig-2',
+        planId: 'plan-2',
+        slug: 'mock-figma',
+        body: 'sign-in screen',
+        refUri: 'https://figma.com/file/BBB',
+      }),
+    ]);
+
+    const { alerts } = await runDriftScan(tx as unknown as never, 'p1', 2);
     expect(alerts[0].severity).toBe('medium');
     expect(alerts[0].structuralSeverity).toBe('medium');
+    expect(alerts[0].reason).toMatch(/modified refUri: mock-figma/);
   });
 
-  it('change touches only unreferenced items → severity="low"', async () => {
+  // R-154 verification (first half): rename title but id (slug) unchanged
+  // and body/refUri identical → does NOT trigger high.
+  it('rename title only (slug/body/refUri unchanged) → does NOT trigger high', async () => {
     tx.task.findMany.mockResolvedValueOnce([
-      // Task explicitly references "docs" — added "graphql api" should NOT
-      // change the contract.
-      taskRow('t1', { boundPlanVersion: 1, planDeliverableRefs: ['docs'] }),
+      taskRow('t1', {
+        boundPlanVersion: 1,
+        linkedDeliverableIds: ['d-rest'],
+        running: true,
+      }),
+    ]);
+    tx.plan.findFirst.mockResolvedValueOnce(planRow(2));
+    tx.plan.findMany.mockResolvedValueOnce([planRow(1)]);
+    mocks.planDeliverableFindMany.mockResolvedValueOnce([
+      deliv({
+        id: 'd-rest',
+        planId: 'plan-1',
+        slug: 'rest-api',
+        title: 'REST API',
+        body: 'spec',
+      }),
+      deliv({
+        id: 'd-rest-2',
+        planId: 'plan-2',
+        slug: 'rest-api',
+        // Owner just polished the title; semantically identical contract.
+        title: 'REST API (v1)',
+        body: 'spec',
+      }),
+    ]);
+
+    const { alerts } = await runDriftScan(tx as unknown as never, 'p1', 2);
+    expect(alerts[0].severity).not.toBe('high');
+    expect(alerts[0].severity).toBe('low');
+    expect(alerts[0].structuralSeverity).toBe('low');
+  });
+
+  // R-154 step 3: empty link table ⇒ severity=low.
+  it('task with no deliverableLinks → severity="low" even on big plan changes (alert fatigue fix)', async () => {
+    tx.task.findMany.mockResolvedValueOnce([
+      taskRow('t-orphan', { boundPlanVersion: 1, linkedDeliverableIds: [] }),
     ]);
     tx.plan.findFirst.mockResolvedValueOnce(
-      planRow(2, { deliverables: ['rest', 'docs', 'graphql api'] }),
+      planRow(2, { goal: 'TOTALLY DIFFERENT GOAL', scope: 'mobile only' }),
     );
-    tx.plan.findMany.mockResolvedValueOnce([planRow(1, { deliverables: ['rest', 'docs'] })]);
+    tx.plan.findMany.mockResolvedValueOnce([planRow(1)]);
+    // Even if v2 added and removed deliverables, an unlinked task gets
+    // severity='low' — R-154 step 3 explicit opt-out.
+    mocks.planDeliverableFindMany.mockResolvedValueOnce([
+      deliv({ id: 'd-old', planId: 'plan-1', slug: 'old-thing', body: 'gone' }),
+      deliv({ id: 'd-new', planId: 'plan-2', slug: 'new-thing', body: 'arrived' }),
+    ]);
 
     const { alerts } = await runDriftScan(tx as unknown as never, 'p1', 2);
     expect(alerts).toHaveLength(1);
     expect(alerts[0].severity).toBe('low');
     expect(alerts[0].structuralSeverity).toBe('low');
+    expect(alerts[0].reason).toMatch(/no deliverable links/i);
   });
 
   it('hasRunningExecution is carried on the alert independent of severity', async () => {
@@ -170,71 +297,6 @@ describe('runDriftScan — structural severity is mapped onto the persisted enum
     expect(alerts[0].severity).toBe('high');
     expect(alerts[0].structuralSeverity).toBe('breaking');
     expect(alerts[0].reason).toMatch(/cannot compute structural diff/i);
-  });
-
-  describe('planConstraintRefs / planStandardRefs narrow severity (per-task)', () => {
-    it('constraint change → "high" for tasks whose planConstraintRefs include it; "low" for others', async () => {
-      tx.task.findMany.mockResolvedValueOnce([
-        taskRow('t-touched', {
-          boundPlanVersion: 1,
-          planConstraintRefs: ['use postgres'],
-        }),
-        taskRow('t-unrelated', {
-          boundPlanVersion: 1,
-          planConstraintRefs: ['use kafka'],
-        }),
-      ]);
-      tx.plan.findFirst.mockResolvedValueOnce(
-        planRow(2, { constraints: ['use mysql', 'use kafka'] }), // 'use postgres' → 'use mysql'
-      );
-      tx.plan.findMany.mockResolvedValueOnce([
-        planRow(1, { constraints: ['use postgres', 'use kafka'] }),
-      ]);
-
-      const { alerts } = await runDriftScan(tx as unknown as never, 'p1', 2);
-      const byId = new Map(alerts.map((a) => [a.taskId, a]));
-      expect(byId.get('t-touched')?.severity).toBe('high');
-      expect(byId.get('t-touched')?.structuralSeverity).toBe('breaking');
-      expect(byId.get('t-unrelated')?.severity).toBe('low');
-      expect(byId.get('t-unrelated')?.structuralSeverity).toBe('low');
-    });
-
-    it('standard change → "medium" for tasks whose planStandardRefs include it; "low" for others', async () => {
-      tx.task.findMany.mockResolvedValueOnce([
-        taskRow('t-touched', {
-          boundPlanVersion: 1,
-          planStandardRefs: ['eslint'],
-        }),
-        taskRow('t-unrelated', {
-          boundPlanVersion: 1,
-          planStandardRefs: ['prettier'],
-        }),
-      ]);
-      tx.plan.findFirst.mockResolvedValueOnce(
-        planRow(2, { standards: ['biome', 'prettier'] }), // 'eslint' → 'biome'
-      );
-      tx.plan.findMany.mockResolvedValueOnce([planRow(1, { standards: ['eslint', 'prettier'] })]);
-
-      const { alerts } = await runDriftScan(tx as unknown as never, 'p1', 2);
-      const byId = new Map(alerts.map((a) => [a.taskId, a]));
-      expect(byId.get('t-touched')?.severity).toBe('medium');
-      expect(byId.get('t-unrelated')?.severity).toBe('low');
-    });
-
-    it('empty constraint refs ([]) preserve the legacy "depends on all" behavior — any constraint change is breaking', async () => {
-      // Existing tasks in the DB have empty constraint refs (no migration
-      // backfill); they MUST keep behaving conservatively until the owner
-      // explicitly narrows them. Otherwise the migration would silently
-      // downgrade existing alerts.
-      tx.task.findMany.mockResolvedValueOnce([
-        taskRow('t-legacy', { boundPlanVersion: 1 /* no refs */ }),
-      ]);
-      tx.plan.findFirst.mockResolvedValueOnce(planRow(2, { constraints: ['use mysql'] }));
-      tx.plan.findMany.mockResolvedValueOnce([planRow(1, { constraints: ['use postgres'] })]);
-
-      const { alerts } = await runDriftScan(tx as unknown as never, 'p1', 2);
-      expect(alerts[0].severity).toBe('high'); // breaking
-    });
   });
 
   it('cancelled tasks are excluded from the scan (unchanged contract)', async () => {

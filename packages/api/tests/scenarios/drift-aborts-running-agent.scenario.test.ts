@@ -188,10 +188,25 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
     let phaseV2PlanId: string;
     let phaseV2Version: number;
 
+    let phaseV1DeliverableId: string;
+
     beforeAll(async () => {
       ({ projectId: phaseProjectId } = await createTestProject(phaseOwner));
       const v1plan = await createActivePlan(phaseProjectId, phaseOwner);
       phaseV1 = v1plan.version;
+      // R-154: drift severity is computed off the PlanDeliverable graph.
+      // Materialise one deliverable on v1 and link the task to it so the
+      // body change in v2 (below) registers as a per-task breaking diff.
+      const d = await testPrisma.planDeliverable.create({
+        data: {
+          planId: v1plan.planId,
+          slug: 'health-endpoint',
+          title: 'health endpoint',
+          body: 'GET /healthz returning 200',
+          status: 'active',
+        },
+      });
+      phaseV1DeliverableId = d.id;
       const t = await testPrisma.task.create({
         data: {
           projectId: phaseProjectId,
@@ -202,10 +217,14 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
           assignee: phaseOwner,
           assigneeType: 'human',
           boundPlanVersion: phaseV1,
+          planDeliverableRefs: ['health-endpoint'],
           agentConstraints: [],
         },
       });
       phaseTaskId = t.id;
+      await testPrisma.taskDeliverableLink.create({
+        data: { taskId: t.id, deliverableId: phaseV1DeliverableId },
+      });
 
       const startRes = await runsPost(
         makeReq(`/api/projects/${phaseProjectId}/tasks/${phaseTaskId}/runs`, {
@@ -238,6 +257,16 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
       });
       phaseV2PlanId = v2plan.id;
       phaseV2Version = v2plan.version;
+      // Same slug, body changed → R-154 modified.bodyChanged → breaking.
+      await testPrisma.planDeliverable.create({
+        data: {
+          planId: v2plan.id,
+          slug: 'health-endpoint',
+          title: 'health endpoint',
+          body: 'GET /healthz returning 200 with build SHA',
+          status: 'active',
+        },
+      });
 
       const activateRes = await activatePost(
         makeReq(`/api/projects/${phaseProjectId}/plans/${phaseV2PlanId}/activate`, {
@@ -365,6 +394,15 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
       const { projectId: pX } = await createTestProject('drift-v2-cancel-owner');
       try {
         const v1 = await createActivePlan(pX, 'drift-v2-cancel-owner');
+        const d1 = await testPrisma.planDeliverable.create({
+          data: {
+            planId: v1.planId,
+            slug: 'spec',
+            title: 'spec',
+            body: 'do the thing',
+            status: 'active',
+          },
+        });
         const t = await testPrisma.task.create({
           data: {
             projectId: pX,
@@ -375,8 +413,12 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
             assignee: 'drift-v2-cancel-owner',
             assigneeType: 'human',
             boundPlanVersion: v1.version,
+            planDeliverableRefs: ['spec'],
             agentConstraints: [],
           },
+        });
+        await testPrisma.taskDeliverableLink.create({
+          data: { taskId: t.id, deliverableId: d1.id },
         });
         const startRes = await runsPost(
           makeReq(`/api/projects/${pX}/tasks/${t.id}/runs`, {
@@ -397,6 +439,16 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
             version: v1.version + 1,
             status: 'draft',
             createdBy: 'drift-v2-cancel-owner',
+          },
+        });
+        // R-154: drive the breaking diff via deliverable body change.
+        await testPrisma.planDeliverable.create({
+          data: {
+            planId: v2.id,
+            slug: 'spec',
+            title: 'spec',
+            body: 'do a DIFFERENT thing',
+            status: 'active',
           },
         });
         await activatePost(
@@ -436,6 +488,15 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
       const { projectId: pY } = await createTestProject('drift-v2-noimpact-owner');
       try {
         const v1 = await createActivePlan(pY, 'drift-v2-noimpact-owner');
+        const d1 = await testPrisma.planDeliverable.create({
+          data: {
+            planId: v1.planId,
+            slug: 'spec',
+            title: 'spec',
+            body: 'do the thing',
+            status: 'active',
+          },
+        });
         const t = await testPrisma.task.create({
           data: {
             projectId: pY,
@@ -446,8 +507,12 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
             assignee: 'drift-v2-noimpact-owner',
             assigneeType: 'human',
             boundPlanVersion: v1.version,
+            planDeliverableRefs: ['spec'],
             agentConstraints: [],
           },
+        });
+        await testPrisma.taskDeliverableLink.create({
+          data: { taskId: t.id, deliverableId: d1.id },
         });
         const startRes = await runsPost(
           makeReq(`/api/projects/${pY}/tasks/${t.id}/runs`, {
@@ -468,6 +533,15 @@ describe('Scenario: drift aborts a running agent (drift v2 acceptance gate)', ()
             version: v1.version + 1,
             status: 'draft',
             createdBy: 'drift-v2-noimpact-owner',
+          },
+        });
+        await testPrisma.planDeliverable.create({
+          data: {
+            planId: v2.id,
+            slug: 'spec',
+            title: 'spec',
+            body: 'do a DIFFERENT thing',
+            status: 'active',
           },
         });
         await activatePost(
