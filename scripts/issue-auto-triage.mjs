@@ -76,8 +76,38 @@ const APPLY = mode === '--apply';
 
 const REPO = process.env.GH_REPO || '';
 const TOKEN = process.env.GITHUB_TOKEN || '';
-const MAX_DISPATCH = Number.parseInt(process.env.TRIAGE_MAX_DISPATCH || '3', 10);
-const MAX_CLOSE = Number.parseInt(process.env.TRIAGE_MAX_CLOSE || '25', 10);
+// Parse a positive-integer rate-limit knob from the env, with a hard
+// guard against garbage input.
+//
+// Why this isn't just `Number.parseInt(raw || default, 10)`:
+//   The two consumers below use `count >= LIMIT` as the loop break.
+//   `Number.parseInt('abc', 10)` returns NaN, and any comparison
+//   against NaN is `false` — so a NaN limit silently DISABLES the
+//   rate limit and the loop drains the entire backlog. The manual
+//   workflow_dispatch form (.github/workflows/issue-auto-triage.yml
+//   `max_dispatch` / `max_close` inputs) is the realistic source of
+//   bad input: a typo like `max_dispatch=abx` would otherwise
+//   dispatch every open `severity:must` issue in one run and burn
+//   the Cursor API quota. Negative numbers are rejected for the
+//   same reason (`-1 >= 0` is false → loop never breaks on the
+//   first iteration where count is 0).
+function parseLimitEnv(name, raw, defaultValue) {
+  if (raw === undefined || raw === null || raw === '') {
+    return defaultValue;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    console.warn(
+      `[triage] ${name}=${JSON.stringify(raw)} is not a non-negative integer; ` +
+        `falling back to default=${defaultValue} to preserve rate-limit semantics.`,
+    );
+    return defaultValue;
+  }
+  return parsed;
+}
+
+const MAX_DISPATCH = parseLimitEnv('TRIAGE_MAX_DISPATCH', process.env.TRIAGE_MAX_DISPATCH, 3);
+const MAX_CLOSE = parseLimitEnv('TRIAGE_MAX_CLOSE', process.env.TRIAGE_MAX_CLOSE, 25);
 
 if (APPLY && (!REPO || !TOKEN)) {
   console.error(
