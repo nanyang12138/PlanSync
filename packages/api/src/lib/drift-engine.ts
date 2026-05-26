@@ -415,6 +415,17 @@ export async function persistDriftAlerts(
  * Note: the project-channel `drift_detected` SSE event is published by the
  * calling route (activate / reactivate), so this function only handles the
  * per-assignee personal-channel SSE and email side-effects.
+ *
+ * Closes #1208: defensively dedupe the alert list by taskId BEFORE building
+ * notifications. Callers (activate / reactivate routes) currently hand us
+ * the raw `scanResult.alerts` while `persistDriftAlerts` writes only the
+ * deduped subset. Without this guard, when the same task carries multiple
+ * raw alerts (e.g. a future caller emits two severities for one task), the
+ * recipient would receive duplicate emails / SSE events AND see entries for
+ * lower-severity alerts that were collapsed away in the DB — inconsistent
+ * with the persisted open-alert state. Dedupe here mirrors the persist-side
+ * collapse so what the user sees in their inbox matches what they see in
+ * the drift list.
  */
 export async function dispatchDriftNotifications(
   projectId: string,
@@ -422,14 +433,19 @@ export async function dispatchDriftNotifications(
 ): Promise<void> {
   if (alerts.length === 0) return;
 
-  const taskIds = alerts.map((a) => a.taskId);
+  // Mirror persistDriftAlerts: one notification per task, keyed to the
+  // highest-severity alert (same row that won the DB write).
+  const deduped = dedupeAlertsByTaskId(alerts);
+  if (deduped.length === 0) return;
+
+  const taskIds = deduped.map((a) => a.taskId);
   const tasks = await prisma.task.findMany({
     where: { id: { in: taskIds }, assignee: { not: null } },
     select: { id: true, title: true, assignee: true },
   });
 
   const byAssignee = new Map<string, Array<{ title: string; reason: string; severity: string }>>();
-  for (const alert of alerts) {
+  for (const alert of deduped) {
     const task = tasks.find((t) => t.id === alert.taskId);
     if (!task?.assignee) continue;
     if (!byAssignee.has(task.assignee)) byAssignee.set(task.assignee, []);
