@@ -75,10 +75,19 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
     // leave the reply orphaned in JS view-models that still join through
     // parent_id). The 404 also avoids leaking the existence of comments in
     // other plans the caller may not have access to.
+    //
+    // #1257 (R-156 follow-up): also load the parent's deliverableId so we
+    // can either inherit it (when the reply omits the field) or validate
+    // that it matches (when the reply sets one explicitly). Without this,
+    // a "Reply" button on a deliverable-A comment that doesn't forward
+    // deliverableId silently drops the reply onto the plan-level thread,
+    // and an over-eager caller can attach the reply to deliverable B
+    // breaking the timeline grouping.
+    let parentDeliverableId: string | null = null;
     if (body.parentId) {
       const parent = await prisma.planComment.findUnique({
         where: { id: body.parentId },
-        select: { planId: true, isDeleted: true },
+        select: { planId: true, isDeleted: true, deliverableId: true },
       });
       if (!parent || parent.planId !== params.planId) {
         throw new AppError(ErrorCode.NOT_FOUND, 'Parent comment not found in this plan', {
@@ -93,21 +102,54 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
           { parentId: body.parentId },
         );
       }
+      parentDeliverableId = parent.deliverableId;
     }
+
+    // #1257: when a reply explicitly sets deliverableId, it must agree
+    // with the parent's deliverableId (both null = plan-level thread,
+    // or both equal to the same deliverable id). Splitting a thread
+    // across deliverables would produce orphaned replies in the
+    // timeline UI and break the per-deliverable filter contract.
+    if (body.parentId && body.deliverableId !== undefined) {
+      if (body.deliverableId !== parentDeliverableId) {
+        throw new AppError(
+          ErrorCode.BAD_REQUEST,
+          'Reply deliverableId must match parent comment deliverableId',
+          {
+            parentId: body.parentId,
+            parentDeliverableId,
+            replyDeliverableId: body.deliverableId,
+          },
+        );
+      }
+    }
+
+    // #1257: resolve the effective deliverableId — explicit value wins
+    // (already validated against the parent above when applicable),
+    // otherwise inherit the parent's deliverableId so a reply stays on
+    // the same thread the user clicked "Reply" from.
+    const effectiveDeliverableId =
+      body.deliverableId !== undefined ? body.deliverableId : parentDeliverableId;
 
     // R-156: when anchoring a comment to a deliverable, refuse cross-plan
     // ids. The DB-level FK only enforces that the deliverable row exists;
     // without this check a caller could attach a v1 plan's comment to a v3
     // plan's deliverable, breaking the timeline UI's per-plan grouping and
     // leaking the existence of unrelated deliverables via 500 stack traces.
-    if (body.deliverableId) {
+    //
+    // We validate the *effective* deliverableId — that covers both an
+    // explicit body.deliverableId and the value inherited from a parent
+    // (the parent passed this same check at creation time, but the
+    // deliverable may have been re-parented or deleted since, so we
+    // re-check defensively).
+    if (effectiveDeliverableId) {
       const deliverable = await prisma.planDeliverable.findUnique({
-        where: { id: body.deliverableId },
+        where: { id: effectiveDeliverableId },
         select: { planId: true },
       });
       if (!deliverable || deliverable.planId !== params.planId) {
         throw new AppError(ErrorCode.NOT_FOUND, 'Deliverable not found in this plan', {
-          deliverableId: body.deliverableId,
+          deliverableId: effectiveDeliverableId,
           planId: params.planId,
         });
       }
@@ -122,8 +164,10 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
         content: body.content,
         parentId: body.parentId,
         // R-156: deliverableId is optional; null = plan-level comment
-        // (the existing default behaviour).
-        deliverableId: body.deliverableId,
+        // (the existing default behaviour). #1257: when this is a reply,
+        // the value is inherited from the parent unless the caller passed
+        // an explicit (matching) deliverableId.
+        deliverableId: effectiveDeliverableId,
         planId: params.planId,
         authorName: auth.userName,
         authorType: member?.type === 'agent' ? 'agent' : 'human',
