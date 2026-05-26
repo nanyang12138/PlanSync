@@ -35,6 +35,26 @@ const RESTART_BACKOFF_MS = [0, 250, 750];
 const CHILD_OUTPUT_RING_LINES = 50;
 /** Per-line cap so a runaway log line cannot blow memory. */
 const CHILD_OUTPUT_LINE_CAP = 4096;
+/**
+ * Cap on the partial-line stdout buffer that holds bytes between
+ * newline boundaries. A LEGITIMATE MCP JSON-RPC response is one
+ * newline-delimited frame, and frames the size of an inflated
+ * `task_pack` (deliverable bodies + plan diff + drift alerts on a
+ * mature project) can comfortably reach a few hundred kilobytes.
+ *
+ * Pre-fix this used `CHILD_OUTPUT_LINE_CAP` (4 KiB), which forced
+ * the partial buffer to be force-flushed as a diagnostic line and
+ * the rest of the legitimate frame to be parsed as garbage —
+ * `request timed out` / `tool result lost` were the visible
+ * symptoms (closes #871 / #913).
+ *
+ * 16 MiB is the same upper bound Node uses by default for outgoing
+ * HTTP bodies and is plenty for any single MCP frame. Anything
+ * past it is almost certainly a runaway / malicious child stream
+ * — we still drop the partial buffer and surface a diagnostic so
+ * the bug is visible rather than silently OOMing the CLI.
+ */
+const CHILD_STDOUT_PARTIAL_BUFFER_CAP = 16 * 1024 * 1024;
 
 export class McpClient {
   private proc: ChildProcess | null = null;
@@ -137,15 +157,22 @@ export class McpClient {
       this.readBuffer += chunk.toString();
       const lines = this.readBuffer.split('\n');
       this.readBuffer = lines.pop() || '';
-      // Closes #807: bound the partial-line buffer too. A malicious or
-      // misbehaving MCP child that writes a multi-megabyte line without
-      // a trailing newline used to grow `readBuffer` without limit
-      // (split on '\n' produced a single huge segment, the CAP only
-      // applies per-line inside recordChildOutput which never runs
-      // until a newline arrives). If the partial line exceeds the per-
-      // line cap, force-flush it as a diagnostic line and reset the
-      // buffer; subsequent bytes start a new line.
-      if (this.readBuffer.length > CHILD_OUTPUT_LINE_CAP) {
+      // Closes #807: bound the partial-line buffer so a malicious or
+      // misbehaving MCP child that writes a multi-megabyte line
+      // without a trailing newline cannot grow `readBuffer` without
+      // limit and OOM the CLI.
+      //
+      // Closes #871 / #913: the previous cap was the per-line
+      // diagnostic cap (4 KiB), which is fine for log lines but FAR
+      // too small for legitimate MCP JSON-RPC frames — a populated
+      // `task_pack` response can be hundreds of kilobytes, and
+      // anything that arrived in 2+ chunks would push the partial
+      // buffer past 4 KiB before its trailing newline showed up,
+      // and the buffer was dropped — request timed out, tool result
+      // lost. The new cap (16 MiB) is generous enough to pass any
+      // realistic single frame and still bounds memory at ~16 MB
+      // per stdio reader.
+      if (this.readBuffer.length > CHILD_STDOUT_PARTIAL_BUFFER_CAP) {
         this.recordChildOutput(this.readBuffer);
         this.readBuffer = '';
       }
