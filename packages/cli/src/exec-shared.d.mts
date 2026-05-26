@@ -18,6 +18,11 @@ export function resolveExecAssignee(
   currentUser: string,
 ): ExecAssigneeDecision;
 
+// PR #1111 (R-?): /pack returns { data: <taskPack> } but legacy callers
+// pass the raw taskPack. unwrapTaskPack handles both shapes and throws
+// loudly when neither the envelope nor a recognizable taskPack is present.
+export function unwrapTaskPack(response: unknown): unknown;
+
 export function openDriftAlerts(taskPack: unknown): Array<{ status?: string; reason?: string }>;
 
 export function buildExecPrompt(opts: { taskId: string; taskPack: unknown }): string;
