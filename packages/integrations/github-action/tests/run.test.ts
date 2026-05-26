@@ -634,6 +634,111 @@ describe('github-action run()', () => {
     expect(coreMock.setFailed).not.toHaveBeenCalled();
   });
 
+  // ---- #1266 — parsePrFiles should split space-separated input ----
+
+  it('#1266: parses space-separated pr-files (tj-actions/changed-files default output)', async () => {
+    // `tj-actions/changed-files` emits `all_changed_files` space-separated
+    // by default. Before #1266 the parser collapsed the whole string into
+    // a single "filename" that could never match a glob, producing a
+    // false-positive semantic-gate failure.
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'pr-files': 'packages/api/src/lib/foo.ts packages/api/src/app/bar.ts',
+    });
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: { id: 'plan-1', version: 3 } }));
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(200, {
+        data: [
+          {
+            id: 'd-1',
+            slug: 'api-routes',
+            refType: 'file_glob',
+            refUri: 'packages/api/src/**/*.ts',
+            status: 'active',
+          },
+        ],
+      }),
+    );
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] }));
+
+    const { run } = await import('../index');
+    await run();
+
+    expect(coreMock.setOutput).toHaveBeenCalledWith('semantic-gate', 'passed');
+    expect(coreMock.setFailed).not.toHaveBeenCalled();
+    const infos = coreMock.info.mock.calls.map((c) => String(c[0]));
+    expect(infos.some((m) => m.includes('all 2 PR file(s) match'))).toBe(true);
+  });
+
+  it('#1266: space-separated input still flags genuinely out-of-scope files individually', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'pr-files': 'packages/api/src/lib/foo.ts docs/random.md',
+    });
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: { id: 'plan-1', version: 3 } }));
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(200, {
+        data: [
+          {
+            id: 'd-1',
+            slug: 'api-routes',
+            refType: 'file_glob',
+            refUri: 'packages/api/src/**/*.ts',
+            status: 'active',
+          },
+        ],
+      }),
+    );
+
+    const { run } = await import('../index');
+    await run();
+
+    expect(coreMock.setOutput).toHaveBeenCalledWith('semantic-gate', 'failed');
+    expect(coreMock.setOutput).toHaveBeenCalledWith('unmatched-files', 'docs/random.md');
+    const failed = String(coreMock.setFailed.mock.calls[0]?.[0] ?? '');
+    expect(failed).toMatch(/1 unmatched/);
+  });
+
+  it('#1266: newline-separated input still preserves filenames containing spaces', async () => {
+    // Regression guard for the original deliberate behaviour: when the
+    // caller uses a structured delimiter (newline or comma), embedded
+    // spaces are part of the filename and must NOT be split apart.
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'pr-files': 'docs/my notes/foo.md\ndocs/bar.md',
+    });
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: { id: 'plan-1', version: 3 } }));
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(200, {
+        data: [
+          {
+            id: 'd-1',
+            slug: 'docs',
+            refType: 'file_glob',
+            refUri: 'docs/**/*.md',
+            status: 'active',
+          },
+        ],
+      }),
+    );
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] }));
+
+    const { run } = await import('../index');
+    await run();
+
+    expect(coreMock.setOutput).toHaveBeenCalledWith('semantic-gate', 'passed');
+    expect(coreMock.setFailed).not.toHaveBeenCalled();
+    const infos = coreMock.info.mock.calls.map((c) => String(c[0]));
+    // Both files (including the one with the embedded space) counted.
+    expect(infos.some((m) => m.includes('all 2 PR file(s) match'))).toBe(true);
+  });
+
   it('R-157: skips the semantic gate when pr-files input is empty', async () => {
     configureInputs({
       'api-url': 'https://plansync.example.com',
