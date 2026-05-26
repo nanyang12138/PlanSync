@@ -165,6 +165,23 @@ const EVENT_HANDLERS: Partial<Record<string, (data: Record<string, unknown>) => 
       level: 'info',
       msg: `Task "${d.title}" marked done by ${d.completedBy ?? 'someone'}`,
     }),
+    // Closes #1231 — PR #1223 introduced this event for the R-192 gate.
+    // The run finished but the task is parked in `awaiting_evidence`
+    // pending one or more signals (PR merge, deliverable commit, etc.).
+    // Surfacing it as a warning toast tells the owner work is *not*
+    // closed even though the agent reported `complete`.
+    task_awaiting_evidence: (d) => {
+      const missing = Array.isArray(d.missing) ? (d.missing as Array<{ code?: string }>) : [];
+      const codes = missing
+        .map((m) => (typeof m === 'string' ? m : m?.code))
+        .filter(Boolean) as string[];
+      const detail = codes.length > 0 ? ` — missing ${codes.join(', ')}` : '';
+      return {
+        level: 'warning',
+        msg: `Task "${d.title}" awaiting evidence${detail}`,
+        sticky: true,
+      };
+    },
     execution_stale: (d) => ({
       level: 'warning',
       msg: `Execution by "${d.executorName}" went stale — may have crashed`,
@@ -196,6 +213,10 @@ const ALL_EVENT_TYPES = [
   'task_unassigned',
   'task_started',
   'task_completed',
+  // Closes #1231 — keep in sync with EVENT_HANDLERS above and with the
+  // other browser SSE whitelists (use-realtime.ts, notification-bell.tsx).
+  // EventSource named events are dropped without an explicit listener.
+  'task_awaiting_evidence',
   'execution_stale',
   'suggestion_created',
   'suggestion_resolved',

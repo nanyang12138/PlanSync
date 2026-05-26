@@ -54,6 +54,13 @@ export function useRealtime(
       'task_assigned',
       'task_started',
       'task_completed',
+      // Closes #1231 — PR #1223 introduced this event when the R-192
+      // evidence gate parks a task in `awaiting_evidence` (run finished,
+      // task did not). EventSource named events do NOT fall back to
+      // `onmessage`, so without an explicit listener the browser drops
+      // the event entirely and the UI keeps showing the task as still
+      // running until manual refresh.
+      'task_awaiting_evidence',
       'execution_stale',
       'suggestion_created',
       'suggestion_resolved',
