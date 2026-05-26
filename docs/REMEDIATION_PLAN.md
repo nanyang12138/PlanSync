@@ -2749,7 +2749,7 @@
 
 #### R-156 [MEDIUM] Web UI Deliverable 状态时间线 + per-deliverable 评论
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B13
 - **depends_on**: R-155
 - **effort**: medium
