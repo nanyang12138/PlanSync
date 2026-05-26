@@ -165,3 +165,92 @@ test('static guard: skip-label list covers every label that should freeze triage
     );
   }
 });
+
+// Mirror of parseLimitEnv() in scripts/issue-auto-triage.mjs. Same
+// inline-mirror pattern as extractClosesRefs above — the script
+// can't be imported (it spawns gh at module load when env is set)
+// so we re-declare the pure helper and pin it with a static guard.
+function parseLimitEnv(name, raw, defaultValue, warn = () => {}) {
+  if (raw === undefined || raw === null || raw === '') {
+    return defaultValue;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    warn(
+      `[triage] ${name}=${JSON.stringify(raw)} is not a non-negative integer; ` +
+        `falling back to default=${defaultValue} to preserve rate-limit semantics.`,
+    );
+    return defaultValue;
+  }
+  return parsed;
+}
+
+test('parseLimitEnv returns default when env var is unset / empty', () => {
+  assert.equal(parseLimitEnv('X', undefined, 3), 3);
+  assert.equal(parseLimitEnv('X', null, 3), 3);
+  assert.equal(parseLimitEnv('X', '', 3), 3);
+});
+
+test('parseLimitEnv parses valid non-negative integers', () => {
+  assert.equal(parseLimitEnv('X', '0', 3), 0);
+  assert.equal(parseLimitEnv('X', '5', 3), 5);
+  assert.equal(parseLimitEnv('X', '25', 3), 25);
+  // parseInt is permissive about trailing non-digits — that's fine
+  // for our use-case (`'5\n'` from a heredoc still means 5).
+  assert.equal(parseLimitEnv('X', '5abc', 3), 5);
+});
+
+test('parseLimitEnv falls back to default on NaN input (the rate-limit-bypass bug)', () => {
+  // This is the actual finding: workflow_dispatch input "abc" would
+  // produce NaN, and `count >= NaN` is always false, so the loop
+  // never breaks and the entire backlog gets dispatched/closed.
+  const warnings = [];
+  const warn = (msg) => warnings.push(msg);
+  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', 'abc', 3, warn), 3);
+  assert.equal(parseLimitEnv('TRIAGE_MAX_CLOSE', 'not-a-number', 25, warn), 25);
+  assert.equal(warnings.length, 2);
+  // The warning must name the offending env var so a CI log
+  // skim-reader can spot the misconfigured workflow_dispatch input.
+  assert.match(warnings[0], /TRIAGE_MAX_DISPATCH/);
+  assert.match(warnings[1], /TRIAGE_MAX_CLOSE/);
+});
+
+test('parseLimitEnv falls back to default on negative integers', () => {
+  // `-1 >= 0` is false, so a negative limit also disables the
+  // rate-limit on the first loop iteration. Reject it.
+  const warnings = [];
+  const warn = (msg) => warnings.push(msg);
+  assert.equal(parseLimitEnv('X', '-1', 3, warn), 3);
+  assert.equal(parseLimitEnv('X', '-100', 3, warn), 3);
+  assert.equal(warnings.length, 2);
+});
+
+test('parseLimitEnv: rate-limit comparison is sound for every fallback path', () => {
+  // End-to-end shape of the bug: simulate the loop break with the
+  // value parseLimitEnv returns. count is 0 at the start of the
+  // loop; `0 >= LIMIT` must be a real boolean (never NaN-poisoned)
+  // so the loop terminates after exactly LIMIT iterations.
+  for (const raw of ['abc', '', undefined, null, '-5', 'NaN']) {
+    const limit = parseLimitEnv('X', raw, 3);
+    assert.equal(typeof limit, 'number');
+    assert.ok(Number.isFinite(limit), `limit must be finite for raw=${JSON.stringify(raw)}`);
+    assert.ok(limit >= 0, `limit must be non-negative for raw=${JSON.stringify(raw)}`);
+  }
+});
+
+test('static guard: issue-auto-triage.mjs still defines parseLimitEnv and uses it for both knobs', () => {
+  // If a future refactor inlines `Number.parseInt(... || '3', 10)`
+  // again, the rate-limit-bypass bug returns. Pin the helper.
+  const src = readFileSync(SCRIPT_PATH, 'utf-8');
+  assert.match(src, /function parseLimitEnv\s*\(/);
+  assert.match(
+    src,
+    /MAX_DISPATCH\s*=\s*parseLimitEnv\(\s*'TRIAGE_MAX_DISPATCH'/,
+    'MAX_DISPATCH must go through parseLimitEnv to reject NaN/negative',
+  );
+  assert.match(
+    src,
+    /MAX_CLOSE\s*=\s*parseLimitEnv\(\s*'TRIAGE_MAX_CLOSE'/,
+    'MAX_CLOSE must go through parseLimitEnv to reject NaN/negative',
+  );
+});
