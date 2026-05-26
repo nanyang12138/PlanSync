@@ -16,6 +16,7 @@ import path from 'node:path';
 
 // --- Mirror of the validator in scripts/run-worker.ts ---
 const PG_URL_RE = /^postgres(?:ql)?:\/\/([^/?#]*)/;
+const URL_SCHEME_RE = /^[A-Za-z][A-Za-z0-9+\-.]*:\/\//;
 
 function redactDbUrl(raw: string): string {
   // Closes #1046 — refuse to echo any colon-separated leading
@@ -24,7 +25,14 @@ function redactDbUrl(raw: string): string {
   // `protocol='alice:'` (a non-special scheme), and the pre-fix
   // success branch leaked that token. Same trap was in the catch
   // fallback's `${raw.slice(0,colon)}`.
-  if (!raw.includes('://')) {
+  //
+  // Closes #1213 #1209 #1200 #1195 #1186 #1179 #1171 #1157 #1143
+  // #1134 #1125 — the previous `raw.includes('://')` gate was too
+  // permissive; an input like `alice:s3cret://db/x` still passed
+  // it and, when WHATWG threw, the catch fallback echoed
+  // `alice:s3cret://[unparseable]`. Tighten the gate to require
+  // an RFC 3986-shaped scheme before the `://`.
+  if (!URL_SCHEME_RE.test(raw)) {
     return '[unparseable]';
   }
   try {
@@ -151,6 +159,33 @@ describe('P0-8 / R1b redactDbUrl', () => {
     expect(out.startsWith('postgresql://')).toBe(true);
     expect(out).toContain('[unparseable]');
   });
+
+  it('does NOT leak leading token on inputs whose prefix-before-:// is not a valid URL scheme (closes #1213 #1209 #1200 #1195 #1186 #1179 #1171 #1157 #1143 #1134 #1125)', () => {
+    // Pre-fix: the `raw.includes('://')` gate let these through.
+    // For `alice:s3cret://db/x` WHATWG would either parse it as a
+    // non-special URL with `protocol='alice:'` (success branch
+    // echoes only the scheme — harmless but reviewer-visible) OR
+    // throw, in which case the catch fallback `${raw.slice(0,sep)}://`
+    // emitted `alice:s3cret://…`, leaking the credential `s3cret`.
+    // RFC-3986 scheme syntax disallows `:` inside the scheme, so
+    // the URL_SCHEME_RE gate now refuses both branches outright.
+    const cases = [
+      'alice:s3cret://db/x',
+      'user:pass@host://x',
+      '0badscheme://x',  // RFC scheme must start with ALPHA
+      ' postgresql://user:pass@host/x',  // leading whitespace breaks the prefix
+      ':@://x',
+      'alice:s3://cret@db/x',
+    ];
+    for (const input of cases) {
+      const out = redactDbUrl(input);
+      expect(out).toBe('[unparseable]');
+      expect(out).not.toContain('alice');
+      expect(out).not.toContain('s3cret');
+      expect(out).not.toContain('user');
+      expect(out).not.toContain('pass');
+    }
+  });
 });
 
 // Static-source guard: if a future refactor drops the validator from
@@ -162,6 +197,7 @@ describe('P0-8 / R1b run-worker.ts source still defines the contract', () => {
     expect(src).toMatch(/function\s+validateDatabaseUrl\s*\(/);
     expect(src).toMatch(/function\s+redactDbUrl\s*\(/);
     expect(src).toMatch(/PG_URL_RE\s*=/);
+    expect(src).toMatch(/URL_SCHEME_RE\s*=/);
     // The two key behavioural lines must still be there.
     expect(src).toMatch(/empty host/);
     expect(src).toMatch(/postgres(?:ql)?:\/\//);
