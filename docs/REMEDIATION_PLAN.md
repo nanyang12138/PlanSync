@@ -3179,7 +3179,7 @@
 
 #### R-192 [HIGH] task 状态从 git + verification rules 自动推导
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B17
 - **depends_on**: R-181, R-191
 - **effort**: medium
