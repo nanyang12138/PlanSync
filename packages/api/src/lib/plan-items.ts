@@ -380,6 +380,36 @@ export async function supersedeDeliverables(
   return linked;
 }
 
+/**
+ * R-155: re-derive the legacy `plans.deliverables` String[] column from the
+ * current `PlanDeliverable` rows for a single plan. Used by the per-row CRUD
+ * routes (`/plans/:planId/deliverables/...`) so that after a create/update/
+ * supersede on the split table the legacy array stays a faithful mirror.
+ *
+ * Ordering: `createdAt ASC, id ASC`, matching `readMerged`. Item content is
+ * the row `title` (same field `writeBoth` uses), so existing readers that
+ * lean on `plan.deliverables` (CLI banner, drift legacy paths, plan_show)
+ * see no shape change — only newly created rows show up at the array tail.
+ *
+ * Always called inside the route's transaction (the per-row write and this
+ * mirror sync must commit together) so plan_show can never observe a
+ * window where the array and the rows diverge.
+ */
+export async function syncDeliverableArrayMirror(
+  planId: string,
+  tx: PrismaClient | Prisma.TransactionClient,
+): Promise<void> {
+  const rows = await tx.planDeliverable.findMany({
+    where: { planId },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    select: { title: true },
+  });
+  await tx.plan.update({
+    where: { id: planId },
+    data: { deliverables: rows.map((r) => r.title) },
+  });
+}
+
 export async function checkPlanItemsInvariant(
   planId: string,
   client: PrismaClient | Prisma.TransactionClient = defaultPrisma,
