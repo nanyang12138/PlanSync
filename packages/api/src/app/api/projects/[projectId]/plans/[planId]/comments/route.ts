@@ -4,7 +4,11 @@ import { authenticate, requireProjectRole } from '@/lib/auth';
 import { AppError, ErrorCode } from '@plansync/shared';
 import { handleApiError } from '@/lib/errors';
 import { validateBody, validateSearchParams } from '@/lib/validate';
-import { createCommentSchema, paginationSchema } from '@plansync/shared';
+import { createCommentSchema, paginationSchema, listCommentsQuerySchema } from '@plansync/shared';
+
+// R-156: merge pagination + deliverableId into one query schema so the
+// comments listing endpoint can be filtered to a single deliverable.
+const commentsListQuerySchema = paginationSchema.merge(listCommentsQuerySchema);
 import { eventBus } from '@/lib/event-bus';
 import { createActivity } from '@/lib/activity';
 import { dispatchWebhooks } from '@/lib/webhook';
@@ -18,17 +22,32 @@ export async function GET(req: NextRequest, __nextCtx: Params) {
     const auth = await authenticate(req);
     await requireProjectRole(auth, params.projectId);
     await requirePlanInProject(params.planId, params.projectId);
-    const { page = 1, pageSize = 20 } = validateSearchParams(req, paginationSchema);
+    // R-156: accept both pagination + deliverableId in the same query string.
+    // The merged schema keeps the existing pagination contract unchanged and
+    // adds the deliverableId filter as a purely additive option.
+    const {
+      page = 1,
+      pageSize = 20,
+      deliverableId,
+    } = validateSearchParams(req, commentsListQuerySchema);
     const skip = (page - 1) * pageSize;
+
+    const where: { planId: string; deliverableId?: string } = { planId: params.planId };
+    if (deliverableId) {
+      // R-156: callers asking for "comments on deliverable X" must not see
+      // rows that belong to deliverables on a different plan — the planId
+      // clause above already scopes by plan, so this filter is safe.
+      where.deliverableId = deliverableId;
+    }
 
     const [comments, total] = await Promise.all([
       prisma.planComment.findMany({
-        where: { planId: params.planId },
+        where,
         skip,
         take: pageSize,
         orderBy: { createdAt: 'asc' },
       }),
-      prisma.planComment.count({ where: { planId: params.planId } }),
+      prisma.planComment.count({ where }),
     ]);
 
     return NextResponse.json({
@@ -76,13 +95,35 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
       }
     }
 
+    // R-156: when anchoring a comment to a deliverable, refuse cross-plan
+    // ids. The DB-level FK only enforces that the deliverable row exists;
+    // without this check a caller could attach a v1 plan's comment to a v3
+    // plan's deliverable, breaking the timeline UI's per-plan grouping and
+    // leaking the existence of unrelated deliverables via 500 stack traces.
+    if (body.deliverableId) {
+      const deliverable = await prisma.planDeliverable.findUnique({
+        where: { id: body.deliverableId },
+        select: { planId: true },
+      });
+      if (!deliverable || deliverable.planId !== params.planId) {
+        throw new AppError(ErrorCode.NOT_FOUND, 'Deliverable not found in this plan', {
+          deliverableId: body.deliverableId,
+          planId: params.planId,
+        });
+      }
+    }
+
     const member = await prisma.projectMember.findUnique({
       where: { projectId_name: { projectId: params.projectId, name: auth.userName } },
     });
 
     const comment = await prisma.planComment.create({
       data: {
-        ...body,
+        content: body.content,
+        parentId: body.parentId,
+        // R-156: deliverableId is optional; null = plan-level comment
+        // (the existing default behaviour).
+        deliverableId: body.deliverableId,
         planId: params.planId,
         authorName: auth.userName,
         authorType: member?.type === 'agent' ? 'agent' : 'human',
