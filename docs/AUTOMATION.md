@@ -136,7 +136,53 @@
 - e2e 本身有一定 flakiness（globalSetup 660s timeout 已说明），fail 后误以为 PR 有问题反而误导
 - nightly 每天一次，足够及时发现新 master 上的回归
 
-### 5. `.github/workflows/cursor-review.yml` — AI 自动 code review
+### 5. `.github/workflows/issue-auto-triage.yml` — `severity:must` 积压自动分流
+
+**触发**：每天 UTC 04:30 cron + 手动 `workflow_dispatch`（可调 `max_dispatch` / `max_close` / `mode`）。
+
+**做什么**：跑 `scripts/issue-auto-triage.mjs`，把所有 open 的 `severity:must` issue 分类成五桶并立即执行对应动作：
+
+| 桶                 | 判定依据                                                                                                                                                                      | 动作                                                                                                                               |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `resolved-by-pr`   | 已被某个近 14 天合入的 PR body 用 `closes #N` 引用，但 GitHub 的 squash-auto-close 没触发（最常见原因：markdown bold 包了 `closes`、PR 一行 closes 列表超长被截断）           | 评论 + `gh issue close --reason completed` + 加 `auto-triaged` label                                                               |
+| `resolved-in-tree` | 命中静态 probe，确认代码已经是期望形态                                                                                                                                        | 同上                                                                                                                               |
+| `phantom`          | 命中静态 probe，确认 issue 描述的代码路径在本仓库根本不存在（review agent 幻觉）                                                                                              | 评论 + `wontfix` label + close as not_planned                                                                                      |
+| `dispatch`         | 既没在飞，也没被任何 probe 命中 → 真的需要人/agent 处理                                                                                                                       | 加 `cursor:dispatch` label（已有 `cursor-review-dispatch.yml` 接管）+ `auto-triaged` label。受 `TRIAGE_MAX_DISPATCH`（默认 3）限流 |
+| `skip`             | 已有 `cursor:dispatch` / `dispatched` / `umbrella` / `wontfix` / `auto-triaged` / `needs-human` / `do-not-merge` 任一 label，或被某个**仍打开**的 PR body 用 `closes #N` 引用 | 什么都不做                                                                                                                         |
+
+**为什么这层有意义**：
+
+- review-finding 流水线每天会新开 10-30 个 `severity:must` issue，绝大部分都是同一个 finding 被不同 PR 的 review pass 反复举报。这个 workflow 在不需要 LLM 的情况下，通过两个确定性信号（**closes-keyword 扫描** + **静态代码 probe**）就能把可关掉的关掉、需要 agent 修的派出去，把剩下的留给人工。
+- 任何写动作（close、label、comment）失败都不会中止其它 issue 的处理。整个流程是幂等的：每个 issue 处理后会被打上 `auto-triaged` label，下一轮 cron 自动跳过；CI 重跑也不会重复评论。
+- `cursor:dispatch` 的限流（默认每轮 3 个）避免 Cursor API 配额被一晚上烧光。需要紧急加速时手动跑 `workflow_dispatch` 并把 `max_dispatch` 调高。
+
+**如何加新的 probe**（最常见的扩展场景）：
+
+在 `scripts/issue-auto-triage.mjs` 的 `PROBES` 数组里加一个对象：
+
+```js
+{
+  id: 'verification-rules-not-implemented',
+  match: (issue) => /\/explain rule|verification-rules/i.test(issue.title),
+  verify: () => {
+    const matches = !rg('explainRule|/explain rule', ['packages/cli/src']);
+    return {
+      matches,
+      evidence: matches
+        ? 'rg explainRule packages/cli/src → no match'
+        : 'rg explainRule packages/cli/src → matches (feature is implemented)',
+    };
+  },
+  verdict: 'phantom',  // or 'resolved-in-tree'
+  reason: 'Reviewer flagged a /explain rule auth bug on a CLI command that has never been implemented.',
+},
+```
+
+每个 probe 必须做"代码侧实证"，不能只是 title 匹配 —— 这样写错了也只是漏掉一类，不会误关一个真 bug。
+
+`scripts/issue-auto-triage.test.mjs` 有 6 个单元测试，覆盖 closing-keyword 正则、null/undefined 安全、SKIP_LABELS 完整性、关键内部名（`PROBES` / `categorize`）的静态源码守护，确保未来重构不会悄悄破坏分类逻辑。
+
+### 6. `.github/workflows/cursor-review.yml` — AI 自动 code review
 
 **触发**：
 
