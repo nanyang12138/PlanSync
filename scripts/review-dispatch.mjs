@@ -29,6 +29,7 @@
  *   REVIEW_DISPATCH_DRY_RUN=1
  */
 import { Buffer } from 'node:buffer';
+import { pathToFileURL } from 'node:url';
 
 const {
   GITHUB_TOKEN,
@@ -40,7 +41,19 @@ const {
   REVIEW_DISPATCH_DRY_RUN,
 } = process.env;
 
-if (!GITHUB_TOKEN || !GH_REPO || !ISSUE_NUMBER) {
+// Direct-execution detection so importing this module for unit testing
+// does NOT trigger the env-var enforcement / process.exit(1) below.
+// Mirrors the pattern already used by scripts/review-triage.mjs.
+const __isMainScript = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return import.meta.url === pathToFileURL(process.argv[1]).href;
+  } catch {
+    return false;
+  }
+})();
+
+if (__isMainScript && (!GITHUB_TOKEN || !GH_REPO || !ISSUE_NUMBER)) {
   console.error('Missing required env: GITHUB_TOKEN, GH_REPO, ISSUE_NUMBER');
   process.exit(1);
 }
@@ -94,6 +107,78 @@ async function listIssueComments() {
     if (page > 20) break;
   }
   return all;
+}
+
+async function listIssueEvents() {
+  // Issue events API ("labeled" / "unlabeled" / etc.) carries server-stamped
+  // `created_at` per label change. We use it to determine whether THIS run
+  // or a concurrent peer first acquired the `dispatched` lock label (see
+  // `didWeAcquireDispatchLock` and the call site in main()).
+  const all = [];
+  let page = 1;
+  while (true) {
+    const data = await ghApi(
+      'GET',
+      `/repos/${GH_REPO}/issues/${ISSUE_NUMBER}/events?per_page=100&page=${page}`,
+    );
+    if (!Array.isArray(data) || data.length === 0) break;
+    all.push(...data);
+    if (data.length < 100) break;
+    page += 1;
+    if (page > 20) break;
+  }
+  return all;
+}
+
+/**
+ * Pure decision helper for the dispatch-lock race detection added to fix
+ * #1253. Given the issue's `events` list (as returned by the GitHub issue
+ * events API), the name of the lock label, and the local clock timestamp
+ * captured *just before* this run called `addLabels([LOCK_LABEL])`, return
+ * whether THIS run is the one that actually acquired the label (versus a
+ * concurrent peer that beat us to it).
+ *
+ * Algorithm: find the most recent `labeled` event for `lockLabel`. If its
+ * server-stamped `created_at` is more than `toleranceMs` BEFORE our local
+ * pre-call timestamp, a peer added the label first and we should bail. The
+ * tolerance is small (default 1500 ms) — it only needs to cover clock skew
+ * between the local Node runtime and the GitHub server clock; 1.5 s is
+ * generous on NTP-synced GitHub Actions runners (sub-ms drift in practice).
+ *
+ * Why this is necessary: before PR #1252 the Cursor `v1/agents` body
+ * included a deterministic `branchName: cursor/fix-rf-<n>-d31d`. Two
+ * concurrent dispatch runs that both passed the top-of-main `labelSet`
+ * check would race to `createCursorAgent`, but the SECOND Cursor call
+ * collided with the first's branch and was rejected — an implicit dedup
+ * barrier. PR #1252 removed `branchName` (Cursor now auto-generates a
+ * unique branch server-side), so without an explicit dedup we can spawn
+ * duplicate agents / open duplicate PRs for the same issue.
+ */
+export function didWeAcquireDispatchLock({
+  events,
+  lockLabel,
+  preAddLabelsAtMs,
+  toleranceMs = 1500,
+} = {}) {
+  if (!Array.isArray(events) || events.length === 0) return true;
+  if (!Number.isFinite(preAddLabelsAtMs)) return true;
+  if (!lockLabel) return true;
+  const lockedTimestamps = [];
+  for (const e of events) {
+    if (!e || e.event !== 'labeled') continue;
+    const name = e.label && typeof e.label === 'object' ? e.label.name : null;
+    if (name !== lockLabel) continue;
+    const ts = new Date(e.created_at).getTime();
+    if (Number.isFinite(ts)) lockedTimestamps.push(ts);
+  }
+  if (lockedTimestamps.length === 0) {
+    // No labeled event surfaced yet — likely API propagation lag. Treat as
+    // a win; downstream `dispatchSucceededAlready` check will still catch
+    // a peer that has already posted a SUCCESS marker.
+    return true;
+  }
+  const latestTs = Math.max(...lockedTimestamps);
+  return latestTs >= preAddLabelsAtMs - toleranceMs;
 }
 
 async function dispatchSucceededAlready() {
@@ -358,9 +443,53 @@ async function main() {
   // Acquire the lock label as the first mutation. addLabels is idempotent
   // server-side; the local short-circuit above relied on the issue snapshot
   // we fetched at the top. Two truly concurrent runs can both reach this
-  // point, but only one will subsequently succeed at the Cursor API
-  // (the loser sees an upstream conflict).
+  // point, both call addLabels (idempotent), then both would race to call
+  // the Cursor API. Before #1252 a deterministic `branchName` made the
+  // loser's createCursorAgent fail with a branch-collision 400 — implicit
+  // dedup. With the field gone (Cursor now auto-generates branch names per
+  // call), we need explicit dedup. We capture `preAddLabelsAtMs` *before*
+  // the addLabels call, then re-fetch issue events to see whether the
+  // resulting `labeled` event was created by us or already existed from a
+  // peer's earlier call. See `didWeAcquireDispatchLock` for the decision
+  // rule. This fixes #1253.
+  const preAddLabelsAtMs = Date.now();
   await addLabels([LOCK_LABEL]);
+
+  // Race-detection: did a concurrent dispatch run beat us to the lock?
+  // If yes, exit WITHOUT releasing the label (peer holds it) and WITHOUT
+  // calling Cursor (would spawn a duplicate agent/PR).
+  let events;
+  try {
+    events = await listIssueEvents();
+  } catch (err) {
+    console.warn(
+      `listIssueEvents failed (proceeding under workflow-level concurrency guard): ${err.message}`,
+    );
+    events = null;
+  }
+  if (
+    events &&
+    !didWeAcquireDispatchLock({ events, lockLabel: LOCK_LABEL, preAddLabelsAtMs })
+  ) {
+    console.log(
+      `Lost dispatch race for #${ISSUE_NUMBER}: peer run acquired '${LOCK_LABEL}' first. ` +
+        `Exiting without spawning a Cursor agent; lock left in place (peer owns it).`,
+    );
+    await commentIssue(
+      `${DISPATCH_MARKER}\n\n⚠ 检测到并发 dispatch 竞态：另一次 run 已先获取 \`${LOCK_LABEL}\` 锁。本次 run 跳过，未启动 Cursor agent，未摘锁（避免覆盖 peer 的进度）。`,
+    );
+    return;
+  }
+
+  // Belt-and-suspenders: if a peer raced ahead, won the lock, AND already
+  // posted the SUCCESS marker comment between our addLabels and now, exit
+  // before calling Cursor so we don't spawn a duplicate agent.
+  if (await dispatchSucceededAlready()) {
+    console.log(
+      `Peer dispatch already posted SUCCESS marker for #${ISSUE_NUMBER}; skipping Cursor call.`,
+    );
+    return;
+  }
 
   let result;
   try {
@@ -422,7 +551,9 @@ async function main() {
   console.log(`Dispatched ${agentId} (run ${runId}) on ${actualBranch} [${kind}]`);
 }
 
-main().catch((err) => {
-  console.error(err.stack || err.message);
-  process.exit(1);
-});
+if (__isMainScript) {
+  main().catch((err) => {
+    console.error(err.stack || err.message);
+    process.exit(1);
+  });
+}
