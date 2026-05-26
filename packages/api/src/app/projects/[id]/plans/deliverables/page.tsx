@@ -50,11 +50,20 @@ export default async function ProjectDeliverablesPage({
     select: { id: true, version: true, status: true, title: true },
     orderBy: { version: 'desc' },
   });
+
+  // Fail-closed (#1289 / PR #1272 follow-up): when `?plan=` is supplied it
+  // MUST identify a plan in this project; otherwise we 404 instead of
+  // silently rendering the active/latest plan under a URL that names a
+  // different (or empty) one. We test against `undefined` rather than
+  // truthiness so an empty-string `?plan=` (e.g. `…/deliverables?plan=`)
+  // also fails closed — the truthy form `searchParams.plan && …` would let
+  // the empty-string case slip through and render misleading content.
+  if (searchParams.plan !== undefined && !allPlans.some((p) => p.id === searchParams.plan)) {
+    notFound();
+  }
+
   const activePlan = allPlans.find((p) => p.status === 'active') ?? allPlans[0];
-  const requestedPlanId =
-    searchParams.plan && allPlans.some((p) => p.id === searchParams.plan)
-      ? searchParams.plan
-      : activePlan?.id;
+  const requestedPlanId = searchParams.plan ?? activePlan?.id;
 
   const selectedPlan = requestedPlanId
     ? await prisma.plan.findUnique({
@@ -63,9 +72,9 @@ export default async function ProjectDeliverablesPage({
       })
     : null;
 
-  // Cross-project guard: refuse to render even if the caller hand-crafts a
-  // planId that belongs to another project. The API enforces this too
-  // (R-041) but the page-level check avoids a 404 from a hostile URL.
+  // Defensive cross-project guard. `allPlans` already filters by projectId
+  // so reaching this branch implies a race (e.g. the plan was reassigned
+  // between the two queries) — fail closed in that case (R-041).
   if (selectedPlan && selectedPlan.projectId !== params.id) notFound();
 
   let deliverables: DeliverableWithLinks[] = [];
