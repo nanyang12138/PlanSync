@@ -3,7 +3,15 @@ import { MessageSquare } from 'lucide-react';
 import { CommentThreadClient, type CommentNode } from './comment-thread-client';
 
 function buildCommentTree(comments: PlanComment[]): CommentNode[] {
-  const visible = comments.filter((c) => !c.isDeleted);
+  // Closes #1334: this component renders the *plan-level* discussion only.
+  // R-156 stores per-deliverable comments in the same `plan_comments`
+  // table with a non-null `deliverableId`; those rows belong on the
+  // deliverable timeline (`<DeliverableTimeline>`) and would otherwise
+  // double-display here and pollute the plan-level thread with
+  // out-of-context replies. The primary fix is in the page-level Prisma
+  // include, but this defensive filter keeps the component honest if a
+  // future caller hands us a mixed set.
+  const visible = comments.filter((c) => !c.isDeleted && c.deliverableId == null);
   const map = new Map<string, CommentNode>();
   for (const c of visible) {
     map.set(c.id, { ...c, replies: [] });
@@ -43,7 +51,8 @@ export function CommentThread({ projectId, planId, comments }: CommentThreadProp
         </div>
         <span className="section-label">Discussion</span>
         <span className="ml-auto text-xs text-slate-400">
-          {comments.filter((c) => !c.isDeleted).length} comments
+          {/* #1334: count matches the rendered tree — plan-level rows only. */}
+          {comments.filter((c) => !c.isDeleted && c.deliverableId == null).length} comments
         </span>
       </div>
       <CommentThreadClient roots={tree} projectId={projectId} planId={planId} />
