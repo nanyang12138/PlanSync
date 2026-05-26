@@ -31,14 +31,19 @@
  *     transition once everything lines up.
  *
  * Backwards compatibility:
- *   - The gate is OFF when neither the task nor the project carries any
- *     git wiring (no `task.prUrl`, no `project.githubRepo`). Tasks that
- *     pre-date the git-integration era keep their pre-R-192 behaviour
- *     so the change is safe to land before every project has opted in.
- *   - The gate is also OFF when the task has no `planDeliverableRefs`,
- *     because there is nothing for the commit-linker to anchor on. A
- *     project can therefore migrate one task at a time by populating
- *     refs + PRs incrementally.
+ *   - The gate is **per-task opt-in**: it only fires when the task
+ *     itself carries some git wiring, i.e. `task.prUrl` is non-empty
+ *     OR `task.planDeliverableRefs` has at least one slug. Otherwise
+ *     the task keeps its pre-R-192 "always done" behaviour even when
+ *     the project has set `project.githubRepo`.
+ *
+ *     This matters for the legacy migration story (fixes #1197): an
+ *     owner that flips on GitHub integration must NOT retroactively
+ *     trap every old task in `awaiting_evidence`. The project-level
+ *     `githubRepo` setting is a global enable for *new* webhook /
+ *     commit-link plumbing — actual gating is decided per task by
+ *     looking at the task's own wiring, so each task can be migrated
+ *     incrementally as the owner populates `prUrl` + refs.
  *
  * The state machine is intentionally a pure function over a snapshot of
  * the task, the request body, and a few Prisma helpers. Tests can call
@@ -116,18 +121,27 @@ export async function deriveTaskCompletionState(
   const client = input.prismaClient ?? defaultPrisma;
   const { task, projectId } = input;
 
-  // Pre-flight: is git integration applicable to this task at all?
-  // We check both the task-level signal (prUrl was set by the agent or
-  // a prior PATCH) and the project-level signal (the owner registered
-  // a githubRepo). When neither is present, the gate stays silent and
-  // the caller falls back to legacy "always done".
-  const project = await client.project.findUnique({
-    where: { id: projectId },
-    select: { githubRepo: true },
-  });
+  // Pre-flight: is git integration applicable to *this task*?
+  //
+  // The gate is per-task opt-in. A task opts in by carrying its own
+  // git wiring — either `prUrl` (the agent attached a PR) or at least
+  // one entry in `planDeliverableRefs` (the plan binds the task to a
+  // deliverable the commit-linker can anchor on). When the task has
+  // neither, the gate stays silent so legacy / pre-R-192 tasks keep
+  // flipping straight to `done`.
+  //
+  // We intentionally do NOT key off `project.githubRepo` here: that
+  // setting is a project-wide enable for the webhook + commit-link
+  // pipelines, not a retroactive gate for every task that ever
+  // existed. Tying gate-applicability to it would silently trap old
+  // tasks (no prUrl, no refs) in `awaiting_evidence` the moment the
+  // owner registered a repo, which was the regression #1197 reported.
   const hasTaskPrUrl = typeof task.prUrl === 'string' && task.prUrl.length > 0;
-  const hasProjectRepo = typeof project?.githubRepo === 'string' && project.githubRepo.length > 0;
-  if (!hasTaskPrUrl && !hasProjectRepo) {
+  const refsList = (task.planDeliverableRefs ?? []).filter(
+    (r) => typeof r === 'string' && r.length > 0,
+  );
+  const hasTaskDeliverableRefs = refsList.length > 0;
+  if (!hasTaskPrUrl && !hasTaskDeliverableRefs) {
     return { status: 'done', missing: [], gateApplied: false };
   }
 
@@ -164,14 +178,14 @@ export async function deriveTaskCompletionState(
   // must have at least one CommitDeliverableLink row visible to this
   // project. A task with no refs at all is treated as "no evidence
   // requirement" — the constraint is opt-in per task.
-  const refs = (task.planDeliverableRefs ?? []).filter(
-    (r) => typeof r === 'string' && r.length > 0,
-  );
-  if (refs.length > 0) {
+  //
+  // `refsList` was computed during the pre-flight above; we re-use it
+  // here instead of re-filtering so the two branches stay in lock-step.
+  if (hasTaskDeliverableRefs) {
     const missingRefs = await deliverableRefsWithoutEvidence(
       client,
       projectId,
-      refs,
+      refsList,
       task.boundPlanVersion ?? null,
     );
     if (missingRefs.length > 0) {
