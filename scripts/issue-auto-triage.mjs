@@ -105,6 +105,91 @@ function ghJson(args) {
   return JSON.parse(r.stdout);
 }
 
+// Labels the script writes during normal operation. Created at
+// startup via `gh label create --force` (idempotent — `--force`
+// no-ops if the label already exists with the same metadata,
+// otherwise updates colour/description). Without this bootstrap
+// step the first `gh issue edit --add-label <name>` call fails
+// with "'<name>' not found" and the script aborts mid-batch
+// (production hit: workflow run 2026-05-26 crashed on issue #1219
+// after closing it but before labelling it; remaining 68
+// resolved-by-pr issues were never processed).
+//
+// `cursor:dispatch` and `dispatched` are the labels the *existing*
+// cursor-review-dispatch.yml workflow listens for; if they are
+// missing from the repo, the whole agent-dispatch chain is dead
+// regardless of whether THIS script runs. Creating them here
+// doubles as a repo-bootstrap guarantee — the first run of
+// issue-auto-triage anywhere becomes the canonical creator of all
+// labels the automation surface depends on.
+const REQUIRED_LABELS = [
+  {
+    name: 'auto-triaged',
+    color: 'ededed',
+    description: 'issue-auto-triage acted on this issue (idempotency lock)',
+  },
+  {
+    name: 'needs-human',
+    color: 'fbca04',
+    description: 'issue-auto-triage could not classify; owner needs to look',
+  },
+  {
+    name: 'cursor:dispatch',
+    color: '5319e7',
+    description:
+      'Apply this label to ask cursor-review-dispatch.yml to spawn a Cursor Cloud Agent to fix this issue',
+  },
+  {
+    name: 'dispatched',
+    color: 'c5def5',
+    description: 'cursor-review-dispatch.yml has handed this issue to an agent',
+  },
+];
+
+function ensureRequiredLabels() {
+  // We use `--force` so an existing label is preserved (with its
+  // current colour / description updated to match the canonical
+  // values above). Non-zero exit here is logged but does NOT abort
+  // the run — the per-issue label calls below already fall back
+  // to allowFail mode so the worst case is "this issue does not
+  // get the lock label", not "the whole batch dies".
+  for (const label of REQUIRED_LABELS) {
+    const r = gh(
+      [
+        'label',
+        'create',
+        label.name,
+        '--color',
+        label.color,
+        '--description',
+        label.description,
+        '--force',
+      ],
+      { allowFail: true },
+    );
+    if (r.status !== 0) {
+      console.warn(
+        `[warn] could not ensure label "${label.name}": ${r.stderr.trim() || '(no stderr)'}`,
+      );
+    }
+  }
+}
+
+// `gh issue edit --add-label X,Y` rejects the WHOLE call if any
+// label in the list is missing, even if the others exist. This
+// helper retries the add label-by-label and lets the caller log
+// partial failures without aborting the batch.
+function addLabelsToIssue(issueNumber, labels) {
+  const failed = [];
+  for (const label of labels) {
+    const r = gh(['issue', 'edit', String(issueNumber), '--add-label', label], { allowFail: true });
+    if (r.status !== 0) {
+      failed.push({ label, stderr: r.stderr.trim() });
+    }
+  }
+  return failed;
+}
+
 // --- 1. Snapshot the world -------------------------------------------------
 
 function listOpenMustIssues() {
@@ -272,7 +357,10 @@ async function commentAndClose(issue, body, reason) {
     console.log(`[dry-run] would close #${issue.number} as ${reason}: ${issue.title.slice(0, 80)}`);
     return;
   }
-  // gh issue close --comment is one atomic call.
+  // `gh issue close --comment` is one atomic call that creates the
+  // closing comment and flips state in a single API round-trip — if
+  // it throws here, no comment has been published either so retry
+  // on the next cron is safe.
   gh([
     'issue',
     'close',
@@ -282,13 +370,20 @@ async function commentAndClose(issue, body, reason) {
     '--comment',
     body,
   ]);
-  gh([
-    'issue',
-    'edit',
-    String(issue.number),
-    '--add-label',
-    reason === 'wontfix' ? 'wontfix,auto-triaged' : 'auto-triaged',
-  ]);
+  // Best-effort label apply: if any label is missing from the repo
+  // (e.g. someone deleted it manually between ensureRequiredLabels
+  // at startup and now) we log the failure and continue rather
+  // than abort the whole batch — the issue is already closed, so
+  // the worst case is missing audit metadata, not duplicate work.
+  const labels = reason === 'wontfix' ? ['wontfix', 'auto-triaged'] : ['auto-triaged'];
+  const failed = addLabelsToIssue(issue.number, labels);
+  if (failed.length > 0) {
+    console.warn(
+      `[warn] #${issue.number} closed but label apply failed for: ${failed
+        .map((f) => f.label)
+        .join(', ')}`,
+    );
+  }
   console.log(`closed #${issue.number} (${reason}): ${issue.title.slice(0, 80)}`);
 }
 
@@ -297,13 +392,39 @@ async function dispatchIssue(issue) {
     console.log(`[dry-run] would dispatch #${issue.number}: ${issue.title.slice(0, 80)}`);
     return;
   }
-  gh(['issue', 'edit', String(issue.number), '--add-label', 'cursor:dispatch,auto-triaged']);
+  // Dispatch label MUST land — without it the existing
+  // cursor-review-dispatch.yml workflow won't trigger and the
+  // issue sits forever. The auto-triaged lock is best-effort: if
+  // cursor:dispatch landed but auto-triaged didn't, the next cron
+  // run will see the cursor:dispatch label in SKIP_LABELS and
+  // skip the issue anyway, so no duplicate dispatch is possible.
+  const failed = addLabelsToIssue(issue.number, ['cursor:dispatch', 'auto-triaged']);
+  const dispatchFailed = failed.find((f) => f.label === 'cursor:dispatch');
+  if (dispatchFailed) {
+    console.warn(`[warn] failed to dispatch #${issue.number}: ${dispatchFailed.stderr}`);
+    return;
+  }
+  if (failed.length > 0) {
+    console.warn(
+      `[warn] #${issue.number} dispatched but auto-triaged label failed: ${failed
+        .map((f) => f.label)
+        .join(', ')}`,
+    );
+  }
   console.log(`dispatched #${issue.number}: ${issue.title.slice(0, 80)}`);
 }
 
 // --- 5. Main ---------------------------------------------------------------
 
 async function main() {
+  // Make sure every label the script reads/writes exists in the
+  // repo before we start mutating issues. Skipped in --json mode
+  // (read-only contract) and in --dry-run (the whole point of dry-
+  // run is "touch nothing").
+  if (APPLY) {
+    ensureRequiredLabels();
+  }
+
   const issues = listOpenMustIssues();
   const openPrs = listOpenPrs();
   // Always fetch merged PRs — even --json output classifies issues
