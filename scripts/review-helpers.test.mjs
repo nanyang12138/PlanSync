@@ -285,3 +285,40 @@ test('consumeSse', async (t) => {
     assert.equal(r.sawTerminal, true);
   });
 });
+
+// ---------------------------------------------------------------------
+// review-dispatch.mjs Cursor API contract — static-source guards
+// ---------------------------------------------------------------------
+//
+// Cursor's `v1/agents` endpoint removed the top-level `branchName`
+// field in a breaking change (~2026-05). Sending it returns 400
+// "Unrecognized key(s) in object: 'branchName'" and the whole
+// dispatch fails. We can't easily integration-test against the live
+// API (would burn quota + need a valid CURSOR_API_KEY in CI), so
+// instead we lock the contract by static-source assertion: the
+// agent-create body shape must NEVER list `branchName` as a top-
+// level key.
+test('review-dispatch.mjs does not send the removed `branchName` field to Cursor v1/agents', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { resolve } = await import('node:path');
+  const src = readFileSync(resolve(import.meta.dirname, 'review-dispatch.mjs'), 'utf-8');
+
+  // createCursorAgent must still exist and must POST to /v1/agents.
+  assert.match(src, /async function createCursorAgent\s*\(/);
+  assert.match(src, /https:\/\/api\.cursor\.com\/v1\/agents/);
+
+  // The body object's keys must NOT include a literal `branchName,`
+  // entry — that was the field Cursor rejects with a 400. Match the
+  // exact shape `branchName,` (shorthand property) or
+  // `branchName:` (explicit value), restricted to the body block.
+  //
+  // Catches both `{ ..., branchName, ... }` and `{ ..., branchName:
+  // someExpr, ... }` shapes.
+  const bodyBlockRe = /const body = \{[\s\S]*?\n\s*\};/m;
+  const bodyMatch = src.match(bodyBlockRe);
+  assert.ok(bodyMatch, 'expected `const body = { ... };` block in createCursorAgent');
+  assert.ok(
+    !/\bbranchName\s*[,:]/.test(bodyMatch[0]),
+    'createCursorAgent body must NOT include `branchName` (Cursor v1/agents removed the field; sending it returns 400). Cursor auto-generates a `cursor/...` branch from startingRef.',
+  );
+});
