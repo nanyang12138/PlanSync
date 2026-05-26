@@ -92,6 +92,23 @@ declare -a CLUSTERS=(
   #   - validateDatabaseUrl regex only matches \${VAR} curly form, not
   #     bare \$VAR (closes #979).
   "merged|862|863 864 910 911 978 979|Cluster L: load-dotenv single-quote literal + run-worker redactDbUrl + bare \$VAR validation (PR #862, partial #1038)"
+  # Cluster B11 — PR #909 already shipped both fixes that #1001 / #1002
+  # complain about. The reviews were filed against a pre-#909 snapshot
+  # of the test files.
+  # Verified on master:
+  #   - packages/api/tests/unit/r113-email-async-queue.test.ts L270-307
+  #     declares its own local 'localSpawnedChildren: FakeChild[]'
+  #     INSIDE the R8 describe, with an explicit comment that the
+  #     outer describe's 'spawnedChildren' is out of scope (closes
+  #     #1001).
+  #   - packages/api/tests/unit/r113-email-async-queue.test.ts L71
+  #     and r113-email-queue-limit-nan-guard.test.ts L48 build the
+  #     fake 'stdin' as 'new EventEmitter()' which already has '.on()'
+  #     built-in, so child.stdin?.on('error', ...) does NOT throw
+  #     (closes #1002).
+  # Test run on master at 2026-05-25:
+  #   16 / 16 passing across both r113 test files.
+  "merged|909|1001 1002|Cluster B11: r113 email test stale review — both already addressed by PR #909 (localSpawnedChildren naming + EventEmitter-backed fake stdin)"
 )
 
 close_one() {

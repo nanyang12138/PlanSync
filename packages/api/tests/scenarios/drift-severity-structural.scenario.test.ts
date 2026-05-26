@@ -3,22 +3,24 @@
  *
  * The previous drift engine assigned severity from the task's status (high
  * iff a run was in flight, regardless of what changed in the plan). After
- * drift v2 the engine uses `severityForTask` on the deterministic plan diff
- * so the alert severity — AND the pause-runs side-effect — depend on whether
- * the change touches anything the task references.
+ * drift v3 (R-154) the engine uses the deliverable-id-based diff:
+ * `severityForTaskByDeliverables` keys per-task severity off `task →
+ * TaskDeliverableLink → PlanDeliverable` rows, so the alert — AND the
+ * pause-runs side-effect — depend on whether the linked deliverable was
+ * removed, had its body changed, or had only its refUri changed.
  *
  * Three phases, three projects (one per severity class):
  *
- *   1. BREAKING — task references the deliverable that v2 modifies. Drift
- *      alert is severity='high'; the in-flight run is paused.
- *   2. MEDIUM   — v2 only changes scope; task references unchanged
- *      deliverables. Drift alert is severity='medium'; the in-flight run is
- *      paused (medium is still disruptive — surrounding context shifted).
- *   3. LOW      — v2 only adds a deliverable the task does not reference;
- *      goal and scope unchanged. Drift alert is severity='low'; the in-flight
- *      run is **NOT paused** and the task is NOT blocked. This is the
- *      user-visible behaviour change: agents working on unaffected tasks
- *      keep working without false interruption.
+ *   1. BREAKING — task is linked to a deliverable whose body v2 changed.
+ *      Drift alert is severity='high'; the in-flight run is paused.
+ *   2. MEDIUM   — task is linked to a deliverable whose refUri v2 changed
+ *      (body intact). Drift alert is severity='medium'; the in-flight run
+ *      is paused (medium is still disruptive — surrounding context shifted).
+ *   3. LOW      — v2 only adds a deliverable the task is not linked to;
+ *      linked deliverables are unchanged. Drift alert is severity='low';
+ *      the in-flight run is **NOT paused** and the task is NOT blocked.
+ *      This is the user-visible behaviour change: agents working on
+ *      unaffected tasks keep working without false interruption.
  *
  * Phase 3 is the meaningful new guarantee — phases 1 and 2 mirror the
  * paused-runs scenario but assert the severity classification end-to-end
@@ -38,23 +40,54 @@ type Setup = {
   v2PlanId: string;
 };
 
+interface DeliverableSpec {
+  slug: string;
+  title?: string;
+  body: string;
+  refUri?: string | null;
+}
+
+interface PlanFixture {
+  goal?: string;
+  scope?: string;
+  deliverables?: DeliverableSpec[];
+}
+
+/**
+ * Build a project with v1 (active) → task linked to a subset of v1's
+ * deliverables → in-flight run → v2 (activated, supersedes v1).
+ *
+ * R-154 lives off the deliverable-id graph, not the legacy `Plan.*` String[]
+ * columns. So this helper:
+ *   - Materialises PlanDeliverable rows per spec (both v1 and v2),
+ *     mirroring what `writeBoth` would write in the production path.
+ *   - Wires `TaskDeliverableLink` rows from the task to whichever v1
+ *     deliverable slugs `linkedSlugs` names, so the engine has explicit
+ *     "this task depends on X" signal (R-154 step 3 turns missing links
+ *     into severity='low').
+ *   - Lets the `activate` route call `supersedeDeliverables` so the
+ *     supersede chain across versions is real (slug-keyed match).
+ */
 async function buildSetup(opts: {
   owner: string;
-  v1: Record<string, unknown>;
-  v2: Record<string, unknown>;
-  taskRefs: string[];
+  v1: PlanFixture;
+  v2: PlanFixture;
+  linkedSlugs: string[];
 }): Promise<Setup> {
   const { projectId } = await createTestProject(opts.owner);
 
+  const v1Deliverables = opts.v1.deliverables ?? [];
   const v1 = await testPrisma.plan.create({
     data: {
       projectId,
       title: 'v1',
-      goal: (opts.v1.goal as string) ?? 'g1',
-      scope: (opts.v1.scope as string) ?? 's1',
-      constraints: (opts.v1.constraints as string[]) ?? [],
-      standards: (opts.v1.standards as string[]) ?? [],
-      deliverables: (opts.v1.deliverables as string[]) ?? [],
+      goal: opts.v1.goal ?? 'g1',
+      scope: opts.v1.scope ?? 's1',
+      constraints: [],
+      standards: [],
+      // Keep the legacy String[] column in lockstep with the split table
+      // so the rest of the system (plan_show, etc.) sees the same content.
+      deliverables: v1Deliverables.map((d) => d.body),
       openQuestions: [],
       requiredReviewers: [],
       version: 1,
@@ -64,6 +97,22 @@ async function buildSetup(opts: {
       activatedBy: opts.owner,
     },
   });
+
+  // Materialise v1's PlanDeliverable rows. Tests previously bypassed this
+  // step because the old drift engine ran off the legacy String[] column.
+  // R-154 reads the split table, so the rows must exist.
+  for (const dSpec of v1Deliverables) {
+    await testPrisma.planDeliverable.create({
+      data: {
+        planId: v1.id,
+        slug: dSpec.slug,
+        title: dSpec.title ?? dSpec.slug,
+        body: dSpec.body,
+        refUri: dSpec.refUri ?? null,
+        status: 'active',
+      },
+    });
+  }
 
   const task = await testPrisma.task.create({
     data: {
@@ -75,10 +124,26 @@ async function buildSetup(opts: {
       assignee: opts.owner,
       assigneeType: 'human',
       boundPlanVersion: v1.version,
-      planDeliverableRefs: opts.taskRefs,
+      planDeliverableRefs: opts.linkedSlugs,
       agentConstraints: [],
     },
   });
+
+  // Wire the link rows. The production write path runs the same lookup
+  // (`syncTaskDeliverableLinks` resolves slug → deliverable id on the
+  // bound plan version) — we just inline it here so the scenario does
+  // not import a helper purely for its side effect.
+  if (opts.linkedSlugs.length > 0) {
+    const linked = await testPrisma.planDeliverable.findMany({
+      where: { planId: v1.id, slug: { in: opts.linkedSlugs } },
+      select: { id: true },
+    });
+    for (const ld of linked) {
+      await testPrisma.taskDeliverableLink.create({
+        data: { taskId: task.id, deliverableId: ld.id },
+      });
+    }
+  }
 
   const startRes = await runsPost(
     makeReq(`/api/projects/${projectId}/tasks/${task.id}/runs`, {
@@ -91,15 +156,16 @@ async function buildSetup(opts: {
   expect(startRes.status).toBe(201);
   const runId = (await startRes.json()).data.id;
 
+  const v2Deliverables = opts.v2.deliverables ?? [];
   const v2 = await testPrisma.plan.create({
     data: {
       projectId,
       title: 'v2',
-      goal: (opts.v2.goal as string) ?? 'g1',
-      scope: (opts.v2.scope as string) ?? 's1',
-      constraints: (opts.v2.constraints as string[]) ?? [],
-      standards: (opts.v2.standards as string[]) ?? [],
-      deliverables: (opts.v2.deliverables as string[]) ?? [],
+      goal: opts.v2.goal ?? 'g1',
+      scope: opts.v2.scope ?? 's1',
+      constraints: [],
+      standards: [],
+      deliverables: v2Deliverables.map((d) => d.body),
       openQuestions: [],
       requiredReviewers: [],
       version: 2,
@@ -107,6 +173,18 @@ async function buildSetup(opts: {
       createdBy: opts.owner,
     },
   });
+  for (const dSpec of v2Deliverables) {
+    await testPrisma.planDeliverable.create({
+      data: {
+        planId: v2.id,
+        slug: dSpec.slug,
+        title: dSpec.title ?? dSpec.slug,
+        body: dSpec.body,
+        refUri: dSpec.refUri ?? null,
+        status: 'active',
+      },
+    });
+  }
 
   const activateRes = await activatePost(
     makeReq(`/api/projects/${projectId}/plans/${v2.id}/activate`, {
@@ -122,14 +200,25 @@ async function buildSetup(opts: {
 }
 
 describe('Scenario: structural severity decides what gets paused', () => {
-  describe('Phase 1 — BREAKING (task references the deliverable that v2 modifies)', () => {
+  describe('Phase 1 — BREAKING (task is linked to a deliverable whose body v2 modifies)', () => {
     let setup: Setup;
     beforeAll(async () => {
       setup = await buildSetup({
         owner: 'sev-breaking-owner',
-        v1: { deliverables: ['rest api', 'docs'] },
-        v2: { deliverables: ['rest api v2', 'docs'] }, // 'rest api' renamed
-        taskRefs: ['rest api'], // task explicitly owns the changed item
+        v1: {
+          deliverables: [
+            { slug: 'rest-api', body: 'rest api spec v1' },
+            { slug: 'docs', body: 'docs site' },
+          ],
+        },
+        v2: {
+          deliverables: [
+            // Same slug → R-154 sees "modified body" → breaking.
+            { slug: 'rest-api', body: 'rest api spec v2' },
+            { slug: 'docs', body: 'docs site' },
+          ],
+        },
+        linkedSlugs: ['rest-api'],
       });
     });
     afterAll(async () => {
@@ -159,14 +248,24 @@ describe('Scenario: structural severity decides what gets paused', () => {
     });
   });
 
-  describe('Phase 2 — MEDIUM (only scope changed; task references unchanged deliverables)', () => {
+  describe('Phase 2 — MEDIUM (task is linked to a deliverable whose refUri v2 changes; body intact)', () => {
     let setup: Setup;
     beforeAll(async () => {
       setup = await buildSetup({
         owner: 'sev-medium-owner',
-        v1: { scope: 'web only', deliverables: ['rest api'] },
-        v2: { scope: 'web + mobile', deliverables: ['rest api'] }, // only scope shifts
-        taskRefs: ['rest api'],
+        v1: {
+          deliverables: [
+            { slug: 'rest-api', body: 'rest api spec', refUri: 'https://figma.com/A' },
+          ],
+        },
+        v2: {
+          deliverables: [
+            // body identical; refUri shifted (e.g. Figma frame moved) → R-154
+            // classifies as 'medium': re-orient, but body of contract is intact.
+            { slug: 'rest-api', body: 'rest api spec', refUri: 'https://figma.com/B' },
+          ],
+        },
+        linkedSlugs: ['rest-api'],
       });
     });
     afterAll(async () => {
@@ -193,7 +292,7 @@ describe('Scenario: structural severity decides what gets paused', () => {
     });
   });
 
-  describe('Phase 3 — LOW (change touches only items the task does not reference)', () => {
+  describe('Phase 3 — LOW (change adds a deliverable the task is not linked to)', () => {
     let setup: Setup;
     beforeAll(async () => {
       setup = await buildSetup({
@@ -201,14 +300,23 @@ describe('Scenario: structural severity decides what gets paused', () => {
         v1: {
           goal: 'ship the thing',
           scope: 'web',
-          deliverables: ['rest api', 'docs'],
+          deliverables: [
+            { slug: 'rest-api', body: 'rest api spec' },
+            { slug: 'docs', body: 'docs site' },
+          ],
         },
         v2: {
           goal: 'ship the thing', // unchanged
           scope: 'web', // unchanged
-          deliverables: ['rest api', 'docs', 'graphql api'], // adds an item task doesn't ref
+          deliverables: [
+            // Identical content for the linked deliverable; just adds a
+            // new one the task is not linked to. R-154 classifies as 'low'.
+            { slug: 'rest-api', body: 'rest api spec' },
+            { slug: 'docs', body: 'docs site' },
+            { slug: 'graphql-api', body: 'graphql api spec' },
+          ],
         },
-        taskRefs: ['rest api'], // task explicitly references only "rest api"
+        linkedSlugs: ['rest-api'],
       });
     });
     afterAll(async () => {
