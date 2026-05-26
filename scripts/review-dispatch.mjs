@@ -148,9 +148,23 @@ async function removeLabel(label) {
   }
 }
 
-async function createCursorAgent({ prompt, branchName }) {
+async function createCursorAgent({ prompt }) {
   if (!CURSOR_API_KEY) throw new Error('CURSOR_API_KEY not set');
   const auth = Buffer.from(`${CURSOR_API_KEY}:`).toString('base64');
+  // Cursor v1/agents body shape (per https://cursor.com/docs/cloud-agent/api/endpoints):
+  //   { prompt:{text}, repos:[{url,startingRef}], autoCreatePR, [workOnCurrentBranch], [model] }
+  // We rely on the default `workOnCurrentBranch: false` so Cursor auto-
+  // generates a `cursor/...` branch from `startingRef`. The agent's
+  // chosen branch comes back on the response as `result.target.branchName`
+  // (also visible later via `git.branches[]`); we forward whichever the
+  // server returned to the caller via the response object.
+  //
+  // Closes the 2026-05-26 regression: the previous version passed an
+  // explicit `branchName` field, which Cursor's API removed in a recent
+  // breaking change and now rejects with 400 validation_error. The
+  // resulting "Unrecognized key(s) in object: 'branchName'" killed every
+  // dispatch run after issue-auto-triage started feeding the workflow,
+  // even though the trigger PAT (issue 1250) was correctly configured.
   const body = {
     prompt: { text: prompt },
     repos: [
@@ -160,7 +174,6 @@ async function createCursorAgent({ prompt, branchName }) {
       },
     ],
     autoCreatePR: true,
-    branchName,
   };
   if (REVIEW_DISPATCH_MODEL) {
     body.model = { id: REVIEW_DISPATCH_MODEL };
@@ -319,12 +332,19 @@ async function main() {
     return;
   }
 
-  const branchName = `cursor/fix-rf-${ISSUE_NUMBER}-d31d`;
+  // Cursor's `v1/agents` API auto-generates a `cursor/...` branch on
+  // its side; the previous explicit `branchName` field was removed in a
+  // breaking change and is now rejected with 400 validation_error
+  // (see `createCursorAgent`). We compute a *hint* here so the
+  // dry-run / comment paths can still display a stable identifier for
+  // the dispatch, but the agent's actual branch name comes back from
+  // the API response and is what we forward to the issue comment.
+  const branchHint = `cursor/fix-rf-${ISSUE_NUMBER}-d31d`;
   const kind = isCluster ? 'cluster' : 'finding';
   const prompt = buildPrompt(issue, kind);
 
   if (DRY_RUN) {
-    console.log('[dry-run] would dispatch:', { kind, branchName, baseRef: BASE_REF });
+    console.log('[dry-run] would dispatch:', { kind, branchHint, baseRef: BASE_REF });
     console.log('[dry-run] prompt preview:\n' + prompt.slice(0, 500));
     return;
   }
@@ -339,12 +359,12 @@ async function main() {
   // server-side; the local short-circuit above relied on the issue snapshot
   // we fetched at the top. Two truly concurrent runs can both reach this
   // point, but only one will subsequently succeed at the Cursor API
-  // (the second sees a duplicate-branchName conflict).
+  // (the loser sees an upstream conflict).
   await addLabels([LOCK_LABEL]);
 
   let result;
   try {
-    result = await createCursorAgent({ prompt, branchName });
+    result = await createCursorAgent({ prompt });
   } catch (err) {
     // The agent didn't start (HTTP failure). We'd like to release the lock
     // so a re-apply of `cursor:dispatch` auto-retries — BUT a concurrent
@@ -369,6 +389,18 @@ async function main() {
   const agentId = result?.agent?.id || '(unknown)';
   const agentUrl = result?.agent?.url || '(unknown)';
   const runId = result?.run?.id || '(unknown)';
+  // The Cursor API auto-generates the branch and (per current docs at
+  // https://cursor.com/docs/cloud-agent/api/endpoints) surfaces it on
+  // `target.branchName` in the v1 response shape, falling back to
+  // `git.branches[]` after the agent has actually pushed. We accept
+  // either; if Cursor's response evolves further we degrade to the
+  // hint we computed up top so the comment is never blank.
+  const actualBranch =
+    result?.target?.branchName ||
+    result?.agent?.target?.branchName ||
+    result?.run?.target?.branchName ||
+    result?.agent?.git?.branches?.[0] ||
+    `${branchHint} (Cursor auto-assigns; hint shown)`;
 
   await commentIssue(
     [
@@ -377,7 +409,7 @@ async function main() {
       ``,
       `- agent: \`${agentId}\``,
       `- run: \`${runId}\``,
-      `- branch: \`${branchName}\``,
+      `- branch: \`${actualBranch}\``,
       `- base ref: \`${BASE_REF}\``,
       `- watch: ${agentUrl}`,
       ``,
@@ -387,7 +419,7 @@ async function main() {
     ].join('\n'),
   );
 
-  console.log(`Dispatched ${agentId} (run ${runId}) on ${branchName} [${kind}]`);
+  console.log(`Dispatched ${agentId} (run ${runId}) on ${actualBranch} [${kind}]`);
 }
 
 main().catch((err) => {
