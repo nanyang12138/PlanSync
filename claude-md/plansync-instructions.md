@@ -30,14 +30,14 @@ You are working on a project managed by **PlanSync**, an AI team collaboration p
 
 ## During Work
 
-- Call `plansync_execution_start` at the beginning of your work session
+- Call `plansync_run({action:"start", ...})` at the beginning of your work session (R-204; the legacy `plansync_execution_start` alias still works but is deprecated)
 - Follow the constraints and standards from the active plan
 - If you discover the plan has issues, use `plansync_plan_suggest` to propose changes
 - Use `plansync_comment_create` to document decisions and questions
 
 ## After Work
 
-- Call `plansync_execution_complete` with a summary of what you did
+- Call `plansync_run({action:"complete", ...})` with a summary of what you did
 - Update task status via `plansync_task_update`
 
 ## If You Detect Drift

@@ -21,6 +21,7 @@
 import { ApiError } from './api-client';
 import { isRunAborted, RunAbortReason } from './abort-signal';
 import { logger } from './logger';
+import { normalizeRunToolNameForFsm } from './tools/run';
 
 export interface ToolErrorEnvelope {
   isError: true;
@@ -189,7 +190,11 @@ export function isLegacyAbortEnabled(env: NodeJS.ProcessEnv = process.env): bool
  *      mode; in `shadow` mode it logs + allows, in `off` mode it tracks
  *      state silently. See `ExecStateManager.recordToolCall`.
  */
-export function evaluatePreflight(toolName: string, options: ToolWrapperOptions): PreflightResult {
+export function evaluatePreflight(
+  toolName: string,
+  options: ToolWrapperOptions,
+  fsmToolName?: string,
+): PreflightResult {
   const getAbort = options.getRunAbortReason ?? isRunAborted;
   const abort = getAbort();
   if (abort && !isLegacyAbortEnabled()) {
@@ -205,7 +210,11 @@ export function evaluatePreflight(toolName: string, options: ToolWrapperOptions)
   }
 
   if (options.execStateManager) {
-    const fsmResult = options.execStateManager.recordToolCall(toolName);
+    // R-204 — `fsmToolName` is the legacy `plansync_execution_*` name when
+    // the actual call was a `plansync_run({action:..., ...})` invocation,
+    // so the FSM table (which still keys on the legacy names) stays
+    // untouched during the deprecation cycle.
+    const fsmResult = options.execStateManager.recordToolCall(toolName, fsmToolName);
     if (!fsmResult.ok) {
       return { kind: 'short-circuit', response: fsmResult.envelope };
     }
@@ -247,7 +256,11 @@ export function wrapToolHandler<TArgs, TResult>(
     // then left the agent stuck in a "completed" state that no longer
     // permitted the recovery tool calls.
     const preFsmState = options.execStateManager?.getState();
-    const preflight = evaluatePreflight(toolName, options);
+    // R-204 — translate `plansync_run(action, ...)` into the legacy
+    // `plansync_execution_*` name the FSM table still keys on. No-op
+    // for any other tool.
+    const fsmToolName = normalizeRunToolNameForFsm(toolName, args);
+    const preflight = evaluatePreflight(toolName, options, fsmToolName);
     if (preflight.kind === 'short-circuit') {
       return preflight.response;
     }

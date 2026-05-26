@@ -27,7 +27,7 @@ export function buildSystemPrompt(status: ProjectStatus): string {
     '- Create or update tasks → call plansync_task_create or plansync_task_update',
     '- Create a plan → call plansync_plan_propose (then activate separately)',
     '- Resolve drift → call plansync_drift_resolve',
-    '- Start work on a task → plansync_task_pack first, then plansync_execution_start',
+    '- Start work on a task → plansync_task_pack first, then plansync_run({action:"start", ...})',
     '- Always confirm actions with a brief summary after each tool call',
     '',
     'Large plan edits: when adding more than ~20 items to deliverables / constraints / ' +
@@ -566,12 +566,16 @@ export async function runAgentLoop(
         toolSp = null;
       }
 
-      // Auto-launch Genie when execution_start is called
-      if (
-        tc.name === 'plansync_execution_start' &&
-        onExecStart &&
-        !result.startsWith('Tool error')
-      ) {
+      // R-204: auto-launch Genie when an execution-start call is made via
+      // either the new `plansync_run({action:"start", ...})` surface or
+      // the legacy `plansync_execution_start` alias. The deprecated alias
+      // is kept handled for one release so older prompts still work.
+      const isExecStartCall =
+        tc.name === 'plansync_execution_start' ||
+        (tc.name === 'plansync_run' &&
+          typeof (tc.input as Record<string, unknown> | undefined)?.action === 'string' &&
+          (tc.input as Record<string, string>).action === 'start');
+      if (isExecStartCall && onExecStart && !result.startsWith('Tool error')) {
         try {
           const parsed = JSON.parse(result);
           const run = parsed?.data ?? parsed;
