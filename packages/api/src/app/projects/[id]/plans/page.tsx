@@ -41,7 +41,14 @@ export default async function ProjectPlansPage({
     include: {
       reviews: true,
       suggestions: { orderBy: { createdAt: 'desc' } },
-      comments: { orderBy: { createdAt: 'asc' } },
+      // Issue #1256 / R-156 follow-up: the plan-level "Comments" sidebar must
+      // NOT show per-deliverable comments. Those belong to the deliverable
+      // timeline page and have their own focused thread. Without this filter
+      // a comment posted under deliverable X would also surface in the plan
+      // sidebar, breaking the "one discussion per surface" mental model and
+      // duplicating context across views. The deliverable comments still
+      // load via the `[id]/plans/deliverables` route's own Prisma query.
+      comments: { where: { deliverableId: null }, orderBy: { createdAt: 'asc' } },
     },
     orderBy: { version: 'desc' },
   });

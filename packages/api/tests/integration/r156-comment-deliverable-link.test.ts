@@ -300,7 +300,30 @@ describe('R-156: PlanComment.deliverableId per-deliverable thread', () => {
     expect(aReplyBody.data.deliverableId).toBe(deliverableA);
   });
 
-  it('GET /comments (no filter) → returns plan-level + all per-deliverable rows', async () => {
+  it('plan include with `where: { deliverableId: null }` excludes per-deliverable rows — Issue #1256', async () => {
+    // Mirrors the SSR query in `packages/api/src/app/projects/[id]/plans/page.tsx`,
+    // which includes `comments` for the legacy plan-level sidebar. The
+    // include MUST filter `deliverableId IS NULL` so per-deliverable
+    // comments never leak into the sidebar render.
+    const planWithComments = await testPrisma.plan.findUnique({
+      where: { id: planId },
+      include: {
+        comments: { where: { deliverableId: null }, orderBy: { createdAt: 'asc' } },
+      },
+    });
+    expect(planWithComments).not.toBeNull();
+    const sidebarComments = planWithComments!.comments;
+    expect(sidebarComments.length).toBeGreaterThanOrEqual(1);
+    for (const c of sidebarComments) {
+      expect(c.deliverableId).toBeNull();
+    }
+  });
+
+  it('GET /comments (no filter) → only plan-level rows (deliverableId IS NULL) — Issue #1256', async () => {
+    // Regression for #1256: the legacy plan-level Comments sidebar calls
+    // GET /comments without a `deliverableId` query. Per-deliverable rows
+    // must NOT bleed into that response — they have their own focused
+    // thread on the deliverable timeline page.
     const res = await GET(
       makeReq(`/api/projects/${projectId}/plans/${planId}/comments`, { userName: owner }),
       { params: Promise.resolve({ projectId, planId }) },
@@ -308,10 +331,12 @@ describe('R-156: PlanComment.deliverableId per-deliverable thread', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     const items = body.data as Array<{ deliverableId: string | null }>;
-    // Mixed surface: at least one row from A, one from B, and one
-    // plan-level row from the earlier cases.
-    expect(items.some((i) => i.deliverableId === deliverableA)).toBe(true);
-    expect(items.some((i) => i.deliverableId === deliverableB)).toBe(true);
+    // The earlier cases wrote: 2 comments on A, 1 on B, 1 plan-level.
+    // The default (no-filter) listing must include the plan-level row…
     expect(items.some((i) => i.deliverableId === null)).toBe(true);
+    // …and must NOT include any deliverable-anchored row.
+    expect(items.every((i) => i.deliverableId === null)).toBe(true);
+    expect(items.some((i) => i.deliverableId === deliverableA)).toBe(false);
+    expect(items.some((i) => i.deliverableId === deliverableB)).toBe(false);
   });
 });
