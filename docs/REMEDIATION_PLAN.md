@@ -2765,7 +2765,7 @@
 
 #### R-157 [HIGH] GitHub Action drift-gate 升级为语义 gate
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B13
 - **depends_on**: R-150, R-152, R-155
 - **effort**: medium
