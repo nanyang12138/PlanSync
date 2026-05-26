@@ -367,8 +367,8 @@ model PlanComment {
   // default of `SetNull` previously did). Plan deletion still cascades the
   // whole thread away because the `plan` relation above is `Cascade` and
   // Postgres evaluates the cascade for the entire subtree in one statement.
-  parent  PlanComment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  replies PlanComment[] @relation("CommentReplies")
+  parent      PlanComment?     @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  replies     PlanComment[]    @relation("CommentReplies")
 
   @@index([deliverableId])
   @@map("plan_comments")
