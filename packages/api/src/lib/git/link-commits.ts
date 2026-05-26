@@ -11,12 +11,23 @@
  *      `matched_by = 'glob'`, `matched_ref` = the actual file path.
  *
  *   2. The commit message contains `[deliverable:<slug>]` and the slug
- *      resolves to an active deliverable for the same project.
+ *      resolves to one or more active deliverables for the same project.
  *      Recorded with `matched_by = 'message'`, `matched_ref` = the slug.
  *      Message links take priority in downstream consumers — when both
  *      reasons fire for the same (sha, deliverable) the message row is
  *      treated as the dominant signal — but both rows are persisted so
  *      the audit trail keeps every signal.
+ *
+ *      A bare slug is intentionally project-scoped, not plan-version-scoped:
+ *      authors writing commit messages have no reasonable way to know which
+ *      `PlanDeliverable.id` row a slug points at on each plan version, and
+ *      the downstream R-192 evidence gate scopes its lookup by the task's
+ *      `boundPlanVersion`. When the same slug exists on multiple plan
+ *      versions (e.g. an `auth` deliverable carried v1→v2→v3) we therefore
+ *      write one message row PER same-slug deliverable so that tasks on any
+ *      of those versions can pick the evidence up. The unique key
+ *      `(sha, deliverable_id, matched_by)` permits this — the dedupe is
+ *      per `deliverable_id`, not per slug.
  *
  * The function is idempotent: re-delivery of the same GitHub event hits
  * the `(sha, deliverable_id, matched_by)` unique constraint and the
@@ -134,27 +145,30 @@ interface LoadedDeliverable {
 }
 
 /**
- * Load every deliverable visible to the project across all of its plan
- * versions, INCLUDING ones marked `deprecated` by
- * `supersedeDeliverables`. We deliberately don't restrict to the active
- * plan and we deliberately don't drop deprecated rows: a commit landing
- * today may close out a deliverable defined in plan v2 even if plan v3
- * is now active and renamed/dropped it — the link is a statement about
- * the commit, not about the current plan version.
+ * Load every deliverable visible to the project across plan versions
+ * that have been ratified at some point — i.e. parent plan status ∈
+ * ('active', 'superseded'). We deliberately do not restrict to just the
+ * currently-active plan: a commit landing today may close out a
+ * deliverable defined in plan v2 even if plan v3 is now active and
+ * renamed/dropped it — the link is a statement about the commit, not
+ * about the current plan version, and `PlanDeliverable.supersededById`
+ * is the right place to walk the version chain at read time.
  *
- * Why we keep the deprecated rows (closes #1326): when activate fans
- * a plan from v_n → v_{n+1}, `supersedeDeliverables` flips every
- * same-slug old row to `status='deprecated'` and points its
- * `supersededById` at the new row. R-192 scopes its evidence query to
- * the task's `boundPlanVersion`, so a task still pinned to v_n looks
- * up the OLD (now-deprecated) deliverable id when checking for
- * `commit_deliverable_links`. If we filtered deprecated rows out here,
- * the message-tag fan-out (and the same-refUri glob fan-out) would
- * only write rows against the latest version's id, leaving v_n-bound
- * tasks permanently in `awaiting_evidence` even after a tagged commit
- * lands. By loading all versions and walking each match across them
- * the link table records evidence against every concurrently-bound
- * version, which is exactly what R-192's per-version lookup expects.
+ * Plans in `draft` or `proposed` status are excluded on purpose: they
+ * represent unratified intent (a future plan version under review or
+ * still being authored) and any deliverable rows attached to them must
+ * not collect commit evidence. Without this filter, a `[deliverable:foo]`
+ * tag in a commit message would fan out to every plan version that
+ * happens to share the slug `foo`, including a draft plan v3 whose
+ * deliverable card has not been agreed on yet — producing misleading
+ * evidence the moment plan v3 is activated. See review finding for #1286.
+ *
+ * Deliverable rows with `status='deprecated'` are NOT filtered out: when
+ * `supersedeDeliverables` flips an old same-slug row to deprecated and
+ * points its `supersededById` at the successor, R-192 still scopes its
+ * evidence query by the task's `boundPlanVersion`. Tasks pinned to the
+ * old version need the deprecated row's id to appear in
+ * `commit_deliverable_links` to satisfy their gate — see #1326.
  */
 async function loadProjectDeliverables(
   client: Prisma.TransactionClient | PrismaClient,
@@ -162,7 +176,10 @@ async function loadProjectDeliverables(
 ): Promise<LoadedDeliverable[]> {
   const rows = await client.planDeliverable.findMany({
     where: {
-      plan: { projectId },
+      plan: {
+        projectId,
+        status: { in: ['active', 'superseded'] },
+      },
     },
     select: { id: true, slug: true, refUri: true, refType: true },
   });
@@ -232,20 +249,18 @@ export async function linkCommitsFromPushPayload(
 
   const deliverables = await loadProjectDeliverables(client, input.projectId);
   // O(deliverables) lookup keyed by slug for the message-tag path.
-  // Multi-valued because a single slug can appear on multiple plan
-  // versions once `supersedeDeliverables` has fired (each prior version
-  // keeps its own `PlanDeliverable` row, just with `status='deprecated'`
-  // and a `supersededById` pointer). We fan out the link to every row
-  // sharing the slug so tasks pinned to older plan versions can find
-  // evidence (see #1326).
+  // Multi-valued: when the same slug exists on multiple plan versions
+  // (e.g. an `auth` deliverable carried v1→v2→v3) we must fan the
+  // message tag out to every same-slug deliverable. Otherwise tasks
+  // bound to whichever version we did NOT pick would never see
+  // `deliverable_evidence` (R-192 scopes its lookup by
+  // `boundPlanVersion`, so only the deliverable_id on the task's bound
+  // version satisfies that task's gate).
   const bySlug = new Map<string, LoadedDeliverable[]>();
   for (const d of deliverables) {
-    const existing = bySlug.get(d.slug);
-    if (existing) {
-      existing.push(d);
-    } else {
-      bySlug.set(d.slug, [d]);
-    }
+    const list = bySlug.get(d.slug);
+    if (list) list.push(d);
+    else bySlug.set(d.slug, [d]);
   }
 
   const pending: PendingRow[] = [];
@@ -283,12 +298,12 @@ export async function linkCommitsFromPushPayload(
 
     // 2) Message tag match — `[deliverable:<slug>]` wins over glob in
     //    downstream consumers, but we emit both rows so the audit trail
-    //    keeps every signal. We fan out across every version that owns
-    //    this slug (current + superseded ancestors) so tasks pinned to
-    //    an older plan version can also see the evidence (#1326).
+    //    keeps every signal. When the same slug resolves to multiple
+    //    deliverables (cross-plan-version), emit a row for each so a
+    //    task on any of those versions can find its evidence.
     for (const slug of extractMessageSlugs(commit.message)) {
       const matches = bySlug.get(slug);
-      if (!matches) continue;
+      if (!matches || matches.length === 0) continue;
       for (const d of matches) {
         pending.push({
           projectId: input.projectId,

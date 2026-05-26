@@ -194,4 +194,52 @@ describe('R-007 — dispatchDriftNotifications runs only after caller invokes it
     expect(sendMail).not.toHaveBeenCalled();
     expect(eventBus.publishToUser).not.toHaveBeenCalled();
   });
+
+  // Closes #1208 — dispatch must dedupe by taskId before fanning out
+  // notifications. persistDriftAlerts already writes only the
+  // highest-severity row per task (drift_alerts_one_open_per_task);
+  // dispatch must mirror that so SSE / email match the persisted state.
+  // Previously the activate/reactivate routes passed the raw
+  // scanResult.alerts here, which could produce duplicate emails and
+  // surface lower-severity entries that the DB had already collapsed.
+  it('dedupes alerts by taskId so SSE/email match persisted open alerts (#1208)', async () => {
+    (prisma.task.findMany as any).mockResolvedValue([{ id: 't1', title: 'T1', assignee: 'alice' }]);
+    (prisma.projectMember.findMany as any).mockResolvedValue([{ name: 'alice' }]);
+
+    const rawAlerts = [
+      {
+        taskId: 't1',
+        severity: 'low' as const,
+        reason: 'low-severity entry that would be collapsed in DB',
+        currentPlanVersion: 2,
+        taskBoundVersion: 1,
+        hasRunningExecution: false,
+      },
+      {
+        taskId: 't1',
+        severity: 'high' as const,
+        reason: 'high-severity entry — this one wins the persist write',
+        currentPlanVersion: 2,
+        taskBoundVersion: 1,
+        hasRunningExecution: true,
+      },
+    ];
+
+    await dispatchDriftNotifications('p1', rawAlerts);
+
+    // One email per recipient — not two — even though two raw alerts targeted t1.
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    const emailBody = (sendMail as any).mock.calls[0][2] as string;
+    expect(emailBody).toContain('high-severity entry');
+    expect(emailBody).not.toContain('low-severity entry');
+
+    // SSE payload likewise carries only the winning (highest-severity) entry.
+    expect(eventBus.publishToUser).toHaveBeenCalledTimes(1);
+    const ssePayload = (eventBus.publishToUser as any).mock.calls[0][3] as {
+      alerts: Array<{ title: string; reason: string; severity: string }>;
+    };
+    expect(ssePayload.alerts).toHaveLength(1);
+    expect(ssePayload.alerts[0].severity).toBe('high');
+    expect(ssePayload.alerts[0].reason).toContain('high-severity entry');
+  });
 });
