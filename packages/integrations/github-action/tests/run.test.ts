@@ -465,6 +465,193 @@ describe('github-action run()', () => {
 
   // ---- #189 — drift cap should fail the build instead of silently truncating ----
 
+  // ---- R-157 — semantic deliverable gate ----
+
+  it('R-157: fails the build when PR files do not match any active deliverable glob', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'pr-files': 'docs/random.md\npackages/foo/unrelated.ts',
+    });
+    // GET /plans/active
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: { id: 'plan-1', version: 3 } }));
+    // GET /plans/plan-1/deliverables
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(200, {
+        data: [
+          {
+            id: 'd-1',
+            slug: 'api-routes',
+            refType: 'file_glob',
+            refUri: 'packages/api/src/**/*.ts',
+            status: 'active',
+          },
+          {
+            id: 'd-2',
+            slug: 'free-text',
+            refType: 'free',
+            refUri: null,
+            status: 'active',
+          },
+        ],
+      }),
+    );
+
+    const { run } = await import('../index');
+    await run();
+
+    // Only the two semantic-gate fetches happened — drift check was
+    // short-circuited because the gate already failed.
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/plans/active');
+    expect(String(fetchSpy.mock.calls[1][0])).toContain('/deliverables');
+
+    const failed = String(coreMock.setFailed.mock.calls[0]?.[0] ?? '');
+    expect(failed).toMatch(/Modified files are not in scope/);
+    expect(failed).toMatch(/2 unmatched/);
+
+    expect(coreMock.setOutput).toHaveBeenCalledWith('semantic-gate', 'failed');
+    expect(coreMock.setOutput).toHaveBeenCalledWith(
+      'unmatched-files',
+      'docs/random.md\npackages/foo/unrelated.ts',
+    );
+    // R-157 short-circuit clears drift outputs so downstream summaries do
+    // not double-report a confusing "no drift, looks good" alongside the
+    // semantic-gate failure.
+    expect(coreMock.setOutput).toHaveBeenCalledWith('drift-count', '0');
+    expect(coreMock.setOutput).toHaveBeenCalledWith('has-drift', 'false');
+  });
+
+  it('R-157: passes the semantic gate and falls through to the drift check when every PR file matches a glob', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'pr-files': 'packages/api/src/lib/foo.ts,packages/api/src/app/bar.ts',
+    });
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: { id: 'plan-1', version: 3 } }));
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(200, {
+        data: [
+          {
+            id: 'd-1',
+            slug: 'api-routes',
+            refType: 'file_glob',
+            refUri: 'packages/api/src/**/*.ts',
+            status: 'active',
+          },
+          // A deprecated glob must NOT count even if its pattern would match.
+          // Otherwise retired deliverables would silently keep gating PRs.
+          {
+            id: 'd-2',
+            slug: 'old',
+            refType: 'file_glob',
+            refUri: 'packages/api/src/**/*.ts',
+            status: 'deprecated',
+          },
+        ],
+      }),
+    );
+    // Drift check fetches /drifts and returns empty.
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] }));
+
+    const { run } = await import('../index');
+    await run();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(String(fetchSpy.mock.calls[2][0])).toContain('/drifts?status=open');
+    expect(coreMock.setOutput).toHaveBeenCalledWith('semantic-gate', 'passed');
+    expect(coreMock.setOutput).toHaveBeenCalledWith('drift-count', '0');
+    expect(coreMock.setOutput).toHaveBeenCalledWith('has-drift', 'false');
+    expect(coreMock.setFailed).not.toHaveBeenCalled();
+  });
+
+  it('R-157: legacy-mode=true skips the semantic gate entirely', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'pr-files': 'completely/unrelated.txt',
+      'legacy-mode': 'true',
+    });
+    // Only the drift check should fire — no /plans/active call.
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] }));
+
+    const { run } = await import('../index');
+    await run();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/drifts?status=open');
+    expect(coreMock.setOutput).toHaveBeenCalledWith('semantic-gate', 'skipped');
+    expect(coreMock.setFailed).not.toHaveBeenCalled();
+  });
+
+  it('R-157: skips the semantic gate when the active plan has zero file_glob deliverables', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'pr-files': 'anywhere.txt',
+    });
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: { id: 'plan-1', version: 1 } }));
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(200, {
+        data: [{ id: 'd-1', slug: 'free', refType: 'free', refUri: null, status: 'active' }],
+      }),
+    );
+    // Drift check still runs.
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] }));
+
+    const { run } = await import('../index');
+    await run();
+
+    expect(coreMock.setOutput).toHaveBeenCalledWith('semantic-gate', 'skipped');
+    const infos = coreMock.info.mock.calls.map((c) => String(c[0]));
+    expect(infos.some((m) => m.includes('no `file_glob` deliverables'))).toBe(true);
+    expect(coreMock.setFailed).not.toHaveBeenCalled();
+  });
+
+  it('R-157: skips the semantic gate when there is no active plan (404)', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'pr-files': 'anywhere.txt',
+    });
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(404, { error: { message: 'No active plan found' } }),
+    );
+    // Drift check still runs.
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] }));
+
+    const { run } = await import('../index');
+    await run();
+
+    expect(coreMock.setOutput).toHaveBeenCalledWith('semantic-gate', 'skipped');
+    const infos = coreMock.info.mock.calls.map((c) => String(c[0]));
+    expect(infos.some((m) => m.includes('no active plan'))).toBe(true);
+    expect(coreMock.setFailed).not.toHaveBeenCalled();
+  });
+
+  it('R-157: skips the semantic gate when pr-files input is empty', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      // pr-files intentionally omitted
+    });
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] }));
+
+    const { run } = await import('../index');
+    await run();
+
+    // No /plans/active call → semantic gate skipped, drift check ran.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/drifts?status=open');
+    expect(coreMock.setOutput).toHaveBeenCalledWith('semantic-gate', 'skipped');
+  });
+
   it('#189: drift list exceeding DRIFT_PAGE_CAP fails the build (covers the cap branch)', async () => {
     configureInputs({
       'api-url': 'https://plansync.example.com',
