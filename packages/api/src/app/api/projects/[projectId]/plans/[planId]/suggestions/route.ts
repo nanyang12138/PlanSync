@@ -54,17 +54,16 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
       );
     }
 
-    // R-155: if the caller scoped the suggestion to a specific
-    // PlanDeliverable, verify the row exists AND belongs to THIS plan
-    // before writing. Cross-plan or non-existent ids collapse to NOT_FOUND
-    // (no probing surface). Storing the FK without this check would let
-    // any member quietly attach suggestions to arbitrary deliverables.
+    // R-155: when the suggestion targets a specific deliverable, verify
+    // that row lives on the same plan so callers can't probe arbitrary
+    // deliverable ids. NOT_FOUND collapses cross-plan / cross-project
+    // probes into the same response (matches `requirePlanInProject`).
     if (body.deliverableId) {
-      const deliverable = await prisma.planDeliverable.findUnique({
+      const linked = await prisma.planDeliverable.findUnique({
         where: { id: body.deliverableId },
         select: { planId: true },
       });
-      if (!deliverable || deliverable.planId !== params.planId) {
+      if (!linked || linked.planId !== params.planId) {
         throw new AppError(ErrorCode.NOT_FOUND, 'Deliverable not found');
       }
     }

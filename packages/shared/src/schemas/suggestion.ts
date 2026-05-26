@@ -21,16 +21,11 @@ export const createSuggestionSchema = z
     action: suggestionActionSchema,
     value: z.string().min(1),
     reason: z.string().min(1),
-    // R-155: optional pointer to a specific PlanDeliverable. When set,
-    // the suggestion is recorded against that deliverable so the owner
-    // can route per-item proposals (e.g. "rename the OIDC deliverable",
-    // "deprecate the legacy callback ref") without rewriting the whole
-    // `deliverables` array. The deliverable must belong to the plan
-    // being commented on; the API rejects cross-plan references.
-    // Only meaningful when `field === 'deliverables'` — present-with-
-    // any-other-field is allowed at the schema level (for forward
-    // compatibility with future per-item fields) but the API records
-    // it as advisory metadata only.
+    // R-155: optional pointer at a specific PlanDeliverable row this
+    // suggestion is about. Lets an agent target one item ("change refUri on
+    // auth/oidc-callback") rather than rewriting the whole deliverables[]
+    // array. The API verifies the deliverable belongs to the same plan; if
+    // omitted the suggestion behaves exactly as before (field-level patch).
     deliverableId: z.string().min(1).optional(),
   })
   .refine(
@@ -61,6 +56,9 @@ export const suggestionSchema = z.object({
   status: suggestionStatusSchema,
   resolvedBy: z.string().nullable(),
   resolvedComment: z.string().nullable(),
+  // R-155: optional pointer at the specific PlanDeliverable this
+  // suggestion targets. Nullable for legacy/field-level suggestions.
+  deliverableId: z.string().nullable().optional(),
   createdAt: z.coerce.date(),
   resolvedAt: z.coerce.date().nullable(),
   // R-155: optional FK to PlanDeliverable; nullable in DB to preserve

@@ -82,9 +82,10 @@ async function main() {
     'plansync_comment_list',
     'plansync_exec_context',
     'plansync_check_task_conflicts',
-    // R-155: deliverable read-only access (execution agents need to see the
-    // active deliverable set to understand what they're producing; writes
-    // remain owner-only and are intentionally excluded).
+    // R-155: deliverable read-only views — exec-mode agents need to inspect
+    // the structured deliverable rows when reasoning about which file
+    // changes belong to their bound task. Writes stay owner-only via
+    // `requireNotExecScoped` on the API side.
     'plansync_deliverable_list',
     'plansync_deliverable_show',
     // Execution lifecycle
@@ -122,8 +123,10 @@ async function main() {
     'plansync_comment_list',
     'plansync_exec_context',
     'plansync_check_task_conflicts',
-    // R-155: deliverable read-only access (agents reviewing a plan need to
-    // see the deliverable set to write a meaningful review).
+    // R-155: deliverable reads available in delegation mode too. Writes
+    // are owner-only and would fail at the API layer regardless, but
+    // reads are useful when an agent reviews a plan and wants to see
+    // structured deliverables instead of the legacy String[] mirror.
     'plansync_deliverable_list',
     'plansync_deliverable_show',
     // Execution lifecycle

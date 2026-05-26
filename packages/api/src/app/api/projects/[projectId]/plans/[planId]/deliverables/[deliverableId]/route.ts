@@ -1,17 +1,3 @@
-/**
- * R-155: single-deliverable read + update.
- *
- *   GET   — any project member; returns the row including supersededById.
- *   PATCH — owner only, draft plans only.
- *
- * Delete is intentionally NOT exposed. Removing a deliverable from a
- * draft plan should be done via `plansync_plan_update` (rewriting the
- * `deliverables` array via writeBoth) so the legacy String[] column and
- * the split table stay in lockstep. Once a plan is `proposed` or
- * `active`, the supported retire path is `supersede` (link to a new row
- * in a future plan version) — never a hard delete that would break drift
- * attribution and downstream commit-link rows (R-191).
- */
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { authenticate, requireProjectRole, requireNotExecScoped } from '@/lib/auth';
@@ -22,16 +8,28 @@ import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
 import { createActivity } from '@/lib/activity';
 import { requirePlanInProject } from '@/lib/plan-scope';
+import { syncDeliverableArrayMirror } from '@/lib/plan-items';
+
+// R-155 detail route: GET (any member) and PATCH (owner). Both verify the
+// `(projectId, planId, deliverableId)` chain so a developer in project A
+// cannot probe / mutate a deliverable in project B by knowing its row id —
+// same defense as `requirePlanInProject` for plan-scoped routes (R-041).
 
 type Params = {
   params: Promise<{ projectId: string; planId: string; deliverableId: string }>;
 };
 
-async function loadDeliverableInPlan(deliverableId: string, planId: string, projectId: string) {
+async function loadDeliverableInPlan(
+  deliverableId: string,
+  planId: string,
+  projectId: string,
+): Promise<NonNullable<Awaited<ReturnType<typeof prisma.planDeliverable.findUnique>>>> {
   await requirePlanInProject(planId, projectId);
   const row = await prisma.planDeliverable.findUnique({
     where: { id: deliverableId },
   });
+  // Collapse "wrong plan" and "wrong project" into the same NOT_FOUND so
+  // callers cannot probe row ids across plans / projects.
   if (!row || row.planId !== planId) {
     throw new AppError(ErrorCode.NOT_FOUND, 'Deliverable not found');
   }
@@ -62,44 +60,59 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
     if (plan.status !== 'draft') {
       throw new AppError(
         ErrorCode.STATE_CONFLICT,
-        'Only deliverables on draft plans can be edited',
+        'Only deliverables on draft plans can be edited — propose a new plan version instead',
       );
     }
+    const existing = await prisma.planDeliverable.findUnique({
+      where: { id: params.deliverableId },
+    });
+    if (!existing || existing.planId !== params.planId) {
+      throw new AppError(ErrorCode.NOT_FOUND, 'Deliverable not found');
+    }
 
-    const existing = await loadDeliverableInPlan(
-      params.deliverableId,
-      params.planId,
-      params.projectId,
-    );
-
-    // Build a partial update from the validated body. Each optional key
-    // is forwarded only when explicitly present so PATCH semantics stay
-    // clean: `undefined` is "leave alone", `null` (refType / refUri) is
-    // "clear the value". Status updates here are local-only; the
-    // supersede endpoint is the canonical path for cross-version
-    // lifecycle changes.
-    const data: Record<string, unknown> = {};
+    // Build the patch payload. Treat `null` on refType/refUri as "clear",
+    // missing as "leave as-is". status is non-null in the schema so it can
+    // only be set, not cleared (deprecating uses status='deprecated' or the
+    // dedicated supersede route).
+    const data: {
+      title?: string;
+      body?: string;
+      refType?: string | null;
+      refUri?: string | null;
+      status?: string;
+    } = {};
     if (body.title !== undefined) data.title = body.title;
     if (body.body !== undefined) data.body = body.body;
     if (body.refType !== undefined) data.refType = body.refType;
     if (body.refUri !== undefined) data.refUri = body.refUri;
     if (body.status !== undefined) data.status = body.status;
 
-    const updated = await prisma.planDeliverable.update({
-      where: { id: params.deliverableId },
-      data,
+    const updated = await prisma.$transaction(async (tx) => {
+      const row = await tx.planDeliverable.update({
+        where: { id: params.deliverableId },
+        data,
+      });
+      // Title or status changes alter what the legacy String[] mirror
+      // should look like (the mirror stores titles, which double as the
+      // free-text item form). Re-derive after every write so plan_show
+      // and any drift fallback path keep observing a consistent view.
+      if (body.title !== undefined) {
+        await syncDeliverableArrayMirror(params.planId, tx);
+      }
+      return row;
     });
 
     await createActivity({
       projectId: params.projectId,
       type: 'plan_draft_updated',
       actorName: auth.userName,
-      actorType: 'human',
-      summary: `Updated deliverable "${existing.slug}" on Plan v${plan.version}`,
+      actorType: auth.projectMemberType ?? 'human',
+      summary: `Updated deliverable "${updated.slug}" on Plan v${plan.version}`,
       metadata: {
         planId: params.planId,
         deliverableId: updated.id,
-        slug: updated.slug,
+        deliverableSlug: updated.slug,
+        op: 'deliverable_update',
         fields: Object.keys(data),
       },
     });

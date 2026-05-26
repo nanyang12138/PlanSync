@@ -1,66 +1,42 @@
-/**
- * R-155: REST surface for the `PlanDeliverable` table.
- *
- * Routes
- *   GET  /api/projects/:projectId/plans/:planId/deliverables
- *        — any project member: list deliverables on a plan (filterable by
- *          `status` and `refType` so the GitHub Action drift-gate from
- *          R-157 can scope its `file_glob` lookup in one call).
- *   POST /api/projects/:projectId/plans/:planId/deliverables
- *        — owner only, draft plans only: create a new deliverable row.
- *
- * The single-deliverable read/update + supersede live in the sibling
- * `[deliverableId]/route.ts` and `[deliverableId]/supersede/route.ts`
- * files.
- *
- * Owner-only writes: enforced by `requireProjectRole(..., 'owner')` plus
- * `requireNotExecScoped` so an exec-scoped API key from a running task
- * cannot mutate plan structure mid-flight (same posture as plan create /
- * update routes). Draft-only edits: enforced by checking `plan.status`
- * against the same allow-list `append` / `update` use — proposed and
- * active plans are immutable so review and drift v2 stay deterministic.
- */
 import { NextRequest, NextResponse } from 'next/server';
-import { z } from 'zod';
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { authenticate, requireProjectRole, requireNotExecScoped } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
-import { validateBody, validateSearchParams } from '@/lib/validate';
-import {
-  AppError,
-  ErrorCode,
-  createDeliverableSchema,
-  deliverableRefTypeSchema,
-  deliverableStatusSchema,
-} from '@plansync/shared';
+import { validateBody } from '@/lib/validate';
+import { AppError, ErrorCode, createDeliverableSchema } from '@plansync/shared';
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
 import { createActivity } from '@/lib/activity';
 import { requirePlanInProject } from '@/lib/plan-scope';
+import { syncDeliverableArrayMirror } from '@/lib/plan-items';
+
+// R-155: per-deliverable CRUD surface. Each route enforces:
+//   - authenticate + requireProjectRole (read = any member, write = owner).
+//   - requireNotExecScoped on writes so exec-scoped Genie sessions cannot
+//     bypass MCP and rewrite the plan via raw curl (matches the rest of the
+//     plan write paths — same rule as plan PATCH / append / propose).
+//   - the plan must be in `draft` for create/update because rewriting an
+//     active plan's deliverable rows would leak into drift-engine and
+//     diff-against-previous-version logic. Owners who need to change an
+//     active plan must propose a new version (existing flow).
+//
+// `supersede` (R-152's helper, called automatically on activate) is also
+// exposed as an explicit per-row action under `/deliverables/:id/supersede`
+// for the rare cases where an owner wants to retire one item without
+// bumping a plan version.
 
 type Params = { params: Promise<{ projectId: string; planId: string }> };
 
-const listQuerySchema = z.object({
-  status: deliverableStatusSchema.optional(),
-  refType: deliverableRefTypeSchema.optional(),
-});
-
-export async function GET(req: NextRequest, __nextCtx: Params) {
+export async function GET(_req: NextRequest, __nextCtx: Params) {
   const params = await __nextCtx.params;
   try {
-    const auth = await authenticate(req);
+    const auth = await authenticate(_req);
     await requireProjectRole(auth, params.projectId);
     await requirePlanInProject(params.planId, params.projectId);
-    const query = validateSearchParams(req, listQuerySchema);
-
-    const where: { planId: string; status?: string; refType?: string } = {
-      planId: params.planId,
-    };
-    if (query.status) where.status = query.status;
-    if (query.refType) where.refType = query.refType;
 
     const rows = await prisma.planDeliverable.findMany({
-      where,
+      where: { planId: params.planId },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
     });
 
@@ -80,55 +56,51 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
 
     const plan = await requirePlanInProject(params.planId, params.projectId);
     if (plan.status !== 'draft') {
-      // Editing deliverables on a `proposed` or `active` plan would silently
-      // invalidate ongoing reviews and break drift v2 attribution. The
-      // supported path is to draft a new plan version and supersede the
-      // current row via the supersede endpoint instead.
-      throw new AppError(ErrorCode.STATE_CONFLICT, 'Only draft plans can have deliverables added');
+      throw new AppError(
+        ErrorCode.STATE_CONFLICT,
+        'Only draft plans can have deliverables added — propose a new plan version instead',
+      );
     }
 
-    let created;
-    try {
-      created = await prisma.planDeliverable.create({
-        data: {
-          planId: params.planId,
-          slug: body.slug,
-          title: body.title,
-          body: body.body ?? body.title,
-          refType: body.refType ?? 'free',
-          refUri: body.refUri ?? null,
-          status: body.status ?? 'active',
-        },
-      });
-    } catch (err) {
-      // Prisma P2002 on the (plan_id, slug) unique key → 409 STATE_CONFLICT
-      // with a stable message so callers can detect the duplicate. We do not
-      // attempt to leak the underlying constraint name in the message; the
-      // code-level discriminator is enough.
-      if (
-        err &&
-        typeof err === 'object' &&
-        'code' in err &&
-        (err as { code: string }).code === 'P2002'
-      ) {
-        throw new AppError(
-          ErrorCode.STATE_CONFLICT,
-          `Deliverable with slug "${body.slug}" already exists on this plan`,
-        );
+    const created = await prisma.$transaction(async (tx) => {
+      try {
+        const row = await tx.planDeliverable.create({
+          data: {
+            planId: params.planId,
+            slug: body.slug,
+            title: body.title,
+            body: body.body,
+            refType: body.refType ?? 'free',
+            refUri: body.refUri ?? null,
+            status: body.status ?? 'active',
+          },
+        });
+        await syncDeliverableArrayMirror(params.planId, tx);
+        return row;
+      } catch (err) {
+        // (planId, slug) UNIQUE — surface a clean BAD_REQUEST instead of
+        // letting Prisma's P2002 leak through as 500.
+        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+          throw new AppError(
+            ErrorCode.STATE_CONFLICT,
+            `Deliverable slug "${body.slug}" already exists on this plan`,
+          );
+        }
+        throw err;
       }
-      throw err;
-    }
+    });
 
     await createActivity({
       projectId: params.projectId,
       type: 'plan_draft_updated',
       actorName: auth.userName,
-      actorType: 'human',
-      summary: `Added deliverable "${body.slug}" to Plan v${plan.version}`,
+      actorType: auth.projectMemberType ?? 'human',
+      summary: `Added deliverable "${created.slug}" to Plan v${plan.version}`,
       metadata: {
         planId: params.planId,
         deliverableId: created.id,
-        slug: created.slug,
+        deliverableSlug: created.slug,
+        op: 'deliverable_create',
       },
     });
 

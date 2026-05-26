@@ -15,19 +15,17 @@ export function registerSuggestionTools(server: McpServer, api: ApiClient) {
         .describe('set: replace field value, append: add to array, remove: remove from array'),
       value: z.string().describe('The suggested content'),
       reason: z.string().describe('Why this change is needed'),
-      // R-155: scope a deliverables-field suggestion to one PlanDeliverable
-      // row instead of the whole array. The owner UI surfaces this id so the
-      // suggestion can be applied to the specific item (rename, deprecate,
-      // swap refUri) without rewriting the entire `deliverables` list.
-      // Optional + only meaningful when field === 'deliverables'; the API
-      // validates the deliverable belongs to the same plan and rejects
-      // cross-plan references with NOT_FOUND.
+      // R-155: optional pointer at a specific PlanDeliverable row this
+      // suggestion targets. Lets an agent propose "change refUri on
+      // auth/oidc-callback" without rewriting the whole deliverables array.
+      // The API verifies the deliverable belongs to the same plan; omit it
+      // and the suggestion behaves exactly as before (field-level patch).
       deliverableId: z
         .string()
         .optional()
         .describe(
-          'Optional. When field="deliverables", scope the suggestion to one PlanDeliverable id. ' +
-            'Use plansync_deliverable_list to find the id.',
+          'Optional PlanDeliverable row id to scope the suggestion to a single deliverable. ' +
+            'Use plansync_deliverable_list to discover ids. Validated server-side.',
         ),
     },
     async (args) => {

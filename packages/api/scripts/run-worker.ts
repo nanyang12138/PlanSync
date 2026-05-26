@@ -64,19 +64,37 @@ function redactDbUrl(raw: string): string {
   // user:pass before failing the scheme check. Now we always
   // strip everything before the host: parse via the WHATWG URL
   // class and emit `<scheme>://***@<host>:<port>/…` regardless
-  // of scheme; if even WHATWG fails to parse, fall back to the
-  // scheme prefix only — never any chars from the credentials
+  // of scheme; if even WHATWG fails to parse, fall back to a
+  // scheme-free placeholder — never any chars from the credentials
   // segment.
+  //
+  // Closes #1046 — WHATWG `new URL()` happily parses
+  // `alice:s3cret@db/x` (no `://` at all) as a "non-special URL"
+  // with `protocol === 'alice:'` and `hostname === ''`. The pre-fix
+  // success branch would then emit `alice://***@?/…`, leaking the
+  // first colon-separated token from the input — which for any
+  // accidentally-pasted `user:pass@host` shape IS the username.
+  // The same trap caught the catch fallback's `${raw.slice(0,colon)}`,
+  // so both paths needed tightening.
+  //
+  // Hard rule now: only echo the parsed protocol back if the raw
+  // input actually contained `://`. Otherwise we have no idea
+  // whether the leading token is a scheme or a username, and the
+  // safe move is to drop it entirely.
+  if (!raw.includes('://')) {
+    return '[unparseable]';
+  }
   try {
     const u = new URL(raw);
     const port = u.port ? `:${u.port}` : '';
     return `${u.protocol}//***@${u.hostname || '?'}${port}/…`;
   } catch {
-    // Strip any `<scheme>:` prefix; everything after `:` is potentially
-    // credentials/host and must NOT appear in logs.
-    const colon = raw.indexOf(':');
-    if (colon > 0) return `${raw.slice(0, colon)}://[unparseable]`;
-    return '[unparseable]';
+    // We know `://` is in there but WHATWG still rejected it
+    // (e.g. unbalanced IPv6 brackets, empty authority). Echo only
+    // the part BEFORE the first `://` — that's safe because by
+    // construction it cannot contain credentials.
+    const sep = raw.indexOf('://');
+    return `${raw.slice(0, sep)}://[unparseable]`;
   }
 }
 

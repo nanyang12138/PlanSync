@@ -1,17 +1,20 @@
 import { z } from 'zod';
 
-// R-155: structured CRUD schemas for `PlanDeliverable` rows. The
-// `plansync_deliverable_*` MCP tools and the new
-// `/plans/[planId]/deliverables/...` REST routes share these definitions so
-// the wire shape, the MCP tool surface, and the API validation layer cannot
-// drift apart (R-034 schema-drift CI test catches divergence).
+// R-155: shared zod schemas for the per-deliverable CRUD surface introduced
+// alongside the `plansync_deliverable_*` MCP tools. These power both the
+// REST routes under `/api/projects/:projectId/plans/:planId/deliverables/...`
+// and the MCP tool argument shapes, so a schema mismatch between client and
+// server is a build failure.
 //
-// `refType` and `status` are intentionally kept as string enums (not Prisma
-// enums) so a future ref kind (e.g. `figma_file`, `confluence_page`) can be
-// added with a one-migration string CHECK constraint change and a one-line
-// edit here, without an enum-rename migration that would break Prisma type
-// generation across all packages.
+// Why "shared" instead of inlining: R-150 carries the design contract that
+// `refType`, `refUri`, and `status` are CHECK-constrained at the DB layer.
+// Codifying the same enums here keeps the three layers (DB CHECK, Zod input
+// validation, MCP tool description) in lockstep so any future refType
+// addition is a single-PR change rather than a hunt across the repo.
 
+// refType ∈ ('file_glob' | 'api_spec' | 'figma_frame' | 'notion_page' | 'free').
+// Matches the CHECK constraint in `20260523080000_add_plan_items_split` /
+// the R-150 schema commentary; kept in sync with PlanDeliverable.refType.
 export const deliverableRefTypeSchema = z.enum([
   'file_glob',
   'api_spec',
@@ -20,74 +23,64 @@ export const deliverableRefTypeSchema = z.enum([
   'free',
 ]);
 
+// status ∈ ('draft' | 'active' | 'done' | 'deprecated'). Independent of
+// Plan.status — a deliverable can be 'done' while the surrounding plan is
+// still 'active', and the UI/CLI treat that as the per-item lifecycle.
 export const deliverableStatusSchema = z.enum(['draft', 'active', 'done', 'deprecated']);
 
-// Slug shape mirrors the convention used by `slugify()` in
-// `packages/api/src/lib/plan-items.ts`: lowercase, alphanumeric + dashes,
-// optionally namespaced with `/`. A 120-char cap is loose enough for
-// readable namespaces (e.g. `auth/oidc/callback-handler`) but small
-// enough that the unique B-tree index stays compact.
+// Slug constraint mirrors the `slugify(...)` helper in `plan-items.ts` plus
+// allowance for slashes (e.g. `auth/oidc-callback`) so owners can hand-write
+// readable slugs. Length cap matches the soft-cap used by writeBoth (50)
+// with a small headroom for hand-written slugs that need extra qualifiers.
 export const deliverableSlugSchema = z
   .string()
   .min(1)
-  .max(120)
-  .regex(/^[a-z0-9][a-z0-9\-/]*$/, {
-    message: 'slug must be lowercase alphanumeric with - and / (no leading - or /)',
+  .max(80)
+  .regex(/^[a-z0-9][a-z0-9/_-]*$/, {
+    message: 'slug must be lowercase alphanumerics with `/`, `-`, `_` separators',
   });
+
+export const createDeliverableSchema = z.object({
+  slug: deliverableSlugSchema,
+  title: z.string().min(1).max(200),
+  body: z.string().min(1),
+  refType: deliverableRefTypeSchema.optional(),
+  refUri: z.string().min(1).max(2000).nullable().optional(),
+  status: deliverableStatusSchema.optional(),
+});
+
+// PATCH input. All fields optional; refType/refUri/status can be cleared by
+// passing null. Slug is intentionally excluded — slug is a stable identifier
+// once a deliverable lives on a plan version (renaming would silently break
+// the supersede chain that R-152 links via slug). Use supersede + create on
+// the new plan version to "rename" instead.
+export const updateDeliverableSchema = z
+  .object({
+    title: z.string().min(1).max(200).optional(),
+    body: z.string().min(1).optional(),
+    refType: deliverableRefTypeSchema.nullable().optional(),
+    refUri: z.string().max(2000).nullable().optional(),
+    status: deliverableStatusSchema.optional(),
+  })
+  .refine((d) => Object.keys(d).length > 0, {
+    message: 'patch body must contain at least one field',
+  });
+
+// Body for POST .../deliverables/:deliverableId/supersede. Empty by default
+// (the supersede operation only needs the row id from the URL); reserved
+// here so a future `supersededById` override can be added without a route
+// signature change.
+export const supersedeDeliverableSchema = z.object({});
 
 export const deliverableSchema = z.object({
   id: z.string(),
   planId: z.string(),
-  slug: deliverableSlugSchema,
+  slug: z.string(),
   title: z.string(),
   body: z.string(),
   refType: deliverableRefTypeSchema.nullable(),
   refUri: z.string().nullable(),
   status: deliverableStatusSchema,
-  // `supersededById` is the new (current) row that replaced this one when a
-  // newer plan version was activated. Null on the row that is still
-  // current. Walking the chain `supersededBy → supersededBy → …` ends at
-  // the latest version's row.
   supersededById: z.string().nullable(),
   createdAt: z.coerce.date(),
-});
-
-// POST body for creating a deliverable on a `draft` plan. `slug` is
-// caller-provided so the human-readable identifier survives plan rewrites
-// and renames — letting the server auto-generate it would defeat the
-// stability guarantee the entire R-150 design relies on. `body` is
-// optional and defaults to the title at the route layer (consistent with
-// how the dual-write helper populates rows from legacy String[] items).
-export const createDeliverableSchema = z.object({
-  slug: deliverableSlugSchema,
-  title: z.string().min(1).max(500),
-  body: z.string().max(20000).optional(),
-  refType: deliverableRefTypeSchema.optional(),
-  refUri: z.string().max(2000).optional(),
-  status: deliverableStatusSchema.optional(),
-});
-
-// PATCH body. Every field is optional; an empty body is a 400 at the
-// route layer (the route enforces `Object.keys(body).length > 0`). Slug
-// is intentionally NOT updatable here — slugs are stable identifiers and
-// renaming them would silently break drift attribution. To "rename" a
-// deliverable, supersede the old one with a new row carrying the new slug.
-export const updateDeliverableSchema = z
-  .object({
-    title: z.string().min(1).max(500).optional(),
-    body: z.string().max(20000).optional(),
-    refType: deliverableRefTypeSchema.nullable().optional(),
-    refUri: z.string().max(2000).nullable().optional(),
-    status: deliverableStatusSchema.optional(),
-  })
-  .refine((data) => Object.keys(data).length > 0, {
-    message: 'at least one field must be provided',
-  });
-
-// POST body for supersede. `newDeliverableId` must belong to the SAME
-// plan (active version is the common case) and must not already be
-// pointed at by another supersede chain. Both checks are enforced server-
-// side; the schema only validates shape.
-export const supersedeDeliverableSchema = z.object({
-  newDeliverableId: z.string().min(1),
 });

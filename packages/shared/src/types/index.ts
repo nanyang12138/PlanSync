@@ -60,7 +60,16 @@ import {
   driftSeveritySchema,
   driftStatusSchema,
   driftResolveActionSchema,
+  driftResolvedActionSchema,
 } from '../schemas/drift';
+import {
+  deliverableSchema,
+  createDeliverableSchema,
+  updateDeliverableSchema,
+  supersedeDeliverableSchema,
+  deliverableRefTypeSchema,
+  deliverableStatusSchema,
+} from '../schemas/deliverable';
 
 // Common
 export type Pagination = z.infer<typeof paginationSchema>;
@@ -133,6 +142,15 @@ export type DriftType = z.infer<typeof driftTypeSchema>;
 export type DriftSeverity = z.infer<typeof driftSeveritySchema>;
 export type DriftStatus = z.infer<typeof driftStatusSchema>;
 export type DriftResolveAction = z.infer<typeof driftResolveActionSchema>;
+export type DriftResolvedAction = z.infer<typeof driftResolvedActionSchema>;
+
+// PlanDeliverable (R-155)
+export type PlanDeliverable = z.infer<typeof deliverableSchema>;
+export type CreateDeliverable = z.infer<typeof createDeliverableSchema>;
+export type UpdateDeliverable = z.infer<typeof updateDeliverableSchema>;
+export type SupersedeDeliverable = z.infer<typeof supersedeDeliverableSchema>;
+export type DeliverableRefType = z.infer<typeof deliverableRefTypeSchema>;
+export type DeliverableStatus = z.infer<typeof deliverableStatusSchema>;
 
 // Paginated response wrapper
 export interface PaginatedResponse<T> {

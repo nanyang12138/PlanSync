@@ -124,6 +124,46 @@ declare -a CLUSTERS=(
   # at-most-once. The single repo-wide DELETE site for comments is
   # this file (verified by grep).
   "merged|878|880 971|Cluster B13: comment DELETE atomic updateMany + count guard (PR #878, partial-auto-close)"
+  # Cluster B8-partial — PR #874 already shipped the lightweight
+  # task_started event handling that #875 / #907 / #969 ask for.
+  # Verified at packages/client-core/src/stores/run-store.ts:
+  #   - L91-93 STORE_AFFECTING_EVENTS includes 'task_started'
+  #   - L102-108 if the payload carries a full run object, byId is
+  #     updated directly
+  #   - L110-130 if the payload is lightweight (taskId only), the
+  #     store calls this.load(projectId, taskScope) to refetch — the
+  #     refetch path's subsequent setState IS the subscriber
+  #     notification
+  # The header comment at L84-90 explicitly references closes #785
+  # for this exact change. Issues #875 / #907 / #969 are the same
+  # finding from later review passes after PR #874 landed.
+  # (We deliberately do NOT include #970 here — that issue argues
+  # for capturing handleEvent's return value at the registry layer,
+  # which is a design preference the run-store.ts L110-114 comment
+  # explicitly rejects in favour of the refetch path. Keep it open
+  # for owner adjudication.)
+  "merged|874|875 907 969|Cluster B8-partial: RunStore lightweight task_started handling (PR #874, partial-auto-close)"
+  # Cluster B6 — PR #850 + #1025 already shipped the single-tx fix
+  # for the multi-project github webhook outbox path.
+  "merged|850|852 900 968|Cluster B6: webhook multi-project outbox single-tx (PR #850 / #1025)"
+  # Cluster B3 — #1014 was filed against the pre-#1038 snapshot of
+  # wrapToolHandler. PR #1038's R6b commit added isErrorEnvelopeReturn()
+  # + rollbackTo(preFsmState) on the SUCCESS-with-isError-envelope path.
+  "merged|1038|1014|Cluster B3: wrapToolHandler isError envelope FSM rollback (R6b)"
+  # Cluster B19 — PR #1010 already shipped the master-allowlist fix
+  # for heartbeat/complete (PATCH → POST + ?action= query). PR #856 +
+  # the same line in #1010 already fixed the drift-resolve path.
+  "merged|1010|857 906|Cluster B19a: master allowlist heartbeat/complete HTTP method (PATCH→POST)"
+  "merged|856|674 680 685|Cluster B19b: master allowlist drift-resolve route path (drift-alerts→drifts)"
+  # Cluster B4 — PR #876 already extended the exec-state FSM to cover
+  # CONTEXT_LOADED + PACK_FETCHED → execution_complete transitions.
+  "merged|876|877 914 922 974|Cluster B4: exec-state FSM CONTEXT_LOADED/PACK_FETCHED → execution_complete (PR #876)"
+  # Cluster B7-partial — PR #1067 (R-154) replaced the text-hash
+  # drift severity with the deliverable-id graph diff.
+  "merged|1067|884|Cluster B7-partial: drift severity slug-vs-text mismatch (PR #1067 R-154)"
+  # Cluster B18-partial — PR #856 (R-136) shipped the master delegation
+  # reuse window semantics.
+  "merged|856|682 686|Cluster B18-partial: master delegation reuse window (PR #856, R-136)"
 )
 
 close_one() {
