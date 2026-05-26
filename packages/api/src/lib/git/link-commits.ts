@@ -11,12 +11,23 @@
  *      `matched_by = 'glob'`, `matched_ref` = the actual file path.
  *
  *   2. The commit message contains `[deliverable:<slug>]` and the slug
- *      resolves to an active deliverable for the same project.
+ *      resolves to one or more active deliverables for the same project.
  *      Recorded with `matched_by = 'message'`, `matched_ref` = the slug.
  *      Message links take priority in downstream consumers — when both
  *      reasons fire for the same (sha, deliverable) the message row is
  *      treated as the dominant signal — but both rows are persisted so
  *      the audit trail keeps every signal.
+ *
+ *      A bare slug is intentionally project-scoped, not plan-version-scoped:
+ *      authors writing commit messages have no reasonable way to know which
+ *      `PlanDeliverable.id` row a slug points at on each plan version, and
+ *      the downstream R-192 evidence gate scopes its lookup by the task's
+ *      `boundPlanVersion`. When the same slug exists on multiple plan
+ *      versions (e.g. an `auth` deliverable carried v1→v2→v3) we therefore
+ *      write one message row PER same-slug deliverable so that tasks on any
+ *      of those versions can pick the evidence up. The unique key
+ *      `(sha, deliverable_id, matched_by)` permits this — the dedupe is
+ *      per `deliverable_id`, not per slug.
  *
  * The function is idempotent: re-delivery of the same GitHub event hits
  * the `(sha, deliverable_id, matched_by)` unique constraint and the
@@ -232,8 +243,19 @@ export async function linkCommitsFromPushPayload(
 
   const deliverables = await loadProjectDeliverables(client, input.projectId);
   // O(deliverables) lookup keyed by slug for the message-tag path.
-  const bySlug = new Map<string, LoadedDeliverable>();
-  for (const d of deliverables) bySlug.set(d.slug, d);
+  // Multi-valued: when the same slug exists on multiple plan versions
+  // (e.g. an `auth` deliverable carried v1→v2→v3) we must fan the
+  // message tag out to every same-slug deliverable. Otherwise tasks
+  // bound to whichever version we did NOT pick would never see
+  // `deliverable_evidence` (R-192 scopes its lookup by
+  // `boundPlanVersion`, so only the deliverable_id on the task's bound
+  // version satisfies that task's gate).
+  const bySlug = new Map<string, LoadedDeliverable[]>();
+  for (const d of deliverables) {
+    const list = bySlug.get(d.slug);
+    if (list) list.push(d);
+    else bySlug.set(d.slug, [d]);
+  }
 
   const pending: PendingRow[] = [];
   const byCommit: LinkCommitsResult['byCommit'] = [];
@@ -270,18 +292,22 @@ export async function linkCommitsFromPushPayload(
 
     // 2) Message tag match — `[deliverable:<slug>]` wins over glob in
     //    downstream consumers, but we emit both rows so the audit trail
-    //    keeps every signal.
+    //    keeps every signal. When the same slug resolves to multiple
+    //    deliverables (cross-plan-version), emit a row for each so a
+    //    task on any of those versions can find its evidence.
     for (const slug of extractMessageSlugs(commit.message)) {
-      const d = bySlug.get(slug);
-      if (!d) continue;
-      pending.push({
-        projectId: input.projectId,
-        sha,
-        deliverableId: d.id,
-        matchedBy: 'message',
-        matchedRef: slug,
-      });
-      messageHits += 1;
+      const matches = bySlug.get(slug);
+      if (!matches || matches.length === 0) continue;
+      for (const d of matches) {
+        pending.push({
+          projectId: input.projectId,
+          sha,
+          deliverableId: d.id,
+          matchedBy: 'message',
+          matchedRef: slug,
+        });
+        messageHits += 1;
+      }
     }
 
     byCommit.push({ sha, globMatches: globHits, messageMatches: messageHits });
