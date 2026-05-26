@@ -146,6 +146,24 @@ declare -a CLUSTERS=(
   # Cluster B6 — PR #850 + #1025 already shipped the single-tx fix
   # for the multi-project github webhook outbox path.
   "merged|850|852 900 968|Cluster B6: webhook multi-project outbox single-tx (PR #850 / #1025)"
+  # Cluster B3 — #1014 was filed against the pre-#1038 snapshot of
+  # wrapToolHandler. PR #1038's R6b commit added isErrorEnvelopeReturn()
+  # + rollbackTo(preFsmState) on the SUCCESS-with-isError-envelope path.
+  "merged|1038|1014|Cluster B3: wrapToolHandler isError envelope FSM rollback (R6b)"
+  # Cluster B19 — PR #1010 already shipped the master-allowlist fix
+  # for heartbeat/complete (PATCH → POST + ?action= query). PR #856 +
+  # the same line in #1010 already fixed the drift-resolve path.
+  "merged|1010|857 906|Cluster B19a: master allowlist heartbeat/complete HTTP method (PATCH→POST)"
+  "merged|856|674 680 685|Cluster B19b: master allowlist drift-resolve route path (drift-alerts→drifts)"
+  # Cluster B4 — PR #876 already extended the exec-state FSM to cover
+  # CONTEXT_LOADED + PACK_FETCHED → execution_complete transitions.
+  "merged|876|877 914 922 974|Cluster B4: exec-state FSM CONTEXT_LOADED/PACK_FETCHED → execution_complete (PR #876)"
+  # Cluster B7-partial — PR #1067 (R-154) replaced the text-hash
+  # drift severity with the deliverable-id graph diff.
+  "merged|1067|884|Cluster B7-partial: drift severity slug-vs-text mismatch (PR #1067 R-154)"
+  # Cluster B18-partial — PR #856 (R-136) shipped the master delegation
+  # reuse window semantics.
+  "merged|856|682 686|Cluster B18-partial: master delegation reuse window (PR #856, R-136)"
 )
 
 close_one() {
