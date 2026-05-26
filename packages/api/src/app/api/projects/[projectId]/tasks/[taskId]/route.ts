@@ -11,6 +11,7 @@ import { logger } from '@/lib/logger';
 import { auditCrossProjectTaskIfNeeded } from '@/lib/task-scope';
 import { createActivity } from '@/lib/activity';
 import { syncTaskDeliverableLinks } from '@/lib/task-deliverable-links';
+import { deriveTaskCompletionState } from '@/lib/task-state-machine';
 
 type Params = { params: Promise<{ projectId: string; taskId: string }> };
 
@@ -124,6 +125,62 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
             ErrorCode.FORBIDDEN,
             'Only the project owner, the current assignee (for human tasks), or execution_complete can mark a task done.',
           );
+        }
+
+        // R-192 evidence-gate re-check / closes #1342 — guard against the
+        // `awaiting_evidence → in_progress → done` bypass that any non-owner
+        // member could exploit.
+        //
+        // Pre-fix attack:
+        //   1. Agent calls execution_complete; R-192 finds evidence missing
+        //      (PR not merged, deliverable_evidence missing, or drift open)
+        //      so the run finalises as `completed` BUT the task is parked
+        //      in `awaiting_evidence` — that is exactly the gate's "the
+        //      work is not done yet, do not flip" contract.
+        //   2. Any developer-role member then PATCHes `awaiting_evidence →
+        //      in_progress` (allowed by the state machine — comment says
+        //      "owner reopens for more work" but the route never actually
+        //      enforced owner-only on the transition).
+        //   3. Same member PATCHes `in_progress → done`. The `done` check
+        //      above accepts ANY completed run via `hasCompletedRun`, so the
+        //      stale R-192-gated run from step 1 satisfies the proxy and the
+        //      task flips to `done` — completely bypassing the evidence
+        //      requirement that R-192 was designed to enforce.
+        //
+        // The bypass also has shorter variants: `awaiting_evidence → done`
+        // directly, or `awaiting_evidence → blocked → in_progress → done`,
+        // etc. Trying to lock each transition source individually is
+        // whack-a-mole; the real security boundary is the `done` write
+        // itself. We re-run the gate here and reject if R-192 would still
+        // park the task in `awaiting_evidence`. Owners are exempt — they
+        // retain the documented override path ("forward to `done` (owner
+        // override after evidence finally lands)").
+        //
+        // When the gate does not apply at all (no PR url, no deliverable
+        // refs — i.e. legacy / pre-R-192 task), `gateApplied` is false and
+        // we let the existing `hasCompletedRun` / human-self-complete
+        // branches decide as before so projects that never opted into git
+        // wiring are byte-for-byte unaffected.
+        if (!isOwner) {
+          const r192 = await deriveTaskCompletionState({
+            projectId: params.projectId,
+            task: {
+              id: task.id,
+              prUrl: task.prUrl,
+              planDeliverableRefs: task.planDeliverableRefs ?? [],
+              boundPlanVersion: task.boundPlanVersion,
+            },
+          });
+          if (r192.gateApplied && r192.status === 'awaiting_evidence') {
+            throw new AppError(
+              ErrorCode.STATE_CONFLICT,
+              `Cannot mark task done: R-192 evidence gate has ${r192.missing.length} missing signal(s). Supply the evidence (e.g. merge the PR, link a commit to each bound deliverable, resolve open drift) and retry, or ask the project owner to override.`,
+              {
+                code: 'R192_EVIDENCE_MISSING',
+                missing: r192.missing,
+              },
+            );
+          }
         }
       }
     }

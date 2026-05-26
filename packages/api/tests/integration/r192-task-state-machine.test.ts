@@ -62,6 +62,7 @@ import {
   createActivePlan,
   cleanupProject,
   testPrisma,
+  addMember,
 } from '../helpers/request';
 
 const owner = 'r192-owner';
@@ -670,5 +671,214 @@ describe('R-192 recovery: awaiting_evidence has out-transitions (closes #1218 #1
       const after = await testPrisma.task.findUnique({ where: { id: t.id } });
       expect(after?.status).toBe(next);
     }
+  });
+});
+
+// ---------------------------------------------------------------
+// 5. R-192 evidence-gate bypass on PATCH (closes #1342)
+// ---------------------------------------------------------------
+//
+// Pre-fix, a developer-role member could bypass the R-192 evidence gate
+// in two steps:
+//
+//   1. PATCH /tasks/:id { status: 'in_progress' }
+//      Allowed by VALID_STATUS_TRANSITIONS (awaiting_evidence →
+//      in_progress) with no permission check on the source state.
+//   2. PATCH /tasks/:id { status: 'done' }
+//      The route's `hasCompletedRun` proxy was satisfied by the *stale*
+//      R-192-gated completed run from before the parking, so the done
+//      check waved the transition through even though no new evidence
+//      had landed.
+//
+// The fix re-evaluates `deriveTaskCompletionState` inside the done PATCH
+// for non-owner callers and rejects with R192_EVIDENCE_MISSING when the
+// gate would still park the task in `awaiting_evidence`. The owner
+// override path documented in the recovery test above is preserved.
+
+describe('R-192 evidence-gate bypass via PATCH (closes #1342)', () => {
+  const dev = 'r192-dev-1342';
+
+  beforeAll(async () => {
+    await addMember(projectId, dev, 'developer');
+  });
+
+  async function parkInAwaitingEvidence(prUrl: string) {
+    // Build the same "first complete with no merged PR" scenario the
+    // recovery test uses: a task with a prUrl and deliverable evidence,
+    // but the PR webhook never arrived, so R-192 parks it.
+    const task = await newTask({ prUrl });
+    await linkCommitToDeliverable(deliverableA.id, 'aaaabbbbccccddddeeeeffff0000111122223333');
+    const runId = await startRun(task.id);
+    const res = await runActionPost(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}/runs/${runId}?action=complete`, {
+        method: 'POST',
+        userName: owner,
+        body: {
+          status: 'completed',
+          outputSummary: 'first attempt, PR not merged',
+          filesChanged: ['src/r192/foo.ts'],
+          deliverablesMet: [`${deliverableA.slug}: implemented`],
+        },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id, runId }) },
+    );
+    expect(res.status).toBe(200);
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('awaiting_evidence');
+    return { task, runId };
+  }
+
+  it('blocks the awaiting_evidence → in_progress → done bypass for a non-owner', async () => {
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/1342';
+    const { task } = await parkInAwaitingEvidence(prUrl);
+
+    // Step 1: dev PATCH awaiting_evidence → in_progress. The state
+    // machine itself allows this (only `done` carries explicit perm
+    // checks today); we let it through to prove the security boundary
+    // catches at step 2 even if step 1 is reachable.
+    const step1 = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: dev,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(step1.status).toBe(200);
+    const midTask = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(midTask?.status).toBe('in_progress');
+
+    // Step 2: dev PATCH in_progress → done. Pre-fix this returned 200;
+    // post-fix it must 409 with R192_EVIDENCE_MISSING because the PR
+    // has not actually merged yet.
+    const step2 = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: dev,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(step2.status).toBe(409);
+    const errJson = await step2.json();
+    // Convention in this route (matches RUN_STALE_VERSION etc.): the
+    // top-level `error.code` carries the AppError category
+    // (STATE_CONFLICT for a 409) and `error.details.code` carries the
+    // specific sub-code that callers branch on.
+    expect(errJson.error.code).toBe('STATE_CONFLICT');
+    expect(errJson.error.details?.code).toBe('R192_EVIDENCE_MISSING');
+    expect(Array.isArray(errJson.error.details?.missing)).toBe(true);
+    expect(errJson.error.details.missing.map((m: { code: string }) => m.code)).toContain(
+      'pr_merged',
+    );
+
+    // The task must remain in_progress (the failed transition) so we
+    // can prove the write was rejected, not partially applied.
+    const finalTask = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(finalTask?.status).toBe('in_progress');
+  });
+
+  it('blocks the direct awaiting_evidence → done bypass for a non-owner', async () => {
+    // The shortest form of the bypass: skip the in_progress detour and
+    // PATCH straight to done. Same root cause (`hasCompletedRun` honoured
+    // the stale R-192-gated run); same fix catches it.
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/1343';
+    const { task } = await parkInAwaitingEvidence(prUrl);
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: dev,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(409);
+    const errJson = await res.json();
+    expect(errJson.error.code).toBe('STATE_CONFLICT');
+    expect(errJson.error.details?.code).toBe('R192_EVIDENCE_MISSING');
+
+    const finalTask = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(finalTask?.status).toBe('awaiting_evidence');
+  });
+
+  it('still lets a non-owner reach done via PATCH once R-192 actually passes (no regression on legitimate flow)', async () => {
+    // Same setup but this time the PR actually merges between park and
+    // the dev's PATCH. R-192 now returns `done`, so the gate must NOT
+    // block the transition — the security check is about evidence, not
+    // about role.
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/1344';
+    const { task } = await parkInAwaitingEvidence(prUrl);
+    await emitMergedPrEvent(prUrl);
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: dev,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(200);
+    const finalTask = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(finalTask?.status).toBe('done');
+  });
+
+  it('preserves the owner override path even when R-192 still gates the task', async () => {
+    // The owner is explicitly exempt from the R-192 re-check so the
+    // documented "forward to done (owner override after evidence finally
+    // lands)" exit stays usable when the owner intentionally accepts the
+    // work without waiting for the webhook. This must not regress.
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/1345';
+    const { task } = await parkInAwaitingEvidence(prUrl);
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: owner,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(200);
+    const finalTask = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(finalTask?.status).toBe('done');
+  });
+
+  it('leaves legacy tasks (no PR url, no deliverable refs) on their pre-R-192 path', async () => {
+    // gateApplied=false short-circuit: a task with no git wiring must
+    // still be markable done by a non-owner via the existing
+    // `hasCompletedRun` proxy, otherwise the fix would silently break
+    // every legacy project. We exercise the human-self-complete branch
+    // here because it's the simplest non-owner path that doesn't
+    // require staging an ExecutionRun.
+    const legacyAssignee = 'r192-legacy-self-1342';
+    await addMember(projectId, legacyAssignee, 'developer');
+    const legacy = await testPrisma.task.create({
+      data: {
+        projectId,
+        title: 'r192-1342-legacy',
+        type: 'code',
+        priority: 'p1',
+        status: 'in_progress',
+        assignee: legacyAssignee,
+        assigneeType: 'human',
+        boundPlanVersion: planVersion,
+        agentConstraints: [],
+        planDeliverableRefs: [],
+        prUrl: null,
+      },
+    });
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${legacy.id}`, {
+        method: 'PATCH',
+        userName: legacyAssignee,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: legacy.id }) },
+    );
+    expect(res.status).toBe(200);
+    const after = await testPrisma.task.findUnique({ where: { id: legacy.id } });
+    expect(after?.status).toBe('done');
   });
 });
