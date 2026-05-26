@@ -145,13 +145,23 @@ interface LoadedDeliverable {
 }
 
 /**
- * Load every active deliverable visible to the project across all of its
- * plan versions. We deliberately don't restrict to the active plan: a
- * commit landing today may close out a deliverable defined in plan v2
- * even if plan v3 is now active and renamed/dropped it — the link is a
- * statement about the commit, not about the current plan version, and
- * `PlanDeliverable.supersededById` is the right place to walk the
- * version chain at read time.
+ * Load every active deliverable visible to the project across plan
+ * versions that have been ratified at some point — i.e. parent plan
+ * status ∈ ('active', 'superseded'). We deliberately do not restrict to
+ * just the currently-active plan: a commit landing today may close out
+ * a deliverable defined in plan v2 even if plan v3 is now active and
+ * renamed/dropped it — the link is a statement about the commit, not
+ * about the current plan version, and `PlanDeliverable.supersededById`
+ * is the right place to walk the version chain at read time.
+ *
+ * Plans in `draft` or `proposed` status are excluded on purpose: they
+ * represent unratified intent (a future plan version under review or
+ * still being authored) and any deliverable rows attached to them must
+ * not collect commit evidence. Without this filter, a `[deliverable:foo]`
+ * tag in a commit message would fan out to every plan version that
+ * happens to share the slug `foo`, including a draft plan v3 whose
+ * deliverable card has not been agreed on yet — producing misleading
+ * evidence the moment plan v3 is activated. See review finding for #1286.
  */
 async function loadProjectDeliverables(
   client: Prisma.TransactionClient | PrismaClient,
@@ -160,7 +170,10 @@ async function loadProjectDeliverables(
   const rows = await client.planDeliverable.findMany({
     where: {
       status: { not: 'deprecated' },
-      plan: { projectId },
+      plan: {
+        projectId,
+        status: { in: ['active', 'superseded'] },
+      },
     },
     select: { id: true, slug: true, refUri: true, refType: true },
   });
