@@ -337,12 +337,36 @@ jobs:
           # 1) Determine the base-branch tracking state. If the bundle was
           #    tracked at the base of this change, the PR/push must keep it
           #    tracked — otherwise an adversarial delete would silently pass.
+          #
+          # IMPORTANT (closes finding #1283): the `build` job's
+          # `actions/checkout@v4` uses the default shallow clone
+          # (`fetch-depth: 1`), so `$BASE_SHA` is NOT in the local object
+          # store. Without an explicit fetch, `git cat-file -e $BASE_SHA:$REL`
+          # silently fails and we'd treat the base as "bundle not tracked",
+          # bypassing the delete-protection gate added by #1277. We therefore
+          # fetch the base commit on demand and, for the PR path, fail loud
+          # if the fetch does not succeed — silently degrading to
+          # `BASE_HAS_DIST=false` would re-open the exact attack surface this
+          # gate exists to close.
           if [ -n "${BASE_SHA:-}" ]; then
             REF="$BASE_SHA"
+            if ! git cat-file -e "$REF" 2>/dev/null; then
+              if ! git fetch --no-tags --depth=1 origin "$REF" 2>/dev/null; then
+                echo "::error::Could not fetch PR base commit $REF into the local object store; refusing to skip the bundle base-tracking probe. Re-run the job, or configure the build job's checkout with 'fetch-depth: 0' if this persists."
+                exit 1
+              fi
+            fi
           else
+            # push-to-master fallback. Shallow clones don't include HEAD~1
+            # either; deepen by one commit. If that still fails (e.g. initial
+            # commit, no parent exists), skip with a notice — push events are
+            # post-merge and already gated by the PR path above.
             REF="HEAD~1"
+            if ! git cat-file -e "$REF" 2>/dev/null; then
+              git fetch --no-tags --deepen=1 2>/dev/null || true
+            fi
           fi
-          if git cat-file -e "$REF":"$REL" 2>/dev/null; then
+          if [ -n "$REF" ] && git cat-file -e "$REF":"$REL" 2>/dev/null; then
             BASE_HAS_DIST=true
           else
             BASE_HAS_DIST=false
