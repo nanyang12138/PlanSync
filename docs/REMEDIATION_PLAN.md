@@ -2719,7 +2719,7 @@
 
 #### R-154 [HIGH] drift-engine 切换为图 diff：基于 Deliverable.id 而非文本哈希
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B13
 - **depends_on**: R-152, R-153
 - **effort**: medium

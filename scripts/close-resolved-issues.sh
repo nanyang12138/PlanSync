@@ -70,6 +70,45 @@ declare -a CLUSTERS=(
   "open|250|251 252 309|Cluster: Web SSE consumer missing bus_resync_required listener"
   "open|240|175 215|Same finding as #154 — review on in-flight PR #151 (PR-E #240 supersedes)"
   "open|240|177|Same finding as #155 — review on in-flight PR #151 (PR-E #240 supersedes)"
+  # ---- 2026-05-25 triage additions (see docs/MUST_TRIAGE_2026-05-25.md) ----
+  # Cluster K — PR #846 already shipped the AI verifier untrusted-input
+  # sandbox + ai-draft/ai-field tagUntrusted + client.ts 4xx text-mode
+  # fallback. Auto-close didn't fire because:
+  #   - #854's body wrote `Closes #819` ~ `Closes #832` inside backticks
+  #     (GitHub closing-keyword parser ignores code spans).
+  #   - #846's "Closes #819 #820 ... #838" 18-issue line was partially
+  #     processed by GitHub (10 closed, 8 stayed open).
+  # Verified on master: grep -c 'tagUntrusted\|UNTRUSTED_INPUT_PREAMBLE'
+  # packages/api/src/lib/ai/verifier.ts returns 19.
+  "merged|846|820 821 824 825 827 828 831 837|Cluster K: AI verifier untrusted-input sandbox + ai-draft/ai-field + client.ts 4xx fallback (PR #846 / #854 partial-auto-close)"
+  # Cluster L — PR #862 (single-quoted .env literal preservation +
+  # bare \$VAR no longer flagged as unresolved template + redactDbUrl on
+  # all error paths) already shipped on master.
+  # Verified:
+  #   - packages/api/scripts/load-dotenv.ts L82-97 — 'single' quoted
+  #     values bypass expandRefs (closes #863 #910).
+  #   - packages/api/scripts/run-worker.ts L60-80 redactDbUrl WHATWG
+  #     URL parse for all log paths (closes #864 #911 #978).
+  #   - validateDatabaseUrl regex only matches \${VAR} curly form, not
+  #     bare \$VAR (closes #979).
+  "merged|862|863 864 910 911 978 979|Cluster L: load-dotenv single-quote literal + run-worker redactDbUrl + bare \$VAR validation (PR #862, partial #1038)"
+  # Cluster B11 — PR #909 already shipped both fixes that #1001 / #1002
+  # complain about. The reviews were filed against a pre-#909 snapshot
+  # of the test files.
+  # Verified on master:
+  #   - packages/api/tests/unit/r113-email-async-queue.test.ts L270-307
+  #     declares its own local 'localSpawnedChildren: FakeChild[]'
+  #     INSIDE the R8 describe, with an explicit comment that the
+  #     outer describe's 'spawnedChildren' is out of scope (closes
+  #     #1001).
+  #   - packages/api/tests/unit/r113-email-async-queue.test.ts L71
+  #     and r113-email-queue-limit-nan-guard.test.ts L48 build the
+  #     fake 'stdin' as 'new EventEmitter()' which already has '.on()'
+  #     built-in, so child.stdin?.on('error', ...) does NOT throw
+  #     (closes #1002).
+  # Test run on master at 2026-05-25:
+  #   16 / 16 passing across both r113 test files.
+  "merged|909|1001 1002|Cluster B11: r113 email test stale review — both already addressed by PR #909 (localSpawnedChildren naming + EventEmitter-backed fake stdin)"
 )
 
 close_one() {
