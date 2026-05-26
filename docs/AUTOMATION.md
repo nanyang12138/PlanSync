@@ -138,7 +138,7 @@
 
 ### 5. `.github/workflows/issue-auto-triage.yml` — `severity:must` 积压自动分流
 
-**触发**：每天 UTC 04:30 cron + 手动 `workflow_dispatch`（可调 `max_dispatch` / `max_close` / `mode`）。
+**触发**：每 20 分钟 cron（`*/20 * * * *`）+ 手动 `workflow_dispatch`（可调 `max_dispatch` / `max_close` / `mode`）。20 分钟来自一次实测：以默认 `TRIAGE_MAX_DISPATCH=3`/run 计，72 run/天 × 3 = 最多 216 dispatch/天，足以在 ~2 天内消化 400 条积压；如果要进一步加速，临时把 `TRIAGE_MAX_DISPATCH` 调高，**不要再缩短 cron 间隔**（GitHub Actions cron 高峰期会 delay 5–15 分钟，\*/20 是稳定运行的下限）。
 
 **做什么**：跑 `scripts/issue-auto-triage.mjs`，把所有 open 的 `severity:must` issue 分类成五桶并立即执行对应动作：
 

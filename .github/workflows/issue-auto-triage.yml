@@ -35,11 +35,19 @@ name: issue-auto-triage
 
 on:
   schedule:
-    # Daily at 04:30 UTC — slightly after the 02:00 UTC remediation
-    # cron in docs/AUTOMATION.md and 03:00 UTC nightly. Leaves time
-    # for any overnight PR auto-merges to land before we count their
-    # closes-keywords as "resolved".
-    - cron: '30 4 * * *'
+    # Every 20 minutes. The original daily cron was too slow for the
+    # current backlog (~400 open severity:must issues) — at 3
+    # dispatches/run that would take ~3 months to drain. 20-minute
+    # cadence × 3 dispatches/run = up to 216 dispatches/day, which
+    # closes the gap to ~2 days while still leaving the per-run
+    # TRIAGE_MAX_DISPATCH cap as the spend-control knob (lower it
+    # via workflow_dispatch if Cursor API quota gets tight).
+    #
+    # GitHub Actions cron is best-effort and may delay 5-15 min
+    # during peak hours; */20 is a safe interval. We do NOT go below
+    # 5min (the GitHub Actions minimum) and the concurrency: group
+    # below serialises runs so a delayed schedule doesn't double-run.
+    - cron: '*/20 * * * *'
   workflow_dispatch:
     inputs:
       max_dispatch:
