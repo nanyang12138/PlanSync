@@ -14,8 +14,13 @@ use_local_node_runtime
 # without a populated USER environment (cron, minimal CI runner,
 # stripped-down Docker base) writes to and reads from the same
 # directory dev.sh manages. next.config.js looks up
-# PLANSYNC_BUILD_USER → USER → 'shared' in that order.
-export PLANSYNC_BUILD_USER="${PLANSYNC_BUILD_USER:-${USER:-$(whoami)}}"
+# PLANSYNC_BUILD_USER → USER → 'shared' in that order, applying a
+# trim() at every step. resolve_build_user() in build-user.sh mirrors
+# that trim so a whitespace-only env value can't desync the two
+# resolutions (closes #287 #466 #510 #526 #901).
+# shellcheck source=scripts/build-user.sh
+. "$SCRIPT_DIR/build-user.sh"
+export PLANSYNC_BUILD_USER="$(resolve_build_user)"
 export USER="$PLANSYNC_BUILD_USER"
 
 run_local_npm run --workspace=@plansync/shared build

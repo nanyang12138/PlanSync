@@ -62,7 +62,16 @@ fi
 #   3. The fallback chain is the same in every entry point — dev.sh,
 #      build.sh, ad-hoc npm run, cron — so a missing USER never
 #      silently splits the cache anymore.
-export PLANSYNC_BUILD_USER="${PLANSYNC_BUILD_USER:-${USER:-$(whoami)}}"
+# Closes #287 #466 #510 #526 #901 — bash's `:-` only falls back on
+# UNSET or empty; a whitespace-only value (`"   "`) leaks through
+# while next.config.js's `(env || '').trim()` collapses it to the
+# `'shared'` fallback. The two values then diverge and the cache /
+# marker / distDir all split. resolve_build_user() in
+# scripts/build-user.sh implements the JS trim semantics in pure
+# bash so dev.sh, build.sh, and next.config.js agree byte-for-byte.
+# shellcheck source=scripts/build-user.sh
+. "$SCRIPT_DIR/build-user.sh"
+export PLANSYNC_BUILD_USER="$(resolve_build_user)"
 # Keep USER exported too so older tooling that still reads it sees
 # the same resolved value.
 export USER="$PLANSYNC_BUILD_USER"
