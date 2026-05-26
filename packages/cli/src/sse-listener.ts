@@ -239,6 +239,21 @@ export function describeEvent(eventType: string, data: Record<string, unknown>):
       return w(`"${data.title}" assigned to ${data.assignee}`);
     case 'task_completed':
       return w(`"${data.title ?? data.taskId}" done`);
+    case 'task_awaiting_evidence': {
+      // Closes #1231 — PR #1223 introduced this named SSE event when
+      // the R-192 gate parks a task in `awaiting_evidence`. The CLI
+      // listener parses every named event off the stream so the
+      // `handler` already gets it; without a describe case the
+      // notification bar would silently render nothing.
+      const missing = Array.isArray(data.missing)
+        ? (data.missing as Array<{ code?: string } | string>)
+        : [];
+      const codes = missing
+        .map((m) => (typeof m === 'string' ? m : m?.code))
+        .filter((c): c is string => typeof c === 'string' && c.length > 0);
+      const detail = codes.length > 0 ? ` — missing ${codes.join(', ')}` : '';
+      return w(`"${data.title ?? data.taskId}" awaiting evidence${detail}`);
+    }
     case 'task_unassigned':
       return w(`Task unassigned (was: ${data.previousAssignee ?? '?'})`);
     case 'execution_stale':
