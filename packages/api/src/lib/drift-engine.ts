@@ -8,12 +8,12 @@ import { escalateLowConfidence } from './ai-escalation';
 import { eventBus } from './event-bus';
 import { sendMail, userEmail } from './email';
 import {
-  diffPlans,
-  severityForTask,
-  type PlanContent,
+  describeLinkedDeliverableChanges,
+  diffDeliverables,
+  severityForTaskByDeliverables,
+  type DeliverableDiff,
+  type DeliverableLite,
   type Severity,
-  type StructuralDiff,
-  type TaskRefs,
 } from '@plansync/shared';
 
 export interface DriftScanResult {
@@ -53,85 +53,38 @@ function severityToDb(sev: Severity): 'high' | 'medium' | 'low' {
 }
 
 /**
- * Project the Prisma Plan row to the bare `PlanContent` the diff function
- * needs. Stripping the row to the diff-relevant fields here makes it cheap to
- * compare and keeps the contract of the pure functions tight.
- */
-function planContent(plan: {
-  goal: string;
-  scope: string;
-  constraints: string[];
-  standards: string[];
-  deliverables: string[];
-  openQuestions: string[];
-  requiredReviewers: string[];
-}): PlanContent {
-  return {
-    goal: plan.goal,
-    scope: plan.scope,
-    constraints: plan.constraints,
-    standards: plan.standards,
-    deliverables: plan.deliverables,
-    openQuestions: plan.openQuestions,
-    requiredReviewers: plan.requiredReviewers,
-  };
-}
-
-function refsFromTask(task: {
-  planDeliverableRefs: string[];
-  planConstraintRefs?: string[] | null;
-  planStandardRefs?: string[] | null;
-  // R-153: link rows shipped via Prisma `include` from runDriftScan. When
-  // present (length > 0), the linked deliverables' *current* slugs win over
-  // the legacy `planDeliverableRefs: String[]` column — that's the whole
-  // point of the link table, surviving slug renames inside the same plan
-  // version. Tasks that pre-date the migration (no links yet) fall through
-  // to the legacy slug array unchanged.
-  deliverableLinks?: Array<{ deliverable: { slug: string } }> | null;
-}): TaskRefs {
-  const linkedSlugs = task.deliverableLinks?.map((l) => l.deliverable.slug) ?? [];
-  return {
-    planDeliverableRefs: linkedSlugs.length > 0 ? linkedSlugs : task.planDeliverableRefs,
-    // The schema columns default to `[]`; the classifier treats both `[]`
-    // and `null` as the conservative "depends on all" sentinel so tasks
-    // that pre-date the migration (or whose owner has not explicitly
-    // narrowed the refs) still pause on any constraint / standard change.
-    // Owners narrowing per task is what unlocks the sharper severity.
-    planConstraintRefs: task.planConstraintRefs ?? null,
-    planStandardRefs: task.planStandardRefs ?? null,
-  };
-}
-
-/**
  * Scan the project for tasks bound to a now-superseded plan version and emit
- * one alert per task. Severity is derived from the **structural** difference
- * between the task's bound plan content and the newly activated plan content
- * (see `severityForTask`), not from the task's status.
+ * one alert per task. Severity is derived from the **deliverable-id-based**
+ * diff between the task's bound plan and the newly activated plan (R-154):
+ * which PlanDeliverable rows were removed, modified (body/refUri/title),
+ * added, or unchanged — keyed by the stable row id, not by text hashing.
  *
- * The previous heuristic (severity=high iff a run is currently running)
- * conflated "user-facing urgency" with "does the change actually affect this
- * task". A goal change to an unrelated deliverable used to read as 'high'
- * just because an agent happened to be mid-execution; that bred alert
- * fatigue. Now:
+ * Before R-154 the engine used a text-hash diff over the legacy `Plan.*`
+ * String[] columns and treated every plan change (goal, scope, constraints,
+ * standards) as a severity driver. That bred alert fatigue: a typo fix in
+ * the goal field paused every running task in the project. R-154 narrows
+ * the contract:
  *
- *   - 'high'   ↔ structural 'breaking'   — task's goal / referenced
- *     deliverable / referenced constraint changed. The task's contract is
- *     broken; a running run must be paused.
- *   - 'medium' ↔ structural 'medium'     — scope or referenced standard
- *     changed. The task should re-orient but the deliverables it owns are
- *     intact.
- *   - 'low'    ↔ structural 'low'        — nothing the task references
- *     changed. Informational; running runs are NOT paused (see
- *     `persistDriftAlerts`).
+ *   - 'high'   — a deliverable the task is linked to (via the R-153
+ *     `task_deliverable_links` table) was REMOVED, or its `body` was
+ *     changed. The task's contract is broken; a running run must be
+ *     paused.
+ *   - 'medium' — a linked deliverable's `refUri` changed but `body` is
+ *     intact. The task should re-orient (e.g. the file glob moved) but
+ *     the deliverable text the agent has been reading is unchanged.
+ *   - 'low'    — a linked deliverable's `title` is the only field that
+ *     changed, OR no linked deliverable appears in the diff, OR the task
+ *     has no link rows at all (R-154 step 3 — explicit opt-out from
+ *     drift fatigue for tasks that have not declared what they depend on).
  *
- * The "is there a running run" signal is preserved on the alert as a
- * separate field `hasRunningExecution` for the pause rule downstream — it no
- * longer drives severity.
+ * The "is there a running run" signal is preserved on the alert as the
+ * separate field `hasRunningExecution` for the pause rule downstream — it
+ * does not drive severity.
  *
- * Fallback: if the activated plan or any bound-plan row is missing (very
- * unusual — would mean the row was hard-deleted while the activate
- * transaction was in flight), we cannot compute a structural diff for that
- * task. We emit an alert with severity='high' and a clearly-labelled
+ * Fallback: if the activated plan row or any bound-plan row is missing
+ * (very unusual — would mean the row was hard-deleted while the activate
+ * transaction was in flight), we cannot compute a deliverable diff for
+ * that task. We emit an alert with severity='high' and a clearly-labelled
  * fallback reason so the operator notices and the safer side of the choice
  * (block the task) takes effect.
  */
@@ -150,10 +103,12 @@ export async function runDriftScan(
       executionRuns: {
         where: { status: 'running' },
       },
-      // R-153: pull link rows alongside the task so `refsFromTask` can prefer
-      // the linked deliverable slugs (which reflect the *current* slug after
-      // any owner rename) over the cached `planDeliverableRefs` column.
-      deliverableLinks: { include: { deliverable: { select: { slug: true } } } },
+      // R-153: pull link rows alongside the task so the R-154 severity
+      // classifier can look up "did the deliverable I link to appear in
+      // the diff?" without a second round-trip.
+      deliverableLinks: {
+        include: { deliverable: { select: { id: true, slug: true } } },
+      },
     },
   });
 
@@ -165,29 +120,60 @@ export async function runDriftScan(
     where: { projectId, version: newPlanVersion },
   });
 
-  // Group tasks by their bound version so we compute one diff per (old, new)
-  // pair, no matter how many tasks reference each old version. With N tasks
-  // distributed across K old versions, this is K AI-free hash comparisons,
-  // not N.
+  // Group tasks by their bound version so we compute one deliverable diff
+  // per (old, new) pair, regardless of how many tasks share an old version.
   const oldVersions = Array.from(new Set(tasks.map((t) => t.boundPlanVersion)));
   const oldPlans = await tx.plan.findMany({
     where: { projectId, version: { in: oldVersions } },
   });
   const oldPlanByVersion = new Map(oldPlans.map((p) => [p.version, p]));
 
-  const diffByVersion = new Map<number, StructuralDiff | null>();
+  // R-154: fetch PlanDeliverable rows for every plan version involved
+  // (old versions + the newly activated one) in a single query, then group
+  // by planId so `diffDeliverables` can be called once per (old, new) pair.
+  const allPlanIds = [...oldPlans.map((p) => p.id), ...(newPlan ? [newPlan.id] : [])];
+  const allDeliverables =
+    allPlanIds.length > 0
+      ? await tx.planDeliverable.findMany({
+          where: { planId: { in: allPlanIds } },
+          select: {
+            id: true,
+            planId: true,
+            slug: true,
+            title: true,
+            body: true,
+            refUri: true,
+          },
+        })
+      : [];
+
+  const deliverablesByPlanId = new Map<string, DeliverableLite[]>();
+  for (const d of allDeliverables) {
+    const list = deliverablesByPlanId.get(d.planId) ?? [];
+    list.push({
+      id: d.id,
+      slug: d.slug,
+      title: d.title,
+      body: d.body,
+      refUri: d.refUri,
+    });
+    deliverablesByPlanId.set(d.planId, list);
+  }
+  // Maintain a flat id → slug lookup for the human-readable reason builder
+  // below; saves another map per alert.
+  const slugById = new Map<string, string>();
+  for (const d of allDeliverables) slugById.set(d.id, d.slug);
+
+  const newPlanDeliverables = newPlan ? (deliverablesByPlanId.get(newPlan.id) ?? []) : [];
+
+  const diffByOldVersion = new Map<number, DeliverableDiff | null>();
   if (newPlan) {
-    const newContent = planContent(newPlan);
     for (const ov of oldVersions) {
       const oldPlan = oldPlanByVersion.get(ov);
-      diffByVersion.set(
+      const oldDeliverables = oldPlan ? (deliverablesByPlanId.get(oldPlan.id) ?? []) : [];
+      diffByOldVersion.set(
         ov,
-        oldPlan
-          ? diffPlans(
-              { ...planContent(oldPlan), version: ov },
-              { ...newContent, version: newPlanVersion },
-            )
-          : null,
+        oldPlan ? diffDeliverables(oldDeliverables, newPlanDeliverables) : null,
       );
     }
   }
@@ -196,19 +182,32 @@ export async function runDriftScan(
 
   for (const task of tasks) {
     const hasRunningExecution = task.executionRuns.length > 0;
-    const diff = newPlan ? diffByVersion.get(task.boundPlanVersion) : null;
+    const diff = newPlan ? diffByOldVersion.get(task.boundPlanVersion) : null;
 
-    let structuralSeverity: Severity | undefined;
+    let structuralSeverity: Severity;
     let reason: string;
     if (diff) {
-      structuralSeverity = severityForTask(refsFromTask(task), diff);
-      const changedFields = Array.from(new Set(diff.changes.map((c) => c.field))).join(', ');
+      const linkedIds = task.deliverableLinks.map((l) => l.deliverable.id);
+      structuralSeverity = severityForTaskByDeliverables(linkedIds, diff);
       const runSuffix = hasRunningExecution ? ' (run currently in flight)' : '';
-      reason = `Task "${task.title}" bound to v${task.boundPlanVersion}, now v${newPlanVersion}. Changed: ${changedFields || '(no diff)'} — ${structuralSeverity} for this task${runSuffix}.`;
+      const changedSummary = describeLinkedDeliverableChanges(linkedIds, diff, slugById);
+      const baseLine = `Task "${task.title}" bound to v${task.boundPlanVersion}, now v${newPlanVersion}.`;
+      if (changedSummary) {
+        reason = `${baseLine} Linked deliverable changes: ${changedSummary} — ${structuralSeverity} for this task${runSuffix}.`;
+      } else if (linkedIds.length === 0) {
+        // R-154 step 3 — no link rows ⇒ no basis to alert. We still emit
+        // the row at severity='low' so the activity log shows the version
+        // bump happened, but the gate/pause rules in `persistDriftAlerts`
+        // skip low-severity entries.
+        reason = `${baseLine} Task has no deliverable links; treating as ${structuralSeverity} (no alert-worthy impact).`;
+      } else {
+        reason = `${baseLine} Linked deliverables unchanged by this version — ${structuralSeverity} for this task${runSuffix}.`;
+      }
     } else {
-      // Fall back to a conservative 'high' if we cannot compute a structural
-      // diff (e.g. the bound plan row was hard-deleted). Operator sees the
-      // alert; pause-runs fires; nothing slips through silently.
+      // Fall back to a conservative 'high' if we cannot compute a
+      // deliverable diff (e.g. the bound plan row was hard-deleted).
+      // Operator sees the alert; pause-runs fires; nothing slips through
+      // silently.
       structuralSeverity = 'breaking';
       reason = `Task "${task.title}" bound to v${task.boundPlanVersion} (plan row missing); cannot compute structural diff. Treating as breaking change.`;
     }
