@@ -359,6 +359,65 @@ describe('R-192: deriveTaskCompletionState', () => {
     expect(altResult.missing.map((m) => m.code)).not.toContain('deliverable_evidence');
   });
 
+  it('short-circuits with gateApplied=false on a legacy task (no prUrl, no refs) even when the project has githubRepo set (closes #1197)', async () => {
+    // Regression for #1197: enabling GitHub integration on a project
+    // (i.e. setting `project.githubRepo`) must NOT retroactively trap
+    // every old task that never had a prUrl or planDeliverableRefs.
+    // The R-192 gate is per-task opt-in — a task that carries no git
+    // wiring of its own falls back to legacy "always done" so the
+    // owner can migrate one task at a time.
+    //
+    // The shared fixture project here already has `githubRepo` set
+    // (see beforeAll) so this asserts the buggy interaction directly.
+    const legacy = await testPrisma.task.create({
+      data: {
+        projectId,
+        title: 'r192-legacy-pre-github',
+        type: 'code',
+        priority: 'p1',
+        status: 'in_progress',
+        assignee: agentName,
+        assigneeType: 'agent',
+        boundPlanVersion: planVersion,
+        agentConstraints: [],
+        planDeliverableRefs: [],
+        prUrl: null,
+      },
+    });
+    const result = await deriveTaskCompletionState({
+      projectId,
+      task: { id: legacy.id, prUrl: null, planDeliverableRefs: [] },
+    });
+    expect(result.gateApplied).toBe(false);
+    expect(result.status).toBe('done');
+    expect(result.missing).toEqual([]);
+  });
+
+  it('still fires the gate when the task has refs but no prUrl (per-task opt-in is not "off when prUrl missing")', async () => {
+    // Counterpart to the legacy case above: a task that opted in to
+    // git wiring via planDeliverableRefs (even without a prUrl yet)
+    // must still be gated, otherwise the fix would silently disable
+    // the R-192 enforcement that R-192 was designed to provide. Here
+    // the task has refs but no prUrl + no commit evidence + no merged
+    // PR — both pr_merged and deliverable_evidence must surface as
+    // missing.
+    const task = await newTask({ prUrl: null, refs: [deliverableA.slug] });
+    const result = await deriveTaskCompletionState({
+      projectId,
+      task: {
+        id: task.id,
+        prUrl: null,
+        planDeliverableRefs: task.planDeliverableRefs,
+        boundPlanVersion: planVersion,
+      },
+    });
+    expect(result.gateApplied).toBe(true);
+    expect(result.status).toBe('awaiting_evidence');
+    const codes = result.missing.map((m) => m.code);
+    expect(codes).toContain('pr_merged');
+    expect(codes).toContain('deliverable_evidence');
+  });
+
   it('short-circuits with gateApplied=false when neither task nor project carries git wiring', async () => {
     // Create a brand-new project with no githubRepo set, then assert
     // the gate stays silent so legacy flows keep their always-done
