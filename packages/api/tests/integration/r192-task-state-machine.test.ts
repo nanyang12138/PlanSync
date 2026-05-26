@@ -1313,32 +1313,6 @@ describe('R-192: awaiting_evidence → done PATCH is owner-only (closes #1227 #1
 });
 
 // ---------------------------------------------------------------
-// 6. R-192 awaiting_evidence → in_progress|blocked is owner-or-assignee
-//    (closes #1429 — third-party bypass of PR #1428's cancel gate)
-// ---------------------------------------------------------------
-//
-// PR #1428 added an owner-or-assignee gate for the direct
-// `awaiting_evidence → cancelled` PATCH (closes #1426). The gate is
-// bypassable on its own because the other two non-`done` exits out of
-// `awaiting_evidence` (`→ in_progress`, `→ blocked`) carry no identity
-// check on master — any project member can flip the parked task out of
-// `awaiting_evidence` first, then run `in_progress → cancelled` (or
-// `blocked → in_progress → cancelled`) where the owner-or-assignee gate
-// no longer fires because the source state is no longer
-// `awaiting_evidence`. This describe pins the fix: the same
-// owner-or-assignee gate now also covers the in_progress / blocked
-// exits, so the bypass is rejected at step 1 and the parked task stays
-// parked.
-
-describe('R-192: awaiting_evidence → in_progress|blocked is owner-or-assignee only (closes #1429)', () => {
-  const thirdParty = 'r1429-third-party';
-  const humanAssignee = 'r1429-human-assignee';
-
-  beforeAll(async () => {
-    await testPrisma.projectMember.upsert({
-      where: { projectId_name: { projectId, name: thirdParty } },
-      update: { role: 'developer', type: 'human' },
-      create: { projectId, name: thirdParty, role: 'developer', type: 'human' },
 // 6. R-192 awaiting_evidence → cancelled is owner-or-assignee only
 //    (closes #1431)
 // ---------------------------------------------------------------
@@ -1376,8 +1350,6 @@ describe('R-192: awaiting_evidence → cancelled is owner-or-assignee only (clos
     });
   });
 
-  async function parkedAgentTask(prSuffix: number) {
-    const prUrl = `https://github.com/plansync-test/r192-repo/pull/${1429000 + prSuffix}`;
   it('rejects a non-owner non-assignee developer cancelling an agent-assigned parked task', async () => {
     const prUrl = 'https://github.com/plansync-test/r192-repo/pull/700';
     const task = await newTask({ prUrl });
@@ -1385,31 +1357,10 @@ describe('R-192: awaiting_evidence → cancelled is owner-or-assignee only (clos
       where: { id: task.id },
       data: { status: 'awaiting_evidence' },
     });
-    // Mirror the real "parked" shape: an old completed run is always on
-    // file when a task is in `awaiting_evidence`.
-    await testPrisma.executionRun.create({
-      data: {
-        taskId: task.id,
-        status: 'completed',
-        executorType: 'agent',
-        executorName: agentName,
-        boundPlanVersion: planVersion,
-        taskPackSnapshot: {},
-        startedAt: new Date(Date.now() - 60_000),
-        endedAt: new Date(),
-      },
-    });
-    return task;
-  }
-
-  it('rejects a third-party developer PATCHing awaiting_evidence → in_progress (the bypass step 1)', async () => {
-    const task = await parkedAgentTask(1);
 
     const res = await taskPatch(
       makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
         method: 'PATCH',
-        userName: thirdParty,
-        body: { status: 'in_progress' },
         userName: otherDeveloper,
         body: { status: 'cancelled' },
       }),
@@ -1417,17 +1368,12 @@ describe('R-192: awaiting_evidence → cancelled is owner-or-assignee only (clos
     );
     expect(res.status).toBe(403);
     const json = await res.json();
-    expect(JSON.stringify(json)).toMatch(/owner or task assignee/i);
-
-    // Task must remain parked — the bypass chain is rejected at step 1.
     expect(JSON.stringify(json)).toMatch(/owner|assignee/i);
 
     const after = await testPrisma.task.findUnique({ where: { id: task.id } });
     expect(after?.status).toBe('awaiting_evidence');
   });
 
-  it('rejects a third-party developer PATCHing awaiting_evidence → blocked (the bypass step 1, blocked variant)', async () => {
-    const task = await parkedAgentTask(2);
   it('rejects another agent (not the assignee) cancelling a parked task', async () => {
     const prUrl = 'https://github.com/plansync-test/r192-repo/pull/701';
     const task = await newTask({ prUrl });
@@ -1439,8 +1385,6 @@ describe('R-192: awaiting_evidence → cancelled is owner-or-assignee only (clos
     const res = await taskPatch(
       makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
         method: 'PATCH',
-        userName: thirdParty,
-        body: { status: 'blocked' },
         userName: otherAgent,
         body: { status: 'cancelled' },
       }),
@@ -1452,11 +1396,6 @@ describe('R-192: awaiting_evidence → cancelled is owner-or-assignee only (clos
     expect(after?.status).toBe('awaiting_evidence');
   });
 
-  it('allows the agent assignee to PATCH awaiting_evidence → in_progress (legitimate self-resume)', async () => {
-    // The agent assignee resuming their own parked task is the
-    // canonical legitimate use of this transition (alongside owner
-    // reopening). Make sure the new gate does not regress it.
-    const task = await parkedAgentTask(3);
   it('allows the assignee (agent) to cancel their own parked task', async () => {
     const prUrl = 'https://github.com/plansync-test/r192-repo/pull/702';
     const task = await newTask({ prUrl });
@@ -1469,7 +1408,6 @@ describe('R-192: awaiting_evidence → cancelled is owner-or-assignee only (clos
       makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
         method: 'PATCH',
         userName: agentName,
-        body: { status: 'in_progress' },
         body: { status: 'cancelled' },
       }),
       { params: Promise.resolve({ projectId, taskId: task.id }) },
@@ -1477,19 +1415,6 @@ describe('R-192: awaiting_evidence → cancelled is owner-or-assignee only (clos
     expect(res.status).toBe(200);
 
     const after = await testPrisma.task.findUnique({ where: { id: task.id } });
-    expect(after?.status).toBe('in_progress');
-  });
-
-  it('allows a human assignee to PATCH awaiting_evidence → blocked on their own task', async () => {
-    // Sibling regression for the assignee path: a human assignee
-    // marking their own parked task `blocked` (drift / external block
-    // landed while they were trying to round up evidence) is a
-    // documented legitimate exit and must remain allowed.
-    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/1429004';
-    const task = await testPrisma.task.create({
-      data: {
-        projectId,
-        title: 'r1429-human-blocked',
     expect(after?.status).toBe('cancelled');
   });
 
@@ -1515,7 +1440,6 @@ describe('R-192: awaiting_evidence → cancelled is owner-or-assignee only (clos
       makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
         method: 'PATCH',
         userName: humanAssignee,
-        body: { status: 'blocked' },
         body: { status: 'cancelled' },
       }),
       { params: Promise.resolve({ projectId, taskId: task.id }) },
@@ -1523,17 +1447,6 @@ describe('R-192: awaiting_evidence → cancelled is owner-or-assignee only (clos
     expect(res.status).toBe(200);
 
     const after = await testPrisma.task.findUnique({ where: { id: task.id } });
-    expect(after?.status).toBe('blocked');
-  });
-
-  it('allows the project owner to PATCH awaiting_evidence → in_progress (owner administrative override)', async () => {
-    // Belt-and-braces: the original R-192 recovery story explicitly
-    // documents owner-reopens-for-more-work as a legitimate exit, and
-    // the suite at "R-192 recovery" already covers this — but we
-    // re-assert here under the #1429 describe so the new gate's
-    // owner-allow branch is exercised next to its developer-reject
-    // siblings.
-    const task = await parkedAgentTask(5);
     expect(after?.status).toBe('cancelled');
   });
 
@@ -1549,7 +1462,6 @@ describe('R-192: awaiting_evidence → cancelled is owner-or-assignee only (clos
       makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
         method: 'PATCH',
         userName: owner,
-        body: { status: 'in_progress' },
         body: { status: 'cancelled' },
       }),
       { params: Promise.resolve({ projectId, taskId: task.id }) },
@@ -1557,34 +1469,6 @@ describe('R-192: awaiting_evidence → cancelled is owner-or-assignee only (clos
     expect(res.status).toBe(200);
 
     const after = await testPrisma.task.findUnique({ where: { id: task.id } });
-    expect(after?.status).toBe('in_progress');
-  });
-
-  it('rejects the full bypass chain at step 1 so the third party never reaches `in_progress → cancelled`', async () => {
-    // Reproduce the exact #1429 bypass shape end-to-end:
-    //   1. third party PATCHes awaiting_evidence → in_progress  ← must reject
-    //   2. (if step 1 succeeded) third party PATCHes in_progress → cancelled
-    //
-    // The fix closes step 1, so the chain never reaches step 2. We do
-    // not assert anything about step 2 here — the contract is that
-    // step 1 is unreachable.
-    const task = await parkedAgentTask(6);
-
-    const step1 = await taskPatch(
-      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
-        method: 'PATCH',
-        userName: thirdParty,
-        body: { status: 'in_progress' },
-      }),
-      { params: Promise.resolve({ projectId, taskId: task.id }) },
-    );
-    expect(step1.status).toBe(403);
-
-    // The task is still parked — `in_progress → cancelled` is no
-    // longer reachable from this caller because the source state
-    // never moved.
-    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
-    expect(after?.status).toBe('awaiting_evidence');
     expect(after?.status).toBe('cancelled');
   });
 
@@ -1623,5 +1507,208 @@ describe('R-192: awaiting_evidence → cancelled is owner-or-assignee only (clos
 
     const after = await testPrisma.task.findUnique({ where: { id: task.id } });
     expect(after?.status).toBe('cancelled');
+  });
+});
+
+// ---------------------------------------------------------------
+// 6. R-192 awaiting_evidence → in_progress|blocked is owner-or-assignee
+//    (closes #1429 — third-party bypass of PR #1428's cancel gate)
+// ---------------------------------------------------------------
+//
+// PR #1428 added an owner-or-assignee gate for the direct
+// `awaiting_evidence → cancelled` PATCH (closes #1426). The gate is
+// bypassable on its own because the other two non-`done` exits out of
+// `awaiting_evidence` (`→ in_progress`, `→ blocked`) carry no identity
+// check on master — any project member can flip the parked task out of
+// `awaiting_evidence` first, then run `in_progress → cancelled` (or
+// `blocked → in_progress → cancelled`) where the owner-or-assignee gate
+// no longer fires because the source state is no longer
+// `awaiting_evidence`. This describe pins the fix: the same
+// owner-or-assignee gate now also covers the in_progress / blocked
+// exits, so the bypass is rejected at step 1 and the parked task stays
+// parked.
+
+describe('R-192: awaiting_evidence → in_progress|blocked is owner-or-assignee only (closes #1429)', () => {
+  const thirdParty = 'r1429-third-party';
+  const humanAssignee = 'r1429-human-assignee';
+
+  beforeAll(async () => {
+    await testPrisma.projectMember.upsert({
+      where: { projectId_name: { projectId, name: thirdParty } },
+      update: { role: 'developer', type: 'human' },
+      create: { projectId, name: thirdParty, role: 'developer', type: 'human' },
+    });
+    await testPrisma.projectMember.upsert({
+      where: { projectId_name: { projectId, name: humanAssignee } },
+      update: { role: 'developer', type: 'human' },
+      create: { projectId, name: humanAssignee, role: 'developer', type: 'human' },
+    });
+  });
+
+  async function parkedAgentTask(prSuffix: number) {
+    const prUrl = `https://github.com/plansync-test/r192-repo/pull/${1429000 + prSuffix}`;
+    const task = await newTask({ prUrl });
+    await testPrisma.task.update({
+      where: { id: task.id },
+      data: { status: 'awaiting_evidence' },
+    });
+    // Mirror the real "parked" shape: an old completed run is always on
+    // file when a task is in `awaiting_evidence`.
+    await testPrisma.executionRun.create({
+      data: {
+        taskId: task.id,
+        status: 'completed',
+        executorType: 'agent',
+        executorName: agentName,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(Date.now() - 60_000),
+        endedAt: new Date(),
+      },
+    });
+    return task;
+  }
+
+  it('rejects a third-party developer PATCHing awaiting_evidence → in_progress (the bypass step 1)', async () => {
+    const task = await parkedAgentTask(1);
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: thirdParty,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(403);
+    const json = await res.json();
+    expect(JSON.stringify(json)).toMatch(/owner or task assignee/i);
+
+    // Task must remain parked — the bypass chain is rejected at step 1.
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('awaiting_evidence');
+  });
+
+  it('rejects a third-party developer PATCHing awaiting_evidence → blocked (the bypass step 1, blocked variant)', async () => {
+    const task = await parkedAgentTask(2);
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: thirdParty,
+        body: { status: 'blocked' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(403);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('awaiting_evidence');
+  });
+
+  it('allows the agent assignee to PATCH awaiting_evidence → in_progress (legitimate self-resume)', async () => {
+    // The agent assignee resuming their own parked task is the
+    // canonical legitimate use of this transition (alongside owner
+    // reopening). Make sure the new gate does not regress it.
+    const task = await parkedAgentTask(3);
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: agentName,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(200);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('in_progress');
+  });
+
+  it('allows a human assignee to PATCH awaiting_evidence → blocked on their own task', async () => {
+    // Sibling regression for the assignee path: a human assignee
+    // marking their own parked task `blocked` (drift / external block
+    // landed while they were trying to round up evidence) is a
+    // documented legitimate exit and must remain allowed.
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/1429004';
+    const task = await testPrisma.task.create({
+      data: {
+        projectId,
+        title: 'r1429-human-blocked',
+        type: 'code',
+        priority: 'p1',
+        status: 'awaiting_evidence',
+        assignee: humanAssignee,
+        assigneeType: 'human',
+        boundPlanVersion: planVersion,
+        agentConstraints: [],
+        planDeliverableRefs: [deliverableA.slug],
+        prUrl,
+      },
+    });
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: humanAssignee,
+        body: { status: 'blocked' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(200);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('blocked');
+  });
+
+  it('allows the project owner to PATCH awaiting_evidence → in_progress (owner administrative override)', async () => {
+    // Belt-and-braces: the original R-192 recovery story explicitly
+    // documents owner-reopens-for-more-work as a legitimate exit, and
+    // the suite at "R-192 recovery" already covers this — but we
+    // re-assert here under the #1429 describe so the new gate's
+    // owner-allow branch is exercised next to its developer-reject
+    // siblings.
+    const task = await parkedAgentTask(5);
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: owner,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(200);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('in_progress');
+  });
+
+  it('rejects the full bypass chain at step 1 so the third party never reaches `in_progress → cancelled`', async () => {
+    // Reproduce the exact #1429 bypass shape end-to-end:
+    //   1. third party PATCHes awaiting_evidence → in_progress  ← must reject
+    //   2. (if step 1 succeeded) third party PATCHes in_progress → cancelled
+    //
+    // The fix closes step 1, so the chain never reaches step 2. We do
+    // not assert anything about step 2 here — the contract is that
+    // step 1 is unreachable.
+    const task = await parkedAgentTask(6);
+
+    const step1 = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: thirdParty,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(step1.status).toBe(403);
+
+    // The task is still parked — `in_progress → cancelled` is no
+    // longer reachable from this caller because the source state
+    // never moved.
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('awaiting_evidence');
   });
 });
