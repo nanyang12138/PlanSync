@@ -92,6 +92,38 @@ test('static guard: issue-auto-triage.mjs still defines the canonical helpers', 
   assert.match(src, /dispatch/);
 });
 
+test('static guard: every label used in actions is bootstrapped via ensureRequiredLabels', () => {
+  // Crash on 2026-05-26 was "'auto-triaged' not found" — the script
+  // tried to apply a label that did not exist in the repo, gh
+  // returned non-zero, and the whole batch died after closing only
+  // one issue (#1219). The fix is REQUIRED_LABELS at startup +
+  // best-effort label adds. This guard makes sure a future refactor
+  // does not silently drop either piece.
+  const src = readFileSync(SCRIPT_PATH, 'utf-8');
+  assert.match(src, /const REQUIRED_LABELS\s*=/);
+  assert.match(src, /function ensureRequiredLabels\s*\(/);
+  assert.match(src, /function addLabelsToIssue\s*\(/);
+  for (const label of ['auto-triaged', 'needs-human', 'cursor:dispatch', 'dispatched']) {
+    assert.ok(
+      src.includes(`name: '${label}'`),
+      `REQUIRED_LABELS must include '${label}' so the script bootstraps it on first run`,
+    );
+  }
+  // There must be exactly ONE `gh issue edit ... --add-label` call
+  // in the source — the chokepoint inside addLabelsToIssue(). Any
+  // additional occurrence would mean commentAndClose / dispatchIssue
+  // started bypassing the best-effort wrapper, re-introducing the
+  // 2026-05-26 crash mode.
+  const directCallRe = /gh\(\s*\[\s*'issue',\s*'edit'[\s\S]*?'--add-label'/gm;
+  const directCalls = src.match(directCallRe) || [];
+  assert.equal(
+    directCalls.length,
+    1,
+    `expected exactly one 'gh issue edit ... --add-label' (inside addLabelsToIssue) but found ${directCalls.length}. ` +
+      `commentAndClose / dispatchIssue must route label writes through addLabelsToIssue() so a missing label degrades to a warning.`,
+  );
+});
+
 test('static guard: skip-label list covers every label that should freeze triage', () => {
   const src = readFileSync(SCRIPT_PATH, 'utf-8');
   for (const label of [
