@@ -18,14 +18,22 @@ import path from 'node:path';
 const PG_URL_RE = /^postgres(?:ql)?:\/\/([^/?#]*)/;
 
 function redactDbUrl(raw: string): string {
+  // Closes #1046 — refuse to echo any colon-separated leading
+  // token unless the raw input actually contained `://`. WHATWG
+  // `new URL('alice:s3cret@db/x')` parses successfully with
+  // `protocol='alice:'` (a non-special scheme), and the pre-fix
+  // success branch leaked that token. Same trap was in the catch
+  // fallback's `${raw.slice(0,colon)}`.
+  if (!raw.includes('://')) {
+    return '[unparseable]';
+  }
   try {
     const u = new URL(raw);
     const port = u.port ? `:${u.port}` : '';
     return `${u.protocol}//***@${u.hostname || '?'}${port}/…`;
   } catch {
-    const colon = raw.indexOf(':');
-    if (colon > 0) return `${raw.slice(0, colon)}://[unparseable]`;
-    return '[unparseable]';
+    const sep = raw.indexOf('://');
+    return `${raw.slice(0, sep)}://[unparseable]`;
   }
 }
 
@@ -114,6 +122,34 @@ describe('P0-8 / R1b redactDbUrl', () => {
     const out = redactDbUrl('not://a$valid:url@@@@');
     expect(out).not.toContain('valid:url');
     expect(out.length).toBeLessThan(40);
+  });
+
+  it('does NOT leak the leading token on inputs without :// (closes #1046)', () => {
+    // Pre-fix: `new URL('alice:s3cret@db/x')` succeeded with
+    // protocol='alice:' and the redactor emitted 'alice://***@?/…',
+    // leaking the username 'alice'. Same trap for any inadvertent
+    // `user:pass@host` paste.
+    const out1 = redactDbUrl('alice:s3cret@db/x');
+    expect(out1).not.toContain('alice');
+    expect(out1).not.toContain('s3cret');
+    expect(out1).toBe('[unparseable]');
+
+    const out2 = redactDbUrl('user:pass@host');
+    expect(out2).not.toContain('user');
+    expect(out2).not.toContain('pass');
+    expect(out2).toBe('[unparseable]');
+
+    // Plain garbage stays unparseable too.
+    expect(redactDbUrl('not-a-url')).toBe('[unparseable]');
+    expect(redactDbUrl('')).toBe('[unparseable]');
+  });
+
+  it('still redacts properly when :// is present but URL parser rejects', () => {
+    // `://` in the input means we can safely echo the part BEFORE
+    // it, which by definition has no credentials.
+    const out = redactDbUrl('postgresql://[unbalanced');
+    expect(out.startsWith('postgresql://')).toBe(true);
+    expect(out).toContain('[unparseable]');
   });
 });
 
