@@ -348,6 +348,103 @@ describe('R-191: linkCommitsFromPushPayload', () => {
     expect(result.created).toBe(2);
   });
 
+  it('fans message-tag rows out across every plan version that carries the same slug (closes #1232)', async () => {
+    // Multi-version scenario: build a second plan with a deliverable
+    // that reuses `deliverableA.slug` ('api-docs'). A commit message
+    // tagged [deliverable:api-docs] must produce one message row per
+    // matching deliverable row — otherwise tasks bound to one version
+    // would silently lose evidence after the read-side `boundPlanVersion`
+    // scoping in #1230. See #1232.
+    const suffix = uniqueSuffix();
+    const otherPlan = await prisma.plan.create({
+      data: {
+        projectId,
+        version: 999,
+        title: `r191 cross-version probe ${suffix}`,
+        goal: 'g',
+        scope: 's',
+        deliverables: ['api docs'],
+        status: 'superseded',
+        createdBy: 'r191-owner',
+      },
+    });
+    const otherDeliverable = await prisma.planDeliverable.create({
+      data: {
+        planId: otherPlan.id,
+        slug: deliverableA.slug,
+        title: 'API docs (v_other)',
+        body: 'same slug, different plan version',
+        // Different refUri so the glob path can't muddy the experiment —
+        // we want to assert the MESSAGE path fans out by itself.
+        refType: 'file_glob',
+        refUri: 'docs/api/v_other/**/*.md',
+        status: 'active',
+      },
+    });
+
+    try {
+      const sha = 'aaa1232a1232a1232a1232a1232a1232a1232a12';
+      const result = await linkCommitsFromPushPayload({
+        projectId,
+        payload: {
+          commits: [
+            {
+              id: sha,
+              // File touches no glob (CHANGELOG is not under docs/api).
+              // The only signal is the deliverable tag — it must fan
+              // out across both plan-version rows of the same slug.
+              message: 'chore: announce [deliverable:api-docs]',
+              added: ['CHANGELOG.md'],
+              modified: [],
+              removed: [],
+            },
+          ],
+        },
+      });
+
+      // Two rows: one per same-slug deliverable across the two versions.
+      expect(result.created).toBe(2);
+      expect(result.byCommit[0]).toMatchObject({ sha, globMatches: 0, messageMatches: 2 });
+
+      const rows = await prisma.commitDeliverableLink.findMany({
+        where: { sha },
+        orderBy: { deliverableId: 'asc' },
+      });
+      expect(rows).toHaveLength(2);
+      const idsHit = new Set(rows.map((r) => r.deliverableId));
+      expect(idsHit.has(deliverableA.id)).toBe(true);
+      expect(idsHit.has(otherDeliverable.id)).toBe(true);
+      for (const row of rows) {
+        expect(row.matchedBy).toBe('message');
+        expect(row.matchedRef).toBe('api-docs');
+      }
+
+      // Re-deliver: unique constraint must keep this idempotent even
+      // with the new fan-out path.
+      const second = await linkCommitsFromPushPayload({
+        projectId,
+        payload: {
+          commits: [
+            {
+              id: sha,
+              message: 'chore: announce [deliverable:api-docs]',
+              added: ['CHANGELOG.md'],
+            },
+          ],
+        },
+      });
+      expect(second.created).toBe(0);
+      const rowsAfter = await prisma.commitDeliverableLink.findMany({ where: { sha } });
+      expect(rowsAfter).toHaveLength(2);
+    } finally {
+      await prisma.commitDeliverableLink.deleteMany({
+        where: { deliverableId: otherDeliverable.id },
+      });
+      await prisma.planDeliverable.delete({ where: { id: otherDeliverable.id } });
+      await prisma.plan.delete({ where: { id: otherPlan.id } });
+    }
+  });
+
   it('handles multiple commits in one push and reports per-commit breakdown', async () => {
     const shaG = 'bbb9999900000000000000000000000000000009';
     const shaM = 'ccc9999900000000000000000000000000000010';
