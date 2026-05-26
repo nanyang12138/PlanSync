@@ -348,6 +348,113 @@ describe('R-191: linkCommitsFromPushPayload', () => {
     expect(result.created).toBe(2);
   });
 
+  it('fans `[deliverable:<slug>]` out to every same-slug deliverable across plan versions', async () => {
+    // Regression for #1237: PR #1230 scoped the R-192 evidence lookup
+    // by `task.boundPlanVersion`, but the commit linker was still
+    // resolving slugs project-wide via a single-valued
+    // Map<slug,deliverable>. The last same-slug deliverable inserted
+    // into the map won, so a message tag `[deliverable:auth]` produced
+    // exactly one CommitDeliverableLink — and tasks bound to whichever
+    // plan version that row did NOT point at could never satisfy the
+    // gate. We now emit one message row per matching deliverable.
+    const suffix = uniqueSuffix();
+    const localProject = await prisma.project.create({
+      data: {
+        name: `r191-multiversion-${suffix}`,
+        phase: 'active',
+        createdBy: 'r191-owner',
+      },
+    });
+
+    const planV1 = await prisma.plan.create({
+      data: {
+        projectId: localProject.id,
+        version: 1,
+        title: 'multiversion v1',
+        goal: 'g',
+        scope: 's',
+        deliverables: ['auth'],
+        status: 'superseded',
+        createdBy: 'r191-owner',
+        activatedAt: new Date(),
+        activatedBy: 'r191-owner',
+      },
+    });
+    const planV2 = await prisma.plan.create({
+      data: {
+        projectId: localProject.id,
+        version: 2,
+        title: 'multiversion v2',
+        goal: 'g',
+        scope: 's',
+        deliverables: ['auth'],
+        status: 'active',
+        createdBy: 'r191-owner',
+        activatedAt: new Date(),
+        activatedBy: 'r191-owner',
+      },
+    });
+
+    const deliverableV1 = await prisma.planDeliverable.create({
+      data: {
+        planId: planV1.id,
+        slug: 'auth',
+        title: 'Auth v1',
+        body: 'v1 spec',
+        refType: 'free',
+        refUri: null,
+        status: 'active',
+      },
+    });
+    const deliverableV2 = await prisma.planDeliverable.create({
+      data: {
+        planId: planV2.id,
+        slug: 'auth',
+        title: 'Auth v2',
+        body: 'v2 spec',
+        refType: 'free',
+        refUri: null,
+        status: 'active',
+      },
+    });
+
+    const sha = '1237abcd00000000000000000000000000000001';
+    try {
+      const result = await linkCommitsFromPushPayload({
+        projectId: localProject.id,
+        payload: {
+          commits: [
+            {
+              id: sha,
+              message: 'feat: ship auth refresh [deliverable:auth]',
+              added: ['unrelated.ts'],
+              modified: [],
+              removed: [],
+            },
+          ],
+        },
+      });
+
+      // One row per same-slug deliverable, both with matched_by='message'.
+      expect(result.created).toBe(2);
+      expect(result.byCommit[0]).toMatchObject({ sha, globMatches: 0, messageMatches: 2 });
+
+      const rows = await prisma.commitDeliverableLink.findMany({
+        where: { sha },
+        orderBy: { deliverableId: 'asc' },
+      });
+      expect(rows).toHaveLength(2);
+      const deliverableIds = new Set(rows.map((r) => r.deliverableId));
+      expect(deliverableIds.has(deliverableV1.id)).toBe(true);
+      expect(deliverableIds.has(deliverableV2.id)).toBe(true);
+      expect(rows.every((r) => r.matchedBy === 'message')).toBe(true);
+      expect(rows.every((r) => r.matchedRef === 'auth')).toBe(true);
+    } finally {
+      await prisma.commitDeliverableLink.deleteMany({ where: { sha } });
+      await prisma.project.delete({ where: { id: localProject.id } }).catch(() => {});
+    }
+  });
+
   it('handles multiple commits in one push and reports per-commit breakdown', async () => {
     const shaG = 'bbb9999900000000000000000000000000000009';
     const shaM = 'ccc9999900000000000000000000000000000010';
