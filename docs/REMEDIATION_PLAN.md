@@ -3001,7 +3001,7 @@
 
 #### R-204 [HIGH] MCP execution\_\* tools → run(runId, action) (R-175 step 2)
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B15
 - **depends_on**: —
 - **effort**: medium

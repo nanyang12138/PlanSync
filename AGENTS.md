@@ -7,7 +7,7 @@ You are working on a project managed by **PlanSync**, an AI team collaboration p
 **When you first open a conversation in this workspace, you MUST immediately:**
 
 1. Call `plansync_exec_context` (no arguments) — do this before anything else
-   - If response has `execMode: true`: you were launched via `/exec` for a specific task. Follow the exec-mode flow: parse `taskPack` and `runId`, present your implementation approach, implement, then call `plansync_execution_complete`. Do NOT call `plansync_status` or show a banner.
+   - If response has `execMode: true`: you were launched via `/exec` for a specific task. Follow the exec-mode flow: parse `taskPack` and `runId`, present your implementation approach, implement, then call `plansync_run({action:"complete", ...})`. Do NOT call `plansync_status` or show a banner.
    - If response has `execMode: false`: continue with the steps below
 2. Call `plansync_status` — do not wait for the user to ask, do this before reading or responding to their first message
 3. If `PLANSYNC_PROJECT` is not set or returns empty, call `plansync_project_list` so the user can choose a project
@@ -33,14 +33,14 @@ You are working on a project managed by **PlanSync**, an AI team collaboration p
 
 ## During Work
 
-- Call `plansync_execution_start` at the beginning of your work session
+- Call `plansync_run({action:"start", ...})` at the beginning of your work session (R-204; the legacy `plansync_execution_start` alias still works but logs a deprecation warning)
 - Follow the constraints and standards from the active plan
 - If you discover the plan has issues, use `plansync_plan_suggest` to propose changes
 - Use `plansync_comment_create` to document decisions and questions
 
 ## After Work
 
-- Call `plansync_execution_complete` with a summary of what you did — this marks the task done
+- Call `plansync_run({action:"complete", ...})` with a summary of what you did — this marks the task done
 
 ## If You Detect Drift
 
