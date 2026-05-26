@@ -3,6 +3,17 @@
 > **Status**: design / source-of-truth. Implementation lives in
 > `packages/shared/src/protocol/exec-state.ts`. Wire-up into the MCP wrapper is
 > tracked separately as **R-171**.
+>
+> **R-204 (2026-05-26)**: the three execution lifecycle tools have been
+> collapsed into a single `plansync_run(action, ...)` tool with
+> `action ∈ {start, heartbeat, complete}`. The legacy tool names
+> (`plansync_execution_start / heartbeat / complete`) remain registered as
+> deprecated aliases for one release so this doc still uses them in the
+> diagrams and FSM table — that's the literal tool name the server's
+> `OUT_OF_SEQUENCE.allowedTools` / `requiredNextOneOf` arrays return today.
+> New callers should use `plansync_run({action: "start" | "heartbeat" |
+"complete", ...})`; the FSM continues to gate the underlying actions
+> identically.
 
 ## Why this exists
 
@@ -13,8 +24,9 @@ server trusted it. In practice:
 - generic MCP clients (Claude Desktop / Cursor / Continue) never read
   `CLAUDE.md` because it's a Claude Code convention,
 - truncated prompts dropped the protocol section regularly,
-- agents under retry pressure happily called `plansync_execution_complete`
-  for runs that were never started, or skipped `plansync_task_pack` entirely.
+- agents under retry pressure happily called `plansync_run({action:"complete"})`
+  (or the legacy `plansync_execution_complete` alias) for runs that were
+  never started, or skipped `plansync_task_pack` entirely.
 
 The drift engine and the heartbeat scanner both had to learn to "tolerate"
 these cases, which made the failure modes (race-lost runs, ghost completions)

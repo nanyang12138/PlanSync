@@ -190,20 +190,30 @@ export class ExecStateManager {
    * token) or a structured OUT_OF_SEQUENCE envelope for enforce mode.
    *
    * This is the single hot-path entry point — keep it cheap.
+   *
+   * R-204 — `fsmToolName` is an optional override used when the wire-level
+   * tool name (`plansync_run`) differs from the FSM-table key it should
+   * be looked up under (`plansync_execution_{start,heartbeat,complete}`).
+   * `tool-wrapper.ts` derives the override from the call's `action`
+   * argument so the FSM table can stay untouched during the R-204
+   * deprecation window. When omitted, falls back to `toolName` —
+   * preserves the pre-R-204 behaviour for every other tool.
    */
-  recordToolCall(toolName: string): RecordResult {
-    if (READ_ONLY_TOOLS.includes(toolName)) {
+  recordToolCall(toolName: string, fsmToolName?: string): RecordResult {
+    const lookupName = fsmToolName ?? toolName;
+    if (READ_ONLY_TOOLS.includes(lookupName)) {
       // Read-only never advances state and never errors. No new token —
       // there's nothing for the agent to round-trip.
       return { ok: true, advanced: false, state: this.state };
     }
-    const result = checkTransition(this.state, toolName);
+    const result = checkTransition(this.state, lookupName);
     if (!result.ok) {
       // Illegal transition.
       if (this.enforceMode === 'enforce') {
         logger.warn(
           {
             tool: toolName,
+            fsmTool: lookupName,
             from: this.state,
             allowed: result.allowedTools,
             expectedNext: result.requiredNextOneOf,
@@ -221,6 +231,7 @@ export class ExecStateManager {
         logger.warn(
           {
             tool: toolName,
+            fsmTool: lookupName,
             from: this.state,
             allowed: result.allowedTools,
             expectedNext: result.requiredNextOneOf,

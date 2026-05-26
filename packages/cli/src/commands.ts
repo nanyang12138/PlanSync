@@ -824,10 +824,15 @@ export async function handleSlashCommand(
             continue;
           }
 
-          // Register execution run
+          // R-204: register execution run via the new unified
+          // `plansync_run({action:"start", ...})` surface. The legacy
+          // `plansync_execution_start` alias is still registered
+          // server-side for one release, but internal callers migrate
+          // immediately so deprecation logs don't fire from our own code.
           let runId = '';
           try {
-            const startResult = await ctx.mcp.callTool('plansync_execution_start', {
+            const startResult = await ctx.mcp.callTool('plansync_run', {
+              action: 'start',
               projectId: cfg.project,
               taskId: task.id,
               executorType: 'agent',
@@ -844,7 +849,7 @@ export async function handleSlashCommand(
             runId = run?.id ?? '';
           } catch (err: unknown) {
             console.log(
-              `  ${c.red}✗ execution_start failed: ${err instanceof Error ? err.message : String(err)}${c.reset}`,
+              `  ${c.red}✗ plansync_run(start) failed: ${err instanceof Error ? err.message : String(err)}${c.reset}`,
             );
             continue;
           }

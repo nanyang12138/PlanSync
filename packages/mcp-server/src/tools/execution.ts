@@ -189,7 +189,10 @@ function buildDriftUnresolvedEnvelope(
   });
 }
 
-function buildCompletionVerificationFailedEnvelope(err: ApiError): ExecutionErrorEnvelope {
+function buildCompletionVerificationFailedEnvelope(
+  err: ApiError,
+  toolName: string = 'plansync_execution_complete',
+): ExecutionErrorEnvelope {
   const d = err.details as
     | {
         score?: number;
@@ -221,7 +224,7 @@ function buildCompletionVerificationFailedEnvelope(err: ApiError): ExecutionErro
     status: err.status,
     details: d,
     guidance: lines.join('\n'),
-    tool: 'plansync_execution_complete',
+    tool: toolName,
   });
 }
 
@@ -252,34 +255,160 @@ export function isTransientExecContextError(err: unknown): boolean {
   );
 }
 
-export function registerExecutionTools(server: McpServer, api: ApiClient) {
-  function makeDriftCallback(srv: McpServer) {
-    return (drifts: DriftAlert[]) => {
-      const highCount = drifts.filter((d) => d.severity === 'high').length;
-      const lines = drifts
-        .map(
-          (d) =>
-            `  [${d.severity.toUpperCase()}] ${d.reason}  →  plansync_drift_resolve ${d.id} action=rebind`,
-        )
-        .join('\n');
-      const msg =
-        `⚠ DRIFT DETECTED: ${drifts.length} alert(s) (${highCount} high). ` +
-        `Pause execution immediately and resolve before continuing.\n` +
-        lines;
-      Promise.resolve()
-        .then(() =>
-          srv.server.sendLoggingMessage({
-            level: 'warning',
-            logger: 'plansync',
-            data: { message: msg, drifts },
-          }),
-        )
-        .catch((err: unknown) => {
-          logger.warn({ err }, 'Failed to send drift notification');
-        });
-    };
-  }
+/**
+ * R-204 — shared callback factory hoisted out of `registerExecutionTools` so
+ * the new `plansync_run` tool (registered in `tools/run.ts`) can reuse the
+ * exact same drift-notification side effect as the legacy
+ * `plansync_execution_start` alias. Keeping the closure in one place is
+ * what guarantees both tool surfaces behave identically on the wire — see
+ * `r204-run-tool.test.ts` for the parity assertions.
+ */
+export function makeDriftCallback(srv: McpServer) {
+  return (drifts: DriftAlert[]) => {
+    const highCount = drifts.filter((d) => d.severity === 'high').length;
+    const lines = drifts
+      .map(
+        (d) =>
+          `  [${d.severity.toUpperCase()}] ${d.reason}  →  plansync_drift_resolve ${d.id} action=rebind`,
+      )
+      .join('\n');
+    const msg =
+      `⚠ DRIFT DETECTED: ${drifts.length} alert(s) (${highCount} high). ` +
+      `Pause execution immediately and resolve before continuing.\n` +
+      lines;
+    Promise.resolve()
+      .then(() =>
+        srv.server.sendLoggingMessage({
+          level: 'warning',
+          logger: 'plansync',
+          data: { message: msg, drifts },
+        }),
+      )
+      .catch((err: unknown) => {
+        logger.warn({ err }, 'Failed to send drift notification');
+      });
+  };
+}
 
+/**
+ * R-204 — shared internal handlers for the three execution actions.
+ *
+ * The legacy `plansync_execution_{start,heartbeat,complete}` tools and the
+ * new unified `plansync_run(action, ...)` tool both route through these
+ * helpers so the wire-level contract is bit-identical regardless of which
+ * surface the caller picked. This is the single source of truth for:
+ *   - URL routing (`/api/projects/.../tasks/.../runs[/{runId}?action=...]`)
+ *   - auto-heartbeat lifecycle (start binds, complete stops, completion
+ *     errors keep the heartbeat alive so the agent can retry)
+ *   - the DRIFT_UNRESOLVED / COMPLETION_VERIFICATION_FAILED error
+ *     envelope shapes
+ *
+ * The handlers expect their arguments to already be schema-validated.
+ */
+export interface ExecutionStartArgs {
+  projectId: string;
+  taskId: string;
+  executorType: 'human' | 'agent';
+  executorName: string;
+}
+
+export interface ExecutionHeartbeatArgs {
+  projectId: string;
+  taskId: string;
+  runId: string;
+}
+
+export interface ExecutionCompleteArgs {
+  projectId: string;
+  taskId: string;
+  runId: string;
+  status: 'completed' | 'failed';
+  outputSummary?: string;
+  filesChanged?: string[];
+  blockers?: string[];
+  driftSignals?: string[];
+  branchName?: string;
+  deliverablesMet?: string[];
+}
+
+export interface ExecutionHandlerContext {
+  api: ApiClient;
+  onDrift?: (drifts: DriftAlert[]) => void;
+  /** Tool name used in error envelopes — `plansync_run` or the legacy alias. */
+  toolName: string;
+}
+
+type ToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
+
+export async function handleExecutionStart(
+  args: ExecutionStartArgs,
+  ctx: ExecutionHandlerContext,
+): Promise<ToolResult> {
+  const { projectId, taskId, executorType, executorName } = args;
+  try {
+    const result = await ctx.api.post(`/api/projects/${projectId}/tasks/${taskId}/runs`, {
+      taskId,
+      executorType,
+      executorName,
+    });
+    const runId = (result as { data?: { id?: string } })?.data?.id;
+    if (runId) {
+      heartbeatManager.start(runId, projectId, taskId, ctx.api, ctx.onDrift);
+    }
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+  } catch (err) {
+    if (err instanceof ApiError && err.code === 'DRIFT_UNRESOLVED') {
+      return buildDriftUnresolvedEnvelope(err, ctx.toolName);
+    }
+    throw err;
+  }
+}
+
+export async function handleExecutionHeartbeat(
+  args: ExecutionHeartbeatArgs,
+  ctx: ExecutionHandlerContext,
+): Promise<ToolResult> {
+  const { projectId, taskId, runId } = args;
+  const result = await ctx.api.post(
+    `/api/projects/${projectId}/tasks/${taskId}/runs/${runId}?action=heartbeat`,
+    {},
+  );
+  return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+}
+
+export async function handleExecutionComplete(
+  args: ExecutionCompleteArgs,
+  ctx: ExecutionHandlerContext,
+): Promise<ToolResult> {
+  const { projectId, taskId, runId, ...body } = args;
+  heartbeatManager.stop(runId);
+  try {
+    const result = await ctx.api.post(
+      `/api/projects/${projectId}/tasks/${taskId}/runs/${runId}?action=complete`,
+      body,
+    );
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+  } catch (err) {
+    if (err instanceof ApiError && err.code === 'DRIFT_UNRESOLVED') {
+      heartbeatManager.start(runId, projectId, taskId, ctx.api, ctx.onDrift);
+      return buildDriftUnresolvedEnvelope(err, ctx.toolName, {
+        extraMessage:
+          'The plan changed while you were executing. Resolve each drift alert before completing:',
+      });
+    }
+    if (
+      err instanceof ApiError &&
+      err.status === 422 &&
+      err.code === 'COMPLETION_VERIFICATION_FAILED'
+    ) {
+      heartbeatManager.start(runId, projectId, taskId, ctx.api);
+      return buildCompletionVerificationFailedEnvelope(err, ctx.toolName);
+    }
+    throw err;
+  }
+}
+
+export function registerExecutionTools(server: McpServer, api: ApiClient) {
   server.tool(
     'plansync_exec_context',
     'Call this at session start to check if this session was launched for task execution. Returns task context and runId if so — skip normal session start and present your implementation approach immediately.',
@@ -376,9 +505,20 @@ export function registerExecutionTools(server: McpServer, api: ApiClient) {
     },
   );
 
+  // R-204 — legacy aliases. These three tool names stay registered for one
+  // release so any agent prompt that hasn't migrated to `plansync_run(action,
+  // ...)` (CLAUDE.md / AGENTS.md / cli ai-loop / third-party MCP clients)
+  // keeps working. The handlers delegate to the same `handleExecution*`
+  // helpers as `plansync_run`, so wire behaviour is bit-identical across
+  // the two surfaces. Each handler also emits a deprecation warning to the
+  // server log on every call — ops can grep `R-204 deprecated alias` to
+  // identify callers that still need migration before the next release
+  // drops the aliases.
   server.tool(
     'plansync_execution_start',
-    'Register your execution. Binds your work to the current plan version so the team can see you are running. Auto-heartbeat every 30s.',
+    '[DEPRECATED — use plansync_run({action:"start", ...})] Register your execution. ' +
+      'Binds your work to the current plan version so the team can see you are running. ' +
+      'Auto-heartbeat every 30s. Will be removed in the next release.',
     {
       projectId: z.string(),
       taskId: z.string(),
@@ -386,43 +526,48 @@ export function registerExecutionTools(server: McpServer, api: ApiClient) {
       executorName: z.string(),
     },
     async (args) => {
-      const { projectId, ...body } = args;
-      try {
-        const result = await api.post(`/api/projects/${projectId}/tasks/${args.taskId}/runs`, body);
-        const runId = (result as { data?: { id?: string } })?.data?.id;
-        if (runId) {
-          heartbeatManager.start(runId, projectId, args.taskId, api, makeDriftCallback(server));
-        }
-        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-      } catch (err) {
-        if (err instanceof ApiError && err.code === 'DRIFT_UNRESOLVED') {
-          return buildDriftUnresolvedEnvelope(err, 'plansync_execution_start');
-        }
-        throw err;
-      }
+      logger.warn(
+        { tool: 'plansync_execution_start' },
+        'R-204 deprecated alias called — migrate to plansync_run({action:"start", ...})',
+      );
+      return handleExecutionStart(args, {
+        api,
+        onDrift: makeDriftCallback(server),
+        toolName: 'plansync_execution_start',
+      });
     },
   );
 
   server.tool(
     'plansync_execution_heartbeat',
-    'Manually send a heartbeat for a running execution (auto-heartbeat does this every 30s, but call this if you want to confirm liveness)',
+    '[DEPRECATED — use plansync_run({action:"heartbeat", ...})] Manually send a heartbeat for ' +
+      'a running execution (auto-heartbeat does this every 30s, but call this if you want to ' +
+      'confirm liveness). Will be removed in the next release.',
     {
       projectId: z.string(),
       taskId: z.string(),
       runId: z.string(),
     },
     async (args) => {
-      const result = await api.post(
-        `/api/projects/${args.projectId}/tasks/${args.taskId}/runs/${args.runId}?action=heartbeat`,
-        {},
+      logger.warn(
+        { tool: 'plansync_execution_heartbeat' },
+        'R-204 deprecated alias called — migrate to plansync_run({action:"heartbeat", ...})',
       );
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      return handleExecutionHeartbeat(args, {
+        api,
+        toolName: 'plansync_execution_heartbeat',
+      });
     },
   );
 
   server.tool(
     'plansync_execution_complete',
-    'Complete or fail an execution run. When status=completed: (1) deliverablesMet is REQUIRED — list each plan deliverable you met (e.g. ["Implemented login API endpoint", "Added unit tests for auth module"]); (2) for agent executors, AI will verify your evidence (claims, filesChanged, outputSummary) against the task context and return COMPLETION_VERIFICATION_FAILED with a score breakdown if insufficient — improve your list and retry.',
+    '[DEPRECATED — use plansync_run({action:"complete", ...})] Complete or fail an execution run. ' +
+      'When status=completed: (1) deliverablesMet is REQUIRED — list each plan deliverable you met ' +
+      '(e.g. ["Implemented login API endpoint", "Added unit tests for auth module"]); ' +
+      '(2) for agent executors, AI will verify your evidence (claims, filesChanged, outputSummary) ' +
+      'against the task context and return COMPLETION_VERIFICATION_FAILED with a score breakdown ' +
+      'if insufficient — improve your list and retry. Will be removed in the next release.',
     {
       projectId: z.string(),
       taskId: z.string(),
@@ -441,34 +586,15 @@ export function registerExecutionTools(server: McpServer, api: ApiClient) {
         ),
     },
     async (args) => {
-      const { projectId, taskId, runId, ...body } = args;
-      heartbeatManager.stop(runId);
-      try {
-        const result = await api.post(
-          `/api/projects/${projectId}/tasks/${taskId}/runs/${runId}?action=complete`,
-          body,
-        );
-        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-      } catch (err) {
-        if (err instanceof ApiError && err.code === 'DRIFT_UNRESOLVED') {
-          // Restart heartbeat while agent resolves drift.
-          heartbeatManager.start(runId, projectId, taskId, api, makeDriftCallback(server));
-          return buildDriftUnresolvedEnvelope(err, 'plansync_execution_complete', {
-            extraMessage:
-              'The plan changed while you were executing. Resolve each drift alert before completing:',
-          });
-        }
-        if (
-          err instanceof ApiError &&
-          err.status === 422 &&
-          err.code === 'COMPLETION_VERIFICATION_FAILED'
-        ) {
-          // Run is still active — restart heartbeat while agent retries.
-          heartbeatManager.start(runId, projectId, taskId, api);
-          return buildCompletionVerificationFailedEnvelope(err);
-        }
-        throw err;
-      }
+      logger.warn(
+        { tool: 'plansync_execution_complete' },
+        'R-204 deprecated alias called — migrate to plansync_run({action:"complete", ...})',
+      );
+      return handleExecutionComplete(args, {
+        api,
+        onDrift: makeDriftCallback(server),
+        toolName: 'plansync_execution_complete',
+      });
     },
   );
 }

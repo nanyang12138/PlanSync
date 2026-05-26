@@ -13,6 +13,7 @@ import { registerSuggestionTools } from './tools/suggestion';
 import { registerCommentTools } from './tools/comment';
 import { registerTaskTools } from './tools/task';
 import { registerExecutionTools, heartbeatManager } from './tools/execution';
+import { registerRunTool } from './tools/run';
 import { registerDriftTools } from './tools/drift';
 import { registerStatusTools, getDelegationAgent } from './tools/status';
 import { onRunAborted } from './abort-signal';
@@ -89,6 +90,10 @@ async function main() {
     'plansync_deliverable_list',
     'plansync_deliverable_show',
     // Execution lifecycle
+    // R-204: `plansync_run(action, ...)` is the new unified surface; the
+    // three `plansync_execution_*` names stay registered as deprecated
+    // aliases for one release.
+    'plansync_run',
     'plansync_execution_start',
     'plansync_execution_heartbeat',
     'plansync_execution_complete',
@@ -130,6 +135,8 @@ async function main() {
     'plansync_deliverable_list',
     'plansync_deliverable_show',
     // Execution lifecycle
+    // R-204: unified `plansync_run` surface + deprecated aliases.
+    'plansync_run',
     'plansync_execution_start',
     'plansync_execution_heartbeat',
     'plansync_execution_complete',
@@ -228,6 +235,10 @@ async function main() {
   registerSuggestionTools(server, api);
   registerCommentTools(server, api);
   registerTaskTools(server, api);
+  // R-204: register `plansync_run` first so the new surface shows up
+  // before its deprecated aliases in `tools/list`. Both write into the
+  // same `server` object; ordering is purely cosmetic / hint-friendly.
+  registerRunTool(server, api);
   registerExecutionTools(server, api);
   registerDriftTools(server, api);
   registerStatusTools(server, api, config);

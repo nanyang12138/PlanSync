@@ -121,10 +121,10 @@ Do not describe yourself as "Claude using PlanSync tools". You are PlanSync Term
 
   1. Skip the normal session start (no banner, no `plansync_my_work`)
   2. Parse `taskPack` and `runId` from the response
-  3. Execution is already registered — do NOT call `plansync_execution_start` again
+  3. Execution is already registered — do NOT call `plansync_run({action:"start", ...})` again
   4. Immediately enter plan mode — present your implementation approach for user approval
   5. Once approved: implement with real tools (Edit, Write, Bash, Glob, Grep)
-  6. When done: call `plansync_execution_complete` with the `runId` from the response — this marks the task done
+  6. When done: call `plansync_run({action:"complete", ...})` with the `runId` from the response — this marks the task done
   7. FORBIDDEN: Do NOT call `plansync_plan_create`, `plansync_plan_propose`, or `plansync_plan_activate`
 
 - If response has `execMode: false`: continue with normal session start below.
@@ -136,9 +136,9 @@ When `execMode: true`, only the tools below are registered. Anything else is **i
 | Group               | Tools                                                                                                                                                                                                                                                                                                                                              |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Read-only queries   | `plansync_task_list/show/pack`, `plansync_plan_list/show/active/diff`, `plansync_status`, `plansync_who`, `plansync_activity_list`, `plansync_my_work`, `plansync_drift_list`, `plansync_member_list`, `plansync_project_list/show`, `plansync_suggestion_list`, `plansync_comment_list`, `plansync_exec_context`, `plansync_check_task_conflicts` |
-| Execution lifecycle | `plansync_execution_start/heartbeat/complete`                                                                                                                                                                                                                                                                                                      |
+| Execution lifecycle | `plansync_run` with `action ∈ {start, heartbeat, complete}` (R-204). The legacy `plansync_execution_start/heartbeat/complete` tools stay registered as deprecated aliases for one release; prefer `plansync_run`.                                                                                                                                  |
 | Safe writes         | `plansync_comment_create/edit/delete`, `plansync_plan_suggest`, `plansync_drift_resolve`, `plansync_task_rebind`                                                                                                                                                                                                                                   |
-| **Blocked**         | `plansync_plan_create`, `plansync_plan_propose`, `plansync_plan_activate`, `plansync_plan_reactivate`, `plansync_task_create`, `plansync_task_update`. To change the status of the task you were dispatched to, call `plansync_execution_complete` instead — there is no exec-mode shortcut for editing the task record directly.                  |
+| **Blocked**         | `plansync_plan_create`, `plansync_plan_propose`, `plansync_plan_activate`, `plansync_plan_reactivate`, `plansync_task_create`, `plansync_task_update`. To change the status of the task you were dispatched to, call `plansync_run({action:"complete", ...})` instead — there is no exec-mode shortcut for editing the task record directly.       |
 
 ---
 
@@ -317,7 +317,7 @@ A few tool pairs look similar but do different things. Pick deliberately.
 
 ## During Work
 
-- Call `plansync_execution_start` with `executorName` set EXACTLY equal to the task's `assignee` field (from `plansync_task_pack`). The API rejects any mismatch with 403. Only one running execution is allowed per task — if another is already active you'll get 409 STATE_CONFLICT; wait for it to complete or go stale (5 min heartbeat timeout) before retrying.
+- Call `plansync_run({action:"start", ...})` with `executorName` set EXACTLY equal to the task's `assignee` field (from `plansync_task_pack`). The API rejects any mismatch with 403. Only one running execution is allowed per task — if another is already active you'll get 409 STATE_CONFLICT; wait for it to complete or go stale (5 min heartbeat timeout) before retrying.
 - Heartbeat runs automatically every 30s
 - If the plan has issues, use `plansync_plan_suggest` — not ad-hoc comments
 - Document significant decisions with `plansync_comment_create`
@@ -382,7 +382,7 @@ of stuck plans.
 
 ## After Work
 
-- Call `plansync_execution_complete` with a summary of what was done — this marks the task done
+- Call `plansync_run({action:"complete", ...})` with a summary of what was done — this marks the task done
 
 ---
 
@@ -505,7 +505,7 @@ Free-form, but include: **what changed**, **why**, **alternative considered**, a
 - Never ignore drift alerts
 - Never start work without calling `plansync_task_pack` first
 - Always use `plansync_plan_suggest` for plan change proposals — never just say it verbally
-- Always call `plansync_execution_complete` when done
+- Always call `plansync_run({action:"complete", ...})` when done
 
 ---
 
@@ -535,16 +535,16 @@ If the user says "work as `<agent>`", "handle `<agent>`'s work", or similar:
 
    1. `plansync_task_pack { taskId }` — get task brief (plan context, constraints, drift alerts)
    2. `plansync_who { projectId }` — see who else is executing, identify dependencies or conflicts
-   3. `plansync_comment_create` — pre-work declaration using the **`<pre-work>`** template (see "Comment Templates" above). This is required before `execution_start`.
-   4. `plansync_execution_start`
+   3. `plansync_comment_create` — pre-work declaration using the **`<pre-work>`** template (see "Comment Templates" above). This is required before `plansync_run({action:"start", ...})`.
+   4. `plansync_run({action:"start", ...})`
    5. Do the work:
       - **NEVER call `plansync_plan_create`, `plansync_plan_propose`, `plansync_plan_activate`, or `plansync_task_create`.**
         A plan already exists — you are executing within it, not creating a new one. Task creation is owner-only.
       - For code/design/bug/refactor tasks: MUST use Edit, Write, Bash tools to create actual files.
         Do NOT produce work as chat-only text output.
-      - Do NOT write "complete", "done", or "finished" until `plansync_execution_complete` returns success.
+      - Do NOT write "complete", "done", or "finished" until `plansync_run({action:"complete", ...})` returns success.
       - Document significant decisions with `plansync_comment_create` using the **`<decision>`** format.
-   6. `plansync_execution_complete { summary }` — marks the task done
+   6. `plansync_run({action:"complete", summary})` — marks the task done
 
    **Execution rules:**
 
