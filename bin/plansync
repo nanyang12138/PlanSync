@@ -500,23 +500,28 @@ Output a summary when all work is done, then exit."
     # validate the assignee, pre-register the execution run, issue an
     # exec-scoped key, and feed the engine an identical prompt.
     EXEC_CLI="$PROJECT_DIR/packages/cli/src/exec-cli.mjs"
-    if [ -f "$EXEC_CLI" ]; then
-      inject_instructions "$WORK_DIR_ABS"
-      cd "$WORK_DIR_ABS"
-      export _PS_EXEC_TASK_ID="$EXEC_TASK_ID"
-      export _PS_EXEC_BIN="$EXEC_BIN"
-      export _PS_EXEC_HOST="$EXEC_HOST"
-      exec "$LOCAL_NODE_BIN" "$EXEC_CLI"
+
+    # Closes #1191 — the previous `PLANSYNC_ALLOW_LEGACY_EXEC=1` escape
+    # hatch let any local caller silently downgrade to a bash-only path
+    # that skipped assignee gating, run pre-registration, AND exec-scoped
+    # key issuance. An env-variable toggle is not a controlled diagnostic
+    # mechanism: anyone with shell access could flip it, so the bypass
+    # constituted a routine-reachable security boundary. The legacy
+    # implementation has been removed entirely; the only supported
+    # `--exec` path is now the unified R-062 orchestrator. If the
+    # orchestrator file is missing, we fail loud regardless of any env
+    # var the caller may set — they must rebuild the CLI to recover.
+    if [ "${PLANSYNC_ALLOW_LEGACY_EXEC:-}" = "1" ]; then
+      echo "" >&2
+      echo "⚠️  PLANSYNC_ALLOW_LEGACY_EXEC=1 is no longer honored (removed in #1191)." >&2
+      echo "    The pre-R-062 bash fallback skipped assignee gating, run" >&2
+      echo "    pre-registration and exec-scoped key issuance, so it was" >&2
+      echo "    a security-sensitive bypass reachable by any local caller." >&2
+      echo "    The unified R-062 orchestrator is now mandatory." >&2
+      echo "" >&2
     fi
 
-    # Closes #726 / #736 — the legacy fallback below skips every R-062
-    # security control: no assignee gating, no run pre-registration, no
-    # exec-scoped API key. We leave the implementation in place for
-    # operators who deliberately set `PLANSYNC_ALLOW_LEGACY_EXEC=1` (e.g.
-    # diagnosing a corrupted unified orchestrator on a stripped-down
-    # install), but the default path now fails loud instead of silently
-    # bypassing the controls.
-    if [ "${PLANSYNC_ALLOW_LEGACY_EXEC:-}" != "1" ]; then
+    if [ ! -f "$EXEC_CLI" ]; then
       echo "" >&2
       echo "❌ PlanSync /exec orchestrator missing: $EXEC_CLI" >&2
       echo "" >&2
@@ -525,149 +530,23 @@ Output a summary when all work is done, then exit."
       echo "     - the execution run can be pre-registered before the LLM is launched," >&2
       echo "     - an exec-scoped API key is issued (and revoked on completion)." >&2
       echo "" >&2
-      echo "   Likely fix: rebuild the CLI with" >&2
+      echo "   Fix: rebuild the CLI with" >&2
       echo "     bash $PROJECT_DIR/scripts/build.sh" >&2
       echo "" >&2
-      echo "   To bypass and use the pre-R-062 legacy path explicitly," >&2
-      echo "   set PLANSYNC_ALLOW_LEGACY_EXEC=1 — but be aware that the" >&2
-      echo "   fallback skips assignee gating, run pre-registration, and" >&2
-      echo "   the exec-scoped key issuance." >&2
+      echo "   There is no environment-variable bypass: the previous" >&2
+      echo "   PLANSYNC_ALLOW_LEGACY_EXEC=1 fallback was removed in #1191" >&2
+      echo "   because it constituted a trivially-reachable security" >&2
+      echo "   downgrade (skipped assignee gating, run pre-registration," >&2
+      echo "   and exec-scoped key issuance)." >&2
       exit 1
     fi
-
-    # Legacy path (kept for environments where the unified orchestrator
-    # is missing — e.g. partial checkouts). Reaching this point requires
-    # PLANSYNC_ALLOW_LEGACY_EXEC=1 (closes #736).
-    echo "" >&2
-    echo "⚠️  PLANSYNC_ALLOW_LEGACY_EXEC=1 — running pre-R-062 legacy /exec path." >&2
-    echo "    Skipping assignee gating, run pre-registration, scoped-key issuance." >&2
-    echo "📋 Fetching task pack for $EXEC_TASK_ID..." >&2
-
-    # Fetch task pack via API using env vars to avoid shell injection
-    export _PS_EXEC_TASK_ID="$EXEC_TASK_ID"
-    TASK_PACK_JSON="$("$LOCAL_NODE_BIN" -e '
-      const h = require("http");
-      const url = new URL(
-        "/api/projects/" + process.env._PS_PROJECT +
-        "/tasks/" + process.env._PS_EXEC_TASK_ID + "/pack",
-        process.env._PS_API_URL
-      );
-      h.get({
-        hostname: url.hostname,
-        port: url.port || 80,
-        path: url.pathname,
-        headers: { "Authorization": "Bearer " + process.env._PS_API_KEY }
-      }, (res) => {
-        let d = "";
-        res.on("data", c => d += c);
-        res.on("end", () => {
-          try {
-            const j = JSON.parse(d);
-            if (j.error) { process.stderr.write("API error: " + j.error + "\n"); process.exit(1); }
-            process.stdout.write(JSON.stringify(j, null, 2));
-          } catch { process.stderr.write("Invalid response\n"); process.exit(1); }
-        });
-      }).on("error", e => { process.stderr.write("ERROR: " + e.message + "\n"); process.exit(1); });
-    ' 2>&1)" || die "Failed to fetch task pack. Check task ID and project."
-
-    # Closes #1205 — unwrap the `{ data: pack }` envelope ONCE here so
-    # every downstream consumer (drift gate AND the prompt embedded into
-    # the LLM call below) sees the bare task pack. Pre-#1205 the drift
-    # check below unwrapped defensively, but the EXEC_PROMPT still
-    # interpolated the raw `${TASK_PACK_JSON}` envelope, leaving #739
-    # unfixed on the legacy `PLANSYNC_ALLOW_LEGACY_EXEC=1` path: the
-    # spawned engine saw `{"data":{…}}` instead of the actual pack, so
-    # drift/deliverable references in its prompt were one level too deep.
-    # No-op when the API ever drops the envelope (input passed through).
-    TASK_PACK_JSON="$("$LOCAL_NODE_BIN" -e '
-      try {
-        const raw = process.argv[1] || "{}";
-        const wrapper = JSON.parse(raw);
-        const pack = (wrapper && typeof wrapper === "object" && wrapper.data && typeof wrapper.data === "object")
-          ? wrapper.data
-          : wrapper;
-        process.stdout.write(JSON.stringify(pack, null, 2));
-      } catch { process.stdout.write(process.argv[1] || "{}"); }
-    ' "$TASK_PACK_JSON")"
-
-    # Check for drift alerts in the (now unwrapped) task pack. The
-    # defensive unwrap is retained so a future caller that hands us a
-    # bare-or-wrapped value still behaves correctly (closes #739).
-    HAS_DRIFT="$("$LOCAL_NODE_BIN" -e '
-      try {
-        const wrapper = JSON.parse(process.argv[1] || "{}");
-        const pack = (wrapper && typeof wrapper === "object" && wrapper.data && typeof wrapper.data === "object")
-          ? wrapper.data
-          : wrapper;
-        const alerts = (pack.driftAlerts || []).filter(a => a && a.status === "open");
-        process.stdout.write(alerts.length > 0 ? "yes" : "no");
-      } catch { process.stdout.write("no"); }
-    ' "$TASK_PACK_JSON" 2>/dev/null || echo "no")"
-
-    if [ "$HAS_DRIFT" = "yes" ]; then
-      echo "⚠️  Task $EXEC_TASK_ID has unresolved drift alerts." >&2
-      echo "   Resolve them in PlanSync Terminal before executing." >&2
-      exit 1
-    fi
-
-    # Build MCP config (same pattern as run/genie modes)
-    MCP_CONFIG_JSON="$("$LOCAL_NODE_BIN" -e '
-      const cfg = {
-        mcpServers: {
-          plansync: {
-            command: process.env._PS_NODE_BIN,
-            args: [process.env._PS_MCP_SERVER],
-            env: {
-              PLANSYNC_API_URL: process.env._PS_API_URL,
-              PLANSYNC_API_KEY: process.env._PS_API_KEY,
-              PLANSYNC_USER: process.env._PS_USER,
-              PLANSYNC_PROJECT: process.env._PS_PROJECT || "",
-              LOG_LEVEL: "warn",
-            },
-          },
-        },
-      };
-      process.stdout.write(JSON.stringify(cfg));
-    ')"
 
     inject_instructions "$WORK_DIR_ABS"
-
-    # Construct the execution prompt
-    EXEC_PROMPT="You are PlanSync agent ${PLANSYNC_USER} about to execute a task.
-
-IMPORTANT: Do NOT write any code yet. First, analyze the task and present your implementation plan for user approval.
-
-Task Pack (from PlanSync):
-${TASK_PACK_JSON}
-
-Execution protocol:
-1. Call plansync_task_pack with taskId=\"${EXEC_TASK_ID}\" and projectId=\"${PLANSYNC_PROJECT}\" to confirm current state
-2. If drift alerts present: stop, show them to the user, and wait
-3. Present your approach: what files you will change, what steps you will take, how you will meet each deliverable listed in the task pack
-4. Wait for user approval before writing any code
-5. Once approved: call plansync_execution_start (executorType=\"agent\", executorName=\"${PLANSYNC_USER}\")
-6. Implement the solution using your available tools
-7. Call plansync_execution_complete with a specific deliverablesMet list (each item must name a concrete output, not vague phrases like \"completed the task\")
-8. Call plansync_task_update status=\"done\"
-
-Project: ${PLANSYNC_PROJECT}  |  Task: ${EXEC_TASK_ID}"
-
-    echo "🚀 Launching ${EXEC_HOST} for task execution..." >&2
-    echo "   Task: $EXEC_TASK_ID | User: $PLANSYNC_USER | Project: $PLANSYNC_PROJECT" >&2
-    echo "" >&2
-
     cd "$WORK_DIR_ABS"
-    if [ "$EXEC_HOST" = "claude" ]; then
-      exec "$EXEC_BIN" --mcp-config "$MCP_CONFIG_JSON" -p "$EXEC_PROMPT"
-    else
-      ENGINE=$(_detect_engine)
-      if [ "$ENGINE" = "codex" ]; then
-        _setup_codex_mcp
-        exec "$EXEC_BIN" -- --full-auto "$EXEC_PROMPT"
-      else
-        exec "$EXEC_BIN" --mcp-config "$MCP_CONFIG_JSON" -p "$EXEC_PROMPT"
-      fi
-    fi
+    export _PS_EXEC_TASK_ID="$EXEC_TASK_ID"
+    export _PS_EXEC_BIN="$EXEC_BIN"
+    export _PS_EXEC_HOST="$EXEC_HOST"
+    exec "$LOCAL_NODE_BIN" "$EXEC_CLI"
     ;;
 
   *)
