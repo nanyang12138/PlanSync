@@ -21433,7 +21433,8 @@ function parseTaskIds(input) {
 }
 function parsePrFiles(input) {
   if (!input) return [];
-  return input.split(/[\n,]+/).map((s) => s.trim()).filter((s) => s.length > 0);
+  const splitter = /[\n,]/.test(input) ? /[\n,]+/ : /\s+/;
+  return input.split(splitter).map((s) => s.trim()).filter((s) => s.length > 0);
 }
 function globToRegExp(glob) {
   let re = "";
