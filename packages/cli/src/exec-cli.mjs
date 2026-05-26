@@ -39,6 +39,7 @@ import {
   buildExecPrompt,
   buildExecMcpConfigJson,
   openDriftAlerts,
+  unwrapTaskPack,
 } from './exec-shared.mjs';
 
 const RED = '\x1b[31m';
@@ -136,10 +137,18 @@ async function main() {
   process.stderr.write(`\n📋 Fetching task pack for ${taskId}...\n`);
   let taskPack;
   try {
-    taskPack = await apiRequest(
+    // Closes #725 / #735 — the route returns
+    // `{ data: taskPack }`; unwrap once here so every downstream
+    // reader (`taskPack.task`, `openDriftAlerts(taskPack)`,
+    // `buildExecPrompt({ taskPack })`) sees the actual pack and
+    // not the API envelope. unwrapTaskPack is a no-op on a bare
+    // pack, so test fixtures and any future contract change that
+    // drops the envelope keep working.
+    const response = await apiRequest(
       'GET',
       `/api/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/pack`,
     );
+    taskPack = unwrapTaskPack(response);
   } catch (err) {
     die(`Failed to fetch task pack: ${err.message}`);
   }
