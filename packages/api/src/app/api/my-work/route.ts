@@ -80,12 +80,18 @@ export async function GET(req: NextRequest) {
         },
       }),
 
-      // P2: Tasks assigned to target user that are active
+      // P2: Tasks assigned to target user that are active.
+      // R-192 / closes #1161 — include `awaiting_evidence` so tasks
+      // parked by the R-192 gate (run finished, but missing git
+      // evidence) keep showing up in the assignee's My Work bucket
+      // until they either land the evidence and re-complete, or the
+      // owner overrides the status. Without this, parked tasks
+      // silently disappeared from My Work.
       prisma.task.findMany({
         where: {
           projectId: { in: projectIds },
           assignee: targetUser,
-          status: { in: ['todo', 'in_progress', 'blocked'] },
+          status: { in: ['todo', 'in_progress', 'blocked', 'awaiting_evidence'] },
         },
         select: {
           id: true,
