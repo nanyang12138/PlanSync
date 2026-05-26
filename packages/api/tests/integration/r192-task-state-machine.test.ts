@@ -273,6 +273,90 @@ describe('R-192: deriveTaskCompletionState', () => {
     expect(result.missing.map((m) => m.code)).toContain('drift_open');
   });
 
+  it('does NOT cross-match commit evidence between same-slug deliverables on different plan versions (closes #1212 #1190 #1182 #1178 #1174 #1160 #1137)', async () => {
+    // A project carries the deliverable `r192-deliverable-a` on v1
+    // (the planVersion seeded by createActivePlan). Build a second
+    // plan row with the same slug at a different version, register
+    // a commit link against the v_other deliverable, then attempt
+    // to satisfy the gate for a task bound to v_other → must work,
+    // for a task bound to v1 → must FAIL because v1's deliverable
+    // has no evidence even though a same-slug deliverable on v_other
+    // does. Pre-fix, the lookup matched both rows and the commit
+    // linked to v_other silently satisfied v1's gate.
+    const otherVersion = planVersion + 100; // arbitrary other version
+    const otherPlan = await testPrisma.plan.create({
+      data: {
+        projectId,
+        version: otherVersion,
+        status: 'superseded',
+        title: 'r192 cross-version probe plan',
+        goal: 'g',
+        scope: 's',
+        constraints: [],
+        standards: [],
+        deliverables: [deliverableA.slug],
+        openQuestions: [],
+        createdBy: owner,
+      },
+    });
+    const otherDeliverable = await testPrisma.planDeliverable.create({
+      data: {
+        planId: otherPlan.id,
+        slug: deliverableA.slug, // same slug, different row + plan version
+        title: 'r192 cross-version probe deliverable',
+        body: 'b',
+        refType: 'file_glob',
+        refUri: 'src/r192/other/**/*.ts',
+        status: 'active',
+      },
+    });
+    // Evidence linked to the OTHER plan version's deliverable only.
+    await testPrisma.commitDeliverableLink.create({
+      data: {
+        projectId,
+        sha: '9999cross9999cross9999cross9999cross9999',
+        deliverableId: otherDeliverable.id,
+        matchedBy: 'glob',
+        matchedRef: 'src/r192/other/foo.ts',
+      },
+    });
+    // The task is on planVersion (v1). With boundPlanVersion scoping
+    // the gate should report deliverable_evidence MISSING — even
+    // though a same-slug deliverable on v_other has a commit linked.
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/777';
+    const task = await newTask({ prUrl });
+    await emitMergedPrEvent(prUrl);
+    const result = await deriveTaskCompletionState({
+      projectId,
+      task: {
+        id: task.id,
+        prUrl: task.prUrl,
+        planDeliverableRefs: task.planDeliverableRefs,
+        boundPlanVersion: planVersion,
+      },
+    });
+    expect(result.status).toBe('awaiting_evidence');
+    expect(result.missing.map((m) => m.code)).toContain('deliverable_evidence');
+
+    // Sanity check: a task bound to the OTHER plan version DOES see
+    // the evidence (proves the scoping cut the right way around,
+    // not a blanket "always missing" regression).
+    const altTask = await newTask({ prUrl: `${prUrl}-alt` });
+    await emitMergedPrEvent(`${prUrl}-alt`);
+    const altResult = await deriveTaskCompletionState({
+      projectId,
+      task: {
+        id: altTask.id,
+        prUrl: `${prUrl}-alt`,
+        planDeliverableRefs: altTask.planDeliverableRefs,
+        boundPlanVersion: otherVersion,
+      },
+    });
+    // The deliverable on v_other has a commit link → no
+    // deliverable_evidence in `missing`.
+    expect(altResult.missing.map((m) => m.code)).not.toContain('deliverable_evidence');
+  });
+
   it('short-circuits with gateApplied=false when neither task nor project carries git wiring', async () => {
     // Create a brand-new project with no githubRepo set, then assert
     // the gate stays silent so legacy flows keep their always-done
