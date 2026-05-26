@@ -57,6 +57,13 @@ loadRepoDotenv();
 // see them echoed to stderr or pino logs.
 const PG_URL_RE = /^postgres(?:ql)?:\/\/([^/?#]*)/;
 
+// RFC 3986 §3.1 scheme syntax: ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ).
+// Used to gate the URL-shaped redaction path so that an input which merely
+// *contains* "://" but does not actually start with a valid scheme cannot
+// reach `new URL(raw)` (where WHATWG would mis-parse it) or the catch
+// fallback (which would echo the prefix before "://" verbatim).
+const URL_SCHEME_RE = /^[A-Za-z][A-Za-z0-9+\-.]*:\/\//;
+
 function redactDbUrl(raw: string): string {
   // R1b / closes #1003 #990 — pre-fix, when raw didn't match the
   // postgres URL shape, the redactor returned the first 16 chars
@@ -74,14 +81,26 @@ function redactDbUrl(raw: string): string {
   // success branch would then emit `alice://***@?/…`, leaking the
   // first colon-separated token from the input — which for any
   // accidentally-pasted `user:pass@host` shape IS the username.
-  // The same trap caught the catch fallback's `${raw.slice(0,colon)}`,
-  // so both paths needed tightening.
   //
-  // Hard rule now: only echo the parsed protocol back if the raw
-  // input actually contained `://`. Otherwise we have no idea
-  // whether the leading token is a scheme or a username, and the
-  // safe move is to drop it entirely.
-  if (!raw.includes('://')) {
+  // Closes #1213 #1209 #1200 #1195 #1186 #1179 #1171 #1157 #1143
+  // #1134 #1125 — the previous "input contains `://`" gate was
+  // still bypassable. Inputs like `alice:s3cret://db/x` pass the
+  // `raw.includes('://')` check; WHATWG either parses them as a
+  // non-special URL with `protocol === 'alice:'` (success branch
+  // echoes the scheme — already harmless but the reviewer-visible
+  // concern was that nothing in the original prefix is validated
+  // as a real scheme) or throws, in which case the catch fallback
+  // echoes `${raw.slice(0, sep)}://[unparseable]` and *that*
+  // emits the leading colon-separated token (`alice:s3cret`),
+  // which for a typo'd credential paste IS the secret.
+  //
+  // Hard rule now: only enter the URL-shaped branch when the prefix
+  // before `://` is a syntactically valid URL scheme per RFC 3986.
+  // Anything else (including raw inputs that happen to contain
+  // `://` further along) is treated as opaque and redacted to a
+  // scheme-free placeholder so no part of the original string
+  // (credentials or otherwise) can reach the logs.
+  if (!URL_SCHEME_RE.test(raw)) {
     return '[unparseable]';
   }
   try {
@@ -89,10 +108,10 @@ function redactDbUrl(raw: string): string {
     const port = u.port ? `:${u.port}` : '';
     return `${u.protocol}//***@${u.hostname || '?'}${port}/…`;
   } catch {
-    // We know `://` is in there but WHATWG still rejected it
-    // (e.g. unbalanced IPv6 brackets, empty authority). Echo only
-    // the part BEFORE the first `://` — that's safe because by
-    // construction it cannot contain credentials.
+    // We know the input starts with `<scheme>://` but WHATWG still
+    // rejected it (e.g. unbalanced IPv6 brackets, empty authority).
+    // Echo only the scheme — by construction the scheme cannot
+    // contain credentials, but the part after `://` definitely can.
     const sep = raw.indexOf('://');
     return `${raw.slice(0, sep)}://[unparseable]`;
   }
