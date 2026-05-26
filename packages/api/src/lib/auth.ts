@@ -215,7 +215,12 @@ function bumpLastUsedAtAsync(apiKeyId: string): void {
     });
 }
 
-async function verifyApiKey(
+// Exported so SSR helpers (lib/ssr-auth.ts) can resolve the authenticated
+// user from the httpOnly `plansync-apikey` cookie without re-implementing
+// scrypt / cache plumbing. Keeping a single source of truth means a future
+// change to the cache, key shape, or row-expiry semantics flows through
+// to every caller — page renders included (closes #1258).
+export async function verifyApiKey(
   rawKey: string,
 ): Promise<{ userName: string; projectId: string | null; execRunId: string | null } | null> {
   // R-141: hot path. A repeated auth with the same key — e.g. heartbeat
