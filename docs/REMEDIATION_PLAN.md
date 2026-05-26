@@ -2734,7 +2734,7 @@
 
 #### R-155 [HIGH] 新增 `plansync_deliverable_*` MCP 工具集（list / show / create / update / supersede）
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B13
 - **depends_on**: R-152
 - **effort**: medium
