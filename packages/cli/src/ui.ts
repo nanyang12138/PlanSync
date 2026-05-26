@@ -479,6 +479,9 @@ export function printHelp(toolCount: number) {
     `  ${c.cyan}/worker [agentName] [s]${c.reset}  Run agent task loop (e.g. /worker ai, /worker ai 30)`,
   );
   console.log(`  ${c.cyan}/code${c.reset}                Open Genie coding mode`);
+  console.log(
+    `  ${c.cyan}/explain rule <id>${c.reset}   Explain a verification rule (R-184 hard gate)`,
+  );
   console.log(`  ${c.cyan}/notifs${c.reset}              View recent notifications (last 10 min)`);
   console.log(
     `  ${c.cyan}/verbose${c.reset}             Toggle verbose tool output (default: off)`,
