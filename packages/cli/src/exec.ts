@@ -12,6 +12,7 @@ import {
   buildExecPrompt as _buildExecPrompt,
   buildExecMcpEnv as _buildExecMcpEnv,
   openDriftAlerts as _openDriftAlerts,
+  unwrapTaskPack as _unwrapTaskPack,
   type ExecAssigneeInput as _ExecAssigneeInput,
   type ExecAssigneeDecision as _ExecAssigneeDecision,
 } from './exec-shared.mjs';
@@ -383,7 +384,14 @@ export async function launchExec(
 ): Promise<void> {
   let taskPack: unknown;
   try {
-    taskPack = await apiGet<unknown>(`/api/projects/${cfg.project}/tasks/${taskId}/pack`);
+    // Closes #737 — the route at /api/projects/:projectId/tasks/:taskId/pack
+    // wraps its response as `{ data: pack }`. Unwrap once here so every
+    // downstream reader (drift gate, assignee resolver, prompt builder)
+    // sees the bare pack and not the API envelope. unwrapTaskPack is a
+    // no-op on inputs that already look like the pack (older mocks, future
+    // contract changes that drop the envelope).
+    const response = await apiGet<unknown>(`/api/projects/${cfg.project}/tasks/${taskId}/pack`);
+    taskPack = _unwrapTaskPack(response);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.log(`\n${c.red}✗ Failed to fetch task pack: ${msg}${c.reset}\n`);
