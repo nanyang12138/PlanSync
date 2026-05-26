@@ -107,26 +107,18 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
       if (body.status === 'done') {
         const isOwner = authed.projectRole === 'owner';
 
-        // R-192 / closes #1227 — `awaiting_evidence` is the gate's parked
-        // state: a run *already* completed and R-192 explicitly judged the
-        // evidence (PR merged, commit links, drift) as insufficient. That
-        // means the generic `hasCompletedRun` shortcut below would let
-        // any project member flip `awaiting_evidence → done` and silently
-        // bypass the evidence gate (the parked task always has a
-        // completed run — that's how it got parked). Same for the
-        // human-self-complete shortcut: an assignee who failed the gate
-        // should not be able to override it themselves.
-        //
-        // The legitimate paths out of `awaiting_evidence → done` are:
-        //   (a) The agent supplies fresh evidence, starts a new run via
-        //       POST /runs (which bumps the task back to `in_progress`),
-        //       and calls execution_complete. R-192 re-runs the gate
-        //       against the new evidence and flips to `done` if it now
-        //       passes. This goes through the runs route, not this
-        //       PATCH guard.
-        //   (b) Owner override — the comment on VALID_STATUS_TRANSITIONS
-        //       above explicitly documents this as "owner override after
-        //       evidence finally lands". Enforced here.
+        // R-192 / closes #1227 #1306 — `awaiting_evidence` is the gate's
+        // parked state: a run *already* completed and R-192 explicitly
+        // judged the evidence (PR merged, commit-deliverable links, open
+        // drift) insufficient. A parked task therefore *always* has a
+        // completed run on file (that's how it got parked), which makes
+        // the `hasCompletedRun` shortcut below silently match and let any
+        // member flip `awaiting_evidence → done`, bypassing the R-192
+        // gate. Same threat for the human-self-complete shortcut: an
+        // assignee who failed the gate must not be able to override it
+        // themselves. The legitimate "owner override after evidence
+        // finally lands" path is the documented exit on
+        // `VALID_STATUS_TRANSITIONS`; enforce it here.
         if (task.status === 'awaiting_evidence' && !isOwner) {
           throw new AppError(
             ErrorCode.FORBIDDEN,
@@ -135,10 +127,35 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
           );
         }
 
-        const completedRun = await prisma.executionRun.findFirst({
-          where: { taskId: params.taskId, status: 'completed' },
+        // R-192 / closes #1306 — Anchor the "completed run exists"
+        // shortcut on the *latest* run for this task, not on "any
+        // completed run anywhere in history". The bypass closed here is:
+        //
+        //   1. Task is parked in `awaiting_evidence` (old completed run
+        //      sits on file because R-192 rejected its evidence).
+        //   2. Non-owner calls POST /runs on the parked task, which lifts
+        //      it back to `in_progress` and creates a new `running` run.
+        //   3. Non-owner PATCHes `status: 'done'`. The source state is
+        //      now `in_progress` (so the awaiting_evidence guard above
+        //      doesn't fire), and the OLD completed run still satisfies
+        //      `hasCompletedRun`, so the shortcut greenlits the flip and
+        //      R-192 is bypassed exactly as in the parked-PATCH attack.
+        //
+        // Looking at the *latest* run instead closes this: after step 2
+        // the latest run is `running` (or later `failed`/`stale`/
+        // `cancelled`/`superseded`), so `hasCompletedRun` is false and
+        // the non-owner caller must wait for execution_complete to
+        // re-run the R-192 gate against the new evidence. The
+        // documented legitimate flow (`in_progress` with the most
+        // recent run already `completed` → a member closes the loop)
+        // is unchanged because in that scenario the latest run *is*
+        // the completed one.
+        const latestRun = await prisma.executionRun.findFirst({
+          where: { taskId: params.taskId },
+          orderBy: { startedAt: 'desc' },
+          select: { status: true },
         });
-        const hasCompletedRun = completedRun !== null;
+        const hasCompletedRun = latestRun?.status === 'completed';
         const isHumanSelfComplete =
           task.assigneeType === 'human' && task.assignee === auth.userName;
 
