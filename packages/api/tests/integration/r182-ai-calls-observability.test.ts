@@ -48,18 +48,25 @@ describe('R-182: ai_calls observability persists provider + purpose', () => {
     const { aiClient } = await import('@/lib/ai/client');
     const { PLAN_DIFF_SYSTEM } = await import('@/lib/ai/prompts/plan-diff.prompt');
 
-    const before = await prisma.aiCall.count();
+    // Per-run unique purpose so concurrent vitest forks writing to the
+    // shared ai_calls table can't pollute our count / findFirst lookup.
+    // See #1106 regression: f826a92 inadvertently removed this isolation.
+    const purpose = `plan_diff_writes1_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const before = await prisma.aiCall.count({ where: { purpose } });
     const out = await aiClient.complete(PLAN_DIFF_SYSTEM, 'user msg', {
-      purpose: 'plan_diff',
+      purpose,
     });
-    const after = await prisma.aiCall.count();
+    const after = await prisma.aiCall.count({ where: { purpose } });
 
     expect(out).not.toBeNull();
     expect(after).toBe(before + 1);
 
-    const row = await prisma.aiCall.findFirst({ orderBy: { createdAt: 'desc' } });
+    const row = await prisma.aiCall.findFirst({
+      where: { purpose },
+      orderBy: { createdAt: 'desc' },
+    });
     expect(row).not.toBeNull();
-    expect(row!.purpose).toBe('plan_diff');
+    expect(row!.purpose).toBe(purpose);
     expect(row!.provider).toBe('mock');
     expect(row!.ok).toBe(true);
     expect(row!.cacheHit).toBe(false);
@@ -75,10 +82,16 @@ describe('R-182: ai_calls observability persists provider + purpose', () => {
     const { aiClient } = await import('@/lib/ai/client');
     const { PLAN_DIFF_SYSTEM } = await import('@/lib/ai/prompts/plan-diff.prompt');
 
-    await aiClient.complete(PLAN_DIFF_SYSTEM, 'same-user', { purpose: 'plan_diff' });
-    await aiClient.complete(PLAN_DIFF_SYSTEM, 'same-user', { purpose: 'plan_diff' });
+    // Per-run unique purpose for fork isolation. See #1095 (added this)
+    // and #1106 / f826a92 (regressed it). Same pattern as test 1.
+    const purpose = `plan_diff_dup_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    await aiClient.complete(PLAN_DIFF_SYSTEM, 'same-user', { purpose });
+    await aiClient.complete(PLAN_DIFF_SYSTEM, 'same-user', { purpose });
 
-    const rows = await prisma.aiCall.findMany({ orderBy: { createdAt: 'asc' } });
+    const rows = await prisma.aiCall.findMany({
+      where: { purpose },
+      orderBy: { createdAt: 'asc' },
+    });
     expect(rows.length).toBe(2);
     expect(rows[0].inputHash).toBe(rows[1].inputHash);
     expect(rows[0].outputHash).toBe(rows[1].outputHash);
@@ -89,10 +102,17 @@ describe('R-182: ai_calls observability persists provider + purpose', () => {
     const { PLAN_DIFF_SYSTEM } = await import('@/lib/ai/prompts/plan-diff.prompt');
     const { IMPACT_ANALYSIS_SYSTEM } = await import('@/lib/ai/prompts/impact-analysis.prompt');
 
-    await aiClient.complete(PLAN_DIFF_SYSTEM, 'same-user', { purpose: 'plan_diff' });
-    await aiClient.complete(IMPACT_ANALYSIS_SYSTEM, 'same-user', { purpose: 'drift_impact' });
+    // Per-run unique purposes for fork isolation. See #1095 / #1106.
+    const tag = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const planPurpose = `plan_diff_diff_${tag}`;
+    const impactPurpose = `drift_impact_diff_${tag}`;
+    await aiClient.complete(PLAN_DIFF_SYSTEM, 'same-user', { purpose: planPurpose });
+    await aiClient.complete(IMPACT_ANALYSIS_SYSTEM, 'same-user', { purpose: impactPurpose });
 
-    const rows = await prisma.aiCall.findMany({ orderBy: { createdAt: 'asc' } });
+    const rows = await prisma.aiCall.findMany({
+      where: { purpose: { in: [planPurpose, impactPurpose] } },
+      orderBy: { createdAt: 'asc' },
+    });
     expect(rows[0].inputHash).not.toBe(rows[1].inputHash);
     expect(rows[0].promptHash).not.toBe(rows[1].promptHash);
   });
@@ -110,11 +130,15 @@ describe('R-182: provider field reflects active provider when it switches', () =
     const ORIGINAL_AMD = process.env.LLM_API_KEY;
     const ORIGINAL_ANTHROPIC = process.env.ANTHROPIC_API_KEY;
 
+    // Per-run unique purpose for fork isolation. Same flake class as the
+    // tests in the first describe (see #1095 / #1106 history).
+    const purpose = `plan_diff_provider_switch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
     try {
       // First pass: write a row with provider='mock' (PLANSYNC_AI_MOCK=1
       // is the default from tests/setup.ts).
       await recordAiCall({
-        purpose: 'plan_diff',
+        purpose,
         provider: 'mock',
         model: 'mock-model',
         promptHash: 'h1',
@@ -133,7 +157,7 @@ describe('R-182: provider field reflects active provider when it switches', () =
       // real network call — we hand recordAiCall the row directly because
       // the integration test environment has no Anthropic key).
       await recordAiCall({
-        purpose: 'plan_diff',
+        purpose,
         provider: 'anthropic',
         model: 'claude-sonnet-4-20250514',
         promptHash: 'h2',
@@ -148,7 +172,10 @@ describe('R-182: provider field reflects active provider when it switches', () =
         cacheHit: false,
       });
 
-      const rows = await prisma.aiCall.findMany({ orderBy: { createdAt: 'asc' } });
+      const rows = await prisma.aiCall.findMany({
+        where: { purpose },
+        orderBy: { createdAt: 'asc' },
+      });
       expect(rows.map((r) => r.provider)).toEqual(['mock', 'anthropic']);
       expect(rows[1].inputTokens).toBe(120);
       expect(rows[1].outputTokens).toBe(80);
