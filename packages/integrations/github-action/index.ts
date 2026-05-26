@@ -54,15 +54,29 @@ function parseTaskIds(input: string): string[] {
 // R-157: PR file lists arrive from one of two natural producers:
 //   * `gh pr diff --name-only` → newline-separated
 //   * `${{ steps.changed.outputs.all_changed_files }}` from
-//     `tj-actions/changed-files` → space- or comma-separated
-// Accept either by splitting on both newlines and commas. We deliberately
-// do NOT split on whitespace beyond newlines — file names can contain
-// spaces and silently truncating "my docs/foo.md" → ["my", "docs/foo.md"]
-// would mask real drift.
+//     `tj-actions/changed-files` → space-separated by default,
+//     or comma-separated when the workflow sets `separator: ','`.
+//
+// Splitting strategy preserves filenames containing spaces whenever a
+// structured delimiter is available, while still handling the default
+// space-separated `tj-actions/changed-files` output:
+//
+//   * If the input contains any `\n` or `,`, split on those delimiters
+//     only — filenames with spaces (e.g. "my docs/foo.md") are kept
+//     intact, matching the input contract documented in `action.yml`.
+//   * Otherwise (no commas, no newlines) the input must come from a
+//     space-separated producer; fall back to splitting on any whitespace
+//     so that "a.ts b.ts" → ["a.ts", "b.ts"] instead of being treated as
+//     a single nonexistent path that would trip the semantic gate
+//     (issue #1266). The narrow edge case — a single bare filename that
+//     itself contains a space, with no other delimiter — is unsupported
+//     in this branch; users with such paths should pass them via newline
+//     or comma separation.
 function parsePrFiles(input: string): string[] {
   if (!input) return [];
+  const splitter = /[\n,]/.test(input) ? /[\n,]+/ : /\s+/;
   return input
-    .split(/[\n,]+/)
+    .split(splitter)
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
 }
