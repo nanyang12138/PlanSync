@@ -78,16 +78,31 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
       });
     }
 
-    // R-054: Only 'todo' or 'in_progress' tasks may start a new execution run.
-    // Previously, a 'done', 'cancelled', or 'blocked' task would silently fall through
-    // both status branches below and create a run with the task in a terminal/blocked
-    // state — corrupting status invariants (a 'done' task could end up with a fresh
-    // running run hanging off it). Reject up front and direct the caller to the right
-    // recovery action.
-    if (task.status !== 'todo' && task.status !== 'in_progress') {
+    // R-054: Only 'todo', 'in_progress', or 'awaiting_evidence' tasks may
+    // start a new execution run. Previously, a 'done', 'cancelled', or
+    // 'blocked' task would silently fall through both status branches
+    // below and create a run with the task in a terminal/blocked state —
+    // corrupting status invariants (a 'done' task could end up with a
+    // fresh running run hanging off it). Reject up front and direct the
+    // caller to the right recovery action.
+    //
+    // R-192 / closes #1218 #1215 #1210 #1203 #1196 #1187 #1180 #1176
+    // #1172 #1158 #1150 #1135 #1122 #1082 #1077 — `awaiting_evidence`
+    // is treated like `in_progress` here so that the agent (or the
+    // owner, after the missing PR / commit landed) can start a fresh
+    // run, supply the evidence, and re-enter `execution_complete` to
+    // get the R-192 gate to flip the task to `done`. Without this
+    // branch, the task was stuck: the original run had already finished
+    // (status='completed'), so it could not be re-completed, and a new
+    // run was rejected here.
+    if (
+      task.status !== 'todo' &&
+      task.status !== 'in_progress' &&
+      task.status !== 'awaiting_evidence'
+    ) {
       throw new AppError(
         ErrorCode.STATE_CONFLICT,
-        `Cannot start execution: task is "${task.status}". Only "todo" or "in_progress" tasks may start a new run. ` +
+        `Cannot start execution: task is "${task.status}". Only "todo", "in_progress", or "awaiting_evidence" tasks may start a new run. ` +
           (task.status === 'blocked'
             ? 'Resolve open drift alerts (or PATCH the task back to in_progress) before retrying.'
             : task.status === 'done'
@@ -182,7 +197,7 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
           `Task was just claimed by another executor — only one executor at a time`,
         );
       }
-    } else if (task.status === 'in_progress') {
+    } else if (task.status === 'in_progress' || task.status === 'awaiting_evidence') {
       // Mutex: only one running run per task. Stale/failed/completed runs allow retry.
       // task.assignee is preserved — set on the original todo→in_progress claim, not rewritten here.
       const activeRun = await prisma.executionRun.findFirst({
@@ -194,6 +209,17 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
           ErrorCode.STATE_CONFLICT,
           `Task already has an active execution by "${activeRun.executorName}" (runId: ${activeRun.id}). Wait for it to complete, fail, or go stale (5min heartbeat timeout).`,
         );
+      }
+      // R-192: a fresh run after an `awaiting_evidence` parking lifts the
+      // task back into `in_progress` so the rest of the route (event
+      // payloads, drift gating, status displays) sees a normal run/task
+      // pair. The next `execution_complete` re-derives the R-192 state
+      // and will flip to `done` once the missing evidence is in place.
+      if (task.status === 'awaiting_evidence') {
+        await prisma.task.updateMany({
+          where: { id: params.taskId, status: 'awaiting_evidence' },
+          data: { status: 'in_progress' },
+        });
       }
     }
 

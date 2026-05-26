@@ -587,6 +587,11 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
       // `missing: [...]` payload enumerating the blocked signals; the
       // run itself still finalizes so the agent's work isn't lost.
       let r192State: Awaited<ReturnType<typeof deriveTaskCompletionState>> | null = null;
+      // Resolved task status that downstream event emit / response
+      // assembly read. Defaults to "the task did not transition" so a
+      // failed-run path or a no-op body.status leaves it null and the
+      // event emit block treats that as "no task-level event".
+      let resolvedTaskStatus: 'done' | 'awaiting_evidence' | 'blocked' | null = null;
       if (body.status === 'completed') {
         r192State = await deriveTaskCompletionState({
           projectId: params.projectId,
@@ -610,6 +615,7 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
             ...(body.branchName ? { branchName: body.branchName } : {}),
           },
         });
+        resolvedTaskStatus = r192State.status;
       } else if (body.status === 'failed') {
         const otherRunning = await prisma.executionRun.count({
           where: { taskId: params.taskId, status: 'running', id: { not: params.runId } },
@@ -619,6 +625,7 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
             where: { id: params.taskId },
             data: { status: 'blocked' },
           });
+          resolvedTaskStatus = 'blocked';
         }
       }
 
@@ -632,21 +639,50 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
         metadata: { runId: run.id, taskId: params.taskId },
       });
 
+      // R-192 / closes #1219 #1216 #1211 #1204 #1198 #1188 #1181
+      // #1177 #1173 #1159 #1151 #1136 #1123 — only emit
+      // `task_completed` when the task is *actually* done. When the
+      // R-192 gate parked the task in `awaiting_evidence`, the run
+      // finished but the task did not — emitting `task_completed`
+      // here would mislead every downstream consumer (UI, webhooks,
+      // SSE clients, integrations) into thinking the task closed.
+      // We instead emit a new `task_awaiting_evidence` event whose
+      // payload mirrors `task_completed` but adds the `missing: [...]`
+      // array enumerating the signals the owner still needs to land.
+      // Failed runs go through the existing `execution_failed`
+      // activity above and need no extra task-level event here.
       if (body.status === 'completed') {
-        eventBus.publish(params.projectId, 'task_completed', {
-          taskId: params.taskId,
-          title: run.task.title,
-          completedBy: run.executorName,
-          summary: body.outputSummary || '',
-          filesChanged: body.filesChanged || [],
-        });
-        dispatchWebhooks(params.projectId, 'task_completed', {
-          taskId: params.taskId,
-          title: run.task.title,
-          completedBy: run.executorName,
-          summary: body.outputSummary || '',
-          filesChanged: body.filesChanged || [],
-        });
+        if (resolvedTaskStatus === 'awaiting_evidence') {
+          const awaitingPayload = {
+            taskId: params.taskId,
+            title: run.task.title,
+            completedBy: run.executorName,
+            summary: body.outputSummary || '',
+            filesChanged: body.filesChanged || [],
+            missing: r192State?.missing ?? [],
+          };
+          eventBus.publish(params.projectId, 'task_awaiting_evidence', awaitingPayload);
+          dispatchWebhooks(params.projectId, 'task_awaiting_evidence', awaitingPayload);
+        } else {
+          // resolvedTaskStatus === 'done' (R-192 gate satisfied) or
+          // null (R-192 gate was OFF for this task — legacy path
+          // already flipped status to 'done' via the task.update
+          // above when body.status === 'completed').
+          eventBus.publish(params.projectId, 'task_completed', {
+            taskId: params.taskId,
+            title: run.task.title,
+            completedBy: run.executorName,
+            summary: body.outputSummary || '',
+            filesChanged: body.filesChanged || [],
+          });
+          dispatchWebhooks(params.projectId, 'task_completed', {
+            taskId: params.taskId,
+            title: run.task.title,
+            completedBy: run.executorName,
+            summary: body.outputSummary || '',
+            filesChanged: body.filesChanged || [],
+          });
+        }
       }
 
       // R-192: surface the derived task status + any missing evidence
