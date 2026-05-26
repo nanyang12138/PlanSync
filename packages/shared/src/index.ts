@@ -3,7 +3,6 @@ export * from './schemas/common';
 export * from './schemas/project';
 export * from './schemas/member';
 export * from './schemas/plan';
-export * from './schemas/deliverable';
 export * from './schemas/suggestion';
 export * from './schemas/comment';
 export * from './schemas/task';

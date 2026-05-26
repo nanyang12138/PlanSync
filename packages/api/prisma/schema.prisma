@@ -153,8 +153,7 @@ model PlanSuggestion {
   deliverableId   String?          @map("deliverable_id")
   deliverable     PlanDeliverable? @relation(fields: [deliverableId], references: [id], onDelete: SetNull)
 
-  plan        Plan             @relation(fields: [planId], references: [id], onDelete: Cascade)
-  deliverable PlanDeliverable? @relation(fields: [deliverableId], references: [id], onDelete: SetNull)
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
 
   @@index([deliverableId])
   @@map("plan_suggestions")

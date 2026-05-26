@@ -61,8 +61,4 @@ export const suggestionSchema = z.object({
   deliverableId: z.string().nullable().optional(),
   createdAt: z.coerce.date(),
   resolvedAt: z.coerce.date().nullable(),
-  // R-155: optional FK to PlanDeliverable; nullable in DB to preserve
-  // pre-R-155 suggestion rows and to keep the audit trail when a
-  // deliverable is deleted (ON DELETE SET NULL on the FK).
-  deliverableId: z.string().nullable().optional(),
 });
