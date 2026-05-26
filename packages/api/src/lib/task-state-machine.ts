@@ -31,19 +31,30 @@
  *     transition once everything lines up.
  *
  * Backwards compatibility:
- *   - The gate is **per-task opt-in**: it only fires when the task
- *     itself carries some git wiring, i.e. `task.prUrl` is non-empty
- *     OR `task.planDeliverableRefs` has at least one slug. Otherwise
- *     the task keeps its pre-R-192 "always done" behaviour even when
- *     the project has set `project.githubRepo`.
+ *   - The gate is two-stage opt-in:
  *
- *     This matters for the legacy migration story (fixes #1197): an
- *     owner that flips on GitHub integration must NOT retroactively
- *     trap every old task in `awaiting_evidence`. The project-level
- *     `githubRepo` setting is a global enable for *new* webhook /
- *     commit-link plumbing — actual gating is decided per task by
- *     looking at the task's own wiring, so each task can be migrated
- *     incrementally as the owner populates `prUrl` + refs.
+ *     1. **Project-level master switch**: the project must have
+ *        `project.githubRepo` configured. Without it the webhook
+ *        ingest (R-190) and commit-link plumbing (R-191) aren't
+ *        wired at all, so neither `pr_merged` nor
+ *        `deliverable_evidence` can ever be produced. Firing the
+ *        gate in that state would trap any task that happens to
+ *        carry `planDeliverableRefs` (set by the plan author for
+ *        normal scope tracking) in `awaiting_evidence` with no
+ *        recovery path. So the gate stays silent on
+ *        non-GitHub-integrated projects (fixes #1331).
+ *
+ *     2. **Per-task opt-in** (within a GitHub-integrated project):
+ *        the gate only fires when the task itself carries some git
+ *        wiring, i.e. `task.prUrl` is non-empty OR
+ *        `task.planDeliverableRefs` has at least one slug. Otherwise
+ *        the task keeps its pre-R-192 "always done" behaviour even
+ *        when the project has set `project.githubRepo`. This
+ *        matters for the legacy migration story (fixes #1197): an
+ *        owner that flips on GitHub integration must NOT
+ *        retroactively trap every old task in `awaiting_evidence`.
+ *        Each task can be migrated incrementally as the owner
+ *        populates `prUrl` + refs.
  *
  * The state machine is intentionally a pure function over a snapshot of
  * the task, the request body, and a few Prisma helpers. Tests can call
@@ -121,21 +132,42 @@ export async function deriveTaskCompletionState(
   const client = input.prismaClient ?? defaultPrisma;
   const { task, projectId } = input;
 
-  // Pre-flight: is git integration applicable to *this task*?
+  // Pre-flight stage 1: is git integration enabled at the *project*
+  // level at all?
   //
-  // The gate is per-task opt-in. A task opts in by carrying its own
-  // git wiring — either `prUrl` (the agent attached a PR) or at least
-  // one entry in `planDeliverableRefs` (the plan binds the task to a
-  // deliverable the commit-linker can anchor on). When the task has
-  // neither, the gate stays silent so legacy / pre-R-192 tasks keep
-  // flipping straight to `done`.
+  // `project.githubRepo` is the master switch for the R-190 webhook
+  // ingest + R-191 commit→deliverable linker. Without it, no
+  // GitHub event will ever land in `domain_events` and no row will
+  // ever appear in `commit_deliverable_links` for this project — so
+  // both the `pr_merged` and `deliverable_evidence` checks below are
+  // guaranteed to fail forever. Firing the gate in that state would
+  // trap any task that merely carries `planDeliverableRefs` (which
+  // plan authors set for scope/coverage tracking, independent of any
+  // GitHub wiring) in `awaiting_evidence` with no way out.
   //
-  // We intentionally do NOT key off `project.githubRepo` here: that
-  // setting is a project-wide enable for the webhook + commit-link
-  // pipelines, not a retroactive gate for every task that ever
-  // existed. Tying gate-applicability to it would silently trap old
-  // tasks (no prUrl, no refs) in `awaiting_evidence` the moment the
-  // owner registered a repo, which was the regression #1197 reported.
+  // Closes #1331: the previous revision used `planDeliverableRefs`
+  // as an *independent* gate enable signal, which was wrong on
+  // non-GitHub-integrated projects.
+  const project = await client.project.findUnique({
+    where: { id: projectId },
+    select: { githubRepo: true },
+  });
+  const hasProjectGithubRepo =
+    typeof project?.githubRepo === 'string' && project.githubRepo.length > 0;
+  if (!hasProjectGithubRepo) {
+    return { status: 'done', missing: [], gateApplied: false };
+  }
+
+  // Pre-flight stage 2: is git integration applicable to *this task*?
+  //
+  // Within a GitHub-integrated project the gate is still per-task
+  // opt-in. A task opts in by carrying its own git wiring — either
+  // `prUrl` (the agent attached a PR) or at least one entry in
+  // `planDeliverableRefs` (the plan binds the task to a deliverable
+  // the commit-linker can anchor on). When the task has neither, the
+  // gate stays silent so legacy / pre-R-192 tasks keep flipping
+  // straight to `done` (fixes #1197 — owner that flips on GitHub
+  // integration must not retroactively trap every old task).
   const hasTaskPrUrl = typeof task.prUrl === 'string' && task.prUrl.length > 0;
   const refsList = (task.planDeliverableRefs ?? []).filter(
     (r) => typeof r === 'string' && r.length > 0,
