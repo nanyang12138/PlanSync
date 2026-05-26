@@ -19,7 +19,7 @@ inputs:
     required: false
     default: ''
   pr-files:
-    description: 'Newline- or comma-separated list of files changed by the PR. When provided, the action also runs the R-157 semantic gate: every PR file must match at least one `file_glob` deliverable on the active plan. If empty, the semantic gate is skipped (the legacy drift-only gate still runs).'
+    description: 'List of files changed by the PR. Accepts newline- or comma-separated input (e.g. `gh pr diff --name-only`); when no newline/comma is present the input is split on whitespace as a fallback for the default `tj-actions/changed-files` space-separated `all_changed_files` output. Filenames containing spaces are preserved only when the input also uses a newline or comma delimiter. When provided, the action also runs the R-157 semantic gate: every PR file must match at least one `file_glob` deliverable on the active plan. If empty, the semantic gate is skipped (the legacy drift-only gate still runs).'
     required: false
     default: ''
   legacy-mode:
