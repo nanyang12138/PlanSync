@@ -141,6 +141,18 @@ interface LoadedDeliverable {
  * statement about the commit, not about the current plan version, and
  * `PlanDeliverable.supersededById` is the right place to walk the
  * version chain at read time.
+ *
+ * Because the same `slug` legitimately appears across multiple plan
+ * versions (e.g. v1 active, v2 superseded both carry `auth`), the result
+ * may contain multiple rows per slug. Callers MUST treat the message-tag
+ * lookup as one-slug-to-many-deliverables and emit a link row for each
+ * — collapsing to a single row would non-deterministically attribute the
+ * commit to one version and silently drop evidence for the other. See
+ * #1338 (the reviewer regression that motivated this contract).
+ *
+ * `orderBy` is included so the iteration order is stable across calls;
+ * the contract above means callers no longer rely on order, but a stable
+ * order keeps logs and test snapshots reproducible.
  */
 async function loadProjectDeliverables(
   client: Prisma.TransactionClient | PrismaClient,
@@ -152,6 +164,7 @@ async function loadProjectDeliverables(
       plan: { projectId },
     },
     select: { id: true, slug: true, refUri: true, refType: true },
+    orderBy: [{ slug: 'asc' }, { id: 'asc' }],
   });
   return rows.map((r) => ({
     id: r.id,
@@ -219,8 +232,18 @@ export async function linkCommitsFromPushPayload(
 
   const deliverables = await loadProjectDeliverables(client, input.projectId);
   // O(deliverables) lookup keyed by slug for the message-tag path.
-  const bySlug = new Map<string, LoadedDeliverable>();
-  for (const d of deliverables) bySlug.set(d.slug, d);
+  // The same slug may legitimately appear on multiple plan versions
+  // (e.g. v1 active + v2 superseded both carry `auth`), so the map
+  // value is a list — every matching deliverable gets its own
+  // `matchedBy = 'message'` row. Collapsing to a single deliverable
+  // here would non-deterministically pick a winner and silently drop
+  // commit evidence for the other version's tasks. See #1338.
+  const bySlug = new Map<string, LoadedDeliverable[]>();
+  for (const d of deliverables) {
+    const existing = bySlug.get(d.slug);
+    if (existing) existing.push(d);
+    else bySlug.set(d.slug, [d]);
+  }
 
   const pending: PendingRow[] = [];
   const byCommit: LinkCommitsResult['byCommit'] = [];
@@ -257,18 +280,24 @@ export async function linkCommitsFromPushPayload(
 
     // 2) Message tag match — `[deliverable:<slug>]` wins over glob in
     //    downstream consumers, but we emit both rows so the audit trail
-    //    keeps every signal.
+    //    keeps every signal. When the same slug exists on multiple
+    //    plan versions (e.g. v1 active + v2 superseded), emit one row
+    //    per matching deliverable so neither version's tasks lose
+    //    evidence; the (sha, deliverable_id, matched_by) unique index
+    //    keeps re-deliveries idempotent.
     for (const slug of extractMessageSlugs(commit.message)) {
-      const d = bySlug.get(slug);
-      if (!d) continue;
-      pending.push({
-        projectId: input.projectId,
-        sha,
-        deliverableId: d.id,
-        matchedBy: 'message',
-        matchedRef: slug,
-      });
-      messageHits += 1;
+      const matches = bySlug.get(slug);
+      if (!matches) continue;
+      for (const d of matches) {
+        pending.push({
+          projectId: input.projectId,
+          sha,
+          deliverableId: d.id,
+          matchedBy: 'message',
+          matchedRef: slug,
+        });
+        messageHits += 1;
+      }
     }
 
     byCommit.push({ sha, globMatches: globHits, messageMatches: messageHits });

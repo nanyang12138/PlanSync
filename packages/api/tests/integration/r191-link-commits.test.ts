@@ -390,4 +390,149 @@ describe('R-191: linkCommitsFromPushPayload', () => {
     expect(byCommit[shaM]).toMatchObject({ globMatches: 0, messageMatches: 1 });
     expect(byCommit[shaNoop]).toMatchObject({ globMatches: 0, messageMatches: 0 });
   });
+
+  // Regression for #1338 (review finding on PR #1311):
+  //   loadProjectDeliverables returns deliverables across every
+  //   (non-deprecated) plan version, so the same `slug` can legitimately
+  //   resolve to multiple rows (e.g. v1 active + v2 superseded both
+  //   carry `auth`). The previous code kept a Map<slug, deliverable>
+  //   that retained only one row arbitrarily — and since the query
+  //   carried no `orderBy`, the surviving row was non-deterministic.
+  //   A `[deliverable:auth]` message-only commit therefore wrote a
+  //   CommitDeliverableLink for only one of the two versions, and
+  //   tasks bound to the other version silently lost evidence.
+  //
+  // Uses its own isolated project so the multi-version state does not
+  // leak into the other tests in this file.
+  it('#1338: fans message-tag matches out to every plan-version row that carries the slug', async () => {
+    const suffix = uniqueSuffix();
+    const isoProject = await prisma.project.create({
+      data: {
+        name: `r191-1338-${suffix}`,
+        phase: 'active',
+        createdBy: 'r191-owner',
+      },
+    });
+    try {
+      // v1 — historical plan, marked `superseded` to mirror the
+      // post-#1311 query scope (`active` + `superseded`).
+      const planV1 = await prisma.plan.create({
+        data: {
+          projectId: isoProject.id,
+          version: 1,
+          title: 'r191 #1338 plan v1',
+          goal: 'g',
+          scope: 's',
+          deliverables: ['api docs'],
+          status: 'superseded',
+          createdBy: 'r191-owner',
+          activatedAt: new Date(),
+          activatedBy: 'r191-owner',
+        },
+      });
+      const dV1 = await prisma.planDeliverable.create({
+        data: {
+          planId: planV1.id,
+          slug: 'api-docs',
+          title: 'API docs (v1)',
+          body: 'original',
+          refType: 'file_glob',
+          refUri: 'docs/api/v1/**/*.md',
+          status: 'active',
+        },
+      });
+      const planV2 = await prisma.plan.create({
+        data: {
+          projectId: isoProject.id,
+          version: 2,
+          title: 'r191 #1338 plan v2',
+          goal: 'g',
+          scope: 's',
+          deliverables: ['api docs'],
+          status: 'active',
+          createdBy: 'r191-owner',
+          activatedAt: new Date(),
+          activatedBy: 'r191-owner',
+        },
+      });
+      const dV2 = await prisma.planDeliverable.create({
+        data: {
+          planId: planV2.id,
+          slug: 'api-docs',
+          title: 'API docs (v2)',
+          body: 'rewritten',
+          // Different glob so the glob path cannot fire — the only
+          // signal in the commit below is the message tag.
+          refType: 'file_glob',
+          refUri: 'docs/api/v2/**/*.md',
+          status: 'active',
+        },
+      });
+
+      const sha = '1338111100000000000000000000000000001338';
+      const result = await linkCommitsFromPushPayload({
+        projectId: isoProject.id,
+        payload: {
+          commits: [
+            {
+              id: sha,
+              // CHANGELOG.md hits neither refUri glob.
+              message: 'chore: cross-version release notes [deliverable:api-docs]',
+              added: ['CHANGELOG.md'],
+              modified: [],
+              removed: [],
+            },
+          ],
+        },
+      });
+
+      // Two rows — one per plan-version's `api-docs` row — both
+      // matchedBy='message', different deliverable_ids.
+      expect(result.created).toBe(2);
+      expect(result.byCommit[0]).toMatchObject({
+        sha,
+        globMatches: 0,
+        messageMatches: 2,
+      });
+
+      const rows = await prisma.commitDeliverableLink.findMany({
+        where: { sha },
+        orderBy: { deliverableId: 'asc' },
+      });
+      expect(rows).toHaveLength(2);
+      expect(rows.every((r) => r.matchedBy === 'message')).toBe(true);
+      expect(rows.every((r) => r.matchedRef === 'api-docs')).toBe(true);
+      const ids = new Set(rows.map((r) => r.deliverableId));
+      expect(ids.has(dV1.id)).toBe(true);
+      expect(ids.has(dV2.id)).toBe(true);
+
+      // Re-delivery stays idempotent under fan-out: the
+      // (sha, deliverable_id, matched_by) unique index rejects both
+      // rows, so created=0 and the row count is unchanged.
+      const second = await linkCommitsFromPushPayload({
+        projectId: isoProject.id,
+        payload: {
+          commits: [
+            {
+              id: sha,
+              message: 'chore: cross-version release notes [deliverable:api-docs]',
+              added: ['CHANGELOG.md'],
+              modified: [],
+              removed: [],
+            },
+          ],
+        },
+      });
+      expect(second.created).toBe(0);
+      const rowsAfter = await prisma.commitDeliverableLink.findMany({
+        where: { sha },
+      });
+      expect(rowsAfter).toHaveLength(2);
+    } finally {
+      await prisma.commitDeliverableLink
+        .deleteMany({ where: { projectId: isoProject.id } })
+        .catch(() => {});
+      await prisma.project.delete({ where: { id: isoProject.id } }).catch(() => {});
+    }
+  });
 });
