@@ -93,6 +93,32 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
         );
       }
 
+      // closes #1431 — `awaiting_evidence → cancelled` is the only
+      // non-owner exit we leave open from the R-192 parked state
+      // (assignee release escape hatch: "I give up on this task; the
+      // gate will never pass and someone else should pick it up").
+      // Without an assignee check, that exit is wide open to any
+      // project member because the rest of this route only requires
+      // `requireProjectRole` (member+). That means any developer can
+      // cancel another human's or an agent's parked task, throwing
+      // away the prior execution run's evidence and silently closing
+      // out work that is not theirs. Restrict cancellation to either
+      // the project owner (administrative close) or the current
+      // assignee (the legitimate self-release path). Exec-scoped
+      // agent keys set `auth.userName` to the executor name, which is
+      // exactly the task's `assignee` for agent tasks, so the agent
+      // doing its own cleanup is unaffected.
+      if (body.status === 'cancelled' && task.status === 'awaiting_evidence') {
+        const isOwner = authed.projectRole === 'owner';
+        const isAssignee = task.assignee !== null && auth.userName === task.assignee;
+        if (!isOwner && !isAssignee) {
+          throw new AppError(
+            ErrorCode.FORBIDDEN,
+            'Only the project owner or the task assignee can cancel an awaiting_evidence task.',
+          );
+        }
+      }
+
       // Marking a task done is the single most consequential PATCH on this
       // route — it closes the loop on accountability for the assigned work.
       // Without a guard, any project member could PATCH any task (their own
