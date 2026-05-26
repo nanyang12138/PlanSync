@@ -68,6 +68,15 @@ permissions:
   issues: write
   pull-requests: read
 
+# Opt into Node 24 for actions/checkout@v4 + actions/setup-node@v4.
+# Both ship Node 20 binaries today; GitHub forces every JS action
+# onto Node 24 starting 2026-06-02 and removes Node 20 on 2026-09-16.
+# Setting this here matches the cursor-review.yml precedent (same
+# repo, same actions, same opt-in) and silences the deprecation
+# warning that fires on every run today.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 # Don't double-run if the cron fires while a manual workflow_dispatch
 # is mid-flight. Don't cancel an in-progress run; let it finish so
 # label edits are atomic.
