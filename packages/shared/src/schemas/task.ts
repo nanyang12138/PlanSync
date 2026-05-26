@@ -17,7 +17,18 @@ export const TASK_PRIORITIES = [
 
 export const taskTypeSchema = z.enum(TASK_TYPES);
 export const taskPrioritySchema = z.enum(['p0', 'p1', 'p2']);
-export const taskStatusSchema = z.enum(['todo', 'in_progress', 'blocked', 'done', 'cancelled']);
+// R-192: `awaiting_evidence` is the new terminal-pending status assigned
+// when an agent completes a run but the system cannot yet derive `done`
+// from git + verification rule signals (PR not merged, no commit linked
+// to a bound deliverable, drift unresolved). See `task-state-machine.ts`.
+export const taskStatusSchema = z.enum([
+  'todo',
+  'in_progress',
+  'blocked',
+  'done',
+  'cancelled',
+  'awaiting_evidence',
+]);
 export const assigneeTypeSchema = z.enum(['human', 'agent', 'unassigned']);
 
 const dateRangeRefinement = {

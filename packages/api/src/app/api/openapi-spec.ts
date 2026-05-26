@@ -129,7 +129,10 @@ export const openApiSpec = {
       TaskStatus: {
         name: 'status',
         in: 'query',
-        schema: { type: 'string', enum: ['todo', 'in_progress', 'blocked', 'done', 'cancelled'] },
+        schema: {
+          type: 'string',
+          enum: ['todo', 'in_progress', 'blocked', 'done', 'cancelled', 'awaiting_evidence'],
+        },
       },
       TaskAssignee: {
         name: 'assignee',
