@@ -93,6 +93,33 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
         );
       }
 
+      // R-192 bypass closure (#1333): a task parked in `awaiting_evidence`
+      // always has a `completed` ExecutionRun on file — that's the run that
+      // failed the R-192 gate and parked the task. The `→done` guard below
+      // grants any caller a pass when such a run exists (`hasCompletedRun`),
+      // which is correct for `in_progress`-sourced PATCHes but trivially
+      // weaponised when the source state is `awaiting_evidence`: a non-owner
+      // would PATCH `awaiting_evidence → in_progress` (or
+      // `awaiting_evidence → blocked → in_progress`) and then PATCH the now
+      // `in_progress` task to `done`, riding the same stale completed run
+      // to silently bypass the evidence gate.
+      //
+      // The block comment on VALID_STATUS_TRANSITIONS already designates
+      // these exits as owner actions ("owner reopens for more work",
+      // "drift / external block arrived"); we enforce what the docs say.
+      // Non-owners that need to clear an `awaiting_evidence` task use the
+      // legitimate recovery path: POST /runs starts a fresh run and
+      // auto-flips the task back to `in_progress`, then a second
+      // execution_complete re-evaluates the R-192 gate against new evidence.
+      // `cancelled` is intentionally NOT gated here — it is a terminal exit
+      // (no outgoing transitions) so it cannot be used to bypass anything.
+      if (
+        task.status === 'awaiting_evidence' &&
+        (body.status === 'in_progress' || body.status === 'blocked')
+      ) {
+        await requireProjectRole(auth, params.projectId, 'owner');
+      }
+
       // Marking a task done is the single most consequential PATCH on this
       // route — it closes the loop on accountability for the assigned work.
       // Without a guard, any project member could PATCH any task (their own

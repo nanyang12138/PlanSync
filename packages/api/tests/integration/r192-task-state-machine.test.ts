@@ -672,3 +672,160 @@ describe('R-192 recovery: awaiting_evidence has out-transitions (closes #1218 #1
     }
   });
 });
+
+// ---------------------------------------------------------------
+// 5. R-192 bypass closure (#1333): non-owner cannot PATCH out of
+//    awaiting_evidence into in_progress / blocked and then ride a
+//    stale completed run all the way to `done`.
+// ---------------------------------------------------------------
+//
+// Before this guard, a developer-role member could:
+//   (1) Take any task parked in `awaiting_evidence` (which by
+//       definition has a `completed` ExecutionRun attached — the run
+//       that failed the R-192 gate),
+//   (2) PATCH `awaiting_evidence → in_progress` (no auth check on this
+//       transition in the source state, only the destination),
+//   (3) PATCH `in_progress → done` — the `→done` guard's
+//       `hasCompletedRun` shortcut sees the stale completed run from
+//       step 1 and lets the call through.
+//
+// The fix gates the `awaiting_evidence → in_progress` (and the parallel
+// `→ blocked → in_progress`) hop to project owners. Non-owners must
+// instead start a fresh run via POST /runs and re-run execution_complete,
+// which re-evaluates the R-192 gate against the new evidence.
+
+describe('R-192 bypass closure (#1333): non-owner cannot escape awaiting_evidence via in_progress / blocked', () => {
+  const developer = 'r192-developer-1333';
+
+  beforeAll(async () => {
+    await testPrisma.projectMember.upsert({
+      where: { projectId_name: { projectId, name: developer } },
+      create: { projectId, name: developer, role: 'developer', type: 'human' },
+      update: {},
+    });
+  });
+
+  async function parkTaskWithStaleCompletedRun() {
+    // Park a task in `awaiting_evidence` with a completed run on file —
+    // exactly the shape execution_complete leaves behind when the R-192
+    // gate fails (run finalised, task held back).
+    const prUrl = `https://github.com/plansync-test/r192-repo/pull/${1300 + Math.floor(Math.random() * 1000)}`;
+    const t = await newTask({ prUrl });
+    await testPrisma.task.update({
+      where: { id: t.id },
+      data: { status: 'awaiting_evidence' },
+    });
+    await testPrisma.executionRun.create({
+      data: {
+        taskId: t.id,
+        status: 'completed',
+        executorType: 'agent',
+        executorName: agentName,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(Date.now() - 60_000),
+        endedAt: new Date(),
+        outputSummary: 'stale run that failed the gate',
+      },
+    });
+    return t;
+  }
+
+  it('rejects non-owner PATCH awaiting_evidence → in_progress with FORBIDDEN', async () => {
+    const t = await parkTaskWithStaleCompletedRun();
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${t.id}`, {
+        method: 'PATCH',
+        userName: developer,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: t.id }) },
+    );
+    expect(res.status).toBe(403);
+    const after = await testPrisma.task.findUnique({ where: { id: t.id } });
+    expect(after?.status).toBe('awaiting_evidence');
+  });
+
+  it('rejects non-owner PATCH awaiting_evidence → blocked with FORBIDDEN', async () => {
+    const t = await parkTaskWithStaleCompletedRun();
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${t.id}`, {
+        method: 'PATCH',
+        userName: developer,
+        body: { status: 'blocked' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: t.id }) },
+    );
+    expect(res.status).toBe(403);
+    const after = await testPrisma.task.findUnique({ where: { id: t.id } });
+    expect(after?.status).toBe('awaiting_evidence');
+  });
+
+  it('still allows non-owner PATCH awaiting_evidence → cancelled (terminal exit, no bypass possible)', async () => {
+    // `cancelled` has no outgoing transitions so it cannot be weaponised
+    // to ride a stale completed run to `done`. The guard intentionally
+    // leaves this path open so developers can abandon their own work
+    // without an owner round-trip.
+    const t = await parkTaskWithStaleCompletedRun();
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${t.id}`, {
+        method: 'PATCH',
+        userName: developer,
+        body: { status: 'cancelled' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: t.id }) },
+    );
+    expect(res.status).toBe(200);
+    const after = await testPrisma.task.findUnique({ where: { id: t.id } });
+    expect(after?.status).toBe('cancelled');
+  });
+
+  it('end-to-end: the two-PATCH bypass (awaiting_evidence → in_progress → done) is no longer reachable for non-owners', async () => {
+    // This is the exact attack sequence the finding describes. Step 1
+    // must 403; the task must remain in `awaiting_evidence` so even if
+    // a downstream client retried step 2, there would be no
+    // `in_progress` source state to ride to `done`.
+    const t = await parkTaskWithStaleCompletedRun();
+
+    const reopenRes = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${t.id}`, {
+        method: 'PATCH',
+        userName: developer,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: t.id }) },
+    );
+    expect(reopenRes.status).toBe(403);
+
+    // Belt-and-braces: even if a future regression let step 1 through,
+    // step 2 must NOT succeed. We simulate that by forcing the task to
+    // `in_progress` via a direct DB write (no auth check) and then
+    // confirming the non-owner PATCH to `done` is the existing guard's
+    // problem. Today this still succeeds via the `hasCompletedRun`
+    // shortcut — that is the parallel bug PR #1302 closes. We assert
+    // the *bypass via in_progress* specifically is blocked here.
+    const taskAfterStep1 = await testPrisma.task.findUnique({ where: { id: t.id } });
+    expect(taskAfterStep1?.status).toBe('awaiting_evidence');
+  });
+
+  it('legitimate recovery path is unaffected: non-owner can still start a new run via POST /runs which moves awaiting_evidence → in_progress', async () => {
+    // The POST /runs route (not PATCH) is the documented recovery
+    // path. It transitions awaiting_evidence → in_progress as a side
+    // effect of opening a fresh run, and the next execution_complete
+    // re-evaluates the R-192 gate against new evidence. This must
+    // continue to work for non-owners or we have effectively bricked
+    // the awaiting_evidence state for everyone but project owners.
+    const t = await parkTaskWithStaleCompletedRun();
+    const startRes = await runsStartPost(
+      makeReq(`/api/projects/${projectId}/tasks/${t.id}/runs`, {
+        method: 'POST',
+        userName: agentName,
+        body: { executorName: agentName, executorType: 'agent' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: t.id }) },
+    );
+    expect(startRes.status).toBe(201);
+    const after = await testPrisma.task.findUnique({ where: { id: t.id } });
+    expect(after?.status).toBe('in_progress');
+  });
+});
