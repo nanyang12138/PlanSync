@@ -8,6 +8,7 @@ import { EventListener } from './event-listener';
 import { registerProjectTools } from './tools/project';
 import { registerMemberTools } from './tools/member';
 import { registerPlanTools } from './tools/plan';
+import { registerDeliverableTools } from './tools/deliverable';
 import { registerSuggestionTools } from './tools/suggestion';
 import { registerCommentTools } from './tools/comment';
 import { registerTaskTools } from './tools/task';
@@ -81,6 +82,12 @@ async function main() {
     'plansync_comment_list',
     'plansync_exec_context',
     'plansync_check_task_conflicts',
+    // R-155: deliverable read-only views — exec-mode agents need to inspect
+    // the structured deliverable rows when reasoning about which file
+    // changes belong to their bound task. Writes stay owner-only via
+    // `requireNotExecScoped` on the API side.
+    'plansync_deliverable_list',
+    'plansync_deliverable_show',
     // Execution lifecycle
     'plansync_execution_start',
     'plansync_execution_heartbeat',
@@ -116,6 +123,12 @@ async function main() {
     'plansync_comment_list',
     'plansync_exec_context',
     'plansync_check_task_conflicts',
+    // R-155: deliverable reads available in delegation mode too. Writes
+    // are owner-only and would fail at the API layer regardless, but
+    // reads are useful when an agent reviews a plan and wants to see
+    // structured deliverables instead of the legacy String[] mirror.
+    'plansync_deliverable_list',
+    'plansync_deliverable_show',
     // Execution lifecycle
     'plansync_execution_start',
     'plansync_execution_heartbeat',
@@ -211,6 +224,7 @@ async function main() {
   registerProjectTools(server, api);
   registerMemberTools(server, api);
   registerPlanTools(server, api, config);
+  registerDeliverableTools(server, api);
   registerSuggestionTools(server, api);
   registerCommentTools(server, api);
   registerTaskTools(server, api);
