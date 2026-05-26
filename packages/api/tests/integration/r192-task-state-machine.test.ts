@@ -109,7 +109,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await testPrisma.executionRun.deleteMany({});
+  await testPrisma.executionRun.deleteMany({ where: { task: { projectId } } });
   await testPrisma.commitDeliverableLink.deleteMany({ where: { projectId } });
   await testPrisma.domainEvent.deleteMany({ where: { projectId } });
   mockState.nextResult = null;
@@ -428,19 +428,16 @@ describe('R-192: runs POST applies the awaiting_evidence gate', () => {
 
     const runId = await startRun(task.id);
     const res = await runActionPost(
-      makeReq(
-        `/api/projects/${projectId}/tasks/${task.id}/runs/${runId}?action=complete`,
-        {
-          method: 'POST',
-          userName: owner,
-          body: {
-            status: 'completed',
-            outputSummary: 'agent claims done',
-            filesChanged: ['src/r192/foo.ts'],
-            deliverablesMet: [`${deliverableA.slug}: implemented`],
-          },
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}/runs/${runId}?action=complete`, {
+        method: 'POST',
+        userName: owner,
+        body: {
+          status: 'completed',
+          outputSummary: 'agent claims done',
+          filesChanged: ['src/r192/foo.ts'],
+          deliverablesMet: [`${deliverableA.slug}: implemented`],
         },
-      ),
+      }),
       { params: Promise.resolve({ projectId, taskId: task.id, runId }) },
     );
     expect(res.status).toBe(200);
@@ -468,19 +465,16 @@ describe('R-192: runs POST applies the awaiting_evidence gate', () => {
 
     const runId = await startRun(task.id);
     const res = await runActionPost(
-      makeReq(
-        `/api/projects/${projectId}/tasks/${task.id}/runs/${runId}?action=complete`,
-        {
-          method: 'POST',
-          userName: owner,
-          body: {
-            status: 'completed',
-            outputSummary: 'agent claims done with evidence',
-            filesChanged: ['src/r192/foo.ts'],
-            deliverablesMet: [`${deliverableA.slug}: implemented`],
-          },
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}/runs/${runId}?action=complete`, {
+        method: 'POST',
+        userName: owner,
+        body: {
+          status: 'completed',
+          outputSummary: 'agent claims done with evidence',
+          filesChanged: ['src/r192/foo.ts'],
+          deliverablesMet: [`${deliverableA.slug}: implemented`],
         },
-      ),
+      }),
       { params: Promise.resolve({ projectId, taskId: task.id, runId }) },
     );
     expect(res.status).toBe(200);
