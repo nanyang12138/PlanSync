@@ -16,6 +16,13 @@ export type PlanSyncEventType =
   | 'task_unassigned'
   | 'task_started'
   | 'task_completed'
+  // R-192: the runs route emits this when the R-192 evidence gate
+  // parks the task in `awaiting_evidence` (run finished, but missing
+  // PR-merged / deliverable-commit / drift signals). Payload mirrors
+  // `task_completed` and adds `missing: [...]` so subscribers can
+  // render evidence-pending state distinctly. See
+  // `task-state-machine.ts` for the gate.
+  | 'task_awaiting_evidence'
   | 'execution_stale'
   // Drift v2: emitted when a run transitions to `superseded` outside the
   // normal complete/fail/cancel paths — today only from the pause-ack

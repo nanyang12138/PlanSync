@@ -53,6 +53,8 @@ vi.mock('@/lib/ai/client', () => ({
 }));
 
 import { POST as runActionPost } from '@/app/api/projects/[projectId]/tasks/[taskId]/runs/[runId]/route';
+import { POST as runsStartPost } from '@/app/api/projects/[projectId]/tasks/[taskId]/runs/route';
+import { PATCH as taskPatch } from '@/app/api/projects/[projectId]/tasks/[taskId]/route';
 import { deriveTaskCompletionState, normalizePrUrl } from '@/lib/task-state-machine';
 import {
   makeReq,
@@ -484,5 +486,130 @@ describe('R-192: runs POST applies the awaiting_evidence gate', () => {
 
     const taskAfter = await testPrisma.task.findUnique({ where: { id: task.id } });
     expect(taskAfter?.status).toBe('done');
+  });
+});
+
+// ---------------------------------------------------------------
+// 4. R-192 recovery: awaiting_evidence is no longer a dead state
+// ---------------------------------------------------------------
+//
+// Pre-fix, a task parked in `awaiting_evidence` was stuck:
+//   - The originating run had already been finalised as `completed`,
+//     so a second `action=complete` call on it 409'd ("Execution is
+//     completed.").
+//   - `execution_start` (POST /runs) rejected any task not in
+//     `todo`/`in_progress`, so the agent couldn't open a fresh run
+//     to re-supply evidence.
+//   - The PATCH state machine had no out-transitions for
+//     `awaiting_evidence`, so even an owner couldn't manually
+//     reopen it.
+//
+// The fixes here cover the recovery story end-to-end:
+//   (i)  POST /runs accepts `awaiting_evidence` and bumps the task
+//        back to `in_progress` so a second `execution_complete` can
+//        re-run the R-192 gate against fresh evidence.
+//   (ii) PATCH /tasks/:id permits awaiting_evidence → done /
+//        in_progress / blocked / cancelled so owners have an explicit
+//        manual override path.
+
+describe('R-192 recovery: awaiting_evidence has out-transitions (closes #1218 #1215 #1210 #1203 #1196 #1187 #1180 #1176 #1172 #1158 #1150 #1135 #1122 #1082 #1077)', () => {
+  it('allows starting a new run on an awaiting_evidence task and flips it to done once evidence arrives', async () => {
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/300';
+    const task = await newTask({ prUrl });
+    await linkCommitToDeliverable(deliverableA.id, 'ffff6666ffff6666ffff6666ffff6666ffff6666');
+
+    // ---- Step 1: first complete parks the task in awaiting_evidence
+    const runId1 = await startRun(task.id);
+    const res1 = await runActionPost(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}/runs/${runId1}?action=complete`, {
+        method: 'POST',
+        userName: owner,
+        body: {
+          status: 'completed',
+          outputSummary: 'first attempt, PR not yet merged',
+          filesChanged: ['src/r192/foo.ts'],
+          deliverablesMet: [`${deliverableA.slug}: implemented`],
+        },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id, runId: runId1 }) },
+    );
+    expect(res1.status).toBe(200);
+    const j1 = await res1.json();
+    expect(j1.data.taskStatus).toBe('awaiting_evidence');
+    const parkedTask = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(parkedTask?.status).toBe('awaiting_evidence');
+
+    // ---- Step 2: the agent supplies evidence (PR finally merges)
+    await emitMergedPrEvent(prUrl);
+
+    // ---- Step 3: start a fresh run via the public route. Pre-fix
+    // this 409'd with "Cannot start execution: task is awaiting_evidence".
+    const startRes = await runsStartPost(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}/runs`, {
+        method: 'POST',
+        userName: agentName,
+        body: { executorName: agentName, executorType: 'agent' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(startRes.status).toBe(201);
+    const startJson = await startRes.json();
+    const runId2: string = startJson.data.id;
+    expect(runId2).toBeTruthy();
+    // The task should have been bumped back to in_progress so the
+    // rest of the system sees a normal task/run pair.
+    const taskMidFlight = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(taskMidFlight?.status).toBe('in_progress');
+
+    // ---- Step 4: complete the new run; R-192 now flips to done
+    const res2 = await runActionPost(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}/runs/${runId2}?action=complete`, {
+        method: 'POST',
+        userName: owner,
+        body: {
+          status: 'completed',
+          outputSummary: 'second attempt, PR merged',
+          filesChanged: ['src/r192/foo.ts'],
+          deliverablesMet: [`${deliverableA.slug}: implemented`],
+        },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id, runId: runId2 }) },
+    );
+    expect(res2.status).toBe(200);
+    const j2 = await res2.json();
+    expect(j2.data.taskStatus).toBe('done');
+    expect(j2.data.missing).toEqual([]);
+    const taskAfter = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(taskAfter?.status).toBe('done');
+  });
+
+  it('allows the owner to PATCH awaiting_evidence → done / in_progress / cancelled', async () => {
+    const allowedTransitions: Array<'done' | 'in_progress' | 'cancelled'> = [
+      'done',
+      'in_progress',
+      'cancelled',
+    ];
+    for (const next of allowedTransitions) {
+      const prUrl = `https://github.com/plansync-test/r192-repo/pull/${400 + allowedTransitions.indexOf(next)}`;
+      const t = await newTask({ prUrl });
+      // Park directly via DB write so each iteration is independent.
+      await testPrisma.task.update({
+        where: { id: t.id },
+        data: { status: 'awaiting_evidence' },
+      });
+      const res = await taskPatch(
+        makeReq(`/api/projects/${projectId}/tasks/${t.id}`, {
+          method: 'PATCH',
+          userName: owner,
+          body: { status: next },
+        }),
+        { params: Promise.resolve({ projectId, taskId: t.id }) },
+      );
+      // `done` requires either a completed run, owner role, or human
+      // self-complete. The owner role covers us here.
+      expect(res.status).toBe(200);
+      const after = await testPrisma.task.findUnique({ where: { id: t.id } });
+      expect(after?.status).toBe(next);
+    }
   });
 });

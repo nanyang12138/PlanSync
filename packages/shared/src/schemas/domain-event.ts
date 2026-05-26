@@ -52,6 +52,11 @@ export const domainEventTypeSchema = z.enum([
   'task_unassigned',
   'task_started',
   'task_completed',
+  // R-192: emitted when the R-192 evidence gate parks the task in
+  // `awaiting_evidence` (run finished but PR-merged /
+  // deliverable-commit / drift signals are still missing). Payload
+  // mirrors `task_completed` and adds `missing: [...]`.
+  'task_awaiting_evidence',
   'task_cancelled',
   'task_claimed',
   'task_declined',
@@ -122,6 +127,7 @@ export const domainEventPayloadSchema = z.discriminatedUnion('type', [
   eventVariant('task_unassigned'),
   eventVariant('task_started'),
   eventVariant('task_completed'),
+  eventVariant('task_awaiting_evidence'),
   eventVariant('task_cancelled'),
   eventVariant('task_claimed'),
   eventVariant('task_declined'),

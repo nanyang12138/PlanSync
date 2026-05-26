@@ -38,9 +38,19 @@ export async function GET(req: NextRequest, __nextCtx: Params) {
   }
 }
 
+// R-192 / closes #1218 #1215 #1210 #1203 #1196 #1187 #1180 #1176
+// #1172 #1158 #1150 #1135 #1122 #1082 #1077 — `awaiting_evidence` is
+// the gate's "evidence-pending" pause: the run finished, the work is
+// arguably done, but git/rule signals are still missing. Without
+// explicit out-transitions the task was a dead-end (no PATCH, no new
+// run). We give it the same exits as `in_progress`: forward to `done`
+// (owner override after evidence finally lands), back to `in_progress`
+// (owner reopens for more work), `blocked` (drift / external block
+// arrived), or `cancelled`.
 const VALID_STATUS_TRANSITIONS: Record<string, string[]> = {
   todo: ['in_progress', 'cancelled'],
-  in_progress: ['done', 'blocked', 'cancelled'],
+  in_progress: ['done', 'blocked', 'cancelled', 'awaiting_evidence'],
+  awaiting_evidence: ['done', 'in_progress', 'blocked', 'cancelled'],
   blocked: ['in_progress'],
 };
 
