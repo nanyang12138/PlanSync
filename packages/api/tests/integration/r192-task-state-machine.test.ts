@@ -613,3 +613,160 @@ describe('R-192 recovery: awaiting_evidence has out-transitions (closes #1218 #1
     }
   });
 });
+
+// ---------------------------------------------------------------
+// 5. R-192 evidence-gate bypass guard (closes #1227)
+// ---------------------------------------------------------------
+//
+// A task parked in `awaiting_evidence` *always* has a completed
+// ExecutionRun — that's how it got parked: the run finalised,
+// R-192 evaluated the git/rule signals and judged them insufficient.
+//
+// Pre-fix, the PATCH `done` guard allowed the transition whenever
+// any completed run existed, which meant a non-owner developer
+// (or the human assignee themselves) could flip
+// `awaiting_evidence → done` and silently bypass the R-192 gate:
+// the parked task *guarantees* a completed run is present, so the
+// hasCompletedRun shortcut always matched.
+//
+// The fix restricts `awaiting_evidence → done` to project owners
+// (the explicit "owner override" path documented on
+// `VALID_STATUS_TRANSITIONS`). Non-owners must instead supply
+// fresh evidence and re-run execution_complete, which goes
+// through the runs route and re-evaluates the gate.
+
+describe('R-192: awaiting_evidence → done PATCH is owner-only (closes #1227)', () => {
+  const developerName = 'r192-dev-bypasser';
+
+  beforeAll(async () => {
+    await testPrisma.projectMember.upsert({
+      where: { projectId_name: { projectId, name: developerName } },
+      update: { role: 'developer', type: 'human' },
+      create: { projectId, name: developerName, role: 'developer', type: 'human' },
+    });
+  });
+
+  it('rejects a non-owner developer PATCHing awaiting_evidence → done even when a completed run exists', async () => {
+    // Build the exact attack shape: a task parked in awaiting_evidence
+    // with a completed run already on file (the run that triggered the
+    // R-192 park). Pre-fix, the hasCompletedRun shortcut greenlit this.
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/500';
+    const task = await newTask({ prUrl });
+    await testPrisma.task.update({
+      where: { id: task.id },
+      data: { status: 'awaiting_evidence' },
+    });
+    await testPrisma.executionRun.create({
+      data: {
+        taskId: task.id,
+        status: 'completed',
+        executorType: 'agent',
+        executorName: agentName,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(Date.now() - 60_000),
+        endedAt: new Date(),
+      },
+    });
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: developerName,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(403);
+    const json = await res.json();
+    expect(JSON.stringify(json)).toMatch(/owner/i);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('awaiting_evidence');
+  });
+
+  it('rejects a human assignee self-completing their own awaiting_evidence task', async () => {
+    // The human-self-complete shortcut was the second bypass vector:
+    // a human-typed task parked in awaiting_evidence could have its
+    // own assignee flip it to done, again skipping the R-192 gate.
+    const humanAssignee = 'r192-human-self';
+    await testPrisma.projectMember.upsert({
+      where: { projectId_name: { projectId, name: humanAssignee } },
+      update: { role: 'developer', type: 'human' },
+      create: { projectId, name: humanAssignee, role: 'developer', type: 'human' },
+    });
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/501';
+    const task = await testPrisma.task.create({
+      data: {
+        projectId,
+        title: 'r192-human-task',
+        type: 'code',
+        priority: 'p1',
+        status: 'awaiting_evidence',
+        assignee: humanAssignee,
+        assigneeType: 'human',
+        boundPlanVersion: planVersion,
+        agentConstraints: [],
+        planDeliverableRefs: [deliverableA.slug],
+        prUrl,
+      },
+    });
+    await testPrisma.executionRun.create({
+      data: {
+        taskId: task.id,
+        status: 'completed',
+        executorType: 'human',
+        executorName: humanAssignee,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(Date.now() - 60_000),
+        endedAt: new Date(),
+      },
+    });
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: humanAssignee,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(403);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('awaiting_evidence');
+  });
+
+  it('still allows a non-owner developer to PATCH in_progress → done when a completed run exists (regression guard for normal flow)', async () => {
+    // Make sure the new guard only narrows `awaiting_evidence → done`
+    // and does not regress the documented "completed run lets a
+    // member close the task" flow on the normal `in_progress` path.
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/502';
+    const task = await newTask({ prUrl }); // status: in_progress
+    await testPrisma.executionRun.create({
+      data: {
+        taskId: task.id,
+        status: 'completed',
+        executorType: 'agent',
+        executorName: agentName,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(Date.now() - 60_000),
+        endedAt: new Date(),
+      },
+    });
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: developerName,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(200);
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('done');
+  });
+});

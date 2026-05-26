@@ -106,6 +106,35 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
       //      only for human-typed tasks (agent tasks always need a run).
       if (body.status === 'done') {
         const isOwner = authed.projectRole === 'owner';
+
+        // R-192 / closes #1227 — `awaiting_evidence` is the gate's parked
+        // state: a run *already* completed and R-192 explicitly judged the
+        // evidence (PR merged, commit links, drift) as insufficient. That
+        // means the generic `hasCompletedRun` shortcut below would let
+        // any project member flip `awaiting_evidence → done` and silently
+        // bypass the evidence gate (the parked task always has a
+        // completed run — that's how it got parked). Same for the
+        // human-self-complete shortcut: an assignee who failed the gate
+        // should not be able to override it themselves.
+        //
+        // The legitimate paths out of `awaiting_evidence → done` are:
+        //   (a) The agent supplies fresh evidence, starts a new run via
+        //       POST /runs (which bumps the task back to `in_progress`),
+        //       and calls execution_complete. R-192 re-runs the gate
+        //       against the new evidence and flips to `done` if it now
+        //       passes. This goes through the runs route, not this
+        //       PATCH guard.
+        //   (b) Owner override — the comment on VALID_STATUS_TRANSITIONS
+        //       above explicitly documents this as "owner override after
+        //       evidence finally lands". Enforced here.
+        if (task.status === 'awaiting_evidence' && !isOwner) {
+          throw new AppError(
+            ErrorCode.FORBIDDEN,
+            'Only the project owner can mark an awaiting_evidence task done. ' +
+              'Re-run execution_complete with fresh evidence to satisfy the R-192 gate.',
+          );
+        }
+
         const completedRun = await prisma.executionRun.findFirst({
           where: { taskId: params.taskId, status: 'completed' },
         });
