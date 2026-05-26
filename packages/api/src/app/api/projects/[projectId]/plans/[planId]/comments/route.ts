@@ -75,10 +75,11 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
     // leave the reply orphaned in JS view-models that still join through
     // parent_id). The 404 also avoids leaking the existence of comments in
     // other plans the caller may not have access to.
+    let parentDeliverableId: string | null | undefined;
     if (body.parentId) {
       const parent = await prisma.planComment.findUnique({
         where: { id: body.parentId },
-        select: { planId: true, isDeleted: true },
+        select: { planId: true, isDeleted: true, deliverableId: true },
       });
       if (!parent || parent.planId !== params.planId) {
         throw new AppError(ErrorCode.NOT_FOUND, 'Parent comment not found in this plan', {
@@ -93,6 +94,7 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
           { parentId: body.parentId },
         );
       }
+      parentDeliverableId = parent.deliverableId;
     }
 
     // R-156: when anchoring a comment to a deliverable, refuse cross-plan
@@ -110,6 +112,32 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
           deliverableId: body.deliverableId,
           planId: params.planId,
         });
+      }
+    }
+
+    // #1261: a reply must live on the same thread anchor as its parent.
+    // The per-field checks above only prove that `parentId` and
+    // `deliverableId` each belong to this plan; they say nothing about
+    // whether they belong to the *same* sub-thread. Without this guard a
+    // caller could reply to a plan-level comment while anchoring the
+    // reply to deliverable A (or reply to a comment on deliverable A
+    // while anchoring to deliverable B), splitting the conversation
+    // across surfaces — the timeline UI groups by `deliverableId` so
+    // half the thread would silently disappear from the deliverable card
+    // and the other half from the plan-level pane.
+    if (body.parentId) {
+      const replyDeliverableId = body.deliverableId ?? null;
+      const expectedDeliverableId = parentDeliverableId ?? null;
+      if (replyDeliverableId !== expectedDeliverableId) {
+        throw new AppError(
+          ErrorCode.BAD_REQUEST,
+          'Reply must share the same deliverable anchor as its parent comment',
+          {
+            parentId: body.parentId,
+            parentDeliverableId: expectedDeliverableId,
+            replyDeliverableId,
+          },
+        );
       }
     }
 

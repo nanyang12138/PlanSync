@@ -166,6 +166,140 @@ describe('R-156: PlanComment.deliverableId per-deliverable thread', () => {
     expect(items.map((i) => i.id)).toContain(aSecondId);
   });
 
+  // ---- #1261: reply must share its parent's deliverable anchor -----------
+  //
+  // The per-field checks above (parent in same plan, deliverable in same
+  // plan) are individually correct but together leave a gap: a reply could
+  // be threaded under a plan-level parent while still claiming a
+  // deliverable anchor (or vice versa), so the timeline UI would lose
+  // half of the thread depending on which view it renders. These cases
+  // pin the cross-field invariant: parent.deliverableId === reply.deliverableId.
+
+  it('#1261: reply to plan-level parent with a deliverableId → 400', async () => {
+    const parentRes = await POST(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/comments`, {
+        method: 'POST',
+        userName: owner,
+        body: { content: 'plan-level parent for #1261' },
+      }),
+      { params: Promise.resolve({ projectId, planId }) },
+    );
+    const parentId = (await parentRes.json()).data.id;
+
+    const replyRes = await POST(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/comments`, {
+        method: 'POST',
+        userName: owner,
+        body: { content: 'reply anchored to A', parentId, deliverableId: deliverableA },
+      }),
+      { params: Promise.resolve({ projectId, planId }) },
+    );
+    expect(replyRes.status).toBe(400);
+    const body = await replyRes.json();
+    expect(body.error.code).toBe('BAD_REQUEST');
+    expect(body.error.message).toMatch(/same deliverable anchor/);
+
+    const stray = await testPrisma.planComment.findFirst({
+      where: { parentId, deliverableId: deliverableA },
+    });
+    expect(stray).toBeNull();
+  });
+
+  it('#1261: reply to deliverable-A parent without a deliverableId → 400', async () => {
+    const parentRes = await POST(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/comments`, {
+        method: 'POST',
+        userName: owner,
+        body: { content: 'parent on A', deliverableId: deliverableA },
+      }),
+      { params: Promise.resolve({ projectId, planId }) },
+    );
+    const parentId = (await parentRes.json()).data.id;
+
+    const replyRes = await POST(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/comments`, {
+        method: 'POST',
+        userName: owner,
+        body: { content: 'reply with no anchor', parentId },
+      }),
+      { params: Promise.resolve({ projectId, planId }) },
+    );
+    expect(replyRes.status).toBe(400);
+    const body = await replyRes.json();
+    expect(body.error.code).toBe('BAD_REQUEST');
+    expect(body.error.message).toMatch(/same deliverable anchor/);
+  });
+
+  it('#1261: reply to deliverable-A parent with deliverableId=B → 400', async () => {
+    const parentRes = await POST(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/comments`, {
+        method: 'POST',
+        userName: owner,
+        body: { content: 'parent on A (cross-deliv test)', deliverableId: deliverableA },
+      }),
+      { params: Promise.resolve({ projectId, planId }) },
+    );
+    const parentId = (await parentRes.json()).data.id;
+
+    const replyRes = await POST(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/comments`, {
+        method: 'POST',
+        userName: owner,
+        body: { content: 'reply on B', parentId, deliverableId: deliverableB },
+      }),
+      { params: Promise.resolve({ projectId, planId }) },
+    );
+    expect(replyRes.status).toBe(400);
+    const body = await replyRes.json();
+    expect(body.error.code).toBe('BAD_REQUEST');
+    expect(body.error.message).toMatch(/same deliverable anchor/);
+  });
+
+  it('#1261: reply that matches its parent anchor → 201 (happy paths)', async () => {
+    // Plan-level parent, plan-level reply.
+    const planParentRes = await POST(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/comments`, {
+        method: 'POST',
+        userName: owner,
+        body: { content: 'plan-level parent (happy)' },
+      }),
+      { params: Promise.resolve({ projectId, planId }) },
+    );
+    const planParentId = (await planParentRes.json()).data.id;
+    const planReplyRes = await POST(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/comments`, {
+        method: 'POST',
+        userName: owner,
+        body: { content: 'plan-level reply', parentId: planParentId },
+      }),
+      { params: Promise.resolve({ projectId, planId }) },
+    );
+    expect(planReplyRes.status).toBe(201);
+
+    // Deliverable-A parent, deliverable-A reply.
+    const aParentRes = await POST(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/comments`, {
+        method: 'POST',
+        userName: owner,
+        body: { content: 'parent on A (happy)', deliverableId: deliverableA },
+      }),
+      { params: Promise.resolve({ projectId, planId }) },
+    );
+    const aParentId = (await aParentRes.json()).data.id;
+    const aReplyRes = await POST(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/comments`, {
+        method: 'POST',
+        userName: owner,
+        body: { content: 'reply on A', parentId: aParentId, deliverableId: deliverableA },
+      }),
+      { params: Promise.resolve({ projectId, planId }) },
+    );
+    expect(aReplyRes.status).toBe(201);
+    const aReplyBody = await aReplyRes.json();
+    expect(aReplyBody.data.parentId).toBe(aParentId);
+    expect(aReplyBody.data.deliverableId).toBe(deliverableA);
+  });
+
   it('GET /comments (no filter) → returns plan-level + all per-deliverable rows', async () => {
     const res = await GET(
       makeReq(`/api/projects/${projectId}/plans/${planId}/comments`, { userName: owner }),
