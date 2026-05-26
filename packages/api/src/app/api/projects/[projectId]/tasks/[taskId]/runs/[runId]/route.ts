@@ -594,6 +594,13 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
             id: run.task.id,
             prUrl: run.task.prUrl,
             planDeliverableRefs: run.task.planDeliverableRefs ?? [],
+            // Scope the deliverable-evidence lookup to the task's
+            // bound plan version so a same-slug deliverable on a
+            // superseded plan version cannot satisfy this task's
+            // gate (R-192 cross-version isolation, closes the
+            // #1212 / #1190 / #1182 / #1178 / #1174 / #1160 / #1137
+            // cluster).
+            boundPlanVersion: run.task.boundPlanVersion,
           },
         });
         await prisma.task.update({
