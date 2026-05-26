@@ -5,6 +5,7 @@ import { loadConfig } from './config';
 import { ApiClient } from './api-client';
 import { logger } from './logger';
 import { EventListener } from './event-listener';
+import { formatAwaitingEvidenceMessage } from './event-notification';
 import { registerProjectTools } from './tools/project';
 import { registerMemberTools } from './tools/member';
 import { registerPlanTools } from './tools/plan';
@@ -314,6 +315,23 @@ async function main() {
           const msg = pfx(`Task "${data.title ?? data.taskId}" completed`);
           logger.info({ taskId: data.taskId }, msg);
           pushNotification(server, 'info', msg, { taskId: data.taskId });
+          break;
+        }
+        case 'task_awaiting_evidence': {
+          // Fixes #1329 — PR #1223 introduced the `task_awaiting_evidence`
+          // SSE event when the R-192 gate parks a task (run finished but
+          // PR-merged / deliverable-evidence signals are still missing).
+          // The browser + CLI surfaces were wired in commit 3f74e4d
+          // (#1231), but this switch was missed, so MCP-connected
+          // agents/IDEs silently dropped the event via the `default`
+          // branch. Push it as a `warning` because the task is NOT done
+          // and an owner action is required to land the missing signals.
+          const msg = formatAwaitingEvidenceMessage(data);
+          logger.warn({ taskId: data.taskId, missing: data.missing }, msg);
+          pushNotification(server, 'warning', msg, {
+            taskId: data.taskId,
+            missing: data.missing,
+          });
           break;
         }
         case 'task_started': {

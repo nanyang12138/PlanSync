@@ -31,14 +31,30 @@
  *     transition once everything lines up.
  *
  * Backwards compatibility:
- *   - The gate is OFF when neither the task nor the project carries any
- *     git wiring (no `task.prUrl`, no `project.githubRepo`). Tasks that
- *     pre-date the git-integration era keep their pre-R-192 behaviour
- *     so the change is safe to land before every project has opted in.
- *   - The gate is also OFF when the task has no `planDeliverableRefs`,
- *     because there is nothing for the commit-linker to anchor on. A
- *     project can therefore migrate one task at a time by populating
- *     refs + PRs incrementally.
+ *   - The gate is two-stage opt-in:
+ *
+ *     1. **Project-level master switch**: the project must have
+ *        `project.githubRepo` configured. Without it the webhook
+ *        ingest (R-190) and commit-link plumbing (R-191) aren't
+ *        wired at all, so neither `pr_merged` nor
+ *        `deliverable_evidence` can ever be produced. Firing the
+ *        gate in that state would trap any task that happens to
+ *        carry `planDeliverableRefs` (set by the plan author for
+ *        normal scope tracking) in `awaiting_evidence` with no
+ *        recovery path. So the gate stays silent on
+ *        non-GitHub-integrated projects (fixes #1331).
+ *
+ *     2. **Per-task opt-in** (within a GitHub-integrated project):
+ *        the gate only fires when the task itself carries some git
+ *        wiring, i.e. `task.prUrl` is non-empty OR
+ *        `task.planDeliverableRefs` has at least one slug. Otherwise
+ *        the task keeps its pre-R-192 "always done" behaviour even
+ *        when the project has set `project.githubRepo`. This
+ *        matters for the legacy migration story (fixes #1197): an
+ *        owner that flips on GitHub integration must NOT
+ *        retroactively trap every old task in `awaiting_evidence`.
+ *        Each task can be migrated incrementally as the owner
+ *        populates `prUrl` + refs.
  *
  * The state machine is intentionally a pure function over a snapshot of
  * the task, the request body, and a few Prisma helpers. Tests can call
@@ -116,18 +132,86 @@ export async function deriveTaskCompletionState(
   const client = input.prismaClient ?? defaultPrisma;
   const { task, projectId } = input;
 
-  // Pre-flight: is git integration applicable to this task at all?
-  // We check both the task-level signal (prUrl was set by the agent or
-  // a prior PATCH) and the project-level signal (the owner registered
-  // a githubRepo). When neither is present, the gate stays silent and
-  // the caller falls back to legacy "always done".
+  // Pre-flight stage 0: defense-in-depth drift guard.
+  //
+  // An open drift alert means the task is bound to a stale plan
+  // version, so even a "no git wiring" task must NOT auto-flip to
+  // `done` — the drift might invalidate the work entirely. The
+  // route's R-006 gate is the primary 409 on open drift, but if
+  // that gate is ever loosened (or a future code path skips it),
+  // surfacing `drift_open` here keeps the helper fail-closed.
+  //
+  // CRITICAL: this check happens BEFORE the project-level
+  // (`githubRepo`) and per-task (`prUrl` / `planDeliverableRefs`)
+  // short-circuits below. Those branches return `status='done'`
+  // with `gateApplied=false`, and pre-fix the helper would happily
+  // flip a drifted task to `done` without ever consulting the
+  // drift table — bypassing the very defense-in-depth check this
+  // function advertises (closes #1422 / PR #1353 review finding).
+  //
+  // Drift overrides the legacy "always done" fallback intentionally:
+  // the `gateApplied=false` contract exists so projects that never
+  // opted into git integration are not silently broken by R-192's
+  // evidence requirements, NOT so they can dodge drift correctness.
+  const openDriftCount = await client.driftAlert.count({
+    where: { taskId: task.id, status: 'open' },
+  });
+  if (openDriftCount > 0) {
+    return {
+      status: 'awaiting_evidence',
+      missing: [
+        {
+          code: 'drift_open',
+          message: `${openDriftCount} drift alert(s) are still open on this task. Resolve them before completing.`,
+          details: { openDriftCount },
+        },
+      ],
+      gateApplied: true,
+    };
+  }
+
+  // Pre-flight stage 1: is git integration enabled at the *project*
+  // level at all?
+  //
+  // `project.githubRepo` is the master switch for the R-190 webhook
+  // ingest + R-191 commit→deliverable linker. Without it, no
+  // GitHub event will ever land in `domain_events` and no row will
+  // ever appear in `commit_deliverable_links` for this project — so
+  // both the `pr_merged` and `deliverable_evidence` checks below are
+  // guaranteed to fail forever. Firing the gate in that state would
+  // trap any task that merely carries `planDeliverableRefs` (which
+  // plan authors set for scope/coverage tracking, independent of any
+  // GitHub wiring) in `awaiting_evidence` with no way out.
+  //
+  // Closes #1331: the previous revision used `planDeliverableRefs`
+  // as an *independent* gate enable signal, which was wrong on
+  // non-GitHub-integrated projects.
   const project = await client.project.findUnique({
     where: { id: projectId },
     select: { githubRepo: true },
   });
+  const hasProjectGithubRepo =
+    typeof project?.githubRepo === 'string' && project.githubRepo.length > 0;
+  if (!hasProjectGithubRepo) {
+    return { status: 'done', missing: [], gateApplied: false };
+  }
+
+  // Pre-flight stage 2: is git integration applicable to *this task*?
+  //
+  // Within a GitHub-integrated project the gate is still per-task
+  // opt-in. A task opts in by carrying its own git wiring — either
+  // `prUrl` (the agent attached a PR) or at least one entry in
+  // `planDeliverableRefs` (the plan binds the task to a deliverable
+  // the commit-linker can anchor on). When the task has neither, the
+  // gate stays silent so legacy / pre-R-192 tasks keep flipping
+  // straight to `done` (fixes #1197 — owner that flips on GitHub
+  // integration must not retroactively trap every old task).
   const hasTaskPrUrl = typeof task.prUrl === 'string' && task.prUrl.length > 0;
-  const hasProjectRepo = typeof project?.githubRepo === 'string' && project.githubRepo.length > 0;
-  if (!hasTaskPrUrl && !hasProjectRepo) {
+  const refsList = (task.planDeliverableRefs ?? []).filter(
+    (r) => typeof r === 'string' && r.length > 0,
+  );
+  const hasTaskDeliverableRefs = refsList.length > 0;
+  if (!hasTaskPrUrl && !hasTaskDeliverableRefs) {
     return { status: 'done', missing: [], gateApplied: false };
   }
 
@@ -140,6 +224,14 @@ export async function deriveTaskCompletionState(
   // declaring the PR signal missing. This way an opt-in project that
   // registers a repo cannot accidentally auto-done tasks that never
   // attached a PR.
+  //
+  // We resolve the PR's merge info up-front (not just a boolean) so
+  // Check 2 below can constrain deliverable evidence to commits that
+  // actually belong to *this task's* PR. Without that constraint a
+  // commit on an unrelated PR (or any historical commit that ever
+  // touched the deliverable's file_glob in this project) would
+  // silently satisfy the gate — see #1189 / PR #1076 review finding.
+  let prShas: string[] = [];
   if (!hasTaskPrUrl) {
     missing.push({
       code: 'pr_merged',
@@ -147,13 +239,15 @@ export async function deriveTaskCompletionState(
         'Task has no pr_url. Attach the pull request URL to the task before completing so the system can verify it merged.',
     });
   } else {
-    const merged = await prUrlIsMerged(client, projectId, task.prUrl!);
-    if (!merged) {
+    const prInfo = await findPrMergeInfo(client, projectId, task.prUrl!);
+    if (!prInfo.merged) {
       missing.push({
         code: 'pr_merged',
         message: `Pull request ${task.prUrl} has not been observed as merged. Wait for the GitHub webhook to deliver the close+merged event.`,
         details: { prUrl: task.prUrl },
       });
+    } else {
+      prShas = prInfo.shas;
     }
   }
 
@@ -161,43 +255,45 @@ export async function deriveTaskCompletionState(
   // Every deliverable the task is bound to (via the legacy
   // `planDeliverableRefs` String[] of slugs, which is kept in sync with
   // the R-153 `TaskDeliverableLink` table by the plan-items writer)
-  // must have at least one CommitDeliverableLink row visible to this
-  // project. A task with no refs at all is treated as "no evidence
-  // requirement" — the constraint is opt-in per task.
-  const refs = (task.planDeliverableRefs ?? []).filter(
-    (r) => typeof r === 'string' && r.length > 0,
-  );
-  if (refs.length > 0) {
+  // must have at least one CommitDeliverableLink row whose SHA is
+  // attributable to *this task's* merged PR. A task with no refs at
+  // all is treated as "no evidence requirement" — the constraint is
+  // opt-in per task.
+  //
+  // The SHA filter (closes #1189) is what binds evidence to the task.
+  // Pre-fix, the lookup accepted any commit linked to the deliverable
+  // anywhere in the project, so a stray historical commit (e.g. an
+  // earlier PR that incidentally touched a file matching the
+  // deliverable's `file_glob`) could mark a brand-new task `done`.
+  // We now restrict to the SHAs we extracted from the PR's
+  // pull_request webhook + the github_push that delivered its merge
+  // commit. When the task has no merged PR (`prShas` empty), every
+  // ref is reported as missing — fail-closed is the safe default for
+  // an opt-in correctness gate.
+  //
+  // `refsList` was computed during the pre-flight above; we re-use it
+  // here instead of re-filtering so the two branches stay in lock-step.
+  if (hasTaskDeliverableRefs) {
     const missingRefs = await deliverableRefsWithoutEvidence(
       client,
       projectId,
-      refs,
+      refsList,
       task.boundPlanVersion ?? null,
+      prShas,
     );
     if (missingRefs.length > 0) {
       missing.push({
         code: 'deliverable_evidence',
-        message: `No commit linked to ${missingRefs.length} deliverable(s): ${missingRefs.join(', ')}. Tag the commit message with [deliverable:<slug>] or update the deliverable's file_glob so the linker picks it up.`,
+        message: `No commit from this PR linked to ${missingRefs.length} deliverable(s): ${missingRefs.join(', ')}. Push a commit on the PR that touches the deliverable's file_glob, or tag the commit message with [deliverable:<slug>] so the linker picks it up.`,
         details: { missingDeliverableRefs: missingRefs },
       });
     }
   }
 
-  // ---- Check 3: drift open (defense-in-depth) ------------------
-  // The upstream route gate already 409s on open drift, but if that
-  // gate is ever loosened (or a future code path skips it), we'd
-  // rather block the auto-done than silently advance into the unsafe
-  // state. The check is cheap and the duplication is intentional.
-  const openDriftCount = await client.driftAlert.count({
-    where: { taskId: task.id, status: 'open' },
-  });
-  if (openDriftCount > 0) {
-    missing.push({
-      code: 'drift_open',
-      message: `${openDriftCount} drift alert(s) are still open on this task. Resolve them before completing.`,
-      details: { openDriftCount },
-    });
-  }
+  // (drift_open is handled at pre-flight stage 0 above so the
+  // defense-in-depth check cannot be bypassed by the short-circuit
+  // branches that return `gateApplied=false`. Keeping it here would
+  // be dead code on a fail-closed path.)
 
   if (missing.length === 0) {
     return { status: 'done', missing: [], gateApplied: true };
@@ -206,32 +302,72 @@ export async function deriveTaskCompletionState(
 }
 
 /**
- * Returns true iff a `github_pull_request` event matching `prUrl` was
- * observed with `action ∈ {closed}` AND `pull_request.merged === true`.
+ * Result of looking up a PR's merge state in the domain-event outbox.
  *
- * We search the `domain_events` table directly because R-160 writes
- * every GitHub webhook into it (see R-190). The query is a small index
- * scan keyed by `(eventType, projectId)`; the JSON containment filter
- * (`@>`) lets Postgres push the merged + html_url comparison down to
- * the row level rather than streaming every PR event back to Node.
+ * `merged` mirrors the historical `prUrlIsMerged` boolean. `shas` is
+ * the list of commit SHAs we attribute to this PR — used by the
+ * deliverable-evidence check to bind evidence to *this task's* PR
+ * rather than to any commit in the project (closes #1189):
+ *
+ *   1. `pull_request.merge_commit_sha` from the merged PR event — the
+ *      canonical "this is what GitHub committed to the base branch"
+ *      SHA. For squash merges this is the only commit; for merge
+ *      commits it's the merge commit itself; for rebase merges it's
+ *      the topmost rebased commit.
+ *   2. `pull_request.head.sha` — the PR head at merge time. Useful
+ *      when the linker has indexed the head commit of a feature
+ *      branch (e.g. a `push` event arrived before the PR closed).
+ *   3. Every commit in any `github_push` event whose `head_commit.id`
+ *      equals `merge_commit_sha` AND whose `ref` matches the PR's
+ *      base branch (`refs/heads/<pull_request.base.ref>`). That push
+ *      is what GitHub sent to the base branch when the PR merged, so
+ *      its `commits[]` are precisely the constituent commits of this
+ *      PR (covers the "merge commit" case where only the constituents
+ *      carry file changes — the merge commit itself is empty).
+ *
+ *      The `ref` filter (closes #1420) prevents an unrelated push
+ *      whose `head_commit.id` happens to equal `merge_commit_sha`
+ *      (e.g. a developer first pushed the eventual merge commit to a
+ *      feature branch, or someone cherry-picked it onto another
+ *      branch) from injecting unrelated commits into `allowedShas`.
+ *      Without the ref filter, those stray pushes could satisfy the
+ *      R-192 deliverable-evidence gate for an unrelated task — the
+ *      exact attribution defect #1189 / PR #1394 set out to close.
+ *      If `base.ref` is missing from the PR payload we skip the push
+ *      expansion entirely (fail-closed); the merge SHA + head SHA
+ *      still satisfy the gate for squash / rebase merges (where only
+ *      those SHAs carry file changes), only "merge commit"-style
+ *      merges with empty merge commits are affected.
+ *
+ * When the PR is closed-without-merge (or never merged), `merged` is
+ * false and `shas` is empty; the caller treats this the same as
+ * "no PR observed".
  */
-async function prUrlIsMerged(
+interface PrMergeInfo {
+  merged: boolean;
+  shas: string[];
+}
+
+async function findPrMergeInfo(
   client: Prisma.TransactionClient | PrismaClient,
   projectId: string,
   prUrl: string,
-): Promise<boolean> {
+): Promise<PrMergeInfo> {
   // We compare against the raw GitHub payload at
   // `data.payload.pull_request.html_url`, which is the canonical URL
   // GitHub puts in webhook events. Some teams paste the `/files`
   // variant into the task — strip trailing extras so the comparison is
   // robust without doing a full URL canonicalisation pass.
   const normalized = normalizePrUrl(prUrl);
-  type Row = { id: bigint };
+  type PrRow = { merge_sha: string | null; head_sha: string | null; base_ref: string | null };
   // We can't use Prisma's typed query here because `payload` is a free
   // Json column; a raw query keeps the Postgres-side JSON walk while
   // staying parameterised against SQL injection.
-  const rows = await client.$queryRaw<Row[]>`
-    SELECT id
+  const prRows = await client.$queryRaw<PrRow[]>`
+    SELECT
+      payload -> 'data' -> 'payload' -> 'pull_request' ->> 'merge_commit_sha' AS merge_sha,
+      payload -> 'data' -> 'payload' -> 'pull_request' -> 'head' ->> 'sha'    AS head_sha,
+      payload -> 'data' -> 'payload' -> 'pull_request' -> 'base' ->> 'ref'    AS base_ref
     FROM domain_events
     WHERE event_type = 'github_pull_request'
       AND project_id = ${projectId}
@@ -240,7 +376,62 @@ async function prUrlIsMerged(
       AND payload -> 'data' -> 'payload' -> 'pull_request' ->> 'html_url' = ${normalized}
     LIMIT 1
   `;
-  return rows.length > 0;
+  if (prRows.length === 0) {
+    return { merged: false, shas: [] };
+  }
+
+  const shas = new Set<string>();
+  const mergeSha = prRows[0].merge_sha?.trim() || null;
+  const headSha = prRows[0].head_sha?.trim() || null;
+  const baseRef = prRows[0].base_ref?.trim() || null;
+  if (mergeSha) shas.add(mergeSha);
+  if (headSha) shas.add(headSha);
+
+  // Pull every commit from the `github_push` event(s) that carried
+  // this merge commit to the base branch. The push payload's
+  // `head_commit.id` is the SHA of the latest commit in the push, so
+  // matching on it gives us the exact push that landed the PR. The
+  // `commits[]` array on that push is the list of commits added to
+  // the base branch — i.e. the PR's commits (after squash / rebase /
+  // merge, depending on the merge strategy).
+  //
+  // We additionally constrain on `payload.ref` matching the PR's
+  // base branch (`refs/heads/<pull_request.base.ref>`). Without this
+  // constraint a push to ANY ref whose head_commit happens to share
+  // the merge SHA (a feature branch the developer first pushed the
+  // commit to, a cherry-pick onto another branch, a tag-creation
+  // push event, etc.) would inject unrelated commits into the
+  // allowed-shas set and let them satisfy the deliverable_evidence
+  // gate for an unrelated task. The `pull_request.base.ref` field
+  // is the short branch name (e.g. `main`); the push payload's
+  // `ref` is the full git ref (`refs/heads/main`) so we construct
+  // the full form for comparison. If `base.ref` is missing on the
+  // PR payload (malformed webhook) we skip the push expansion
+  // entirely — fail-closed for the attribution gate (closes #1420).
+  if (mergeSha && baseRef) {
+    type PushRow = { commits: unknown };
+    const baseRefFull = `refs/heads/${baseRef}`;
+    const pushRows = await client.$queryRaw<PushRow[]>`
+      SELECT payload -> 'data' -> 'payload' -> 'commits' AS commits
+      FROM domain_events
+      WHERE event_type = 'github_push'
+        AND project_id = ${projectId}
+        AND payload -> 'data' -> 'payload' -> 'head_commit' ->> 'id' = ${mergeSha}
+        AND payload -> 'data' -> 'payload' ->> 'ref' = ${baseRefFull}
+    `;
+    for (const row of pushRows) {
+      if (Array.isArray(row.commits)) {
+        for (const c of row.commits) {
+          if (c && typeof c === 'object' && typeof (c as { id?: unknown }).id === 'string') {
+            const id = (c as { id: string }).id.trim();
+            if (id) shas.add(id);
+          }
+        }
+      }
+    }
+  }
+
+  return { merged: true, shas: Array.from(shas) };
 }
 
 /**
@@ -266,11 +457,12 @@ export function normalizePrUrl(raw: string): string {
 
 /**
  * Returns the subset of `refs` that have NO matching
- * commit_deliverable_links row for this project. We resolve refs by
- * slug → PlanDeliverable.id first (the link table is keyed by id, not
- * slug), then count rows per deliverable in a single grouped query so
- * the gate is O(1) DB round-trip regardless of how many refs the task
- * declares.
+ * commit_deliverable_links row for this project AND for one of the
+ * SHAs that belong to the task's merged PR (`allowedShas`). We resolve
+ * refs by slug → PlanDeliverable.id first (the link table is keyed by
+ * id, not slug), then count rows per deliverable in a single grouped
+ * query so the gate is O(1) DB round-trip regardless of how many refs
+ * the task declares.
  *
  * Refs that don't resolve to any PlanDeliverable (e.g. an older task
  * that pre-dates the R-150 split tables) are treated as "missing
@@ -287,6 +479,13 @@ export function normalizePrUrl(raw: string): string {
  * different work. We scope the lookup to the task's bound plan
  * version so cross-version evidence cannot leak.
  *
+ * Closes #1189 — pre-fix the lookup also accepted commits from any
+ * unrelated PR (or any historical commit that ever touched the
+ * deliverable's `file_glob`) as evidence. We now restrict to SHAs
+ * that originate from the task's merged PR (`allowedShas`); when that
+ * list is empty (no merged PR observed) every resolved ref is
+ * reported as missing — fail closed for an opt-in correctness gate.
+ *
  * When `boundPlanVersion` is null/undefined (legacy callers) we fall
  * back to the previous project-wide lookup so projects that never
  * renamed a slug across versions keep working unchanged.
@@ -296,6 +495,7 @@ async function deliverableRefsWithoutEvidence(
   projectId: string,
   refs: string[],
   boundPlanVersion: number | null,
+  allowedShas: string[],
 ): Promise<string[]> {
   const planFilter =
     typeof boundPlanVersion === 'number' ? { projectId, version: boundPlanVersion } : { projectId };
@@ -313,12 +513,23 @@ async function deliverableRefsWithoutEvidence(
     return unresolved;
   }
 
-  // Count links per resolved deliverable in a single query.
+  // No SHAs to bind to → no commit can possibly satisfy the gate.
+  // Skip the link-count query entirely: every resolved ref is
+  // missing.
+  if (allowedShas.length === 0) {
+    return [...unresolved, ...deliverables.map((d) => d.slug)];
+  }
+
+  // Count links per resolved deliverable in a single query, restricted
+  // to SHAs from the task's merged PR. This is the binding that the
+  // #1189 finding requires: a deliverable is only "covered" if a
+  // commit on *this PR* touched it.
   const linkCounts = await client.commitDeliverableLink.groupBy({
     by: ['deliverableId'],
     where: {
       projectId,
       deliverableId: { in: deliverables.map((d) => d.id) },
+      sha: { in: allowedShas },
     },
     _count: { _all: true },
   });
