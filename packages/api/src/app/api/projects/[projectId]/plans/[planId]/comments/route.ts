@@ -24,7 +24,7 @@ export async function GET(req: NextRequest, __nextCtx: Params) {
     await requirePlanInProject(params.planId, params.projectId);
     // R-156: accept both pagination + deliverableId in the same query string.
     // The merged schema keeps the existing pagination contract unchanged and
-    // adds the deliverableId filter as a purely additive option.
+    // adds the deliverableId filter as an additive option.
     const {
       page = 1,
       pageSize = 20,
@@ -32,13 +32,22 @@ export async function GET(req: NextRequest, __nextCtx: Params) {
     } = validateSearchParams(req, commentsListQuerySchema);
     const skip = (page - 1) * pageSize;
 
-    const where: { planId: string; deliverableId?: string } = { planId: params.planId };
-    if (deliverableId) {
-      // R-156: callers asking for "comments on deliverable X" must not see
-      // rows that belong to deliverables on a different plan — the planId
-      // clause above already scopes by plan, so this filter is safe.
-      where.deliverableId = deliverableId;
-    }
+    // Issue #1256 / R-156 follow-up: surface isolation.
+    //
+    //   - ?deliverableId=<id>  → only comments anchored to that deliverable
+    //   - (no deliverableId)   → only PLAN-LEVEL comments (deliverableId IS NULL)
+    //
+    // Previously the "no filter" branch returned every row on the plan,
+    // which let per-deliverable comments leak into the legacy plan-level
+    // Comments sidebar (`/projects/<id>/plans?plan=<id>`). Treating the
+    // omission as "plan-level only" matches the user mental model: the
+    // plan sidebar is the discussion FOR the plan, not a global feed of
+    // every deliverable thread merged together. Callers that need a
+    // specific deliverable's thread already pass `deliverableId=<id>`.
+    const where: { planId: string; deliverableId: string | null } = {
+      planId: params.planId,
+      deliverableId: deliverableId ?? null,
+    };
 
     const [comments, total] = await Promise.all([
       prisma.planComment.findMany({
