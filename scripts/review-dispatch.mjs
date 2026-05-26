@@ -181,18 +181,111 @@ export function didWeAcquireDispatchLock({
   return latestTs >= preAddLabelsAtMs - toleranceMs;
 }
 
-async function dispatchSucceededAlready() {
-  // Look for a prior SUCCESS marker comment from a peer run. Used in the
-  // catch block to avoid releasing the lock when a concurrent run already
-  // succeeded.
+const DISPATCH_SUCCESS_PHRASE = 'Cursor Cloud Agent dispatched';
+
+/**
+ * Pure decision helper: find the server-stamped timestamp at which
+ * `lockLabel` was most recently REMOVED from the issue, or null if no
+ * such `unlabeled` event exists in the supplied events list.
+ *
+ * That timestamp is the dispatch-cycle boundary used by
+ * `hasSuccessMarkerAfter` / `dispatchSucceededAlready`: SUCCESS marker
+ * comments posted BEFORE it belong to a prior cycle that the user
+ * explicitly ended (the documented re-dispatch flow is "remove
+ * `dispatched` + `cursor:dispatch`, then re-apply `cursor:dispatch`"),
+ * while comments posted AFTER it belong to the current cycle (whether
+ * by us or a same-cycle peer that beat us).
+ *
+ * Returns null when no unlabeled event is present (i.e. this is the
+ * first dispatch ever, or the lock was never released — in which case
+ * the top-of-main `labelSet.has(LOCK_LABEL)` short-circuit would have
+ * already exited). A null return signals "no filter" to the marker
+ * check, matching the original "any historic marker counts" behavior
+ * — safe because there cannot be a prior-cycle marker without a
+ * matching unlabeled event ending that prior cycle.
+ */
+export function findLastUnlabeledMs({ events, lockLabel } = {}) {
+  if (!Array.isArray(events) || events.length === 0) return null;
+  if (!lockLabel) return null;
+  let latestTs = null;
+  for (const e of events) {
+    if (!e || e.event !== 'unlabeled') continue;
+    const name = e.label && typeof e.label === 'object' ? e.label.name : null;
+    if (name !== lockLabel) continue;
+    const ts = new Date(e.created_at).getTime();
+    if (!Number.isFinite(ts)) continue;
+    if (latestTs === null || ts > latestTs) latestTs = ts;
+  }
+  return latestTs;
+}
+
+/**
+ * Pure decision helper for the "did a peer dispatch already succeed in
+ * the CURRENT cycle?" check. Given the issue's `comments` list (as
+ * returned by the GitHub issue comments API) and the cycle-start
+ * timestamp from `findLastUnlabeledMs`, return whether any comment
+ * carries both the dispatch marker and the SUCCESS phrase AND was
+ * posted at or after the cycle start.
+ *
+ * Why a CYCLE-based cutoff and not `preAddLabelsAtMs` (fixes #1340):
+ * the local `preAddLabelsAtMs` clock is not safe to use as a sinceMs
+ * filter because a faster same-cycle peer can post its SUCCESS marker
+ * at a server timestamp that lands BEFORE our local pre-addLabels
+ * timestamp (different clocks, plus the peer's full pipeline can
+ * complete in less time than our delay between getIssue and addLabels
+ * — e.g. our run was queued and B's events-API view of A's `labeled`
+ * event hadn't propagated yet, so the lock-race detector
+ * `didWeAcquireDispatchLock` falls through to its propagation-lag
+ * "assume win" branch). With `sinceMs = preAddLabelsAtMs - tolerance`
+ * the peer's marker would then be filtered out as "stale" and we'd
+ * spawn a duplicate Cursor agent. The unlabeled-event timestamp is
+ * server-clock-to-server-clock, exact, and unambiguously separates
+ * cycles.
+ *
+ * Also fixes #1278: stale markers from a PRIOR (already-completed)
+ * dispatch cycle don't block a legitimate re-dispatch, because the
+ * re-dispatch flow necessarily generates a fresh `unlabeled` event for
+ * the lock — which becomes the new cycle start, leaving any prior
+ * marker behind it.
+ *
+ * `sinceMs = null` (or non-finite) means "no filter": accept any
+ * SUCCESS marker. That is the correct fallback for first-ever
+ * dispatch (no prior marker can exist) and for the events-fetch-
+ * failed path (better safe than sorry — assume the lone marker we
+ * found belongs to a peer than to spawn a duplicate).
+ */
+export function hasSuccessMarkerAfter({
+  comments,
+  marker = DISPATCH_MARKER,
+  successPhrase = DISPATCH_SUCCESS_PHRASE,
+  sinceMs,
+} = {}) {
+  if (!Array.isArray(comments) || comments.length === 0) return false;
+  const cutoffMs = Number.isFinite(sinceMs) ? sinceMs : null;
+  return comments.some((c) => {
+    if (!c || typeof c.body !== 'string') return false;
+    if (!c.body.includes(marker)) return false;
+    if (!c.body.includes(successPhrase)) return false;
+    if (cutoffMs === null) return true;
+    const ts = new Date(c.created_at).getTime();
+    if (!Number.isFinite(ts)) return false;
+    return ts >= cutoffMs;
+  });
+}
+
+async function dispatchSucceededAlready({ sinceMs } = {}) {
+  // Look for a SUCCESS marker comment from a peer run that won the same
+  // race we're currently in. Used both pre-Cursor-call (belt-and-
+  // suspenders after the events-based lock check) and in the catch
+  // block (to avoid releasing the lock if a peer already succeeded).
+  //
+  // `sinceMs` SHOULD be the cycle-start timestamp from
+  // `findLastUnlabeledMs`. Pass `null`/undefined to fall back to "any
+  // historic marker counts" (used when the events list is unavailable
+  // or when no prior cycle exists).
   try {
     const cs = await listIssueComments();
-    return cs.some(
-      (c) =>
-        c.body &&
-        c.body.includes(DISPATCH_MARKER) &&
-        c.body.includes('Cursor Cloud Agent dispatched'),
-    );
+    return hasSuccessMarkerAfter({ comments: cs, sinceMs });
   } catch (err) {
     console.warn(`dispatchSucceededAlready check failed (assuming no): ${err.message}`);
     return false;
@@ -481,10 +574,23 @@ async function main() {
     return;
   }
 
+  // Cycle-start timestamp: the most recent point at which `LOCK_LABEL` was
+  // REMOVED from the issue. SUCCESS-marker comments older than this belong
+  // to a prior dispatch cycle (which the user explicitly ended by removing
+  // the label) and must NOT block the current cycle. See `findLastUnlabeledMs`
+  // / `hasSuccessMarkerAfter` for the why-cycle-not-preAddLabels rationale
+  // (fixes #1278 and #1340).
+  const cycleStartMs = events ? findLastUnlabeledMs({ events, lockLabel: LOCK_LABEL }) : null;
+
   // Belt-and-suspenders: if a peer raced ahead, won the lock, AND already
   // posted the SUCCESS marker comment between our addLabels and now, exit
-  // before calling Cursor so we don't spawn a duplicate agent.
-  if (await dispatchSucceededAlready()) {
+  // before calling Cursor so we don't spawn a duplicate agent. Scope the
+  // marker check to the current dispatch cycle (since `cycleStartMs`) so
+  // (a) prior-cycle markers don't block legitimate re-dispatch (#1278),
+  // and (b) a same-cycle faster-peer's marker isn't filtered out as
+  // "stale" just because it happened to land before our local
+  // preAddLabelsAtMs (#1340).
+  if (await dispatchSucceededAlready({ sinceMs: cycleStartMs })) {
     console.log(
       `Peer dispatch already posted SUCCESS marker for #${ISSUE_NUMBER}; skipping Cursor call.`,
     );
@@ -500,8 +606,12 @@ async function main() {
     // peer run may have succeeded between our addLabels and this catch.
     // Releasing then would let the user re-dispatch and spawn a duplicate
     // agent. Re-check for a SUCCESS marker comment first; only release if
-    // no peer succeeded.
-    const peerSucceeded = await dispatchSucceededAlready();
+    // no peer succeeded. Scope to the current cycle (same `cycleStartMs`
+    // as the pre-call check) so we don't mistake an OLD success marker
+    // from a prior dispatch cycle for a current peer's success and refuse
+    // to release the lock — and so we don't filter out a same-cycle
+    // peer's marker just because it preceded our preAddLabelsAtMs (#1340).
+    const peerSucceeded = await dispatchSucceededAlready({ sinceMs: cycleStartMs });
     if (!peerSucceeded) {
       await removeLabel(LOCK_LABEL);
       await commentIssue(

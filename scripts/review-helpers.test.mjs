@@ -501,4 +501,275 @@ test('review-dispatch.mjs does not send the removed `branchName` field to Cursor
     /didWeAcquireDispatchLock\s*\(\s*\{[\s\S]*?lockLabel:\s*LOCK_LABEL/m,
     'main() must invoke didWeAcquireDispatchLock({ ..., lockLabel: LOCK_LABEL, ... }) between addLabels(LOCK_LABEL) and createCursorAgent — required by #1253 (the removal of `branchName` lost the implicit Cursor-side dedup).',
   );
+
+  // #1278/#1340 cycle-scoping: the belt-and-suspenders peer-success
+  // check (and its mirror in the createCursorAgent catch block) MUST
+  // pass `sinceMs: cycleStartMs` so that (a) prior-cycle markers do
+  // not block re-dispatch, and (b) a same-cycle peer's marker that
+  // landed before our local `preAddLabelsAtMs` is NOT filtered out
+  // as "stale". Using `preAddLabelsAtMs` directly as the `sinceMs`
+  // (the shape PR #1296 first proposed) re-introduces #1340 — the
+  // race that lets two Cursor agents spawn for the same issue.
+  assert.match(
+    src,
+    /dispatchSucceededAlready\s*\(\s*\{\s*sinceMs:\s*cycleStartMs\s*\}\s*\)/,
+    'main() must call dispatchSucceededAlready({ sinceMs: cycleStartMs }) (cycle-boundary cutoff from findLastUnlabeledMs), NOT preAddLabelsAtMs — required by #1340 (a faster same-cycle peer can post its SUCCESS marker before our local pre-addLabels timestamp; using preAddLabelsAtMs as the cutoff filters it out and lets us spawn a duplicate agent).',
+  );
+  assert.ok(
+    !/dispatchSucceededAlready\s*\(\s*\{\s*sinceMs:\s*preAddLabelsAtMs\s*\}\s*\)/.test(src),
+    'dispatchSucceededAlready must NOT be called with sinceMs: preAddLabelsAtMs — that is the #1340 buggy shape (local-clock cutoff filters out same-cycle peer markers). Use cycleStartMs from findLastUnlabeledMs instead.',
+  );
+});
+
+// ---------------------------------------------------------------------
+// review-dispatch.mjs cycle-scoped peer-success detection — #1278 / #1340
+// ---------------------------------------------------------------------
+//
+// Two related regressions converged on the dispatchSucceededAlready
+// belt-and-suspenders check:
+//   - #1278: ANY historic SUCCESS marker (e.g. from a completed prior
+//     cycle that the user explicitly ended by removing `dispatched` and
+//     re-adding `cursor:dispatch`) would short-circuit the new run
+//     before it ever called Cursor — re-dispatch was silently broken.
+//   - #1340: the first attempted fix scoped the check with
+//     `sinceMs = preAddLabelsAtMs`. That clock is LOCAL to this run,
+//     while comment timestamps come from the GitHub server clock. A
+//     faster same-cycle peer whose full pipeline (addLabels → Cursor →
+//     SUCCESS marker) completes before our local `preAddLabelsAtMs`
+//     gets its marker filtered out as "stale", and we spawn a duplicate.
+//
+// The fix is to cut over to a server-clock-to-server-clock cutoff: the
+// timestamp of the most recent `unlabeled` event for the lock label.
+// That moment is the cycle boundary — it's what re-dispatch flows
+// generate, so prior-cycle markers fall behind it; and it's strictly
+// before any same-cycle peer's marker (the peer must add the label
+// before it can post its marker), so peer markers fall after it.
+test('findLastUnlabeledMs', async (t) => {
+  const { findLastUnlabeledMs } = await import('./review-dispatch.mjs');
+  const LOCK = 'dispatched';
+  const baseIso = (ts) => new Date(ts).toISOString();
+
+  await t.test('returns null on empty events', () => {
+    assert.equal(findLastUnlabeledMs({ events: [], lockLabel: LOCK }), null);
+  });
+
+  await t.test('returns null when no unlabeled event for the lock', () => {
+    const now = Date.now();
+    assert.equal(
+      findLastUnlabeledMs({
+        events: [
+          { event: 'labeled', label: { name: LOCK }, created_at: baseIso(now - 10_000) },
+          { event: 'unlabeled', label: { name: 'other-label' }, created_at: baseIso(now - 5_000) },
+        ],
+        lockLabel: LOCK,
+      }),
+      null,
+    );
+  });
+
+  await t.test('returns the timestamp of a single unlabeled event', () => {
+    const ts = Date.now() - 60_000;
+    assert.equal(
+      findLastUnlabeledMs({
+        events: [{ event: 'unlabeled', label: { name: LOCK }, created_at: baseIso(ts) }],
+        lockLabel: LOCK,
+      }),
+      ts,
+    );
+  });
+
+  await t.test('returns the LATEST unlabeled timestamp across multiple cycles', () => {
+    const now = Date.now();
+    // Two prior cycles: dispatched added & removed twice. We want the
+    // most recent removal (the start of the current cycle).
+    const events = [
+      { event: 'labeled', label: { name: LOCK }, created_at: baseIso(now - 7_200_000) },
+      { event: 'unlabeled', label: { name: LOCK }, created_at: baseIso(now - 7_000_000) },
+      { event: 'labeled', label: { name: LOCK }, created_at: baseIso(now - 3_600_000) },
+      { event: 'unlabeled', label: { name: LOCK }, created_at: baseIso(now - 3_500_000) },
+      { event: 'labeled', label: { name: LOCK }, created_at: baseIso(now - 60_000) },
+    ];
+    assert.equal(findLastUnlabeledMs({ events, lockLabel: LOCK }), now - 3_500_000);
+  });
+
+  await t.test('skips malformed events without crashing', () => {
+    const ts = Date.now() - 1_000;
+    assert.equal(
+      findLastUnlabeledMs({
+        events: [
+          null,
+          { event: 'unlabeled' },
+          { event: 'unlabeled', label: null, created_at: baseIso(ts - 100) },
+          { event: 'unlabeled', label: { name: LOCK }, created_at: 'not-a-date' },
+          { event: 'unlabeled', label: { name: LOCK }, created_at: baseIso(ts) },
+        ],
+        lockLabel: LOCK,
+      }),
+      ts,
+    );
+  });
+
+  await t.test('missing args ⇒ null (defensive)', () => {
+    assert.equal(findLastUnlabeledMs(), null);
+    assert.equal(findLastUnlabeledMs({}), null);
+    assert.equal(findLastUnlabeledMs({ events: [{ event: 'unlabeled' }] }), null);
+  });
+});
+
+test('hasSuccessMarkerAfter (cycle-scoped peer-success detection)', async (t) => {
+  const { hasSuccessMarkerAfter } = await import('./review-dispatch.mjs');
+  const baseIso = (ts) => new Date(ts).toISOString();
+  const MARKER = '<!-- review-dispatch:agent -->';
+  const successBody = `${MARKER}\n\n🚀 **Cursor Cloud Agent dispatched** (finding)`;
+  const otherBody = `${MARKER}\n\n⚠ peer race detected, skipping.`;
+
+  await t.test('no comments ⇒ false', () => {
+    assert.equal(hasSuccessMarkerAfter({ comments: [], sinceMs: Date.now() }), false);
+  });
+
+  await t.test('marker absent ⇒ false', () => {
+    assert.equal(
+      hasSuccessMarkerAfter({
+        comments: [{ body: 'just a regular comment', created_at: baseIso(Date.now()) }],
+        sinceMs: 0,
+      }),
+      false,
+    );
+  });
+
+  await t.test('marker present but no SUCCESS phrase ⇒ false', () => {
+    // Race-detected / failure-marker comments share the marker but not the
+    // SUCCESS phrase — must not be misread as a successful peer dispatch.
+    assert.equal(
+      hasSuccessMarkerAfter({
+        comments: [{ body: otherBody, created_at: baseIso(Date.now()) }],
+        sinceMs: 0,
+      }),
+      false,
+    );
+  });
+
+  await t.test('SUCCESS marker after sinceMs ⇒ true (current-cycle peer)', () => {
+    const now = Date.now();
+    assert.equal(
+      hasSuccessMarkerAfter({
+        comments: [{ body: successBody, created_at: baseIso(now) }],
+        sinceMs: now - 10_000,
+      }),
+      true,
+    );
+  });
+
+  await t.test('SUCCESS marker before sinceMs ⇒ false (prior cycle, should not block)', () => {
+    // Documented re-dispatch flow: user removes `dispatched` + `cursor:dispatch`,
+    // then re-applies `cursor:dispatch`. The prior cycle's success marker is
+    // still on the issue but belongs to a cycle the user explicitly ended;
+    // the new cycle MUST be allowed to start. (#1278)
+    const cycleStart = Date.now();
+    const priorMarkerTs = cycleStart - 3_600_000;
+    assert.equal(
+      hasSuccessMarkerAfter({
+        comments: [{ body: successBody, created_at: baseIso(priorMarkerTs) }],
+        sinceMs: cycleStart,
+      }),
+      false,
+    );
+  });
+
+  await t.test(
+    '#1340: same-cycle peer marker BEFORE caller-supplied preAddLabelsAtMs is still detected when sinceMs is the cycle-start (server clock)',
+    () => {
+      // Reproduces the #1340 race the buggy preAddLabelsAtMs-based filter
+      // missed. Run A (faster peer) addLabels at server T_lock, posts the
+      // SUCCESS marker at server T_marker > T_lock. Run B is delayed, so
+      // its LOCAL `preAddLabelsAtMs` is well after T_marker — but the
+      // CYCLE START (last unlabeled-event timestamp, on the same server
+      // clock as the marker) is BEFORE T_marker. With sinceMs = cycleStart,
+      // the peer's marker is correctly preserved and B short-circuits.
+      const cycleStart = 1_700_000_000_000;
+      const peerMarkerTs = cycleStart + 5_000;
+      const ourPreAddLabelsAtMs = peerMarkerTs + 10_000; // would have filtered the marker out under the buggy shape
+      assert.equal(
+        hasSuccessMarkerAfter({
+          comments: [{ body: successBody, created_at: baseIso(peerMarkerTs) }],
+          sinceMs: cycleStart,
+        }),
+        true,
+      );
+      // And a sanity check: the OLD buggy shape (sinceMs = preAddLabelsAtMs)
+      // would indeed have missed it. This documents the regression rather
+      // than guarding the helper itself.
+      assert.equal(
+        hasSuccessMarkerAfter({
+          comments: [{ body: successBody, created_at: baseIso(peerMarkerTs) }],
+          sinceMs: ourPreAddLabelsAtMs,
+        }),
+        false,
+      );
+    },
+  );
+
+  await t.test('sinceMs null/undefined ⇒ no filter (any historic marker counts)', () => {
+    // First-ever-dispatch fallback: no prior unlabeled event exists, so
+    // findLastUnlabeledMs returns null. The marker check then reduces to
+    // the original "any marker counts" semantics — safe because no prior
+    // cycle marker can exist without a matching unlabeled event.
+    const ts = Date.now() - 60_000;
+    assert.equal(
+      hasSuccessMarkerAfter({
+        comments: [{ body: successBody, created_at: baseIso(ts) }],
+        sinceMs: null,
+      }),
+      true,
+    );
+    assert.equal(
+      hasSuccessMarkerAfter({
+        comments: [{ body: successBody, created_at: baseIso(ts) }],
+        // sinceMs omitted entirely
+      }),
+      true,
+    );
+  });
+
+  await t.test('SUCCESS marker exactly at sinceMs ⇒ true (>= comparison)', () => {
+    const now = Date.now();
+    assert.equal(
+      hasSuccessMarkerAfter({
+        comments: [{ body: successBody, created_at: baseIso(now) }],
+        sinceMs: now,
+      }),
+      true,
+    );
+  });
+
+  await t.test('malformed comments are skipped', () => {
+    const now = Date.now();
+    assert.equal(
+      hasSuccessMarkerAfter({
+        comments: [
+          null,
+          { body: null, created_at: baseIso(now) },
+          { body: successBody, created_at: 'not-a-date' },
+          { body: successBody, created_at: baseIso(now) },
+        ],
+        sinceMs: now - 1_000,
+      }),
+      true,
+    );
+  });
+
+  await t.test('mixed comments: returns true on the first matching one', () => {
+    const now = Date.now();
+    assert.equal(
+      hasSuccessMarkerAfter({
+        comments: [
+          { body: 'unrelated', created_at: baseIso(now - 10) },
+          { body: otherBody, created_at: baseIso(now - 5) },
+          { body: successBody, created_at: baseIso(now) },
+        ],
+        sinceMs: now - 60_000,
+      }),
+      true,
+    );
+  });
 });
