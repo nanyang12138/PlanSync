@@ -21,6 +21,12 @@ export const createSuggestionSchema = z
     action: suggestionActionSchema,
     value: z.string().min(1),
     reason: z.string().min(1),
+    // R-155: optional pointer at a specific PlanDeliverable row this
+    // suggestion is about. Lets an agent target one item ("change refUri on
+    // auth/oidc-callback") rather than rewriting the whole deliverables[]
+    // array. The API verifies the deliverable belongs to the same plan; if
+    // omitted the suggestion behaves exactly as before (field-level patch).
+    deliverableId: z.string().min(1).optional(),
   })
   .refine(
     (data) => {
@@ -50,6 +56,9 @@ export const suggestionSchema = z.object({
   status: suggestionStatusSchema,
   resolvedBy: z.string().nullable(),
   resolvedComment: z.string().nullable(),
+  // R-155: optional pointer at the specific PlanDeliverable this
+  // suggestion targets. Nullable for legacy/field-level suggestions.
+  deliverableId: z.string().nullable().optional(),
   createdAt: z.coerce.date(),
   resolvedAt: z.coerce.date().nullable(),
 });
