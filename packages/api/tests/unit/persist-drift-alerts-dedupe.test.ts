@@ -184,4 +184,77 @@ describe('persistDriftAlerts — same-task dedupe (closes #710)', () => {
     const data = (tx.driftAlert.createManyAndReturn.mock.calls[0]![0] as { data: unknown[] }).data;
     expect(data).toHaveLength(1);
   });
+
+  it('preserves hasRunningExecution=true across same-task dedupe — high-on-top (closes #1206 #1154 #1147 #1141)', async () => {
+    // The kept alert (high severity) has `hasRunningExecution=false`,
+    // but a lower-severity alert on the same task signals a running
+    // execution. Pre-fix the dedupe dropped the running-flag and the
+    // running run was NOT paused, leaving an agent free to keep
+    // hitting the now-stale plan. Post-fix the OR-merge guarantees
+    // the pause step still fires.
+    const tx = buildTx();
+    await persistDriftAlerts(tx as any, 'p1', [
+      {
+        taskId: 't1',
+        severity: 'high',
+        reason: 'breaking change',
+        currentPlanVersion: 2,
+        taskBoundVersion: 1,
+        hasRunningExecution: false,
+      },
+      {
+        taskId: 't1',
+        severity: 'medium',
+        reason: 'scope shift',
+        currentPlanVersion: 2,
+        taskBoundVersion: 1,
+        hasRunningExecution: true,
+      },
+    ]);
+
+    // The pause path is `executionRun.updateMany({ where: { taskId:{in},
+    // status:'running' }, data:{ status:'paused' } })`. Since severity
+    // is at least 'medium' (any high or medium alert is "blocking"
+    // per persistDriftAlerts), the running execution on t1 must be
+    // among the pause targets.
+    const pauseCalls = tx.executionRun.updateMany.mock.calls;
+    expect(pauseCalls.length).toBeGreaterThanOrEqual(1);
+    const pausedTaskIds = pauseCalls.flatMap(
+      (c) => (c[0] as { where: { taskId: { in: string[] } } }).where.taskId.in,
+    );
+    expect(pausedTaskIds).toContain('t1');
+  });
+
+  it('preserves hasRunningExecution=true when the running-flag is on the lower-rank alert', async () => {
+    // Same property but with insertion order reversed — exercises
+    // the path where `existing.hasRunningExecution` was set true on
+    // the initial insert and the higher-severity alert arrives
+    // second (the post-fix `||` merge must keep the flag).
+    const tx = buildTx();
+    await persistDriftAlerts(tx as any, 'p1', [
+      {
+        taskId: 't1',
+        severity: 'medium',
+        reason: 'scope shift',
+        currentPlanVersion: 2,
+        taskBoundVersion: 1,
+        hasRunningExecution: true,
+      },
+      {
+        taskId: 't1',
+        severity: 'high',
+        reason: 'breaking change',
+        currentPlanVersion: 2,
+        taskBoundVersion: 1,
+        hasRunningExecution: false,
+      },
+    ]);
+
+    const pauseCalls = tx.executionRun.updateMany.mock.calls;
+    expect(pauseCalls.length).toBeGreaterThanOrEqual(1);
+    const pausedTaskIds = pauseCalls.flatMap(
+      (c) => (c[0] as { where: { taskId: { in: string[] } } }).where.taskId.in,
+    );
+    expect(pausedTaskIds).toContain('t1');
+  });
 });
