@@ -18,11 +18,23 @@ inputs:
     description: 'PR branch name. When provided (and `task-ids` is empty), the action looks up tasks whose `branchName` matches and scopes the drift check to them.'
     required: false
     default: ''
+  pr-files:
+    description: 'Newline- or comma-separated list of files changed by the PR. When provided, the action also runs the R-157 semantic gate: every PR file must match at least one `file_glob` deliverable on the active plan. If empty, the semantic gate is skipped (the legacy drift-only gate still runs).'
+    required: false
+    default: ''
+  legacy-mode:
+    description: 'When `true`, disables the R-157 semantic deliverable gate and only runs the legacy open-drift-count check. Use this only as an emergency rollback.'
+    required: false
+    default: 'false'
 outputs:
   drift-count:
     description: 'Number of open drift alerts'
   has-drift:
     description: 'Whether any open drifts were found'
+  semantic-gate:
+    description: 'Outcome of the R-157 semantic gate: `skipped` (no globs / legacy mode / no files), `passed`, or `failed`.'
+  unmatched-files:
+    description: 'Newline-separated list of PR files that did not match any active deliverable glob (only populated when `semantic-gate=failed`).'
 runs:
   using: 'node20'
   main: 'dist/index.js'
