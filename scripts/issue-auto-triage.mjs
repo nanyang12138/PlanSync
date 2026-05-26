@@ -76,8 +76,54 @@ const APPLY = mode === '--apply';
 
 const REPO = process.env.GH_REPO || '';
 const TOKEN = process.env.GITHUB_TOKEN || '';
-const MAX_DISPATCH = Number.parseInt(process.env.TRIAGE_MAX_DISPATCH || '3', 10);
-const MAX_CLOSE = Number.parseInt(process.env.TRIAGE_MAX_CLOSE || '25', 10);
+
+// MAX_DISPATCH and MAX_CLOSE are load-bearing rate limits:
+//   - MAX_DISPATCH caps `cursor:dispatch` label adds per run. Each
+//     dispatched issue spawns a Cursor Cloud Agent, so a runaway value
+//     burns API quota fast.
+//   - MAX_CLOSE caps the number of `gh issue close` calls per run.
+//
+// Bare `Number.parseInt(envVar || fallback, 10)` is unsafe here:
+//   - `parseInt('abc', 10)` → NaN. Every `count >= NaN` check is false,
+//     so the for-loop never breaks and the script drains the whole
+//     severity:must backlog in one run.
+//   - `parseInt('-5', 10)` → -5. `0 >= -5` is true on iter 0, so the
+//     loop short-circuits silently and nothing gets dispatched.
+//   - `parseInt('100abc', 10)` → 100. parseInt is permissive about
+//     trailing garbage, so a typo in workflow_dispatch input
+//     (`max_dispatch=100abc`) silently raises the cap to 100 instead
+//     of falling back to the documented default. This was the
+//     specific finding flagged on PR #1280 (issue #1328).
+//   - `parseInt('3.7', 10)` → 3 (silent truncate), arguably fine but
+//     better surfaced as a warning so a typo doesn't masquerade as
+//     valid config.
+//
+// `parseLimitEnv` requires the *entire* trimmed string to be a
+// non-negative decimal integer (`^\d+$`). Anything else logs a single
+// warning and returns the documented default — preserving rate-limit
+// semantics rather than silently disabling or inflating them.
+function parseLimitEnv(name, raw, defaultValue) {
+  if (raw === undefined || raw === null) return defaultValue;
+  const trimmed = String(raw).trim();
+  if (trimmed === '') return defaultValue;
+  if (!/^\d+$/.test(trimmed)) {
+    console.warn(
+      `[warn] ${name}=${JSON.stringify(raw)} is not a non-negative integer; falling back to ${defaultValue}`,
+    );
+    return defaultValue;
+  }
+  const n = Number(trimmed);
+  if (!Number.isInteger(n) || n < 0 || n > Number.MAX_SAFE_INTEGER) {
+    console.warn(
+      `[warn] ${name}=${JSON.stringify(raw)} is out of range; falling back to ${defaultValue}`,
+    );
+    return defaultValue;
+  }
+  return n;
+}
+
+const MAX_DISPATCH = parseLimitEnv('TRIAGE_MAX_DISPATCH', process.env.TRIAGE_MAX_DISPATCH, 3);
+const MAX_CLOSE = parseLimitEnv('TRIAGE_MAX_CLOSE', process.env.TRIAGE_MAX_CLOSE, 25);
 
 if (APPLY && (!REPO || !TOKEN)) {
   console.error(

@@ -92,6 +92,98 @@ test('static guard: issue-auto-triage.mjs still defines the canonical helpers', 
   assert.match(src, /dispatch/);
 });
 
+// Mirror of parseLimitEnv from scripts/issue-auto-triage.mjs. Tested
+// in isolation because importing the script triggers top-level `gh`
+// calls. The static guard further down asserts the canonical source
+// stays in sync with this mirror.
+function parseLimitEnv(name, raw, defaultValue) {
+  if (raw === undefined || raw === null) return defaultValue;
+  const trimmed = String(raw).trim();
+  if (trimmed === '') return defaultValue;
+  if (!/^\d+$/.test(trimmed)) {
+    return defaultValue;
+  }
+  const n = Number(trimmed);
+  if (!Number.isInteger(n) || n < 0 || n > Number.MAX_SAFE_INTEGER) {
+    return defaultValue;
+  }
+  return n;
+}
+
+test('parseLimitEnv: undefined / null / empty falls back to default', () => {
+  assert.equal(parseLimitEnv('X', undefined, 3), 3);
+  assert.equal(parseLimitEnv('X', null, 3), 3);
+  assert.equal(parseLimitEnv('X', '', 3), 3);
+  assert.equal(parseLimitEnv('X', '   ', 3), 3);
+});
+
+test('parseLimitEnv: pure non-negative integer string is accepted', () => {
+  assert.equal(parseLimitEnv('X', '0', 3), 0);
+  assert.equal(parseLimitEnv('X', '7', 3), 7);
+  assert.equal(parseLimitEnv('X', '100', 3), 100);
+  assert.equal(parseLimitEnv('X', '  42  ', 3), 42);
+});
+
+test('parseLimitEnv: rejects numeric prefix with garbage trailer (the #1328 finding)', () => {
+  // Number.parseInt('100abc', 10) silently returns 100 — that is the
+  // exact bypass this finding is about. The strict regex must reject
+  // anything that is not entirely digits and fall back to the default
+  // so a workflow_dispatch typo like `max_dispatch=100abc` cannot
+  // inflate the rate limit past the documented value.
+  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', '100abc', 3), 3);
+  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', '3 ; rm -rf /', 3), 3);
+  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', '5.0', 3), 3);
+  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', '0x10', 3), 3);
+  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', '1e3', 3), 3);
+});
+
+test('parseLimitEnv: rejects non-numeric, negative, and fractional input', () => {
+  assert.equal(parseLimitEnv('X', 'abc', 25), 25);
+  assert.equal(parseLimitEnv('X', 'unlimited', 25), 25);
+  assert.equal(parseLimitEnv('X', '-5', 25), 25);
+  assert.equal(parseLimitEnv('X', '-0', 25), 25);
+  assert.equal(parseLimitEnv('X', '3.7', 25), 25);
+  assert.equal(parseLimitEnv('X', '+3', 25), 25);
+  assert.equal(parseLimitEnv('X', 'NaN', 25), 25);
+  assert.equal(parseLimitEnv('X', 'Infinity', 25), 25);
+});
+
+test('static guard: parseLimitEnv stays in the canonical source (no silent revert to bare parseInt)', () => {
+  const src = readFileSync(SCRIPT_PATH, 'utf-8');
+  assert.match(
+    src,
+    /function parseLimitEnv\s*\(/,
+    'parseLimitEnv must remain defined in issue-auto-triage.mjs — finding #1328 documents why a bare Number.parseInt is unsafe',
+  );
+  // The strict-numeric regex is the load-bearing piece — without
+  // `^\d+$` (or a stricter equivalent), parseInt-style prefix
+  // matching accepts `100abc` and the rate-limit cap can be inflated
+  // by typos in workflow_dispatch inputs.
+  assert.match(
+    src,
+    /\/\^\\d\+\$\//,
+    'parseLimitEnv must use a full-string digits regex (/^\\d+$/) so prefix-numeric garbage like "100abc" is rejected',
+  );
+  // The MAX_* env vars MUST be routed through the helper. A future
+  // refactor that re-introduces bare `Number.parseInt(process.env.TRIAGE_MAX_*` would
+  // resurrect the exact #1328 finding.
+  assert.match(
+    src,
+    /MAX_DISPATCH\s*=\s*parseLimitEnv\(\s*'TRIAGE_MAX_DISPATCH'/,
+    'MAX_DISPATCH must go through parseLimitEnv',
+  );
+  assert.match(
+    src,
+    /MAX_CLOSE\s*=\s*parseLimitEnv\(\s*'TRIAGE_MAX_CLOSE'/,
+    'MAX_CLOSE must go through parseLimitEnv',
+  );
+  assert.doesNotMatch(
+    src,
+    /Number\.parseInt\(\s*process\.env\.TRIAGE_MAX_/,
+    'TRIAGE_MAX_* must not be parsed with bare Number.parseInt — that is the #1328 regression',
+  );
+});
+
 test('static guard: cursor:dispatch is added with triggersDownstreamWorkflow=true (closes the GITHUB_TOKEN recursion-guard footgun)', () => {
   // Production hit on 2026-05-26: the script added cursor:dispatch
   // labels successfully with GITHUB_TOKEN, but GitHub silently
