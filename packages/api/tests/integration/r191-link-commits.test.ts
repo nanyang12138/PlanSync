@@ -15,6 +15,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import { linkCommitsFromPushPayload, globToRegExp } from '@/lib/git/link-commits';
+import { supersedeDeliverables } from '@/lib/plan-items';
 
 const prisma = new PrismaClient();
 
@@ -389,5 +390,131 @@ describe('R-191: linkCommitsFromPushPayload', () => {
     expect(byCommit[shaG]).toMatchObject({ globMatches: 1, messageMatches: 0 });
     expect(byCommit[shaM]).toMatchObject({ globMatches: 0, messageMatches: 1 });
     expect(byCommit[shaNoop]).toMatchObject({ globMatches: 0, messageMatches: 0 });
+  });
+
+  // #1326: when a plan version bumps and `supersedeDeliverables` flips
+  // the same-slug ancestor row to `status='deprecated'`, R-191 must
+  // still write a link row against the old deliverable id so that
+  // tasks bound to the older plan version can satisfy R-192's
+  // per-version-scoped `deliverable_evidence` check. Otherwise the
+  // tasks would be permanently trapped in `awaiting_evidence`.
+  it('fans the [deliverable:<slug>] tag out to deprecated/superseded ancestor rows that share the slug (#1326)', async () => {
+    const suffix = uniqueSuffix();
+    const project = await prisma.project.create({
+      data: {
+        name: `r191-supersede-${suffix}`,
+        phase: 'active',
+        createdBy: 'r191-owner',
+      },
+    });
+    try {
+      const planV1 = await prisma.plan.create({
+        data: {
+          projectId: project.id,
+          version: 1,
+          title: 'r191 supersede v1',
+          goal: 'g',
+          scope: 's',
+          deliverables: ['Auth'],
+          status: 'superseded',
+          createdBy: 'r191-owner',
+          activatedAt: new Date(),
+          activatedBy: 'r191-owner',
+        },
+      });
+      const v1Auth = await prisma.planDeliverable.create({
+        data: {
+          planId: planV1.id,
+          slug: 'auth',
+          title: 'Auth',
+          body: 'auth scope v1',
+          refType: 'free',
+          status: 'active',
+        },
+      });
+
+      const planV2 = await prisma.plan.create({
+        data: {
+          projectId: project.id,
+          version: 2,
+          title: 'r191 supersede v2',
+          goal: 'g',
+          scope: 's',
+          deliverables: ['Auth'],
+          status: 'active',
+          createdBy: 'r191-owner',
+          activatedAt: new Date(),
+          activatedBy: 'r191-owner',
+        },
+      });
+      const v2Auth = await prisma.planDeliverable.create({
+        data: {
+          planId: planV2.id,
+          slug: 'auth',
+          title: 'Auth',
+          body: 'auth scope v2',
+          refType: 'free',
+          status: 'active',
+        },
+      });
+
+      // This is what plan_activate runs in production: walks back
+      // through superseded plans and links matching slugs forward,
+      // marking the older row `status='deprecated'`.
+      const linked = await supersedeDeliverables(project.id, planV2.id, prisma);
+      expect(linked).toBe(1);
+
+      const v1AuthAfter = await prisma.planDeliverable.findUniqueOrThrow({
+        where: { id: v1Auth.id },
+        select: { status: true, supersededById: true },
+      });
+      expect(v1AuthAfter.status).toBe('deprecated');
+      expect(v1AuthAfter.supersededById).toBe(v2Auth.id);
+
+      // Build a 40-char hex sha — content-anchored (suffix is unique
+      // per-test-run) so we don't collide with the shared-fixture
+      // shas above even though they live in a different project.
+      const sha = ('1326' + suffix.replace(/[^0-9a-f]/g, '')).padEnd(40, '0').slice(0, 40);
+      const result = await linkCommitsFromPushPayload({
+        projectId: project.id,
+        payload: {
+          commits: [
+            {
+              id: sha,
+              message: 'feat: rework auth flow [deliverable:auth]',
+              added: ['unrelated.ts'],
+              modified: [],
+              removed: [],
+            },
+          ],
+        },
+      });
+
+      // Both versions share the slug, so the message tag must produce
+      // two rows — one per ancestor — and the per-commit breakdown
+      // counts each fanned-out hit independently.
+      expect(result.created).toBe(2);
+      expect(result.byCommit[0]).toMatchObject({
+        sha,
+        globMatches: 0,
+        messageMatches: 2,
+      });
+
+      const rows = await prisma.commitDeliverableLink.findMany({
+        where: { sha },
+        orderBy: { deliverableId: 'asc' },
+      });
+      expect(rows).toHaveLength(2);
+      const linkedIds = new Set(rows.map((r) => r.deliverableId));
+      expect(linkedIds.has(v1Auth.id)).toBe(true);
+      expect(linkedIds.has(v2Auth.id)).toBe(true);
+      for (const row of rows) {
+        expect(row.matchedBy).toBe('message');
+        expect(row.matchedRef).toBe('auth');
+      }
+    } finally {
+      await prisma.commitDeliverableLink.deleteMany({ where: { projectId: project.id } });
+      await prisma.project.delete({ where: { id: project.id } }).catch(() => {});
+    }
   });
 });

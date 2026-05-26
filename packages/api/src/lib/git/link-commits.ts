@@ -134,13 +134,27 @@ interface LoadedDeliverable {
 }
 
 /**
- * Load every active deliverable visible to the project across all of its
- * plan versions. We deliberately don't restrict to the active plan: a
- * commit landing today may close out a deliverable defined in plan v2
- * even if plan v3 is now active and renamed/dropped it — the link is a
- * statement about the commit, not about the current plan version, and
- * `PlanDeliverable.supersededById` is the right place to walk the
- * version chain at read time.
+ * Load every deliverable visible to the project across all of its plan
+ * versions, INCLUDING ones marked `deprecated` by
+ * `supersedeDeliverables`. We deliberately don't restrict to the active
+ * plan and we deliberately don't drop deprecated rows: a commit landing
+ * today may close out a deliverable defined in plan v2 even if plan v3
+ * is now active and renamed/dropped it — the link is a statement about
+ * the commit, not about the current plan version.
+ *
+ * Why we keep the deprecated rows (closes #1326): when activate fans
+ * a plan from v_n → v_{n+1}, `supersedeDeliverables` flips every
+ * same-slug old row to `status='deprecated'` and points its
+ * `supersededById` at the new row. R-192 scopes its evidence query to
+ * the task's `boundPlanVersion`, so a task still pinned to v_n looks
+ * up the OLD (now-deprecated) deliverable id when checking for
+ * `commit_deliverable_links`. If we filtered deprecated rows out here,
+ * the message-tag fan-out (and the same-refUri glob fan-out) would
+ * only write rows against the latest version's id, leaving v_n-bound
+ * tasks permanently in `awaiting_evidence` even after a tagged commit
+ * lands. By loading all versions and walking each match across them
+ * the link table records evidence against every concurrently-bound
+ * version, which is exactly what R-192's per-version lookup expects.
  */
 async function loadProjectDeliverables(
   client: Prisma.TransactionClient | PrismaClient,
@@ -148,7 +162,6 @@ async function loadProjectDeliverables(
 ): Promise<LoadedDeliverable[]> {
   const rows = await client.planDeliverable.findMany({
     where: {
-      status: { not: 'deprecated' },
       plan: { projectId },
     },
     select: { id: true, slug: true, refUri: true, refType: true },
@@ -219,8 +232,21 @@ export async function linkCommitsFromPushPayload(
 
   const deliverables = await loadProjectDeliverables(client, input.projectId);
   // O(deliverables) lookup keyed by slug for the message-tag path.
-  const bySlug = new Map<string, LoadedDeliverable>();
-  for (const d of deliverables) bySlug.set(d.slug, d);
+  // Multi-valued because a single slug can appear on multiple plan
+  // versions once `supersedeDeliverables` has fired (each prior version
+  // keeps its own `PlanDeliverable` row, just with `status='deprecated'`
+  // and a `supersededById` pointer). We fan out the link to every row
+  // sharing the slug so tasks pinned to older plan versions can find
+  // evidence (see #1326).
+  const bySlug = new Map<string, LoadedDeliverable[]>();
+  for (const d of deliverables) {
+    const existing = bySlug.get(d.slug);
+    if (existing) {
+      existing.push(d);
+    } else {
+      bySlug.set(d.slug, [d]);
+    }
+  }
 
   const pending: PendingRow[] = [];
   const byCommit: LinkCommitsResult['byCommit'] = [];
@@ -257,18 +283,22 @@ export async function linkCommitsFromPushPayload(
 
     // 2) Message tag match — `[deliverable:<slug>]` wins over glob in
     //    downstream consumers, but we emit both rows so the audit trail
-    //    keeps every signal.
+    //    keeps every signal. We fan out across every version that owns
+    //    this slug (current + superseded ancestors) so tasks pinned to
+    //    an older plan version can also see the evidence (#1326).
     for (const slug of extractMessageSlugs(commit.message)) {
-      const d = bySlug.get(slug);
-      if (!d) continue;
-      pending.push({
-        projectId: input.projectId,
-        sha,
-        deliverableId: d.id,
-        matchedBy: 'message',
-        matchedRef: slug,
-      });
-      messageHits += 1;
+      const matches = bySlug.get(slug);
+      if (!matches) continue;
+      for (const d of matches) {
+        pending.push({
+          projectId: input.projectId,
+          sha,
+          deliverableId: d.id,
+          matchedBy: 'message',
+          matchedRef: slug,
+        });
+        messageHits += 1;
+      }
     }
 
     byCommit.push({ sha, globMatches: globHits, messageMatches: messageHits });
