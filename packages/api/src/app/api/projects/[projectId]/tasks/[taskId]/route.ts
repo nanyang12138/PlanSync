@@ -93,6 +93,41 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
         );
       }
 
+      // R-192 / closes #1323 — `awaiting_evidence` exit-permission gate.
+      //
+      // The `→ done` branch below already blocks non-owner PATCHes from
+      // `awaiting_evidence` straight to `done`, but a non-owner can still
+      // launder past it in two hops:
+      //   1. PATCH `awaiting_evidence → in_progress` (the source-state
+      //      pivot used by the `→ done` guard never sees this hop).
+      //   2. PATCH `in_progress → done`. The latest-run check is the
+      //      only remaining defence — and as soon as another `running`
+      //      run is created (or the old completed run is still the
+      //      latest), `hasCompletedRun` can flip true again and the
+      //      transition silently lands.
+      // A `awaiting_evidence → blocked → in_progress → done` variant
+      // works the same way because `blocked → in_progress` is also a
+      // permitted hop.
+      //
+      // Close the family by gating the FIRST hop instead: if the source
+      // state is `awaiting_evidence` and the caller is not the project
+      // owner, the only legitimate target is `cancelled` (the assignee
+      // releasing the task). All other recovery flows for non-owners go
+      // through `POST /runs`, which creates a fresh ExecutionRun and
+      // lets the next `execution_complete` re-derive the R-192 gate
+      // against new evidence — that path is unchanged.
+      if (
+        task.status === 'awaiting_evidence' &&
+        body.status !== 'cancelled' &&
+        authed.projectRole !== 'owner'
+      ) {
+        throw new AppError(
+          ErrorCode.FORBIDDEN,
+          'Only the project owner can move a task out of awaiting_evidence (other than cancelling it). ' +
+            'To re-supply evidence, start a new execution via POST /runs and let execution_complete re-evaluate the R-192 gate.',
+        );
+      }
+
       // Marking a task done is the single most consequential PATCH on this
       // route — it closes the loop on accountability for the assigned work.
       // Without a guard, any project member could PATCH any task (their own

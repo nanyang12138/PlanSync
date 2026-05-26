@@ -1244,3 +1244,208 @@ describe('R-192: awaiting_evidence → done PATCH is owner-only (closes #1227 #1
     expect(after?.status).toBe('done');
   });
 });
+
+// ---------------------------------------------------------------
+// 6. R-192 exit-permission gate (closes #1323)
+// ---------------------------------------------------------------
+//
+// Section 5 above closes the direct `awaiting_evidence → done` PATCH
+// bypass. A second laundering shape is still reachable on top of it: a
+// non-owner can step `awaiting_evidence → in_progress → done` (or
+// `awaiting_evidence → blocked → in_progress → done`). On the second
+// PATCH the source state is no longer `awaiting_evidence`, so any guard
+// that pivots on `task.status === 'awaiting_evidence'` does not fire,
+// and the previously-rejected ExecutionRun is still on file with
+// `status='completed'` — enough to satisfy `hasCompletedRun` again as
+// soon as no newer run anchors the check.
+//
+// The PATCH route now requires owner role on the FIRST hop out of
+// `awaiting_evidence` for every exit except `cancelled`, so the
+// laundering chain is closed at hop 1. The only legitimate non-owner
+// recovery (`POST /runs` to create a fresh execution + let
+// `execution_complete` re-derive R-192) is untouched and exercised by
+// the regression case at the bottom of this block.
+
+describe('R-192 exit-permission gate: PATCH out of awaiting_evidence is owner-only (closes #1323)', () => {
+  const nonOwner = 'r192-launder-dev';
+
+  beforeAll(async () => {
+    // A non-owner human member used to drive the bypass attempts below.
+    // We create it once; cleanupProject in the top-level afterAll wipes
+    // it together with the project.
+    await testPrisma.projectMember.upsert({
+      where: { projectId_name: { projectId, name: nonOwner } },
+      create: { projectId, name: nonOwner, role: 'developer', type: 'human' },
+      update: { role: 'developer', type: 'human' },
+    });
+  });
+
+  async function parkedTask(prSuffix: string) {
+    const prUrl = `https://github.com/plansync-test/r192-repo/pull/${prSuffix}`;
+    const t = await newTask({ prUrl });
+    // Park directly via DB write — the assertion focuses on the PATCH
+    // guard, not on the parking path (which has its own coverage in
+    // sections 3 and 5).
+    await testPrisma.task.update({
+      where: { id: t.id },
+      data: { status: 'awaiting_evidence' },
+    });
+    // Seed a previously-rejected completed run on file — this is exactly
+    // the run that the bypass leans on (`hasCompletedRun` still true).
+    // Without it the `→ done` check would 403 on a different branch and
+    // the test wouldn't actually exercise the laundering scenario.
+    await testPrisma.executionRun.create({
+      data: {
+        taskId: t.id,
+        status: 'completed',
+        executorType: 'agent',
+        executorName: agentName,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(Date.now() - 60_000),
+        endedAt: new Date(Date.now() - 30_000),
+      },
+    });
+    return t;
+  }
+
+  it('blocks the laundering route: non-owner PATCH awaiting_evidence → in_progress is 403, task stays parked', async () => {
+    const t = await parkedTask('1323-launder-inprog');
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${t.id}`, {
+        method: 'PATCH',
+        userName: nonOwner,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: t.id }) },
+    );
+    expect(res.status).toBe(403);
+    const after = await testPrisma.task.findUnique({ where: { id: t.id } });
+    expect(after?.status).toBe('awaiting_evidence');
+  });
+
+  it('blocks the deeper variant: non-owner PATCH awaiting_evidence → blocked is 403, task stays parked', async () => {
+    // Without this guard a member could go awaiting_evidence → blocked →
+    // in_progress → done (since blocked allows in_progress as exit). We
+    // close the chain by gating hop 1.
+    const t = await parkedTask('1323-launder-blocked');
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${t.id}`, {
+        method: 'PATCH',
+        userName: nonOwner,
+        body: { status: 'blocked' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: t.id }) },
+    );
+    expect(res.status).toBe(403);
+    const after = await testPrisma.task.findUnique({ where: { id: t.id } });
+    expect(after?.status).toBe('awaiting_evidence');
+  });
+
+  it('blocks the direct attempt: non-owner PATCH awaiting_evidence → done is 403, task stays parked', async () => {
+    // The new guard subsumes the direct-`→done` attempt — the same 403
+    // surfaces from the first-hop check, before the `→ done` branch
+    // runs. The section-5 guard remains as defence-in-depth.
+    const t = await parkedTask('1323-direct-done');
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${t.id}`, {
+        method: 'PATCH',
+        userName: nonOwner,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: t.id }) },
+    );
+    expect(res.status).toBe(403);
+    const after = await testPrisma.task.findUnique({ where: { id: t.id } });
+    expect(after?.status).toBe('awaiting_evidence');
+  });
+
+  it('confirms the full chain is unreachable: after the in_progress hop is denied, a follow-up → done attempt still 403s', async () => {
+    // Belt-and-braces: even if a buggy client retries the chain, both
+    // hops are rejected. This makes the laundering vector explicit in
+    // the test record.
+    const t = await parkedTask('1323-chain-attempt');
+    const hop1 = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${t.id}`, {
+        method: 'PATCH',
+        userName: nonOwner,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: t.id }) },
+    );
+    expect(hop1.status).toBe(403);
+    const hop2 = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${t.id}`, {
+        method: 'PATCH',
+        userName: nonOwner,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: t.id }) },
+    );
+    expect(hop2.status).toBe(403);
+    const after = await testPrisma.task.findUnique({ where: { id: t.id } });
+    expect(after?.status).toBe('awaiting_evidence');
+  });
+
+  it('preserves the assignee-release escape hatch: non-owner PATCH awaiting_evidence → cancelled is allowed', async () => {
+    // The single legitimate non-owner exit from awaiting_evidence is
+    // `cancelled` (the assignee giving up). Verify the guard does not
+    // over-block this path.
+    const t = await parkedTask('1323-cancel-ok');
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${t.id}`, {
+        method: 'PATCH',
+        userName: nonOwner,
+        body: { status: 'cancelled' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: t.id }) },
+    );
+    expect(res.status).toBe(200);
+    const after = await testPrisma.task.findUnique({ where: { id: t.id } });
+    expect(after?.status).toBe('cancelled');
+  });
+
+  it('regression: owner still has full PATCH-out access (no change to admin override)', async () => {
+    // The "owner allows" matrix is already covered by section 4 above.
+    // This is a focused regression — if the new guard accidentally
+    // trapped the owner too, the audit-override path used to clear
+    // stuck tasks would be gone.
+    const t = await parkedTask('1323-owner-regression');
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${t.id}`, {
+        method: 'PATCH',
+        userName: owner,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: t.id }) },
+    );
+    expect(res.status).toBe(200);
+    const after = await testPrisma.task.findUnique({ where: { id: t.id } });
+    expect(after?.status).toBe('in_progress');
+  });
+
+  it('regression: the legitimate non-owner recovery via POST /runs still works', async () => {
+    // The fix only touches the PATCH route. The runs route's R-192
+    // recovery lift (task → in_progress + new run) must remain
+    // available to non-owners — that is the canonical way to re-supply
+    // evidence. The non-owner here is an agent assignee, not the
+    // human developer used by the PATCH cases above.
+    const prUrl = `https://github.com/plansync-test/r192-repo/pull/1323-post-runs`;
+    const t = await newTask({ prUrl });
+    await testPrisma.task.update({
+      where: { id: t.id },
+      data: { status: 'awaiting_evidence' },
+    });
+    const res = await runsStartPost(
+      makeReq(`/api/projects/${projectId}/tasks/${t.id}/runs`, {
+        method: 'POST',
+        userName: agentName,
+        body: { executorName: agentName, executorType: 'agent' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: t.id }) },
+    );
+    expect(res.status).toBe(201);
+    const after = await testPrisma.task.findUnique({ where: { id: t.id } });
+    expect(after?.status).toBe('in_progress');
+  });
+});
