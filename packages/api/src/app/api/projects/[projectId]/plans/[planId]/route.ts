@@ -89,9 +89,41 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
         }
       }
 
+      // Closes #753 — write the audit activity INSIDE the same
+      // transaction as the plan mutation. Pre-fix this createActivity
+      // ran AFTER the $transaction returned, so a failure on the
+      // activity insert (DB blip, FK race, etc.) left the plan
+      // mutated but the audit log empty — breaking the
+      // every-owner-write-is-audited invariant. With both writes in
+      // one tx, a failure on either side rolls the whole patch back.
+      const fields = Object.keys(body);
+      await createActivity(
+        {
+          projectId: params.projectId,
+          type: 'plan_updated',
+          actorName: auth.userName,
+          actorType: 'human',
+          summary:
+            fields.length > 0
+              ? `Plan v${p.version} "${p.title}" updated (${fields.join(', ')})`
+              : `Plan v${p.version} "${p.title}" updated`,
+          metadata: {
+            planId: p.id,
+            version: p.version,
+            fields,
+            planStatus: plan.status,
+          },
+        },
+        tx,
+      );
+
       return p;
     });
 
+    // SSE + webhook fire AFTER the tx commits — same as before. A
+    // rolled-back tx (audit insert failed → throws → outer try/catch
+    // returns 5xx) skips this branch entirely, so consumers never
+    // observe a "plan updated" event for a write that did not land.
     eventBus.publish(params.projectId, 'plan_draft_updated', {
       planId: updated.id,
       version: updated.version,
@@ -103,29 +135,6 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
       version: updated.version,
       updatedBy: auth.userName,
       fields: Object.keys(body),
-    });
-
-    // R-104: audit trail for owner-driven plan edits. We always emit
-    // `plan_updated` here (the existing `plan_draft_updated` event name is
-    // kept for compatibility with the SSE/webhook surface). Surfacing the
-    // changed fields in the metadata lets the activity log explain *what*
-    // changed without having to diff plan revisions after the fact.
-    const fields = Object.keys(body);
-    await createActivity({
-      projectId: params.projectId,
-      type: 'plan_updated',
-      actorName: auth.userName,
-      actorType: 'human',
-      summary:
-        fields.length > 0
-          ? `Plan v${updated.version} "${updated.title}" updated (${fields.join(', ')})`
-          : `Plan v${updated.version} "${updated.title}" updated`,
-      metadata: {
-        planId: updated.id,
-        version: updated.version,
-        fields,
-        planStatus: plan.status,
-      },
     });
 
     return NextResponse.json({ data: updated });
