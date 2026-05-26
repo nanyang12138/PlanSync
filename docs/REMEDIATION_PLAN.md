@@ -3125,7 +3125,7 @@
 
 #### R-184 [MEDIUM] UI/CLI 区分 "AI 建议" vs "规则 gate"
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B16
 - **depends_on**: R-180, R-181
 - **effort**: small

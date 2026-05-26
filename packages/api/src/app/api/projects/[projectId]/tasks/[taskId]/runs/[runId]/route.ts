@@ -201,6 +201,22 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
 
       const body = await validateBody(req, completeExecutionRunSchema);
 
+      // R-184: an AI advisory written to `run_reviews` is the soft signal —
+      // distinct from the rule gate's hard 422 envelope. We return its
+      // identity in the 200 response so CLI / UI can render it differently
+      // from a rule-gate failure ("orange chip" vs "red 422 dialog").
+      // The contract is:
+      //   * 422 body has   error.gate === 'rule'             — hard, deterministic
+      //   * 200 body has   advisory.kind === 'ai_low_score'  — soft, advisory
+      // Both shapes never appear together.
+      let advisory: {
+        kind: 'ai_low_score';
+        runReviewId?: string;
+        score: number;
+        feedback: string;
+        lowConfidence?: boolean;
+      } | null = null;
+
       if (body.status === 'completed') {
         // Layer 2: deliverablesMet required for all executors
         if (!body.deliverablesMet || body.deliverablesMet.length === 0) {
@@ -480,8 +496,13 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
               // actually flagged something (score < 75 OR !verified) —
               // a passing run does not need an advisory.
               if (!result.verified || result.score < 75 || consistencyLowConfidence) {
+                // R-184: even when the RunReview row write fails (Prisma down,
+                // schema mismatch, etc.), the advisory must still surface in
+                // the response — the CLI / UI uses `advisory.kind` to decide
+                // how to render the result. The runReviewId is best-effort.
+                let createdRunReviewId: string | undefined;
                 try {
-                  await prisma.runReview.create({
+                  const created = await prisma.runReview.create({
                     data: {
                       runId: params.runId,
                       kind: 'ai_verification',
@@ -500,6 +521,7 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
                       } as Prisma.InputJsonValue,
                     },
                   });
+                  createdRunReviewId = created.id;
                 } catch (advisoryErr) {
                   // Never block the complete on an advisory write
                   // failure — the owner can still see the result via
@@ -511,6 +533,13 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
                     advisoryMsg,
                   );
                 }
+                advisory = {
+                  kind: 'ai_low_score',
+                  runReviewId: createdRunReviewId,
+                  score: result.score,
+                  feedback: result.feedback,
+                  ...(consistencyLowConfidence ? { lowConfidence: true } : {}),
+                };
               }
             }
           }
@@ -619,12 +648,18 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
       // actually grant. We only emit the fields when the gate was
       // applied — otherwise the legacy response shape is preserved
       // byte-for-byte for clients that never opted into git wiring.
+      // R-184 (this PR): also surface the AI advisory (distinct from
+      // the R-192 rule gate) when one was produced. Both are optional.
       const responseExtras: Record<string, unknown> = {};
       if (r192State && r192State.gateApplied) {
         responseExtras.taskStatus = r192State.status;
         responseExtras.missing = r192State.missing;
       }
-      return NextResponse.json({ data: { ...updated, ...responseExtras } });
+      const responseBody: Record<string, unknown> = { data: { ...updated, ...responseExtras } };
+      if (advisory) {
+        responseBody.advisory = advisory;
+      }
+      return NextResponse.json(responseBody);
     }
 
     throw new AppError(ErrorCode.BAD_REQUEST, 'Action must be "heartbeat" or "complete"');
