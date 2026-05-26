@@ -1311,3 +1311,201 @@ describe('R-192: awaiting_evidence → done PATCH is owner-only (closes #1227 #1
     expect(after?.status).toBe('done');
   });
 });
+
+// ---------------------------------------------------------------
+// 6. R-192 awaiting_evidence → cancelled is owner-or-assignee only
+//    (closes #1431)
+// ---------------------------------------------------------------
+//
+// `awaiting_evidence → cancelled` is the documented assignee-release
+// escape hatch: "this task will never pass the R-192 gate, give up
+// and re-create instead". Pre-fix, the only auth requirement on the
+// PATCH route was `requireProjectRole` (member+), so ANY project
+// member could PATCH another member's or an agent's parked task to
+// `cancelled`, silently discarding the prior execution run's
+// evidence and closing the loop on someone else's work. The fix
+// restricts this transition to the project owner (administrative
+// close) or the current task assignee (legitimate self-release).
+
+describe('R-192: awaiting_evidence → cancelled is owner-or-assignee only (closes #1431)', () => {
+  const otherDeveloper = 'r192-cancel-bypasser';
+  const otherAgent = 'r192-cancel-bypass-agent';
+  const humanAssignee = 'r192-cancel-human';
+
+  beforeAll(async () => {
+    await testPrisma.projectMember.upsert({
+      where: { projectId_name: { projectId, name: otherDeveloper } },
+      update: { role: 'developer', type: 'human' },
+      create: { projectId, name: otherDeveloper, role: 'developer', type: 'human' },
+    });
+    await testPrisma.projectMember.upsert({
+      where: { projectId_name: { projectId, name: otherAgent } },
+      update: { role: 'developer', type: 'agent' },
+      create: { projectId, name: otherAgent, role: 'developer', type: 'agent' },
+    });
+    await testPrisma.projectMember.upsert({
+      where: { projectId_name: { projectId, name: humanAssignee } },
+      update: { role: 'developer', type: 'human' },
+      create: { projectId, name: humanAssignee, role: 'developer', type: 'human' },
+    });
+  });
+
+  it('rejects a non-owner non-assignee developer cancelling an agent-assigned parked task', async () => {
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/700';
+    const task = await newTask({ prUrl });
+    await testPrisma.task.update({
+      where: { id: task.id },
+      data: { status: 'awaiting_evidence' },
+    });
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: otherDeveloper,
+        body: { status: 'cancelled' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(403);
+    const json = await res.json();
+    expect(JSON.stringify(json)).toMatch(/owner|assignee/i);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('awaiting_evidence');
+  });
+
+  it('rejects another agent (not the assignee) cancelling a parked task', async () => {
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/701';
+    const task = await newTask({ prUrl });
+    await testPrisma.task.update({
+      where: { id: task.id },
+      data: { status: 'awaiting_evidence' },
+    });
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: otherAgent,
+        body: { status: 'cancelled' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(403);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('awaiting_evidence');
+  });
+
+  it('allows the assignee (agent) to cancel their own parked task', async () => {
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/702';
+    const task = await newTask({ prUrl });
+    await testPrisma.task.update({
+      where: { id: task.id },
+      data: { status: 'awaiting_evidence' },
+    });
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: agentName,
+        body: { status: 'cancelled' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(200);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('cancelled');
+  });
+
+  it('allows a human assignee to cancel their own parked task', async () => {
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/703';
+    const task = await testPrisma.task.create({
+      data: {
+        projectId,
+        title: 'r192-cancel-human-task',
+        type: 'code',
+        priority: 'p1',
+        status: 'awaiting_evidence',
+        assignee: humanAssignee,
+        assigneeType: 'human',
+        boundPlanVersion: planVersion,
+        agentConstraints: [],
+        planDeliverableRefs: [deliverableA.slug],
+        prUrl,
+      },
+    });
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: humanAssignee,
+        body: { status: 'cancelled' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(200);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('cancelled');
+  });
+
+  it('allows the project owner to cancel a parked task assigned to someone else (regression)', async () => {
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/704';
+    const task = await newTask({ prUrl });
+    await testPrisma.task.update({
+      where: { id: task.id },
+      data: { status: 'awaiting_evidence' },
+    });
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: owner,
+        body: { status: 'cancelled' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(200);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('cancelled');
+  });
+
+  it('does not gate non-awaiting_evidence sources (todo → cancelled by non-assignee still works)', async () => {
+    // Defense-in-depth check: the new guard is scoped strictly to
+    // the `awaiting_evidence` source state. Cancelling from `todo`
+    // — which has no completed-run evidence to discard — keeps its
+    // pre-fix behaviour so this finding does not silently morph
+    // into a much broader policy change. The repo currently treats
+    // `todo → cancelled` as a member-allowed operation; if that
+    // policy is later tightened it belongs in a separate finding.
+    const task = await testPrisma.task.create({
+      data: {
+        projectId,
+        title: 'r192-todo-cancel-scope-task',
+        type: 'code',
+        priority: 'p1',
+        status: 'todo',
+        assignee: agentName,
+        assigneeType: 'agent',
+        boundPlanVersion: planVersion,
+        agentConstraints: [],
+        planDeliverableRefs: [deliverableA.slug],
+      },
+    });
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: otherDeveloper,
+        body: { status: 'cancelled' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(200);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('cancelled');
+  });
+});
