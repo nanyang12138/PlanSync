@@ -570,11 +570,29 @@ Output a summary when all work is done, then exit."
       }).on("error", e => { process.stderr.write("ERROR: " + e.message + "\n"); process.exit(1); });
     ' 2>&1)" || die "Failed to fetch task pack. Check task ID and project."
 
-    # Check for drift alerts in the response. The /pack route returns
-    # `{ data: pack }`; pre-fix this looked at `d.driftAlerts` directly
-    # so a drift on the wrapped envelope was always invisible
-    # (closes #739). Unwrap defensively — if the response shape ever
-    # changes back to bare, this still works.
+    # Closes #1205 — unwrap the `{ data: pack }` envelope ONCE here so
+    # every downstream consumer (drift gate AND the prompt embedded into
+    # the LLM call below) sees the bare task pack. Pre-#1205 the drift
+    # check below unwrapped defensively, but the EXEC_PROMPT still
+    # interpolated the raw `${TASK_PACK_JSON}` envelope, leaving #739
+    # unfixed on the legacy `PLANSYNC_ALLOW_LEGACY_EXEC=1` path: the
+    # spawned engine saw `{"data":{…}}` instead of the actual pack, so
+    # drift/deliverable references in its prompt were one level too deep.
+    # No-op when the API ever drops the envelope (input passed through).
+    TASK_PACK_JSON="$("$LOCAL_NODE_BIN" -e '
+      try {
+        const raw = process.argv[1] || "{}";
+        const wrapper = JSON.parse(raw);
+        const pack = (wrapper && typeof wrapper === "object" && wrapper.data && typeof wrapper.data === "object")
+          ? wrapper.data
+          : wrapper;
+        process.stdout.write(JSON.stringify(pack, null, 2));
+      } catch { process.stdout.write(process.argv[1] || "{}"); }
+    ' "$TASK_PACK_JSON")"
+
+    # Check for drift alerts in the (now unwrapped) task pack. The
+    # defensive unwrap is retained so a future caller that hands us a
+    # bare-or-wrapped value still behaves correctly (closes #739).
     HAS_DRIFT="$("$LOCAL_NODE_BIN" -e '
       try {
         const wrapper = JSON.parse(process.argv[1] || "{}");

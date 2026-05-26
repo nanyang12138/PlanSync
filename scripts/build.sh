@@ -28,3 +28,11 @@ run_local_npm run --workspace=@plansync/client-core build
 run_local_npm run --workspace=@plansync/mcp-server build
 run_local_npm run --workspace=@plansync/cli build
 run_local_npm run --workspace=@plansync/api build
+
+# Rebuild the committed GitHub Action bundle. `action.yml` runs
+# `dist/index.js` directly on the consumer's runner (no install step), so the
+# committed bundle IS the deployable artifact. Re-running it here means a
+# release build cannot ship without the bundle in sync with `index.ts`; the
+# matching dist-staleness guard in .github/workflows/validate.yml fails CI if
+# a PR forgets to commit the regenerated bundle.
+run_local_npm run --workspace=@plansync/integrations build:action
