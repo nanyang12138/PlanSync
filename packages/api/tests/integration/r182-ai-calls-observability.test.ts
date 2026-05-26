@@ -285,14 +285,7 @@ describe('R-182: /api/ai-usage is owner-gated', () => {
       data: Array<{ purpose: string; count: number; p50LatencyMs: number }>;
       totalCalls: number;
     };
-    // Vitest runs test files in parallel forks against the same DB. Even
-    // though we filter by `since = new Date()` set 5ms before our insert,
-    // a concurrent suite can write its own ai_calls row inside that
-    // window and inflate totalCalls above 1 (observed: 3). The contract
-    // we actually want to assert is "at least our row landed and is
-    // visible to the owner-gated aggregator" — use >=1 + the purpose
-    // find() that already proves our specific insert is present.
-    expect(body.totalCalls).toBeGreaterThanOrEqual(1);
+    expect(body.totalCalls).toBe(1);
     expect(body.data.find((b) => b.purpose === 'plan_diff')).toBeDefined();
   });
 
@@ -309,11 +302,16 @@ describe('R-182: PLANSYNC_AI_OBSERVABILITY=false suppresses INSERT', () => {
   });
 
   it('skips the ai_calls write when the flag is off, but still returns AI output', async () => {
-    const before = await prisma.aiCall.count();
+    // Per-run unique purpose so concurrent vitest forks can't insert
+    // rows that we mis-attribute to our recordAiCall call. The contract
+    // we're proving is "when the flag is off, NO row with our purpose
+    // shows up" — count globally was racy.
+    const purpose = `plan_diff_obs_off_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const before = await prisma.aiCall.count({ where: { purpose } });
     process.env.PLANSYNC_AI_OBSERVABILITY = 'false';
     try {
       await recordAiCall({
-        purpose: 'plan_diff',
+        purpose,
         provider: 'mock',
         model: 'mock-model',
         promptHash: 'h',
@@ -330,7 +328,7 @@ describe('R-182: PLANSYNC_AI_OBSERVABILITY=false suppresses INSERT', () => {
     } finally {
       delete process.env.PLANSYNC_AI_OBSERVABILITY;
     }
-    const after = await prisma.aiCall.count();
+    const after = await prisma.aiCall.count({ where: { purpose } });
     expect(after).toBe(before);
   });
 });
