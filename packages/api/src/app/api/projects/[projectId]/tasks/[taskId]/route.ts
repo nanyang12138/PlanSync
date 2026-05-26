@@ -172,6 +172,51 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
           );
         }
       }
+
+      // R-192 / closes #1429 — third-party bypass via
+      // `awaiting_evidence → in_progress|blocked → cancelled`.
+      // PR #1428 added an owner-or-assignee gate for the direct
+      // `awaiting_evidence → cancelled` PATCH. On its own that gate is
+      // bypassable because the other two non-`done` exits of
+      // `awaiting_evidence` (`→ in_progress`, `→ blocked`) carry no
+      // identity check: any project member can flip the parked task
+      // out of `awaiting_evidence` first, then run `in_progress →
+      // cancelled` (or `blocked → in_progress → cancelled`) where the
+      // owner-or-assignee gate no longer fires because the source
+      // state is no longer `awaiting_evidence`.
+      //
+      // Close the bypass at the source by mirroring the same
+      // owner-or-assignee authority model on the other parking-exit
+      // PATCHes. The legitimate use of these transitions — owner
+      // reopens for more work, or assignee resumes / marks blocked
+      // after the gate parked it — is unchanged; only third-party
+      // members lose the ability to unilaterally lift another
+      // member's (or an agent's) parked task.
+      //
+      // `→ done` is intentionally left to the (stricter) owner-only
+      // gate above. `→ cancelled` from `awaiting_evidence` is left to
+      // PR #1428's gate so the two PRs compose without conflict; if
+      // PR #1428 does not land, the direct `→ cancelled` hole remains
+      // an open finding (#1426) but is out of scope for this fix —
+      // this fix targets the bypass chain identified by #1429.
+      //
+      // The POST /runs recovery path is untouched: it has its own
+      // assignee/agent identity checks (`task.assignee === executorName`
+      // for agent tasks) and is the documented R-192 recovery shape.
+      if (
+        task.status === 'awaiting_evidence' &&
+        (body.status === 'in_progress' || body.status === 'blocked')
+      ) {
+        const isOwner = authed.projectRole === 'owner';
+        const isAssignee = task.assignee === auth.userName;
+        if (!isOwner && !isAssignee) {
+          throw new AppError(
+            ErrorCode.FORBIDDEN,
+            'Only the project owner or task assignee can resume or block an awaiting_evidence task. ' +
+              'Use execution_start (POST /runs) for the documented R-192 recovery path.',
+          );
+        }
+      }
     }
 
     if (body.assignee !== undefined && body.assignee !== null && body.assignee !== task.assignee) {
