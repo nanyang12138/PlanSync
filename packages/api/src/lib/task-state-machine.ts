@@ -68,6 +68,16 @@ export interface DeriveTaskCompletionStateInput {
     id: string;
     prUrl?: string | null;
     planDeliverableRefs?: string[] | null;
+    /**
+     * The plan version the task is currently bound to. Used to scope the
+     * deliverable-evidence lookup so a same-slug deliverable on a
+     * superseded plan version cannot satisfy the gate for this task.
+     * Optional for backwards compatibility — callers that don't supply
+     * it fall back to the legacy project-scoped lookup, which is
+     * pre-fix behaviour (still correct for projects that never
+     * renamed/re-keyed a deliverable across versions).
+     */
+    boundPlanVersion?: number | null;
   };
   prismaClient?: Prisma.TransactionClient | PrismaClient;
 }
@@ -158,7 +168,12 @@ export async function deriveTaskCompletionState(
     (r) => typeof r === 'string' && r.length > 0,
   );
   if (refs.length > 0) {
-    const missingRefs = await deliverableRefsWithoutEvidence(client, projectId, refs);
+    const missingRefs = await deliverableRefsWithoutEvidence(
+      client,
+      projectId,
+      refs,
+      task.boundPlanVersion ?? null,
+    );
     if (missingRefs.length > 0) {
       missing.push({
         code: 'deliverable_evidence',
@@ -260,14 +275,32 @@ export function normalizePrUrl(raw: string): string {
  * Refs that don't resolve to any PlanDeliverable (e.g. an older task
  * that pre-dates the R-150 split tables) are treated as "missing
  * evidence" so a stale ref doesn't silently pass the gate.
+ *
+ * Closes #1212 #1190 #1182 #1178 #1174 #1160 #1137 — when a project
+ * has multiple plan versions with the same deliverable slug (the
+ * common case: an `auth` deliverable kept across v1 → v2 → v3 of the
+ * plan, possibly with a different `refUri`/`refType`), the pre-fix
+ * lookup `{ slug: { in: refs }, plan: { projectId } }` matched the
+ * deliverable row on EVERY version of the plan. A commit linked to
+ * the v1 deliverable could then satisfy the gate for a task bound to
+ * v3, even though the v3 deliverable spec might require completely
+ * different work. We scope the lookup to the task's bound plan
+ * version so cross-version evidence cannot leak.
+ *
+ * When `boundPlanVersion` is null/undefined (legacy callers) we fall
+ * back to the previous project-wide lookup so projects that never
+ * renamed a slug across versions keep working unchanged.
  */
 async function deliverableRefsWithoutEvidence(
   client: Prisma.TransactionClient | PrismaClient,
   projectId: string,
   refs: string[],
+  boundPlanVersion: number | null,
 ): Promise<string[]> {
+  const planFilter =
+    typeof boundPlanVersion === 'number' ? { projectId, version: boundPlanVersion } : { projectId };
   const deliverables = await client.planDeliverable.findMany({
-    where: { slug: { in: refs }, plan: { projectId } },
+    where: { slug: { in: refs }, plan: planFilter },
     select: { id: true, slug: true },
   });
 
