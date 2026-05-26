@@ -68,6 +68,19 @@ const cases = [
     'whitespace-only USER too → fallback through to whoami / shared',
     { PLANSYNC_BUILD_USER: '   ', USER: '   ' },
   ],
+  // Closes #1169 #1156 #1127 — JS `.trim()` strips a wider Unicode
+  // whitespace set than bash POSIX `[[:space:]]`. The bash helper
+  // must agree byte-for-byte with next.config.js for every input
+  // below; otherwise the build-cache identity splits exactly the
+  // same way #287 / #901 closed.
+  ['NBSP-prefixed PLANSYNC_BUILD_USER (closes #1169 #1156 #1127)', { PLANSYNC_BUILD_USER: '\u00A0alice' }],
+  ['NBSP-suffixed PLANSYNC_BUILD_USER', { PLANSYNC_BUILD_USER: 'alice\u00A0' }],
+  ['BOM-prefixed PLANSYNC_BUILD_USER', { PLANSYNC_BUILD_USER: '\uFEFFalice' }],
+  ['ideographic-space-wrapped PLANSYNC_BUILD_USER', { PLANSYNC_BUILD_USER: '\u3000alice\u3000' }],
+  ['en-quad + em-space wrapped PLANSYNC_BUILD_USER', { PLANSYNC_BUILD_USER: '\u2000alice\u2003' }],
+  ['narrow-NBSP wrapped PLANSYNC_BUILD_USER', { PLANSYNC_BUILD_USER: '\u202Falice\u205F' }],
+  // NBSP-only must fall through the same way ascii whitespace-only does.
+  ['NBSP-only PLANSYNC_BUILD_USER → fallback to USER', { PLANSYNC_BUILD_USER: '\u00A0\u00A0', USER: 'bob' }],
 ];
 
 for (const [name, env] of cases) {
