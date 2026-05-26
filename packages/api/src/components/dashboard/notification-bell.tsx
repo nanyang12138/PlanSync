@@ -38,6 +38,7 @@ const TYPE_ICON: Record<string, string> = {
   task_unassigned: '↩️',
   task_started: '▶️',
   task_completed: '✓',
+  task_awaiting_evidence: '⏳',
   execution_stale: '⏸',
   suggestion_created: '💡',
   suggestion_resolved: '✓',
@@ -108,6 +109,12 @@ export function NotificationBell() {
       'task_unassigned',
       'task_started',
       'task_completed',
+      // Closes #1231 — without this listener the unread-count badge
+      // never increments when the R-192 gate parks a task in
+      // `awaiting_evidence`. EventSource named events do not fall back
+      // to onmessage; keep in sync with use-realtime.ts and
+      // notifications.tsx.
+      'task_awaiting_evidence',
       'execution_stale',
       'suggestion_created',
       'suggestion_resolved',
