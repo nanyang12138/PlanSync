@@ -1,8 +1,9 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import type { Plan, PlanReview } from '@prisma/client';
-import { CheckCircle2, X } from 'lucide-react';
+import { ArrowRight, CheckCircle2, Layers, X } from 'lucide-react';
 
 type PlanWithReviews = Plan & { reviews: PlanReview[] };
 
@@ -101,6 +102,17 @@ export function PlanDetail({ plan, previousPlan, currentUser, onReviewAction }: 
           <ListSection title="Constraints" items={plan.constraints} />
           <ListSection title="Standards" items={plan.standards} />
           <ListSection title="Deliverables" items={plan.deliverables} />
+          <div>
+            <Link
+              href={`/projects/${plan.projectId}/plans/deliverables?plan=${plan.id}`}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 transition-colors"
+              data-testid="deliverable-timeline-link"
+            >
+              <Layers className="h-3.5 w-3.5 text-slate-500" />
+              View per-deliverable timeline
+              <ArrowRight className="h-3.5 w-3.5 text-slate-400" />
+            </Link>
+          </div>
           <ListSection title="Open questions" items={plan.openQuestions} />
           {plan.why && (
             <div>
