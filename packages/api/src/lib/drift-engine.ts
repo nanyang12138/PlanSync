@@ -254,16 +254,37 @@ const DRIFT_SEVERITY_RANK: Record<'high' | 'medium' | 'low', number> = {
   high: 2,
 };
 
+// Closes #1206 #1154 #1147 #1141 (and the original #710 ranking gap):
+// When collapsing same-task alerts, the dedupe picks the highest-severity
+// alert but must NOT silently drop signals carried on the others. The
+// only signal currently used downstream is `hasRunningExecution`, which
+// drives the pause-running-runs step at the bottom of `persistDriftAlerts`.
+// Pre-fix, an input shaped like
+//   [{taskId:'t1', severity:'high',   hasRunningExecution:false},
+//    {taskId:'t1', severity:'medium', hasRunningExecution:true }]
+// dedupe-picked the `high` alert and emitted `hasRunningExecution:false`,
+// so the running run was *not* paused even though one of the two original
+// alerts said it should be. Fix: OR the flag across all alerts on the
+// same task so any "true" survives.
 function dedupeAlertsByTaskId(alerts: DriftScanResult['alerts']): DriftScanResult['alerts'] {
   const byTask = new Map<string, DriftScanResult['alerts'][number]>();
   for (const a of alerts) {
     const existing = byTask.get(a.taskId);
     if (!existing) {
-      byTask.set(a.taskId, a);
+      byTask.set(a.taskId, { ...a });
       continue;
     }
+    // Always merge the running-execution flag — even when the current
+    // alert is lower-severity than the kept one, its `hasRunningExecution`
+    // is still authoritative about the system state and must not be lost.
+    if (a.hasRunningExecution) {
+      existing.hasRunningExecution = true;
+    }
     if (DRIFT_SEVERITY_RANK[a.severity] > DRIFT_SEVERITY_RANK[existing.severity]) {
-      byTask.set(a.taskId, a);
+      // Take the more-severe alert as the canonical row but carry the
+      // OR'd `hasRunningExecution` forward so the pause path still fires.
+      const mergedHasRunning = existing.hasRunningExecution || a.hasRunningExecution || false;
+      byTask.set(a.taskId, { ...a, hasRunningExecution: mergedHasRunning });
     }
   }
   return Array.from(byTask.values());
