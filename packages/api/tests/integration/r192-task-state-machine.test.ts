@@ -418,6 +418,71 @@ describe('R-192: deriveTaskCompletionState', () => {
     expect(codes).toContain('deliverable_evidence');
   });
 
+  it('short-circuits with gateApplied=false on a project with NO githubRepo even when the task has planDeliverableRefs (closes #1325)', async () => {
+    // Regression for #1325: PR #1318 made the gate per-task opt-in
+    // and dropped the project-level check. That introduced the
+    // opposite regression — a project that never wired GitHub at all
+    // still triggered the gate as soon as the plan handed the task a
+    // `planDeliverableRefs` slug. Because no webhook can ever deliver
+    // a `github_pull_request` event on such a project and no
+    // `commit_deliverable_links` row can ever be written, both
+    // `pr_merged` and `deliverable_evidence` were permanently
+    // unsatisfiable, parking the task in `awaiting_evidence` forever.
+    //
+    // Fix: gate-applicability must require BOTH project-level and
+    // task-level wiring. Here we set up a project with no githubRepo
+    // (the helper unsets the global fixture's value), seed a task
+    // with planDeliverableRefs, and assert the gate stays silent.
+    const { projectId: bareProjectId } = await createTestProject('r192-no-repo-owner');
+    try {
+      const { planId: barePlanId, version: bareVersion } = await createActivePlan(
+        bareProjectId,
+        'r192-no-repo-owner',
+      );
+      // Seed a deliverable so the slug is well-formed but evidence
+      // can never be produced (no githubRepo means the linker has
+      // nowhere to anchor).
+      const bareDeliverable = await testPrisma.planDeliverable.create({
+        data: {
+          planId: barePlanId,
+          slug: 'r192-bare-feature',
+          title: 'bare feature',
+          body: 'no github wiring',
+          refType: 'file_glob',
+          refUri: 'src/**/*.ts',
+          status: 'active',
+        },
+      });
+      const t = await testPrisma.task.create({
+        data: {
+          projectId: bareProjectId,
+          title: 't-no-repo-with-refs',
+          type: 'code',
+          priority: 'p1',
+          status: 'in_progress',
+          boundPlanVersion: bareVersion,
+          agentConstraints: [],
+          planDeliverableRefs: [bareDeliverable.slug],
+          prUrl: null,
+        },
+      });
+      const result = await deriveTaskCompletionState({
+        projectId: bareProjectId,
+        task: {
+          id: t.id,
+          prUrl: null,
+          planDeliverableRefs: t.planDeliverableRefs,
+          boundPlanVersion: bareVersion,
+        },
+      });
+      expect(result.gateApplied).toBe(false);
+      expect(result.status).toBe('done');
+      expect(result.missing).toEqual([]);
+    } finally {
+      await cleanupProject(bareProjectId);
+    }
+  });
+
   it('short-circuits with gateApplied=false when neither task nor project carries git wiring', async () => {
     // Create a brand-new project with no githubRepo set, then assert
     // the gate stays silent so legacy flows keep their always-done
