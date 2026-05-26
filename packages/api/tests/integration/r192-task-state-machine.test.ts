@@ -155,11 +155,20 @@ async function startRun(taskId: string) {
   return run.id;
 }
 
-async function emitMergedPrEvent(prUrl: string) {
+async function emitMergedPrEvent(
+  prUrl: string,
+  opts: { mergeCommitSha?: string; headSha?: string } = {},
+) {
   // Match the shape that R-190 writes when GitHub delivers a merged
   // pull_request webhook. The outer envelope is the `domainEventPayloadSchema`
   // discriminated union (R-160); the inner `data.payload` is the raw
-  // GitHub event.
+  // GitHub event. We always populate `merge_commit_sha` so the
+  // task-state-machine's deliverable_evidence check (closes #1189)
+  // can bind commit links to *this PR* — without it the gate falls
+  // back to "no SHAs" and every deliverable ref is reported missing,
+  // which is fail-closed but trivially flunks every assertion below.
+  const mergeCommitSha = opts.mergeCommitSha ?? defaultMergeShaFor(prUrl);
+  const headSha = opts.headSha ?? defaultHeadShaFor(prUrl);
   await testPrisma.domainEvent.create({
     data: {
       eventType: 'github_pull_request',
@@ -175,12 +184,28 @@ async function emitMergedPrEvent(prUrl: string) {
             pull_request: {
               html_url: prUrl,
               merged: true,
+              merge_commit_sha: mergeCommitSha,
+              head: { sha: headSha },
             },
           },
         },
       },
     },
   });
+  return { mergeCommitSha, headSha };
+}
+
+/**
+ * Deterministic merge-commit SHA derived from the PR URL so each test
+ * case can predict which SHA `linkCommitToDeliverable` must use. Real
+ * SHAs are 40-char lowercase hex; we pad to that length so the value
+ * round-trips through the GitHub-shape JSON path without surprise.
+ */
+function defaultMergeShaFor(prUrl: string): string {
+  return ('m' + Buffer.from(prUrl).toString('hex')).slice(0, 40).padEnd(40, '0');
+}
+function defaultHeadShaFor(prUrl: string): string {
+  return ('h' + Buffer.from(prUrl).toString('hex')).slice(0, 40).padEnd(40, '0');
 }
 
 async function linkCommitToDeliverable(deliverableId: string, sha: string) {
@@ -202,9 +227,16 @@ async function linkCommitToDeliverable(deliverableId: string, sha: string) {
 describe('R-192: deriveTaskCompletionState', () => {
   it('returns awaiting_evidence + missing=["pr_merged"] when the PR has not been observed as merged', async () => {
     const task = await newTask({ prUrl: 'https://github.com/plansync-test/r192-repo/pull/1' });
-    // No merged PR event in the outbox; deliverable evidence exists so
-    // the only missing signal must be pr_merged. This is the exact
-    // spec acceptance ("PR 未合并 → missing 包含 pr_merged").
+    // No merged PR event in the outbox; spec acceptance requires
+    // `pr_merged` ∈ missing. We do NOT also assert
+    // `not.toContain('deliverable_evidence')` here: post-#1189, the
+    // deliverable-evidence check binds commits to the PR's merge
+    // SHAs, so when the PR has not merged there are no SHAs to match
+    // against and `deliverable_evidence` legitimately also surfaces
+    // as missing. The two checks are intentionally coupled — without
+    // a merged PR we cannot say which commits are "this task's", so
+    // we fail closed rather than accept any historical commit as
+    // evidence.
     await linkCommitToDeliverable(deliverableA.id, 'aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111');
 
     const result = await deriveTaskCompletionState({
@@ -215,15 +247,19 @@ describe('R-192: deriveTaskCompletionState', () => {
     expect(result.status).toBe('awaiting_evidence');
     const codes = result.missing.map((m) => m.code);
     expect(codes).toContain('pr_merged');
-    expect(codes).not.toContain('deliverable_evidence');
     expect(codes).not.toContain('drift_open');
   });
 
   it('returns done once the merged PR event + commit evidence both exist', async () => {
     const prUrl = 'https://github.com/plansync-test/r192-repo/pull/42';
     const task = await newTask({ prUrl });
-    await linkCommitToDeliverable(deliverableA.id, 'bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222');
-    await emitMergedPrEvent(prUrl);
+    // The linked SHA must match a SHA attributable to the PR
+    // (post-#1189). Use the merge_commit_sha that emitMergedPrEvent
+    // will write so the deliverable-evidence check sees a matching
+    // row.
+    const mergeCommitSha = defaultMergeShaFor(prUrl);
+    await linkCommitToDeliverable(deliverableA.id, mergeCommitSha);
+    await emitMergedPrEvent(prUrl, { mergeCommitSha });
 
     const result = await deriveTaskCompletionState({
       projectId,
@@ -250,11 +286,103 @@ describe('R-192: deriveTaskCompletionState', () => {
     expect(codes).not.toContain('pr_merged');
   });
 
+  it('rejects unrelated commit evidence that touches the deliverable but is not part of this PR (closes #1189)', async () => {
+    // Pre-fix: deliverable_evidence accepted ANY commit linked to the
+    // deliverable in the project, so a stray historical commit (e.g.
+    // an earlier PR that incidentally touched a file matching the
+    // deliverable's `file_glob`) silently satisfied the gate for a
+    // brand-new task. The fix binds evidence to the SHAs the PR's
+    // merge webhook + the matching push event surfaced.
+    //
+    // Setup: PR is merged. A commit IS linked to the deliverable, but
+    // its SHA does NOT match the PR's merge_commit_sha or any push
+    // commit attributable to the PR (i.e. it's a historical/unrelated
+    // commit). The gate must report deliverable_evidence missing.
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/1189';
+    const task = await newTask({ prUrl });
+    await emitMergedPrEvent(prUrl);
+    // Stray commit on a different SHA — the kind of commit that
+    // pre-fix would let an unrelated task pass the gate.
+    await linkCommitToDeliverable(deliverableA.id, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
+
+    const result = await deriveTaskCompletionState({
+      projectId,
+      task: {
+        id: task.id,
+        prUrl: task.prUrl,
+        planDeliverableRefs: task.planDeliverableRefs,
+        boundPlanVersion: planVersion,
+      },
+    });
+    expect(result.status).toBe('awaiting_evidence');
+    const codes = result.missing.map((m) => m.code);
+    expect(codes).toContain('deliverable_evidence');
+    expect(codes).not.toContain('pr_merged');
+  });
+
+  it('accepts evidence from a push event whose head_commit matches the PR merge_commit_sha (closes #1189)', async () => {
+    // Real-world: GitHub fires a `push` event to the base branch when
+    // a PR is merged. Its `head_commit.id` equals the PR's
+    // `merge_commit_sha`. The push payload's `commits[]` contains the
+    // PR's constituent commits — the linker then writes
+    // CommitDeliverableLink rows for those constituent SHAs (not for
+    // the merge commit itself, which often has zero file changes for
+    // a "merge commit"-style merge). The gate must accept those
+    // constituent commits as evidence.
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/1189-push';
+    const task = await newTask({ prUrl });
+    const mergeCommitSha = defaultMergeShaFor(prUrl);
+    const constituentSha = 'cafefeed' + 'cafefeed'.repeat(4); // 40-char hex
+    // Emit the merged PR event AND the matching push event whose
+    // head_commit.id is the merge_commit_sha. R-191's linker would
+    // normally process both, but we go direct to the link table here
+    // so the test stays focused on the state-machine query.
+    await emitMergedPrEvent(prUrl, { mergeCommitSha });
+    await testPrisma.domainEvent.create({
+      data: {
+        eventType: 'github_push',
+        projectId,
+        payload: {
+          type: 'github_push',
+          projectId,
+          data: {
+            deliveryId: `delivery-${Math.random().toString(36).slice(2)}`,
+            repository: repoSlug,
+            payload: {
+              ref: 'refs/heads/main',
+              head_commit: { id: mergeCommitSha },
+              commits: [{ id: constituentSha, message: 'feat: actual change' }],
+            },
+          },
+        },
+      },
+    });
+    // Linker output: the constituent commit (NOT the merge commit)
+    // is what carries the file_glob match.
+    await linkCommitToDeliverable(deliverableA.id, constituentSha);
+
+    const result = await deriveTaskCompletionState({
+      projectId,
+      task: {
+        id: task.id,
+        prUrl: task.prUrl,
+        planDeliverableRefs: task.planDeliverableRefs,
+        boundPlanVersion: planVersion,
+      },
+    });
+    expect(result.status).toBe('done');
+    expect(result.missing).toEqual([]);
+  });
+
   it('flags drift_open when an open drift alert is present', async () => {
     const prUrl = 'https://github.com/plansync-test/r192-repo/pull/3';
     const task = await newTask({ prUrl });
-    await emitMergedPrEvent(prUrl);
-    await linkCommitToDeliverable(deliverableA.id, 'cccc3333cccc3333cccc3333cccc3333cccc3333');
+    const mergeCommitSha = defaultMergeShaFor(prUrl);
+    await emitMergedPrEvent(prUrl, { mergeCommitSha });
+    // SHA must match the PR's merge commit so deliverable_evidence is
+    // not in the missing list — keeps drift_open the only signal in
+    // the assertion below (post-#1189).
+    await linkCommitToDeliverable(deliverableA.id, mergeCommitSha);
     await testPrisma.driftAlert.create({
       data: {
         projectId,
@@ -312,22 +440,28 @@ describe('R-192: deriveTaskCompletionState', () => {
         status: 'active',
       },
     });
-    // Evidence linked to the OTHER plan version's deliverable only.
-    await testPrisma.commitDeliverableLink.create({
-      data: {
-        projectId,
-        sha: '9999cross9999cross9999cross9999cross9999',
-        deliverableId: otherDeliverable.id,
-        matchedBy: 'glob',
-        matchedRef: 'src/r192/other/foo.ts',
-      },
-    });
     // The task is on planVersion (v1). With boundPlanVersion scoping
     // the gate should report deliverable_evidence MISSING — even
     // though a same-slug deliverable on v_other has a commit linked.
     const prUrl = 'https://github.com/plansync-test/r192-repo/pull/777';
     const task = await newTask({ prUrl });
     await emitMergedPrEvent(prUrl);
+    // Evidence linked to the OTHER plan version's deliverable only.
+    // We attribute it to the *alt* PR (below) so post-#1189 the
+    // alt-task assertion still finds the evidence; v1 task fails on
+    // the cross-version filter regardless of which SHA the link uses
+    // because v1's deliverable has no link rows at all.
+    const altPrUrl = `${prUrl}-alt`;
+    const altMergeSha = defaultMergeShaFor(altPrUrl);
+    await testPrisma.commitDeliverableLink.create({
+      data: {
+        projectId,
+        sha: altMergeSha,
+        deliverableId: otherDeliverable.id,
+        matchedBy: 'glob',
+        matchedRef: 'src/r192/other/foo.ts',
+      },
+    });
     const result = await deriveTaskCompletionState({
       projectId,
       task: {
@@ -343,13 +477,13 @@ describe('R-192: deriveTaskCompletionState', () => {
     // Sanity check: a task bound to the OTHER plan version DOES see
     // the evidence (proves the scoping cut the right way around,
     // not a blanket "always missing" regression).
-    const altTask = await newTask({ prUrl: `${prUrl}-alt` });
-    await emitMergedPrEvent(`${prUrl}-alt`);
+    const altTask = await newTask({ prUrl: altPrUrl });
+    await emitMergedPrEvent(altPrUrl, { mergeCommitSha: altMergeSha });
     const altResult = await deriveTaskCompletionState({
       projectId,
       task: {
         id: altTask.id,
-        prUrl: `${prUrl}-alt`,
+        prUrl: altPrUrl,
         planDeliverableRefs: altTask.planDeliverableRefs,
         boundPlanVersion: otherVersion,
       },
@@ -521,8 +655,9 @@ describe('R-192: runs POST applies the awaiting_evidence gate', () => {
   it('flips the task to done when PR merged + commit evidence + no drift all line up', async () => {
     const prUrl = 'https://github.com/plansync-test/r192-repo/pull/200';
     const task = await newTask({ prUrl });
-    await linkCommitToDeliverable(deliverableA.id, 'eeee5555eeee5555eeee5555eeee5555eeee5555');
-    await emitMergedPrEvent(prUrl);
+    const mergeCommitSha = defaultMergeShaFor(prUrl);
+    await linkCommitToDeliverable(deliverableA.id, mergeCommitSha);
+    await emitMergedPrEvent(prUrl, { mergeCommitSha });
 
     const runId = await startRun(task.id);
     const res = await runActionPost(
@@ -575,7 +710,8 @@ describe('R-192 recovery: awaiting_evidence has out-transitions (closes #1218 #1
   it('allows starting a new run on an awaiting_evidence task and flips it to done once evidence arrives', async () => {
     const prUrl = 'https://github.com/plansync-test/r192-repo/pull/300';
     const task = await newTask({ prUrl });
-    await linkCommitToDeliverable(deliverableA.id, 'ffff6666ffff6666ffff6666ffff6666ffff6666');
+    const mergeCommitSha = defaultMergeShaFor(prUrl);
+    await linkCommitToDeliverable(deliverableA.id, mergeCommitSha);
 
     // ---- Step 1: first complete parks the task in awaiting_evidence
     const runId1 = await startRun(task.id);
@@ -599,7 +735,7 @@ describe('R-192 recovery: awaiting_evidence has out-transitions (closes #1218 #1
     expect(parkedTask?.status).toBe('awaiting_evidence');
 
     // ---- Step 2: the agent supplies evidence (PR finally merges)
-    await emitMergedPrEvent(prUrl);
+    await emitMergedPrEvent(prUrl, { mergeCommitSha });
 
     // ---- Step 3: start a fresh run via the public route. Pre-fix
     // this 409'd with "Cannot start execution: task is awaiting_evidence".
