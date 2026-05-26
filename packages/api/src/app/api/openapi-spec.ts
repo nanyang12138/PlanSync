@@ -798,11 +798,22 @@ export const openApiSpec = {
       get: {
         tags: ['Comments'],
         summary: 'List comments',
+        description:
+          'When `deliverableId` is omitted, the response only includes plan-level ' +
+          'comments (rows where `deliverableId IS NULL`). Pass `deliverableId=<id>` ' +
+          'to fetch the focused thread for a specific PlanDeliverable. (Issue #1256)',
         parameters: [
           { $ref: '#/components/parameters/ProjectId' },
           { $ref: '#/components/parameters/PlanId' },
           { $ref: '#/components/parameters/Page' },
           { $ref: '#/components/parameters/PageSize' },
+          {
+            name: 'deliverableId',
+            in: 'query',
+            required: false,
+            schema: { type: 'string' },
+            description: 'Filter comments to a single PlanDeliverable. Omit for plan-level only.',
+          },
         ],
         responses: {
           '200': {
