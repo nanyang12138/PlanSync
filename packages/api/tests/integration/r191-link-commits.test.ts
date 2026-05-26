@@ -391,3 +391,201 @@ describe('R-191: linkCommitsFromPushPayload', () => {
     expect(byCommit[shaNoop]).toMatchObject({ globMatches: 0, messageMatches: 0 });
   });
 });
+
+// Regression coverage for review finding #1286: deliverables attached to
+// `draft` or `proposed` plan versions must NOT collect commit evidence.
+// Without the plan-status filter, a `[deliverable:<slug>]` tag (or a
+// matching glob) fans out to every plan version that happens to share
+// the slug — including future plan versions still under review — and
+// pollutes those drafts with historical commits the moment they are
+// activated.
+describe('R-191: link-commits ignores deliverables on draft / proposed plans (#1286)', () => {
+  let scopedProjectId: string;
+  let activeDeliverableId: string;
+  let draftDeliverableId: string;
+  let proposedDeliverableId: string;
+
+  beforeAll(async () => {
+    const suffix = uniqueSuffix();
+    const project = await prisma.project.create({
+      data: {
+        name: `r191-status-${suffix}`,
+        phase: 'active',
+        createdBy: 'r191-owner',
+      },
+    });
+    scopedProjectId = project.id;
+
+    const activePlan = await prisma.plan.create({
+      data: {
+        projectId: scopedProjectId,
+        version: 1,
+        title: 'active plan',
+        goal: 'g',
+        scope: 's',
+        deliverables: ['shared'],
+        status: 'active',
+        createdBy: 'r191-owner',
+        activatedAt: new Date(),
+        activatedBy: 'r191-owner',
+      },
+    });
+    const proposedPlan = await prisma.plan.create({
+      data: {
+        projectId: scopedProjectId,
+        version: 2,
+        title: 'proposed plan',
+        goal: 'g',
+        scope: 's',
+        deliverables: ['shared'],
+        status: 'proposed',
+        createdBy: 'r191-owner',
+      },
+    });
+    const draftPlan = await prisma.plan.create({
+      data: {
+        projectId: scopedProjectId,
+        version: 3,
+        title: 'draft plan',
+        goal: 'g',
+        scope: 's',
+        deliverables: ['shared'],
+        status: 'draft',
+        createdBy: 'r191-owner',
+      },
+    });
+
+    // All three plan versions carry a deliverable with the *same slug* and
+    // the *same glob* — exactly the configuration where a naive query
+    // would fan out to all three and pollute the unratified versions.
+    const refUri = 'docs/api/**/*.md';
+    const active = await prisma.planDeliverable.create({
+      data: {
+        planId: activePlan.id,
+        slug: 'shared-slug',
+        title: 'shared',
+        body: 'b',
+        refType: 'file_glob',
+        refUri,
+        status: 'active',
+      },
+    });
+    const proposed = await prisma.planDeliverable.create({
+      data: {
+        planId: proposedPlan.id,
+        slug: 'shared-slug',
+        title: 'shared',
+        body: 'b',
+        refType: 'file_glob',
+        refUri,
+        status: 'active',
+      },
+    });
+    const draft = await prisma.planDeliverable.create({
+      data: {
+        planId: draftPlan.id,
+        slug: 'shared-slug',
+        title: 'shared',
+        body: 'b',
+        refType: 'file_glob',
+        refUri,
+        status: 'active',
+      },
+    });
+    activeDeliverableId = active.id;
+    proposedDeliverableId = proposed.id;
+    draftDeliverableId = draft.id;
+  });
+
+  afterAll(async () => {
+    await prisma.commitDeliverableLink
+      .deleteMany({ where: { projectId: scopedProjectId } })
+      .catch(() => {});
+    await prisma.project.delete({ where: { id: scopedProjectId } }).catch(() => {});
+  });
+
+  it('writes only one row (for the active plan version) when message tag and glob both fire', async () => {
+    const sha = 'eee0000000000000000000000000000000001286';
+    const result = await linkCommitsFromPushPayload({
+      projectId: scopedProjectId,
+      payload: {
+        commits: [
+          {
+            id: sha,
+            // Both signals reference the slug shared by all three plan
+            // versions. The fix must restrict the fan-out to the active
+            // (and superseded) plan versions only.
+            message: 'docs: update [deliverable:shared-slug]',
+            added: ['docs/api/users.md'],
+            modified: [],
+            removed: [],
+          },
+        ],
+      },
+    });
+
+    // Expect 2 rows total: one glob + one message, both pointing at the
+    // *active* plan's deliverable. No rows for the draft or proposed
+    // versions.
+    expect(result.created).toBe(2);
+
+    const rows = await prisma.commitDeliverableLink.findMany({
+      where: { sha },
+      orderBy: { matchedBy: 'asc' },
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.deliverableId === activeDeliverableId)).toBe(true);
+    expect(rows.some((r) => r.deliverableId === draftDeliverableId)).toBe(false);
+    expect(rows.some((r) => r.deliverableId === proposedDeliverableId)).toBe(false);
+  });
+
+  it('still picks up superseded plan versions (historical commits stay attributable)', async () => {
+    // Flip plan v1 to `superseded` and create a new active plan v4 that
+    // does *not* carry the slug. Commits referencing the slug must still
+    // resolve to the (now-superseded) v1 deliverable so the audit trail
+    // is preserved across plan rotations.
+    await prisma.plan.update({
+      where: { projectId_version: { projectId: scopedProjectId, version: 1 } },
+      data: { status: 'superseded' },
+    });
+    const v4 = await prisma.plan.create({
+      data: {
+        projectId: scopedProjectId,
+        version: 4,
+        title: 'new active plan',
+        goal: 'g',
+        scope: 's',
+        deliverables: ['unrelated'],
+        status: 'active',
+        createdBy: 'r191-owner',
+        activatedAt: new Date(),
+        activatedBy: 'r191-owner',
+      },
+    });
+    // No deliverable with `shared-slug` on v4 — the only ratified row
+    // for that slug is the superseded one on v1.
+
+    const sha = 'fff0000000000000000000000000000000001286';
+    const result = await linkCommitsFromPushPayload({
+      projectId: scopedProjectId,
+      payload: {
+        commits: [
+          {
+            id: sha,
+            message: 'chore: backfill [deliverable:shared-slug]',
+            added: ['CHANGELOG.md'],
+            modified: [],
+            removed: [],
+          },
+        ],
+      },
+    });
+
+    expect(result.created).toBe(1);
+    const rows = await prisma.commitDeliverableLink.findMany({ where: { sha } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].deliverableId).toBe(activeDeliverableId);
+
+    await prisma.plan.delete({ where: { id: v4.id } }).catch(() => {});
+  });
+});
