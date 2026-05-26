@@ -26,11 +26,115 @@ type TaskRow = {
 
 type TasksResponse = { data?: TaskRow[]; pagination?: Pagination };
 
+// R-157: shape of `/api/projects/:projectId/plans/active` and the related
+// deliverables endpoint. Only the fields the action actually consumes are
+// modelled — the server may return additional keys.
+type PlanRow = {
+  id: string;
+  version: number;
+};
+
+type DeliverableRow = {
+  id: string;
+  slug: string;
+  refType?: string | null;
+  refUri?: string | null;
+  status: string;
+};
+
+type DeliverablesResponse = { data?: DeliverableRow[] };
+
 function parseTaskIds(input: string): string[] {
   return input
     .split(',')
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
+}
+
+// R-157: PR file lists arrive from one of two natural producers:
+//   * `gh pr diff --name-only` → newline-separated
+//   * `${{ steps.changed.outputs.all_changed_files }}` from
+//     `tj-actions/changed-files` → space- or comma-separated
+// Accept either by splitting on both newlines and commas. We deliberately
+// do NOT split on whitespace beyond newlines — file names can contain
+// spaces and silently truncating "my docs/foo.md" → ["my", "docs/foo.md"]
+// would mask real drift.
+function parsePrFiles(input: string): string[] {
+  if (!input) return [];
+  return input
+    .split(/[\n,]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+// R-157: convert a deliverable `refUri` glob into a RegExp.
+// Supports the subset the rest of the PlanSync code already uses:
+//   `**`  → match any path segments (including empty + slashes)
+//   `*`   → match within a single segment (no slashes)
+//   `?`   → match a single non-slash character
+//   `{a,b,c}` → alternation
+// Anything else is treated as a literal. This intentionally avoids pulling
+// in the full minimatch package (~80 KB of bundled JS) for what is a
+// short list of globs on every PR.
+function globToRegExp(glob: string): RegExp {
+  let re = '';
+  let i = 0;
+  while (i < glob.length) {
+    const c = glob[i];
+    if (c === '*' && glob[i + 1] === '*') {
+      // `**` — drop a trailing `/` if present so `src/**/*.ts` matches
+      // `src/foo.ts` as well as `src/a/b/foo.ts` (standard minimatch
+      // behaviour).
+      if (glob[i + 2] === '/') {
+        re += '(?:.*/)?';
+        i += 3;
+      } else {
+        re += '.*';
+        i += 2;
+      }
+      continue;
+    }
+    if (c === '*') {
+      re += '[^/]*';
+      i += 1;
+      continue;
+    }
+    if (c === '?') {
+      re += '[^/]';
+      i += 1;
+      continue;
+    }
+    if (c === '{') {
+      const end = glob.indexOf('}', i);
+      if (end === -1) {
+        re += '\\{';
+        i += 1;
+        continue;
+      }
+      const alternatives = glob
+        .slice(i + 1, end)
+        .split(',')
+        .map((s) => s.replace(/[.+^$()|[\]\\]/g, '\\$&'));
+      re += `(?:${alternatives.join('|')})`;
+      i = end + 1;
+      continue;
+    }
+    // Escape regex metacharacters; leave `/` as-is.
+    if ('.+^$()|[]\\'.includes(c)) {
+      re += `\\${c}`;
+    } else {
+      re += c;
+    }
+    i += 1;
+  }
+  return new RegExp(`^${re}$`);
+}
+
+function matchesAnyGlob(file: string, globs: readonly RegExp[]): boolean {
+  for (const re of globs) {
+    if (re.test(file)) return true;
+  }
+  return false;
 }
 
 // Scoping safety cap. If a project legitimately holds more than this many
@@ -127,6 +231,40 @@ async function fetchOpenDrifts(
   return { rows, truncated: true };
 }
 
+// R-157: fetch the active plan's `file_glob` deliverable refUris.
+// Returns `null` when no active plan exists (404 on /plans/active) so the
+// caller can treat "no plan" the same as "no globs configured" and skip
+// the semantic gate gracefully.
+async function fetchActivePlanFileGlobs(
+  apiUrl: string,
+  projectId: string,
+  headers: Record<string, string>,
+): Promise<{ planId: string; planVersion: number; globs: string[] } | null> {
+  const planUrl = `${apiUrl}/api/projects/${projectId}/plans/active`;
+  const planRes = await fetch(planUrl, { headers });
+  if (planRes.status === 404) return null;
+  const planJson = (await planRes.json()) as
+    | { data?: PlanRow; error?: { message?: string } }
+    | undefined;
+  if (!planRes.ok) {
+    throw new Error(planJson?.error?.message || `HTTP ${planRes.status} ${planRes.statusText}`);
+  }
+  const plan = planJson?.data;
+  if (!plan?.id) return null;
+
+  const delUrl = `${apiUrl}/api/projects/${projectId}/plans/${plan.id}/deliverables`;
+  const delRes = await fetch(delUrl, { headers });
+  const delJson = (await delRes.json()) as DeliverablesResponse & { error?: { message?: string } };
+  if (!delRes.ok) {
+    throw new Error(delJson?.error?.message || `HTTP ${delRes.status} ${delRes.statusText}`);
+  }
+  const rows = delJson.data ?? [];
+  const globs = rows
+    .filter((r) => r.refType === 'file_glob' && r.status === 'active' && !!r.refUri)
+    .map((r) => r.refUri as string);
+  return { planId: plan.id, planVersion: plan.version, globs };
+}
+
 export async function run() {
   try {
     const apiUrl = core.getInput('api-url').replace(/\/$/, '');
@@ -134,6 +272,12 @@ export async function run() {
     const projectId = core.getInput('project');
     const taskIdsInput = core.getInput('task-ids');
     const branchNameInput = core.getInput('branch-name');
+    const prFilesInput = core.getInput('pr-files');
+    // `legacy-mode` is an emergency rollback for R-157. We accept the
+    // canonical lowercase `true` plus a couple of common typos so a
+    // sleep-deprived operator does not have to remember exact casing.
+    const legacyModeRaw = core.getInput('legacy-mode').trim().toLowerCase();
+    const legacyMode = legacyModeRaw === 'true' || legacyModeRaw === '1' || legacyModeRaw === 'yes';
 
     // Mask the api-key so it never appears in GitHub Actions logs even when
     // accidentally echoed (e.g. via `set -x`, child process stderr, or a
@@ -147,6 +291,87 @@ export async function run() {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     };
+
+    // R-157: semantic deliverable gate. Runs before the drift check so a
+    // PR that does not touch any active deliverable fails fast with a
+    // clear message instead of "no drift, looks good" which is misleading.
+    //
+    // Backwards-compatibility ladder (top wins):
+    //   * `legacy-mode: true`                          → skip semantic gate.
+    //   * `pr-files` empty                             → skip semantic gate
+    //                                                     (workflows not yet
+    //                                                     wired up still pass
+    //                                                     the legacy drift
+    //                                                     check).
+    //   * `/plans/active` returns 404 / no plan        → skip semantic gate.
+    //   * Active plan has zero `file_glob` deliverables → skip semantic gate
+    //                                                     (project has not
+    //                                                     adopted the schema
+    //                                                     yet — fail-open).
+    //   * Otherwise enforce: every PR file must match
+    //     at least one active glob.
+    const prFiles = parsePrFiles(prFilesInput);
+    let semanticGate: 'skipped' | 'passed' | 'failed' = 'skipped';
+    if (legacyMode) {
+      core.info('PlanSync semantic gate disabled (legacy-mode=true). Running drift-only check.');
+    } else if (prFiles.length === 0) {
+      core.info(
+        'PlanSync semantic gate skipped: no `pr-files` input provided. Pass the list of PR-changed files to enable the R-157 deliverable check.',
+      );
+    } else {
+      let activePlan: Awaited<ReturnType<typeof fetchActivePlanFileGlobs>>;
+      try {
+        activePlan = await fetchActivePlanFileGlobs(apiUrl, projectId, headers);
+      } catch (err) {
+        core.setFailed(
+          `PlanSync semantic gate: failed to load active plan deliverables — ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return;
+      }
+      if (!activePlan) {
+        core.info(
+          'PlanSync semantic gate skipped: no active plan for this project. Activate a plan to enable the R-157 deliverable check.',
+        );
+      } else if (activePlan.globs.length === 0) {
+        core.info(
+          `PlanSync semantic gate skipped: active plan v${activePlan.planVersion} has no \`file_glob\` deliverables. Add file_glob deliverables to enable the R-157 check.`,
+        );
+      } else {
+        const compiled = activePlan.globs.map(globToRegExp);
+        const unmatched = prFiles.filter((f) => !matchesAnyGlob(f, compiled));
+        if (unmatched.length > 0) {
+          semanticGate = 'failed';
+          core.setOutput('semantic-gate', semanticGate);
+          core.setOutput('unmatched-files', unmatched.join('\n'));
+          core.error(
+            `PlanSync semantic gate: ${unmatched.length} file(s) modified by this PR do not match any active deliverable glob on plan v${activePlan.planVersion}.`,
+          );
+          for (const f of unmatched) {
+            core.error(`  Unmatched file: ${f}`);
+          }
+          core.error(
+            `Active deliverable globs: ${activePlan.globs.map((g) => `\`${g}\``).join(', ')}`,
+          );
+          core.setFailed(
+            `Modified files are not in scope of any active deliverable (${unmatched.length} unmatched). Either add a deliverable that covers these files (see plansync_deliverable_create) or scope the PR to in-plan changes. Override with \`legacy-mode: true\` only as an emergency rollback.`,
+          );
+          // R-157: short-circuit the rest of the gate. Falling through to
+          // the drift check would let a PR that touches out-of-scope files
+          // produce a confusing "drift-count: 0 → green" output alongside
+          // the setFailed, which is the exact ambiguity that motivated the
+          // upgrade. Bail out cleanly with `has-drift=false` so downstream
+          // job summaries do not double-report.
+          core.setOutput('drift-count', '0');
+          core.setOutput('has-drift', 'false');
+          return;
+        }
+        semanticGate = 'passed';
+        core.info(
+          `PlanSync semantic gate passed: all ${prFiles.length} PR file(s) match at least one of ${compiled.length} active deliverable glob(s) on plan v${activePlan.planVersion}.`,
+        );
+      }
+    }
+    core.setOutput('semantic-gate', semanticGate);
 
     // R-094: scope the drift gate to the tasks affected by *this* PR rather
     // than the entire project. Otherwise an unrelated open drift would block
