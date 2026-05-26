@@ -143,6 +143,9 @@ declare -a CLUSTERS=(
   # explicitly rejects in favour of the refetch path. Keep it open
   # for owner adjudication.)
   "merged|874|875 907 969|Cluster B8-partial: RunStore lightweight task_started handling (PR #874, partial-auto-close)"
+  # Cluster B6 — PR #850 + #1025 already shipped the single-tx fix
+  # for the multi-project github webhook outbox path.
+  "merged|850|852 900 968|Cluster B6: webhook multi-project outbox single-tx (PR #850 / #1025)"
 )
 
 close_one() {
