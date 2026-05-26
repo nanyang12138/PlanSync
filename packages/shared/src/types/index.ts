@@ -52,6 +52,7 @@ import {
   driftSeveritySchema,
   driftStatusSchema,
   driftResolveActionSchema,
+  driftResolvedActionSchema,
 } from '../schemas/drift';
 import {
   deliverableSchema,
@@ -125,6 +126,7 @@ export type DriftType = z.infer<typeof driftTypeSchema>;
 export type DriftSeverity = z.infer<typeof driftSeveritySchema>;
 export type DriftStatus = z.infer<typeof driftStatusSchema>;
 export type DriftResolveAction = z.infer<typeof driftResolveActionSchema>;
+export type DriftResolvedAction = z.infer<typeof driftResolvedActionSchema>;
 
 // PlanDeliverable (R-155)
 export type PlanDeliverable = z.infer<typeof deliverableSchema>;
