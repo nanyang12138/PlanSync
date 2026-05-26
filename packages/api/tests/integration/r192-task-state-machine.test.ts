@@ -1387,15 +1387,23 @@ describe('R-192 exit-permission gate: PATCH out of awaiting_evidence is owner-on
     expect(after?.status).toBe('awaiting_evidence');
   });
 
-  it('preserves the assignee-release escape hatch: non-owner PATCH awaiting_evidence → cancelled is allowed', async () => {
+  it('preserves the assignee-release escape hatch: assignee PATCH awaiting_evidence → cancelled is allowed', async () => {
     // The single legitimate non-owner exit from awaiting_evidence is
-    // `cancelled` (the assignee giving up). Verify the guard does not
-    // over-block this path.
+    // `cancelled` driven by the **task's assignee** giving up the
+    // task — that is the authorization shape the comment in the
+    // route handler describes ("assignee giving up / releasing the
+    // task"). Use the task's actual assignee here so this case
+    // tests the documented escape hatch instead of locking in the
+    // broader "any project member can cancel anyone's parked task"
+    // semantics. Whether the route additionally over-permits
+    // arbitrary non-assignees is a separate authorization question
+    // (tracked as the route-side fix); pinning it via this test
+    // would freeze the wrong contract.
     const t = await parkedTask('1323-cancel-ok');
     const res = await taskPatch(
       makeReq(`/api/projects/${projectId}/tasks/${t.id}`, {
         method: 'PATCH',
-        userName: nonOwner,
+        userName: agentName,
         body: { status: 'cancelled' },
       }),
       { params: Promise.resolve({ projectId, taskId: t.id }) },
