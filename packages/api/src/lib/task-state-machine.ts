@@ -298,9 +298,7 @@ async function deliverableRefsWithoutEvidence(
   boundPlanVersion: number | null,
 ): Promise<string[]> {
   const planFilter =
-    typeof boundPlanVersion === 'number'
-      ? { projectId, version: boundPlanVersion }
-      : { projectId };
+    typeof boundPlanVersion === 'number' ? { projectId, version: boundPlanVersion } : { projectId };
   const deliverables = await client.planDeliverable.findMany({
     where: { slug: { in: refs }, plan: planFilter },
     select: { id: true, slug: true },
