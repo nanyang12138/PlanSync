@@ -959,6 +959,23 @@ test('hasSuccessMarkerAfter', async (t) => {
       );
     },
   );
+  await t.test('cutoffServerMs: peer marker at or after anchor ⇒ match', () => {
+    const cutoff = Date.now();
+    assert.equal(
+      hasSuccessMarkerAfter({
+        comments: [mkSuccess(cutoff)],
+        cutoffServerMs: cutoff,
+      }),
+      true,
+    );
+    assert.equal(
+      hasSuccessMarkerAfter({
+        comments: [mkSuccess(cutoff + 5)],
+        cutoffServerMs: cutoff,
+      }),
+      true,
+    );
+  });
 
   await t.test('cutoffServerMs takes precedence over sinceMs when both supplied', () => {
     const t0 = Date.now();
