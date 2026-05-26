@@ -238,12 +238,48 @@ export async function runDriftScan(
   return { alerts };
 }
 
+// Closes #710 — collapse same-task alerts to ONE row, preferring the
+// most-severe entry. `runDriftScan` produces one alert per task today,
+// but the contract advertised by `persistDriftAlerts` (and the
+// drift-engine.ts header comment) is multi-dimensional alerts; a future
+// caller that emits `[{taskId:'t1',severity:'medium',reason:'…scope…'},
+// {taskId:'t1',severity:'high',reason:'…breaking…'}]` would crash the
+// caller's $transaction with a unique-violation on
+// `drift_alerts_one_open_per_task`, taking down plan activation.
+// Keep the highest-severity alert per task; preserve its reason as
+// the most informative summary (severity ranking is structural).
+const DRIFT_SEVERITY_RANK: Record<'high' | 'medium' | 'low', number> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+};
+
+function dedupeAlertsByTaskId(alerts: DriftScanResult['alerts']): DriftScanResult['alerts'] {
+  const byTask = new Map<string, DriftScanResult['alerts'][number]>();
+  for (const a of alerts) {
+    const existing = byTask.get(a.taskId);
+    if (!existing) {
+      byTask.set(a.taskId, a);
+      continue;
+    }
+    if (DRIFT_SEVERITY_RANK[a.severity] > DRIFT_SEVERITY_RANK[existing.severity]) {
+      byTask.set(a.taskId, a);
+    }
+  }
+  return Array.from(byTask.values());
+}
+
 export async function persistDriftAlerts(
   tx: Prisma.TransactionClient | PrismaClient,
   projectId: string,
   alerts: DriftScanResult['alerts'],
 ) {
   if (alerts.length === 0) return [];
+
+  // Dedupe BEFORE the supersede + createMany. See note next to
+  // `dedupeAlertsByTaskId` for why this matters even when the only
+  // current caller (`runDriftScan`) emits one alert per task.
+  const deduped = dedupeAlertsByTaskId(alerts);
 
   // R-051: at most one open DriftAlert per task. Before writing the freshly
   // computed alerts, supersede every existing open alert on the affected
@@ -256,7 +292,7 @@ export async function persistDriftAlerts(
   // history is preserved and clearly attributed to the engine rather than
   // a human operator. Both writes live inside the caller's transaction so
   // a rollback restores the prior open alerts untouched.
-  const supersedeTaskIds = Array.from(new Set(alerts.map((a) => a.taskId)));
+  const supersedeTaskIds = Array.from(new Set(deduped.map((a) => a.taskId)));
   await tx.driftAlert.updateMany({
     where: { taskId: { in: supersedeTaskIds }, status: 'open' },
     data: {
@@ -268,7 +304,7 @@ export async function persistDriftAlerts(
   });
 
   const created = await tx.driftAlert.createManyAndReturn({
-    data: alerts.map((a) => ({
+    data: deduped.map((a) => ({
       projectId,
       taskId: a.taskId,
       type: 'version_mismatch',
@@ -309,7 +345,7 @@ export async function persistDriftAlerts(
   // running to pause. The `status='running'` filter on the updateMany leaves
   // alone any run that the agent voluntarily completed in the millisecond
   // between drift scan and persist.
-  const blockingAlerts = alerts.filter((a) => a.severity !== 'low');
+  const blockingAlerts = deduped.filter((a) => a.severity !== 'low');
   if (blockingAlerts.length > 0) {
     // Per-task gate value tracks the alert's severity so the banner can
     // pick a copy that matches: 'drift_high' (breaking — agent contract
