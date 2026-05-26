@@ -552,6 +552,95 @@ describe('R-192: deriveTaskCompletionState', () => {
     expect(codes).toContain('deliverable_evidence');
   });
 
+  it('blocks auto-done with drift_open even when the project has no githubRepo (closes #1422 — short-circuit must not bypass drift)', async () => {
+    // Regression for #1422 / PR #1353 review finding: the
+    // project-level `githubRepo` short-circuit returned status='done'
+    // BEFORE the helper's defense-in-depth drift check ran, so a
+    // task with an open drift alert in a non-GitHub-integrated
+    // project would silently flip to `done`. The drift_open guard
+    // must run first.
+    const { projectId: bareProjectId } = await createTestProject('r1422-bare-owner');
+    try {
+      const { version: bareVersion } = await createActivePlan(bareProjectId, 'r1422-bare-owner');
+      const t = await testPrisma.task.create({
+        data: {
+          projectId: bareProjectId,
+          title: 't-drift-no-github',
+          type: 'code',
+          priority: 'p1',
+          status: 'in_progress',
+          boundPlanVersion: bareVersion,
+          agentConstraints: [],
+          planDeliverableRefs: [],
+          prUrl: null,
+        },
+      });
+      await testPrisma.driftAlert.create({
+        data: {
+          projectId: bareProjectId,
+          taskId: t.id,
+          currentPlanVersion: bareVersion + 1,
+          taskBoundVersion: bareVersion,
+          reason: 'plan changed under a drifted task',
+          severity: 'high',
+          status: 'open',
+        },
+      });
+      const result = await deriveTaskCompletionState({
+        projectId: bareProjectId,
+        task: { id: t.id, prUrl: null, planDeliverableRefs: [] },
+      });
+      // Pre-fix this asserted (status='done', gateApplied=false).
+      // The defense-in-depth check must now block the auto-done.
+      expect(result.status).toBe('awaiting_evidence');
+      expect(result.gateApplied).toBe(true);
+      expect(result.missing.map((m) => m.code)).toEqual(['drift_open']);
+    } finally {
+      await cleanupProject(bareProjectId);
+    }
+  });
+
+  it('blocks auto-done with drift_open on a legacy task (no prUrl, no refs) even when the project has githubRepo (closes #1422 — per-task short-circuit must not bypass drift)', async () => {
+    // Sibling regression for the per-task opt-in short-circuit: in
+    // a GitHub-integrated project, a legacy task with no `prUrl`
+    // and no `planDeliverableRefs` previously short-circuited to
+    // `done` (gateApplied=false) before the drift check ran. Same
+    // defense-in-depth concern as the project-level branch above.
+    const legacy = await testPrisma.task.create({
+      data: {
+        projectId,
+        title: 'r1422-legacy-drift',
+        type: 'code',
+        priority: 'p1',
+        status: 'in_progress',
+        assignee: agentName,
+        assigneeType: 'agent',
+        boundPlanVersion: planVersion,
+        agentConstraints: [],
+        planDeliverableRefs: [],
+        prUrl: null,
+      },
+    });
+    await testPrisma.driftAlert.create({
+      data: {
+        projectId,
+        taskId: legacy.id,
+        currentPlanVersion: planVersion + 1,
+        taskBoundVersion: planVersion,
+        reason: 'plan changed under a legacy task',
+        severity: 'medium',
+        status: 'open',
+      },
+    });
+    const result = await deriveTaskCompletionState({
+      projectId,
+      task: { id: legacy.id, prUrl: null, planDeliverableRefs: [] },
+    });
+    expect(result.status).toBe('awaiting_evidence');
+    expect(result.gateApplied).toBe(true);
+    expect(result.missing.map((m) => m.code)).toEqual(['drift_open']);
+  });
+
   it('short-circuits with gateApplied=false when neither task nor project carries git wiring', async () => {
     // Create a brand-new project with no githubRepo set, then assert
     // the gate stays silent so legacy flows keep their always-done

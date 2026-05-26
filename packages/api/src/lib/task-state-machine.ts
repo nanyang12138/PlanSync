@@ -132,6 +132,44 @@ export async function deriveTaskCompletionState(
   const client = input.prismaClient ?? defaultPrisma;
   const { task, projectId } = input;
 
+  // Pre-flight stage 0: defense-in-depth drift guard.
+  //
+  // An open drift alert means the task is bound to a stale plan
+  // version, so even a "no git wiring" task must NOT auto-flip to
+  // `done` — the drift might invalidate the work entirely. The
+  // route's R-006 gate is the primary 409 on open drift, but if
+  // that gate is ever loosened (or a future code path skips it),
+  // surfacing `drift_open` here keeps the helper fail-closed.
+  //
+  // CRITICAL: this check happens BEFORE the project-level
+  // (`githubRepo`) and per-task (`prUrl` / `planDeliverableRefs`)
+  // short-circuits below. Those branches return `status='done'`
+  // with `gateApplied=false`, and pre-fix the helper would happily
+  // flip a drifted task to `done` without ever consulting the
+  // drift table — bypassing the very defense-in-depth check this
+  // function advertises (closes #1422 / PR #1353 review finding).
+  //
+  // Drift overrides the legacy "always done" fallback intentionally:
+  // the `gateApplied=false` contract exists so projects that never
+  // opted into git integration are not silently broken by R-192's
+  // evidence requirements, NOT so they can dodge drift correctness.
+  const openDriftCount = await client.driftAlert.count({
+    where: { taskId: task.id, status: 'open' },
+  });
+  if (openDriftCount > 0) {
+    return {
+      status: 'awaiting_evidence',
+      missing: [
+        {
+          code: 'drift_open',
+          message: `${openDriftCount} drift alert(s) are still open on this task. Resolve them before completing.`,
+          details: { openDriftCount },
+        },
+      ],
+      gateApplied: true,
+    };
+  }
+
   // Pre-flight stage 1: is git integration enabled at the *project*
   // level at all?
   //
@@ -252,21 +290,10 @@ export async function deriveTaskCompletionState(
     }
   }
 
-  // ---- Check 3: drift open (defense-in-depth) ------------------
-  // The upstream route gate already 409s on open drift, but if that
-  // gate is ever loosened (or a future code path skips it), we'd
-  // rather block the auto-done than silently advance into the unsafe
-  // state. The check is cheap and the duplication is intentional.
-  const openDriftCount = await client.driftAlert.count({
-    where: { taskId: task.id, status: 'open' },
-  });
-  if (openDriftCount > 0) {
-    missing.push({
-      code: 'drift_open',
-      message: `${openDriftCount} drift alert(s) are still open on this task. Resolve them before completing.`,
-      details: { openDriftCount },
-    });
-  }
+  // (drift_open is handled at pre-flight stage 0 above so the
+  // defense-in-depth check cannot be bypassed by the short-circuit
+  // branches that return `gateApplied=false`. Keeping it here would
+  // be dead code on a fail-closed path.)
 
   if (missing.length === 0) {
     return { status: 'done', missing: [], gateApplied: true };
