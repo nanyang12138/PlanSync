@@ -110,14 +110,51 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
           data: { status: 'superseded' },
         });
 
-        const a = await tx.plan.update({
-          where: { id: params.planId },
+        // Closes #903 #984 — the previous activate path read
+        // plan.status OUTSIDE the transaction (via
+        // requirePlanInProject), then unconditionally ran
+        // `tx.plan.update({ where: { id } })` here. A concurrent
+        // withdraw that flipped status from 'proposed' → 'draft'
+        // between the read and this update used to be silently
+        // resurrected back to 'active' — the same race that #816
+        // closed in the OTHER direction (withdraw losing to
+        // activate). The advisory lock above serializes activate
+        // calls per project, but the transactional read isolation
+        // at READ COMMITTED still allows withdraw to slip in: the
+        // lock only excludes other activates, not other write
+        // paths.
+        //
+        // Mirror the withdraw fix: use updateMany scoped to
+        // status: 'draft' | 'proposed' so the row only flips when
+        // its state still matches what we observed. count===0
+        // means a concurrent writer (almost certainly withdraw)
+        // changed it; surface as STATE_CONFLICT so the operator
+        // re-reads and decides explicitly.
+        const flip = await tx.plan.updateMany({
+          where: { id: params.planId, status: { in: ['draft', 'proposed'] } },
           data: {
             status: 'active',
             activatedAt: new Date(),
             activatedBy: auth.userName,
           },
         });
+        if (flip.count === 0) {
+          const fresh = await tx.plan.findUnique({
+            where: { id: params.planId },
+            select: { status: true },
+          });
+          throw new AppError(
+            ErrorCode.STATE_CONFLICT,
+            `Concurrent state change: plan is no longer 'draft' or 'proposed' (now ` +
+              `'${fresh?.status ?? 'unknown'}'). ` +
+              'Re-read the plan and decide whether to re-propose / re-activate or take a different action.',
+          );
+        }
+        // findUniqueOrThrow re-reads the post-update row so the
+        // route can return the canonical activated plan + its
+        // updated audit fields, byte-equivalent to the previous
+        // `update`'s return value.
+        const a = await tx.plan.findUniqueOrThrow({ where: { id: params.planId } });
 
         // R-152: link previous-version PlanDeliverable rows to the new
         // ones via supersededById (slug-matched). This must happen *after*
