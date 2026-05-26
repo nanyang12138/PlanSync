@@ -219,6 +219,11 @@ model PlanDeliverable {
   // UI can render the suggestion thread inline next to the deliverable
   // card). SetNull on delete on the suggestion side keeps history intact.
   suggestions  PlanSuggestion[]
+  // R-156: PlanComment rows that are anchored to this deliverable (per-row
+  // discussion thread on the deliverable timeline UI). SetNull on the
+  // comment side keeps historical context intact if the deliverable row
+  // is later deleted; matches the convention used for `suggestions` above.
+  comments     PlanComment[]
 
   @@unique([planId, slug])
   @@index([planId, status])
@@ -337,17 +342,24 @@ model PlanStandard {
 }
 
 model PlanComment {
-  id         String   @id @default(cuid())
-  planId     String   @map("plan_id")
-  authorName String   @map("author_name")
-  authorType String   @map("author_type") // human | agent
-  content    String
-  parentId   String?  @map("parent_id")
-  isDeleted  Boolean  @default(false) @map("is_deleted")
-  createdAt  DateTime @default(now()) @map("created_at")
-  updatedAt  DateTime @updatedAt @map("updated_at")
+  id            String   @id @default(cuid())
+  planId        String   @map("plan_id")
+  authorName    String   @map("author_name")
+  authorType    String   @map("author_type") // human | agent
+  content       String
+  parentId      String?  @map("parent_id")
+  // R-156: optional pointer to the PlanDeliverable this comment is
+  // anchored to. NULL keeps the comment as a top-level plan comment
+  // (existing behaviour). SetNull on the deliverable cascade keeps the
+  // comment as historical context when a deliverable row is removed; the
+  // UI degrades to rendering the comment in the plan-level thread.
+  deliverableId String?  @map("deliverable_id")
+  isDeleted     Boolean  @default(false) @map("is_deleted")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
 
-  plan    Plan          @relation(fields: [planId], references: [id], onDelete: Cascade)
+  plan        Plan             @relation(fields: [planId], references: [id], onDelete: Cascade)
+  deliverable PlanDeliverable? @relation(fields: [deliverableId], references: [id], onDelete: SetNull, onUpdate: Cascade)
   // R-086: be explicit about the self-relation onDelete behaviour. The
   // application uses soft delete (`isDeleted = true`) for comments, so a hard
   // delete of a parent comment that still has replies should be rejected to
@@ -358,6 +370,7 @@ model PlanComment {
   parent  PlanComment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   replies PlanComment[] @relation("CommentReplies")
 
+  @@index([deliverableId])
   @@map("plan_comments")
 }
 
