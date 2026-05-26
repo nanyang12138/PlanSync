@@ -160,6 +160,29 @@ process.stdin.on('data', (chunk) => {
         setImmediate(() => process.exit(1));
         return;
       }
+      // B9 / closes #871 #913 — when armed, return a tool result whose
+      // `text` payload exceeds N kilobytes so the test can verify
+      // McpClient's stdout partial-buffer no longer drops legitimate
+      // large MCP frames at the per-line cap. We also write the
+      // response in two chunks to specifically exercise the
+      // "partial buffer crosses cap before newline arrives" path.
+      if (callName === 'fake_giant_result_tool') {
+        const sizeKb = Number(process.env.FAKE_MCP_GIANT_RESULT_KB || 16);
+        const payloadText = 'A'.repeat(sizeKb * 1024);
+        const frame =
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: msg.id,
+            result: { content: [{ type: 'text', text: payloadText }] },
+          }) + '\n';
+        // Split halfway and add a tiny delay so the parent's
+        // `data` handler observes the partial buffer state.
+        const half = Math.floor(frame.length / 2);
+        process.stdout.write(frame.slice(0, half));
+        setTimeout(() => process.stdout.write(frame.slice(half)), 5);
+        handled += 1;
+        return;
+      }
       // R-005: when armed, push an `execution_aborted` notification BEFORE
       // replying to the tool call. McpClient's `setAbortHandler` should fire
       // even though the tool call itself succeeds, so callers can verify the
