@@ -28,10 +28,18 @@ export const commentSchema = z.object({
   updatedAt: z.coerce.date(),
 });
 
-// R-156: list-comments query parameters. Lets the deliverable-timeline page
-// pull comments for a single deliverable without scanning the whole plan
-// thread client-side. Kept additive: when neither field is set the route
-// returns all comments (existing behaviour).
+// R-156 + Issue #1256 follow-up: list-comments query parameters.
+//
+// Two surfaces share the same route, distinguished by the `deliverableId`
+// query param:
+//
+//   - `?deliverableId=<id>` → comments anchored to that PlanDeliverable
+//     (used by the deliverable-timeline page to render a focused thread).
+//   - (no `deliverableId`)  → PLAN-LEVEL comments only, i.e. rows where
+//     `deliverableId IS NULL`. This is what the legacy plan Comments
+//     sidebar wants. We deliberately do NOT return a mixed listing here:
+//     mixing per-deliverable threads into the plan sidebar broke the
+//     "one discussion per surface" UX (Issue #1256).
 export const listCommentsQuerySchema = z.object({
   deliverableId: z.string().optional(),
 });
