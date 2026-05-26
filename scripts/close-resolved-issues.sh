@@ -124,6 +124,25 @@ declare -a CLUSTERS=(
   # at-most-once. The single repo-wide DELETE site for comments is
   # this file (verified by grep).
   "merged|878|880 971|Cluster B13: comment DELETE atomic updateMany + count guard (PR #878, partial-auto-close)"
+  # Cluster B8-partial — PR #874 already shipped the lightweight
+  # task_started event handling that #875 / #907 / #969 ask for.
+  # Verified at packages/client-core/src/stores/run-store.ts:
+  #   - L91-93 STORE_AFFECTING_EVENTS includes 'task_started'
+  #   - L102-108 if the payload carries a full run object, byId is
+  #     updated directly
+  #   - L110-130 if the payload is lightweight (taskId only), the
+  #     store calls this.load(projectId, taskScope) to refetch — the
+  #     refetch path's subsequent setState IS the subscriber
+  #     notification
+  # The header comment at L84-90 explicitly references closes #785
+  # for this exact change. Issues #875 / #907 / #969 are the same
+  # finding from later review passes after PR #874 landed.
+  # (We deliberately do NOT include #970 here — that issue argues
+  # for capturing handleEvent's return value at the registry layer,
+  # which is a design preference the run-store.ts L110-114 comment
+  # explicitly rejects in favour of the refetch path. Keep it open
+  # for owner adjudication.)
+  "merged|874|875 907 969|Cluster B8-partial: RunStore lightweight task_started handling (PR #874, partial-auto-close)"
 )
 
 close_one() {
