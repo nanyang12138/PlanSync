@@ -109,6 +109,21 @@ declare -a CLUSTERS=(
   # Test run on master at 2026-05-25:
   #   16 / 16 passing across both r113 test files.
   "merged|909|1001 1002|Cluster B11: r113 email test stale review — both already addressed by PR #909 (localSpawnedChildren naming + EventEmitter-backed fake stdin)"
+  # Cluster B13 — PR #878 already shipped the atomic updateMany +
+  # count guard for comment DELETE. #880 / #971 are the same root
+  # finding from later review passes.
+  # Verified at packages/api/src/app/api/projects/[projectId]/plans/
+  # [planId]/comments/[commentId]/route.ts L97-119:
+  #   const flip = await prisma.planComment.updateMany({
+  #     where: { id: params.commentId, isDeleted: false },
+  #     data: { isDeleted: true, content: '' },
+  #   });
+  #   if (flip.count === 0) { /* race lost — STATE_CONFLICT, no audit */ }
+  # The SQL row lock guarantees exactly one writer sees count=1 even
+  # under concurrent DELETEs, so the per-delete Activity row is
+  # at-most-once. The single repo-wide DELETE site for comments is
+  # this file (verified by grep).
+  "merged|878|880 971|Cluster B13: comment DELETE atomic updateMany + count guard (PR #878, partial-auto-close)"
 )
 
 close_one() {
