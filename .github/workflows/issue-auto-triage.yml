@@ -1,0 +1,102 @@
+name: issue-auto-triage
+
+# Periodic triage of the `severity:must` backlog.
+#
+# Why this exists
+#   cursor-review.yml + cursor-review-triage.yml together open one
+#   structured GitHub issue per finding the AI reviewer flags. With
+#   ~20 PRs/day each producing 1-5 findings, the backlog drifts open
+#   by 50-100 issues a week. Most are duplicates of the same finding
+#   raised across multiple PRs, already-fixed by a merged PR, or about
+#   a feature that doesn't exist yet.
+#
+# What this workflow does
+#   Runs `scripts/issue-auto-triage.mjs` which classifies every open
+#   `severity:must` issue into one of:
+#     * resolved-by-pr     → comments + closes (merge auto-close gap)
+#     * resolved-in-tree   → comments + closes (state-based probe match)
+#     * phantom            → comments + labels wontfix + closes
+#     * dispatch           → labels `cursor:dispatch` so
+#                            cursor-review-dispatch.yml picks it up
+#     * skip               → in-flight via open PR / already triaged
+#
+#   The dispatch budget is small per run (default 3, configurable per
+#   workflow_dispatch invocation) so we don't burn the Cursor API
+#   quota on the entire backlog in one schedule.
+#
+# Permissions / safety
+#   - `issues: write` to comment + close + label
+#   - `pull-requests: read` to scan PR bodies for closes-keywords
+#   - No code is checked out beyond `scripts/issue-auto-triage.mjs`
+#     (sparse checkout) so the runner cannot be tricked into running
+#     untrusted PR code.
+#   - Without write actions (e.g. `gh issue close`) failing, every
+#     issue stays in the same state for the next run — fully idempotent.
+
+on:
+  schedule:
+    # Daily at 04:30 UTC — slightly after the 02:00 UTC remediation
+    # cron in docs/AUTOMATION.md and 03:00 UTC nightly. Leaves time
+    # for any overnight PR auto-merges to land before we count their
+    # closes-keywords as "resolved".
+    - cron: '30 4 * * *'
+  workflow_dispatch:
+    inputs:
+      max_dispatch:
+        description: 'Maximum issues to label cursor:dispatch in this run'
+        required: false
+        default: '3'
+      max_close:
+        description: 'Maximum issues to close in this run'
+        required: false
+        default: '25'
+      mode:
+        description: 'apply (default), dry-run, or json'
+        required: false
+        default: 'apply'
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+# Don't double-run if the cron fires while a manual workflow_dispatch
+# is mid-flight. Don't cancel an in-progress run; let it finish so
+# label edits are atomic.
+concurrency:
+  group: issue-auto-triage
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout (script only)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            scripts/issue-auto-triage.mjs
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run triage
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TRIAGE_MAX_DISPATCH: ${{ github.event.inputs.max_dispatch || '3' }}
+          TRIAGE_MAX_CLOSE: ${{ github.event.inputs.max_close || '25' }}
+        run: |
+          MODE="${{ github.event.inputs.mode || 'apply' }}"
+          case "$MODE" in
+            apply|dry-run|json) ;;
+            *)
+              echo "Unsupported mode: $MODE"
+              exit 2
+              ;;
+          esac
+          node scripts/issue-auto-triage.mjs "--$MODE"
