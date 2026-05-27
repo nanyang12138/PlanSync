@@ -264,6 +264,41 @@ describe('R-155: deliverable CRUD routes', () => {
     const bareBody = await bare.json();
     expect(bareBody.data.status).toBe('deprecated');
     expect(bareBody.data.supersededById).toBeNull();
+
+    // Double-supersede must NOT overwrite an existing supersededById.
+    // `oldId` was already linked to `newId` above; a second supersede
+    // attempt (e.g. pointing at some other row, or even just bare) must
+    // return STATE_CONFLICT so the "history is append-only" invariant
+    // holds even under concurrent owner writes. This is the regression
+    // guard for the TOCTOU race fixed by the guarded `updateMany` CAS
+    // in the supersede route.
+    const otherRow = await deliverablePost(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/deliverables`, {
+        method: 'POST',
+        userName: owner,
+        body: { slug: 'other/item', title: 'Other', body: 'other body' },
+      }),
+      { params: Promise.resolve({ projectId, planId }) },
+    );
+    const otherId = (await otherRow.json()).data.id as string;
+
+    const rewrite = await deliverableSupersede(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/deliverables/${oldId}/supersede`, {
+        method: 'POST',
+        userName: owner,
+        body: { supersededById: otherId },
+      }),
+      { params: Promise.resolve({ projectId, planId, deliverableId: oldId }) },
+    );
+    expect(rewrite.status).toBe(409);
+    const rewriteBody = await rewrite.json();
+    expect(rewriteBody.error?.code).toBe('STATE_CONFLICT');
+    // The original pointer must be intact.
+    const oldRowAfter = await prisma.planDeliverable.findUniqueOrThrow({
+      where: { id: oldId },
+    });
+    expect(oldRowAfter.supersededById).toBe(newId);
+    expect(oldRowAfter.status).toBe('deprecated');
   });
 
   it('issue #1146: accepting a suggestion with deliverableId mutates the targeted row, not the legacy array', async () => {

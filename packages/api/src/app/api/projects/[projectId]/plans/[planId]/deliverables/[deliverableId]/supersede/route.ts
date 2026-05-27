@@ -25,6 +25,15 @@ import { requirePlanInProject } from '@/lib/plan-scope';
 //     supersede chains never cross project boundaries.
 //   - the successor must NOT be the row itself (otherwise we'd build a
 //     cycle pointing at self).
+//   - the target row must not already be superseded. We enforce this with
+//     a guarded `updateMany` (CAS on `supersededById: null` and
+//     `status != 'deprecated'`) instead of a separate read-then-write,
+//     because the latter has a TOCTOU window: two concurrent supersede
+//     calls can each observe `supersededById = null`, both pass the
+//     check, and the later writer overwrites the earlier writer's
+//     pointer — breaking the "history is append-only" invariant. The
+//     activate-time `supersedeDeliverables` helper uses the same
+//     `where: { supersededById: null }` CAS trick for the same reason.
 
 const supersedeBodySchema = z.object({
   supersededById: z.string().min(1).optional(),
@@ -67,12 +76,31 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
       successorPlanVersion = successor.plan.version;
     }
 
-    const updated = await prisma.planDeliverable.update({
-      where: { id: params.deliverableId },
+    // Atomic compare-and-set: only transition rows that are NOT already
+    // superseded (`supersededById IS NULL`) and NOT already `deprecated`.
+    // This collapses the previous "find then update" into a single SQL
+    // statement so two concurrent requests cannot both pass the
+    // "not-yet-superseded" check and race on the write. If the guard
+    // matches no row, the deliverable was either deleted or superseded
+    // by a concurrent writer — surface a 409 STATE_CONFLICT either way,
+    // preserving the "history is append-only" invariant.
+    const cas = await prisma.planDeliverable.updateMany({
+      where: {
+        id: params.deliverableId,
+        planId: params.planId,
+        supersededById: null,
+        status: { not: 'deprecated' },
+      },
       data: {
         status: 'deprecated',
         supersededById: body.supersededById ?? null,
       },
+    });
+    if (cas.count === 0) {
+      throw new AppError(ErrorCode.STATE_CONFLICT, 'Deliverable is already superseded');
+    }
+    const updated = await prisma.planDeliverable.findUniqueOrThrow({
+      where: { id: params.deliverableId },
     });
 
     await createActivity({
