@@ -723,6 +723,130 @@ test('latestLockLabeledAtMs', async (t) => {
   });
 });
 
+// ---------------------------------------------------------------------
+// review-dispatch.mjs same-second prior-cycle leak — #1461
+// ---------------------------------------------------------------------
+//
+// #1396 wired the server-stamped `labeled` LOCK event's `created_at`
+// into the peer-success cutoff with `toleranceMs: 0`, which is correct
+// to millisecond precision. But GitHub's `created_at` field is
+// truncated to whole seconds (ISO 8601, no sub-second component), so
+// `new Date(...).getTime()` always returns a multiple of 1000 ms. If
+// the prior cycle's success marker was posted in the SAME wall-clock
+// second as the new cycle's `labeled` event, the two parsed timestamps
+// collide exactly and the inclusive `ts >= cutoff` comparison leaks
+// the stale marker into the new cycle — exactly the fast-re-dispatch
+// regression #1461 reports. The fix introduces a strict-after
+// `notBeforeMs` cutoff for server-anchored callers.
+test('hasSuccessMarkerAfter — #1461 notBeforeMs strict-after semantics', async (t) => {
+  const { hasSuccessMarkerAfter } = await import('./review-dispatch.mjs');
+  const MARKER = '<!-- review-dispatch:agent -->';
+  const PHRASE = 'Cursor Cloud Agent dispatched';
+  const baseIso = (ts) => new Date(ts).toISOString();
+  const mkSuccess = (ts) => ({
+    body: `${MARKER}\n🚀 **${PHRASE}** (finding)\n- run: r1`,
+    created_at: baseIso(ts),
+  });
+
+  await t.test('marker AT notBeforeMs ⇒ no match (strict >, not >=)', () => {
+    const t0 = 1_700_000_000_000;
+    assert.equal(
+      hasSuccessMarkerAfter({
+        comments: [mkSuccess(t0)],
+        notBeforeMs: t0,
+      }),
+      false,
+    );
+  });
+
+  await t.test('marker strictly after notBeforeMs ⇒ match', () => {
+    const t0 = 1_700_000_000_000;
+    assert.equal(
+      hasSuccessMarkerAfter({
+        comments: [mkSuccess(t0 + 1)],
+        notBeforeMs: t0,
+      }),
+      true,
+    );
+  });
+
+  await t.test('marker before notBeforeMs ⇒ no match', () => {
+    const t0 = 1_700_000_000_000;
+    assert.equal(
+      hasSuccessMarkerAfter({
+        comments: [mkSuccess(t0 - 1000)],
+        notBeforeMs: t0,
+      }),
+      false,
+    );
+  });
+
+  await t.test(
+    'same wall-clock second: prior-cycle ISO timestamp == lock event ISO timestamp ⇒ no match (#1461)',
+    () => {
+      // Realistic shape: GitHub returns ISO strings with second precision.
+      // Both timestamps fall in the same wall-clock second but the LABELED
+      // event happened later in real time (after the user removed labels
+      // and re-applied `cursor:dispatch`). Without the strict-after fix,
+      // `ts >= cutoff` would let the OLD cycle's marker through.
+      const sameSecondIso = '2026-05-27T12:34:56Z';
+      const lockEventMs = new Date(sameSecondIso).getTime();
+      const priorMarker = {
+        body: `${MARKER}\n🚀 **${PHRASE}** (finding)\n- run: prev`,
+        created_at: sameSecondIso,
+      };
+      assert.equal(
+        hasSuccessMarkerAfter({
+          comments: [priorMarker],
+          notBeforeMs: lockEventMs,
+        }),
+        false,
+        'prior-cycle marker bucketed to the same wall-clock second as the labeled LOCK event must NOT be classified as a current peer success',
+      );
+    },
+  );
+
+  await t.test(
+    'genuine current-cycle peer success (next second) ⇒ still matches under notBeforeMs',
+    () => {
+      // Counterpart to the regression case: peer's own success marker
+      // posted ≥1 second after the labeled event must continue to be
+      // detected, otherwise the belt-and-suspenders peer-race guard
+      // collapses.
+      const lockSecondIso = '2026-05-27T12:34:56Z';
+      const peerSuccessIso = '2026-05-27T12:34:57Z';
+      assert.equal(
+        hasSuccessMarkerAfter({
+          comments: [
+            {
+              body: `${MARKER}\n🚀 **${PHRASE}** (finding)\n- run: peer`,
+              created_at: peerSuccessIso,
+            },
+          ],
+          notBeforeMs: new Date(lockSecondIso).getTime(),
+        }),
+        true,
+      );
+    },
+  );
+
+  await t.test('malformed timestamp ⇒ skipped under notBeforeMs', () => {
+    const t0 = Date.now();
+    assert.equal(
+      hasSuccessMarkerAfter({
+        comments: [
+          {
+            body: `${MARKER} ${PHRASE}`,
+            created_at: 'not-a-date',
+          },
+        ],
+        notBeforeMs: t0,
+      }),
+      false,
+    );
+  });
+});
+
 test('hasSuccessMarkerAfter — #1396 fast re-dispatch regression', async (t) => {
   const { hasSuccessMarkerAfter } = await import('./review-dispatch.mjs');
   const MARKER = '<!-- review-dispatch:agent -->';
@@ -801,14 +925,12 @@ test('hasSuccessMarkerAfter — #1396 fast re-dispatch regression', async (t) =>
 
 // Static-source guard: regardless of how future maintainers refactor
 // the helper, both call sites of `dispatchSucceededAlready` in main()
-// MUST forward the SAME (re)lock-acquisition timestamp variable (we
-// no longer require the literal `preAddLabelsAtMs` here because #1396
-// switched the preferred cutoff to a server-time value derived from
-// the events fetch). Without scoping, the #1278 regression returns
-// (old success marker short-circuits the new run); without using a
-// single shared variable, the two call sites can drift apart and one
-// of them can re-open the #1396 leak.
-test('review-dispatch.mjs dispatchSucceededAlready call sites share a single scoped cutoff (#1278, #1396)', async () => {
+// MUST forward the SAME single cutoff argument (a variable identifier
+// pointing at the same `peerSuccessCutoff` derivation). Without scoping
+// the #1278 regression returns (old success marker short-circuits the
+// new run); without sharing a single variable, the two call sites can
+// drift apart and one of them can re-open the #1396 / #1461 leak.
+test('review-dispatch.mjs dispatchSucceededAlready call sites share a single scoped cutoff (#1278, #1396, #1461)', async () => {
   const { readFileSync } = await import('node:fs');
   const { resolve } = await import('node:path');
   const src = readFileSync(resolve(import.meta.dirname, 'review-dispatch.mjs'), 'utf-8');
@@ -824,19 +946,22 @@ test('review-dispatch.mjs dispatchSucceededAlready call sites share a single sco
     2,
     `expected exactly 2 invocations of dispatchSucceededAlready() in main(), got ${calls.length}`,
   );
-  const sinceMsValues = new Set();
+  const argIdentifiers = new Set();
   for (const m of calls) {
-    const sinceMatch = m[1].match(/sinceMs\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)/);
+    // Both call sites must pass a single bare identifier (the shared
+    // `peerSuccessCutoff` object). Reject inline-object literals so the
+    // two call sites cannot drift apart in future edits.
+    const argMatch = m[1].trim().match(/^([A-Za-z_$][A-Za-z0-9_$]*)$/);
     assert.ok(
-      sinceMatch,
-      `dispatchSucceededAlready call site must pass { sinceMs: <identifier>, ... } — required by #1278/#1396; offending call: ${m[0]}`,
+      argMatch,
+      `dispatchSucceededAlready call site must pass a single identifier (the shared peerSuccessCutoff variable) — required by #1278/#1396/#1461; offending call: ${m[0]}`,
     );
-    sinceMsValues.add(sinceMatch[1]);
+    argIdentifiers.add(argMatch[1]);
   }
   assert.equal(
-    sinceMsValues.size,
+    argIdentifiers.size,
     1,
-    `both dispatchSucceededAlready call sites must forward the SAME sinceMs variable — required by #1278/#1396; saw: ${[...sinceMsValues].join(', ')}`,
+    `both dispatchSucceededAlready call sites must forward the SAME cutoff variable — required by #1278/#1396/#1461; saw: ${[...argIdentifiers].join(', ')}`,
   );
 
   // #1396: main() must derive the cutoff from the events fetch's
@@ -846,6 +971,18 @@ test('review-dispatch.mjs dispatchSucceededAlready call sites share a single sco
     src,
     /latestLockLabeledAtMs\s*\(\s*events\s*,\s*LOCK_LABEL\s*\)/,
     'main() must derive the peer-success cutoff via latestLockLabeledAtMs(events, LOCK_LABEL) — required by #1396 (avoids fast-re-dispatch leak).',
+  );
+
+  // #1461: the server-anchored path must use STRICT-AFTER (`notBeforeMs`)
+  // semantics, not the inclusive `sinceMs - toleranceMs` form. GitHub's
+  // `created_at` is at second-level precision, so `>=` against a
+  // same-wall-clock-second prior-cycle marker would let it leak in.
+  // Lock that the cutoff object built from `serverLockedAtMs` populates
+  // `notBeforeMs` (and not `sinceMs`).
+  assert.match(
+    src,
+    /serverLockedAtMs\s*!==\s*null\s*\?\s*\{\s*notBeforeMs\s*:/,
+    'server-anchored peer-success cutoff must use { notBeforeMs: ... } (strict-after) — required by #1461 (same-second prior-cycle marker leak).',
   );
 });
 
