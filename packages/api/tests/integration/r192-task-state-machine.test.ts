@@ -62,6 +62,7 @@ import {
   createActivePlan,
   cleanupProject,
   testPrisma,
+  spyOnProductionPrisma,
 } from '../helpers/request';
 
 const owner = 'r192-owner';
@@ -1710,5 +1711,183 @@ describe('R-192: awaiting_evidence → in_progress|blocked is owner-or-assignee 
     // never moved.
     const after = await testPrisma.task.findUnique({ where: { id: task.id } });
     expect(after?.status).toBe('awaiting_evidence');
+  });
+});
+
+// ---------------------------------------------------------------
+// 7. R-192 POST /runs atomic lift+create (closes #1367)
+// ---------------------------------------------------------------
+//
+// Pre-fix the route did the `awaiting_evidence → in_progress` lift
+// (auto-commit `prisma.task.updateMany`) and the new running run
+// insert (auto-commit `prisma.executionRun.create`) as two
+// independent writes. Between those two commits, the database was
+// observably in the exact bypass shape #1306 set out to close:
+//
+//     task.status = 'in_progress'           ← lift committed
+//     latestRun.status = 'completed'        ← new run not yet inserted
+//
+// A concurrent non-owner `PATCH /tasks/:id status=done` racing into
+// that TOCTOU window would slip past both the explicit
+// `awaiting_evidence` source guard (source is now `in_progress`) and
+// the `hasCompletedRun` shortcut (old completed run is still the
+// latest), bypassing R-192.
+//
+// The fix wraps the lift + run-create in a single
+// `prisma.$transaction`. With atomic commit, the intermediate state
+// is never visible to other readers, and if the run-create fails
+// (P2002 race against the partial unique index) the lift rolls back
+// — the task stays parked rather than getting silently bumped out
+// of `awaiting_evidence` on a failed start.
+
+describe('R-192: POST /runs lift + run-create commit atomically (closes #1367)', () => {
+  it('rolls back the awaiting_evidence → in_progress lift when the new running-run insert fails', async () => {
+    // Setup the parked-task shape used by every #1306 / #1367 test
+    // in this file: an awaiting_evidence task with the old completed
+    // run on file.
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/1367';
+    const task = await newTask({ prUrl });
+    await testPrisma.task.update({
+      where: { id: task.id },
+      data: { status: 'awaiting_evidence' },
+    });
+    await testPrisma.executionRun.create({
+      data: {
+        taskId: task.id,
+        status: 'completed',
+        executorType: 'agent',
+        executorName: agentName,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(Date.now() - 180_000),
+        endedAt: new Date(Date.now() - 120_000),
+      },
+    });
+    // Pre-seed a `running` run for the same task so the partial
+    // unique index `execution_runs_one_running_per_task` will fire
+    // P2002 when the route's transaction tries to insert its new
+    // running run. Real concurrent races against this index are the
+    // failure mode the transaction must defend against.
+    await testPrisma.executionRun.create({
+      data: {
+        taskId: task.id,
+        status: 'running',
+        executorType: 'agent',
+        executorName: agentName,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(Date.now() - 30_000),
+      },
+    });
+
+    // The early mutex check inside POST /runs would normally see the
+    // pre-seeded running run and short-circuit with 409 BEFORE the
+    // transaction ever runs — which would defeat the atomicity test
+    // because the lift would never be attempted. Stub the production
+    // prisma's `executionRun.findFirst` to return null for that one
+    // call so the route reaches the transactional lift+create path,
+    // where the partial unique index then surfaces the P2002 the
+    // rollback must defend against.
+    const restoreFindFirst = await spyOnProductionPrisma('executionRun', 'findFirst', (orig) => {
+      let bypassed = false;
+      return ((args: Parameters<typeof orig>[0]) => {
+        // First call from the route is the mutex check (matches by
+        // status: 'running'). Skip it so we reach the transaction.
+        // Every other call goes through to the real client.
+        const where = (args as { where?: { status?: string } } | undefined)?.where;
+        if (!bypassed && where?.status === 'running') {
+          bypassed = true;
+          return Promise.resolve(null);
+        }
+        return (orig as (a: typeof args) => unknown)(args) as ReturnType<typeof orig>;
+      }) as typeof orig;
+    });
+
+    try {
+      const res = await runsStartPost(
+        makeReq(`/api/projects/${projectId}/tasks/${task.id}/runs`, {
+          method: 'POST',
+          userName: agentName,
+          body: { executorName: agentName, executorType: 'agent' },
+        }),
+        { params: Promise.resolve({ projectId, taskId: task.id }) },
+      );
+      // The route catches P2002 and surfaces it as STATE_CONFLICT
+      // (409). With the fix, the failed insert inside the
+      // transaction also rolls back the lift; pre-fix the route
+      // returned the same 409 status code but had ALREADY committed
+      // the lift, leaving the task in `in_progress` with the old
+      // completed run still latest — the bypass shape.
+      expect(res.status).toBe(409);
+    } finally {
+      restoreFindFirst();
+    }
+
+    // The atomicity contract: the lift must have rolled back. The
+    // task must still be parked in `awaiting_evidence`, NOT silently
+    // bumped to `in_progress` by a failed start.
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('awaiting_evidence');
+
+    // Sanity: only the original two runs (old completed + the pre-seeded
+    // running run) exist. The transaction must not have leaked a partial
+    // insert.
+    const runs = await testPrisma.executionRun.findMany({
+      where: { taskId: task.id },
+      orderBy: { startedAt: 'asc' },
+      select: { status: true },
+    });
+    expect(runs.map((r) => r.status).sort()).toEqual(['completed', 'running']);
+  });
+
+  it('still produces the expected post-state on the happy path: task=in_progress AND latest run=running', async () => {
+    // Regression guard for the post-fix happy path. After the route
+    // returns successfully, the database must be in the shape the
+    // PATCH /tasks/:id `hasCompletedRun` check expects (latest run is
+    // the new `running` row, not the old completed one), so the
+    // R-192 gate on the PATCH route stays effective.
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/1367-happy';
+    const task = await newTask({ prUrl });
+    await testPrisma.task.update({
+      where: { id: task.id },
+      data: { status: 'awaiting_evidence' },
+    });
+    await testPrisma.executionRun.create({
+      data: {
+        taskId: task.id,
+        status: 'completed',
+        executorType: 'agent',
+        executorName: agentName,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(Date.now() - 120_000),
+        endedAt: new Date(Date.now() - 60_000),
+      },
+    });
+
+    const res = await runsStartPost(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}/runs`, {
+        method: 'POST',
+        userName: agentName,
+        body: { executorName: agentName, executorType: 'agent' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(201);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('in_progress');
+
+    // The new running run must be the latest by `startedAt`, so the
+    // PATCH /tasks/:id latest-run anchoring (from #1306) sees
+    // `running`, not `completed`, and the bypass shortcut stays
+    // closed for a concurrent non-owner PATCH that arrives after the
+    // transaction commits.
+    const latest = await testPrisma.executionRun.findFirst({
+      where: { taskId: task.id },
+      orderBy: { startedAt: 'desc' },
+      select: { status: true },
+    });
+    expect(latest?.status).toBe('running');
   });
 });

@@ -215,29 +215,80 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
       // payloads, drift gating, status displays) sees a normal run/task
       // pair. The next `execution_complete` re-derives the R-192 state
       // and will flip to `done` once the missing evidence is in place.
-      if (task.status === 'awaiting_evidence') {
-        await prisma.task.updateMany({
-          where: { id: params.taskId, status: 'awaiting_evidence' },
-          data: { status: 'in_progress' },
-        });
-      }
+      //
+      // The lift is performed inside the `prisma.$transaction` block
+      // below — NOT here as a standalone write — together with the new
+      // running-run insert. See the atomicity rationale on the
+      // transaction call site (closes #1367).
     }
 
     let run;
     try {
-      run = await prisma.executionRun.create({
-        data: {
-          taskId: params.taskId,
-          executorType: body.executorType,
-          executorName: body.executorName,
-          boundPlanVersion: task.boundPlanVersion,
-          status: 'running',
-          taskPackSnapshot: taskPack as object,
-          lastHeartbeatAt: new Date(),
-          filesChanged: [],
-          blockers: [],
-          driftSignals: [],
-        },
+      // closes #1367 — atomicity of the `awaiting_evidence` → `in_progress`
+      // lift and the new `running` run insert.
+      //
+      // Pre-fix the route did:
+      //   1. `prisma.task.updateMany` lifting `awaiting_evidence` →
+      //      `in_progress` (auto-commit).
+      //   2. `prisma.executionRun.create` inserting the new running run
+      //      (separate auto-commit).
+      // Between those two commits, the database was visibly in the
+      // exact shape that bypasses the R-192 PATCH gate fixed by #1306:
+      //   - `task.status = 'in_progress'` (so the explicit
+      //     `awaiting_evidence` source guard in PATCH /tasks/:id does
+      //     not fire), and
+      //   - `latestRun.status = 'completed'` (the OLD parked run is
+      //     still the latest because the new running run hasn't been
+      //     committed yet), so `hasCompletedRun` is true and the
+      //     "completed run lets a member close the task" shortcut
+      //     greenlits a non-owner PATCH → `done`.
+      // A concurrent non-owner `PATCH /tasks/:id status=done` racing
+      // into that window therefore bypassed R-192 the same way the
+      // #1306 attack chain did, just with an even smaller TOCTOU.
+      //
+      // Wrapping the lift and the run-create in a single interactive
+      // transaction closes the window: concurrent readers observe
+      // either the pre-state (`awaiting_evidence` + old completed
+      // latest run → the `awaiting_evidence` guard fires) or the
+      // post-state (`in_progress` + new running latest run →
+      // `hasCompletedRun` is false), never the intermediate bypass
+      // shape. If the run-create fails (e.g. P2002 from the partial
+      // unique index `execution_runs_one_running_per_task` losing a
+      // race), the lift rolls back atomically and the task remains
+      // parked.
+      run = await prisma.$transaction(async (tx) => {
+        if (task.status === 'awaiting_evidence') {
+          // Re-check the status inside the transaction so a concurrent
+          // PATCH that already moved the task out of `awaiting_evidence`
+          // (e.g. owner reopened to `in_progress`, assignee cancelled)
+          // does not silently get a no-op lift. `updateMany` with a
+          // status filter is the same conditional shape used by the
+          // todo→in_progress atomic claim above.
+          const lifted = await tx.task.updateMany({
+            where: { id: params.taskId, status: 'awaiting_evidence' },
+            data: { status: 'in_progress' },
+          });
+          if (lifted.count === 0) {
+            throw new AppError(
+              ErrorCode.STATE_CONFLICT,
+              'Task is no longer in awaiting_evidence — concurrent state change. Re-fetch and retry.',
+            );
+          }
+        }
+        return tx.executionRun.create({
+          data: {
+            taskId: params.taskId,
+            executorType: body.executorType,
+            executorName: body.executorName,
+            boundPlanVersion: task.boundPlanVersion,
+            status: 'running',
+            taskPackSnapshot: taskPack as object,
+            lastHeartbeatAt: new Date(),
+            filesChanged: [],
+            blockers: [],
+            driftSignals: [],
+          },
+        });
       });
     } catch (err) {
       // P2002 = unique constraint violation from the partial index
