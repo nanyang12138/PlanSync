@@ -343,11 +343,16 @@ describe('R-156: PlanComment.deliverableId per-deliverable thread', () => {
     }
   });
 
-  it('GET /comments (no filter) → only plan-level rows (deliverableId IS NULL) — Issue #1256', async () => {
+  it('GET /comments (no filter) → only plan-level rows (deliverableId IS NULL) — Issue #1256/#1260', async () => {
     // Regression for #1256: the legacy plan-level Comments sidebar calls
     // GET /comments without a `deliverableId` query. Per-deliverable rows
     // must NOT bleed into that response — they have their own focused
     // thread on the deliverable timeline page.
+    //
+    // Regression guard for #1260: returning the full planId set caused
+    // deliverable-level comments to double-render — once on the plan
+    // thread and again on each deliverable timeline. The default surface
+    // must be plan-level only (deliverableId IS NULL).
     const res = await GET(
       makeReq(`/api/projects/${projectId}/plans/${planId}/comments`, { userName: owner }),
       { params: Promise.resolve({ projectId, planId }) },
@@ -359,6 +364,10 @@ describe('R-156: PlanComment.deliverableId per-deliverable thread', () => {
     // The default (no-filter) listing must include the plan-level row…
     expect(items.some((i) => i.deliverableId === null)).toBe(true);
     // …and must NOT include any deliverable-anchored row.
+    // At least the "plan-level" row from the earlier back-compat case is
+    // present, and crucially nothing anchored to deliverable A or B
+    // appears here even though those rows exist on the plan.
+    expect(items.length).toBeGreaterThanOrEqual(1);
     expect(items.every((i) => i.deliverableId === null)).toBe(true);
     expect(items.some((i) => i.deliverableId === deliverableA)).toBe(false);
     expect(items.some((i) => i.deliverableId === deliverableB)).toBe(false);
