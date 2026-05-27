@@ -458,6 +458,9 @@ describe('R-181: verification rules gate', () => {
   // owner-writable JSONB `params` (or `createdBy`) to non-owner members
   // / exec agents. Owners on a non-exec session still receive the full
   // row for the rule-edit UI/CLI.
+  // #1411: GET widened to any project member must NOT leak owner-writable
+  // JSONB `params` (or `createdBy`) to non-owner members / exec agents.
+  // Owners still receive the full row for the rule-edit UI/CLI.
   it('#1411: non-owner GET response strips params and createdBy; owner sees full row', async () => {
     await testPrisma.verificationRule.create({
       data: {
@@ -473,6 +476,7 @@ describe('R-181: verification rules gate', () => {
       },
     });
 
+    // Owner: full row, including params + createdBy.
     const ownerRes = await listRulesGet(
       makeReq(`/api/projects/${projectId}/verification-rules`, {
         method: 'GET',
@@ -489,6 +493,7 @@ describe('R-181: verification rules gate', () => {
     });
     expect(ownerJson.data[0].createdBy).toBe(owner);
 
+    // Developer (non-owner human member): params + createdBy must be absent.
     const devRes = await listRulesGet(
       makeReq(`/api/projects/${projectId}/verification-rules`, {
         method: 'GET',
@@ -503,11 +508,14 @@ describe('R-181: verification rules gate', () => {
     expect(devRule.params).toBeUndefined();
     expect(devRule.createdBy).toBeUndefined();
     // Fields R-184 `/explain rule <id>` actually needs are still present.
+    // The non-sensitive fields R-184 `/explain rule <id>` actually needs
+    // are still present so the self-serve path keeps working.
     expect(devRule.id).toEqual(expect.any(String));
     expect(devRule.kind).toBe('min_output_summary_chars');
     expect(devRule.scope).toBe('project');
     expect(devRule.enabled).toBe(true);
 
+    // Agent (exec-time caller): same redaction applies.
     const agentRes = await listRulesGet(
       makeReq(`/api/projects/${projectId}/verification-rules`, {
         method: 'GET',
