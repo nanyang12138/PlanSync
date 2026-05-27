@@ -1433,6 +1433,27 @@ test('review-dispatch.mjs does not send the removed `branchName` field to Cursor
     !/dispatchSucceededAlready\s*\(\s*\{\s*sinceMs:\s*preAddLabelsAtMs\s*\}\s*\)/.test(src),
     'dispatchSucceededAlready must NOT be called with sinceMs: preAddLabelsAtMs — that is the #1340 buggy shape (local-clock cutoff filters out same-cycle peer markers). Use cycleStartMs from findLastUnlabeledMs instead.',
   );
+
+  // #1385 propagation-lag fallback: when the events list does not show
+  // the just-issued `unlabeled` event (events fetch failed, or GH events
+  // API propagation lag), `findLastUnlabeledMs` returns `null`. Earlier
+  // shapes assigned that `null` straight through to `cycleStartMs`, which
+  // collapsed the sinceMs filter to "no filter" and let stale prior-cycle
+  // SUCCESS markers short-circuit the new run — exactly the #1278
+  // regression PR #1357 set out to fix. main() MUST route the assignment
+  // through `computeCycleStartMs` so the null path falls back to the
+  // local-clock `preAddLabelsAtMs - toleranceMs` cutoff.
+  assert.match(
+    src,
+    /const cycleStartMs\s*=\s*computeCycleStartMs\s*\(/,
+    'main() must assign `cycleStartMs` via `computeCycleStartMs({ events, lockLabel, preAddLabelsAtMs })` so that the null-from-findLastUnlabeledMs path (events fetch failed, or propagation lag hid the latest unlabeled event) falls back to a local-clock cutoff instead of degrading to "no filter". The previous `events ? findLastUnlabeledMs(...) : null` shape silently re-introduced #1278 in the degraded path — see #1385.',
+  );
+  assert.ok(
+    !/const cycleStartMs\s*=\s*events\s*\?\s*findLastUnlabeledMs\s*\([^)]*\)\s*:\s*null/.test(
+      src,
+    ),
+    '`cycleStartMs` must NOT be assigned with the bare `events ? findLastUnlabeledMs(...) : null` shape — that collapses to "no filter" whenever events are unavailable or lag hides the latest unlabeled event, re-introducing #1278 (#1385). Use `computeCycleStartMs` instead.',
+  );
 });
 
 // ---------------------------------------------------------------------
@@ -1686,4 +1707,209 @@ test('hasSuccessMarkerAfter (cycle-scoped peer-success detection)', async (t) =>
       true,
     );
   });
+});
+
+// ---------------------------------------------------------------------
+// computeCycleStartMs — events-API-propagation-lag fallback (#1385)
+// ---------------------------------------------------------------------
+//
+// PR #1357 wired main()'s `cycleStartMs` as:
+//
+//     const cycleStartMs = events ? findLastUnlabeledMs({...}) : null;
+//
+// That shape returns `null` whenever the events list can't show the
+// just-issued `unlabeled` event for LOCK_LABEL — either because the
+// events fetch failed, or because the GitHub events API hasn't yet
+// propagated the user's remove-then-re-add re-dispatch action. In that
+// state, `dispatchSucceededAlready({ sinceMs: null })` collapses to
+// "any historic marker counts" and a stale prior-cycle SUCCESS marker
+// short-circuits the new run — exactly the #1278 regression PR #1357
+// claimed to fix. `computeCycleStartMs` keeps the cycle-boundary cutoff
+// when events expose it, and otherwise falls back to the local-clock
+// `preAddLabelsAtMs - toleranceMs` so #1278 stays fixed even in the
+// degraded path.
+test('computeCycleStartMs (#1385 propagation-lag fallback)', async (t) => {
+  const { computeCycleStartMs } = await import('./review-dispatch.mjs');
+  const LOCK = 'dispatched';
+  const baseIso = (ts) => new Date(ts).toISOString();
+
+  await t.test('prefers findLastUnlabeledMs when events expose the cycle boundary', () => {
+    const now = 1_700_000_000_000;
+    const cycleStart = now - 3_600_000;
+    const events = [
+      { event: 'labeled', label: { name: LOCK }, created_at: baseIso(now - 7_200_000) },
+      { event: 'unlabeled', label: { name: LOCK }, created_at: baseIso(cycleStart) },
+      { event: 'labeled', label: { name: LOCK }, created_at: baseIso(now - 60_000) },
+    ];
+    assert.equal(
+      computeCycleStartMs({
+        events,
+        lockLabel: LOCK,
+        preAddLabelsAtMs: now,
+      }),
+      cycleStart,
+    );
+  });
+
+  await t.test(
+    '#1385: events fetch failed (events === null) ⇒ falls back to preAddLabelsAtMs - toleranceMs (not null)',
+    () => {
+      // Reproduces the documented regression: the previous shape
+      // collapsed to `sinceMs: null` here, which made any historic
+      // SUCCESS marker (including the prior cycle's) short-circuit
+      // the new run.
+      const preAddLabelsAtMs = 1_700_000_500_000;
+      assert.equal(
+        computeCycleStartMs({
+          events: null,
+          lockLabel: LOCK,
+          preAddLabelsAtMs,
+        }),
+        preAddLabelsAtMs - 1500,
+      );
+    },
+  );
+
+  await t.test(
+    '#1385: events fetched but propagation lag hides the latest unlabeled event ⇒ falls back, not null',
+    () => {
+      // Real-world repro: user did the remove+re-add re-dispatch dance.
+      // The just-removed `unlabeled` event for LOCK_LABEL hasn't propagated
+      // to the events API yet, so the events list only carries the prior
+      // cycle's `labeled` event (and maybe other unrelated events).
+      // `findLastUnlabeledMs` returns null. `computeCycleStartMs` MUST NOT
+      // pass that null through — it has to fall back to the local-clock
+      // cutoff so a stale prior-cycle SUCCESS marker doesn't block this
+      // legitimate re-dispatch.
+      const preAddLabelsAtMs = 1_700_000_500_000;
+      const events = [
+        // Prior cycle's labeled event is visible; its matching unlabeled
+        // has not propagated yet.
+        {
+          event: 'labeled',
+          label: { name: LOCK },
+          created_at: baseIso(preAddLabelsAtMs - 3_600_000),
+        },
+        // Unrelated unlabeled event that must NOT be confused with the
+        // lock's cycle boundary.
+        {
+          event: 'unlabeled',
+          label: { name: 'some-other-label' },
+          created_at: baseIso(preAddLabelsAtMs - 1_000),
+        },
+      ];
+      assert.equal(
+        computeCycleStartMs({
+          events,
+          lockLabel: LOCK,
+          preAddLabelsAtMs,
+        }),
+        preAddLabelsAtMs - 1500,
+      );
+    },
+  );
+
+  await t.test('respects custom toleranceMs override', () => {
+    const preAddLabelsAtMs = 1_700_000_500_000;
+    assert.equal(
+      computeCycleStartMs({
+        events: null,
+        lockLabel: LOCK,
+        preAddLabelsAtMs,
+        toleranceMs: 5000,
+      }),
+      preAddLabelsAtMs - 5000,
+    );
+  });
+
+  await t.test('toleranceMs=0 ⇒ exact preAddLabelsAtMs cutoff', () => {
+    const preAddLabelsAtMs = 1_700_000_500_000;
+    assert.equal(
+      computeCycleStartMs({
+        events: null,
+        lockLabel: LOCK,
+        preAddLabelsAtMs,
+        toleranceMs: 0,
+      }),
+      preAddLabelsAtMs,
+    );
+  });
+
+  await t.test('non-finite toleranceMs ⇒ degrades to preAddLabelsAtMs without skew', () => {
+    const preAddLabelsAtMs = 1_700_000_500_000;
+    assert.equal(
+      computeCycleStartMs({
+        events: null,
+        lockLabel: LOCK,
+        preAddLabelsAtMs,
+        toleranceMs: NaN,
+      }),
+      preAddLabelsAtMs,
+    );
+  });
+
+  await t.test('non-finite preAddLabelsAtMs AND no events ⇒ null (defensive)', () => {
+    // If both signals are unavailable we have nothing useful to filter on.
+    // The caller (dispatchSucceededAlready) treats null as "no filter",
+    // matching the original "any historic marker counts" behaviour. This
+    // path shouldn't be reachable from main() — `preAddLabelsAtMs` is
+    // always Date.now() there — but the helper is defensive.
+    assert.equal(
+      computeCycleStartMs({
+        events: null,
+        lockLabel: LOCK,
+        preAddLabelsAtMs: NaN,
+      }),
+      null,
+    );
+    assert.equal(computeCycleStartMs(), null);
+    assert.equal(computeCycleStartMs({}), null);
+  });
+
+  await t.test(
+    'end-to-end: hasSuccessMarkerAfter with computeCycleStartMs filters prior-cycle marker on propagation lag',
+    async () => {
+      // Compose the two helpers exactly as main() does, with the events
+      // list missing the latest unlabeled (propagation lag). The prior
+      // cycle's SUCCESS marker must be filtered out so the new run
+      // proceeds to call Cursor.
+      const { hasSuccessMarkerAfter } = await import('./review-dispatch.mjs');
+      const MARKER = '<!-- review-dispatch:agent -->';
+      const successBody = `${MARKER}\n\n🚀 **Cursor Cloud Agent dispatched** (finding)`;
+
+      const preAddLabelsAtMs = 1_700_000_500_000;
+      const priorSuccessTs = preAddLabelsAtMs - 60_000; // 1 minute before this run
+
+      // Events list as the API returns it under propagation lag.
+      const events = [
+        {
+          event: 'labeled',
+          label: { name: LOCK },
+          created_at: baseIso(preAddLabelsAtMs - 120_000),
+        },
+      ];
+
+      const cycleStartMs = computeCycleStartMs({
+        events,
+        lockLabel: LOCK,
+        preAddLabelsAtMs,
+      });
+      // Under PR #1357 this would have been `null` → no filter →
+      // hasSuccessMarkerAfter returns true → run skips Cursor → bug.
+      // Under the fix it's `preAddLabelsAtMs - 1500`, well after the
+      // prior cycle's marker timestamp.
+      assert.ok(
+        Number.isFinite(cycleStartMs) && cycleStartMs > priorSuccessTs,
+        `cycleStartMs (${cycleStartMs}) must be a finite value strictly after priorSuccessTs (${priorSuccessTs})`,
+      );
+      assert.equal(
+        hasSuccessMarkerAfter({
+          comments: [{ body: successBody, created_at: baseIso(priorSuccessTs) }],
+          sinceMs: cycleStartMs,
+        }),
+        false,
+        'prior-cycle SUCCESS marker must NOT be detected as a current-cycle peer success — that would re-block legitimate re-dispatch (#1385)',
+      );
+    },
+  );
 });
