@@ -1276,6 +1276,194 @@ describe('R-192: awaiting_evidence → done PATCH is owner-only (closes #1227 #1
     expect(after?.status).toBe('in_progress');
   });
 
+  // ---- (C) human self-complete via POST /runs lift — closes #1392 ----
+  //
+  // Sibling of (B) for human-typed tasks. The agent-task bypass is
+  // closed by `hasCompletedRun = latestRun.status === 'completed'`
+  // (PR #1321). For human-typed tasks the `isHumanSelfComplete`
+  // shortcut remained open: even after the lift, the source state is
+  // `in_progress` (not `awaiting_evidence`, so the source guard does
+  // not fire), `hasCompletedRun` is false (latest run is `running`),
+  // but `assigneeType === 'human' && assignee === userName` still
+  // matched the shortcut and the transition silently bypassed
+  // R-192. The fix gates the shortcut on the absence of any prior
+  // completed run in history — once the gate has fired once, the
+  // human assignee must go back through `execution_complete` (or
+  // the owner override) to flip to `done`.
+
+  it('rejects a human assignee PATCH→done after lifting their awaiting_evidence task via POST /runs (closes #1392)', async () => {
+    const humanAssignee = 'r192-human-bypasser-1392';
+    await testPrisma.projectMember.upsert({
+      where: { projectId_name: { projectId, name: humanAssignee } },
+      update: { role: 'developer', type: 'human' },
+      create: { projectId, name: humanAssignee, role: 'developer', type: 'human' },
+    });
+
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/610';
+    const task = await testPrisma.task.create({
+      data: {
+        projectId,
+        title: 'r192-human-1392',
+        type: 'code',
+        priority: 'p1',
+        status: 'awaiting_evidence',
+        assignee: humanAssignee,
+        assigneeType: 'human',
+        boundPlanVersion: planVersion,
+        agentConstraints: [],
+        planDeliverableRefs: [deliverableA.slug],
+        prUrl,
+      },
+    });
+    await testPrisma.executionRun.create({
+      data: {
+        taskId: task.id,
+        status: 'completed',
+        executorType: 'human',
+        executorName: humanAssignee,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(Date.now() - 120_000),
+        endedAt: new Date(Date.now() - 60_000),
+      },
+    });
+
+    const startRes = await runsStartPost(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}/runs`, {
+        method: 'POST',
+        userName: humanAssignee,
+        body: { executorName: humanAssignee, executorType: 'human' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(startRes.status).toBe(201);
+    const lifted = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(lifted?.status).toBe('in_progress');
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: humanAssignee,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(403);
+    const json = await res.json();
+    expect(JSON.stringify(json)).toMatch(/R-192|evidence gate|execution_complete/i);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('in_progress');
+  });
+
+  it('rejects the same human self-complete bypass after the lifted run goes stale (closes #1392 stale variant)', async () => {
+    const humanAssignee = 'r192-human-bypasser-1392-stale';
+    await testPrisma.projectMember.upsert({
+      where: { projectId_name: { projectId, name: humanAssignee } },
+      update: { role: 'developer', type: 'human' },
+      create: { projectId, name: humanAssignee, role: 'developer', type: 'human' },
+    });
+
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/611';
+    const task = await testPrisma.task.create({
+      data: {
+        projectId,
+        title: 'r192-human-1392-stale',
+        type: 'code',
+        priority: 'p1',
+        status: 'awaiting_evidence',
+        assignee: humanAssignee,
+        assigneeType: 'human',
+        boundPlanVersion: planVersion,
+        agentConstraints: [],
+        planDeliverableRefs: [deliverableA.slug],
+        prUrl,
+      },
+    });
+    await testPrisma.executionRun.create({
+      data: {
+        taskId: task.id,
+        status: 'completed',
+        executorType: 'human',
+        executorName: humanAssignee,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(Date.now() - 180_000),
+        endedAt: new Date(Date.now() - 120_000),
+      },
+    });
+
+    const startRes = await runsStartPost(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}/runs`, {
+        method: 'POST',
+        userName: humanAssignee,
+        body: { executorName: humanAssignee, executorType: 'human' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(startRes.status).toBe(201);
+    const newRunId: string = (await startRes.json()).data.id;
+    await testPrisma.executionRun.update({
+      where: { id: newRunId },
+      data: { status: 'stale', endedAt: new Date() },
+    });
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: humanAssignee,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(403);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('in_progress');
+  });
+
+  it('still allows a human assignee to self-complete a pristine human task with no prior completed run (regression guard #1392)', async () => {
+    // The shortcut must still work on its documented path: a
+    // human task that has never been through the R-192 gate
+    // (no completed run in history) can be PATCHed to `done`
+    // by its assignee without needing a completed run on file.
+    const humanAssignee = 'r192-human-pristine-1392';
+    await testPrisma.projectMember.upsert({
+      where: { projectId_name: { projectId, name: humanAssignee } },
+      update: { role: 'developer', type: 'human' },
+      create: { projectId, name: humanAssignee, role: 'developer', type: 'human' },
+    });
+
+    const task = await testPrisma.task.create({
+      data: {
+        projectId,
+        title: 'r192-human-pristine-1392',
+        type: 'code',
+        priority: 'p1',
+        status: 'in_progress',
+        assignee: humanAssignee,
+        assigneeType: 'human',
+        boundPlanVersion: planVersion,
+        agentConstraints: [],
+        planDeliverableRefs: [deliverableA.slug],
+        prUrl: null,
+      },
+    });
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: humanAssignee,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(200);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('done');
+  });
+
   // ---- regression guard — normal flow still works --------------
 
   it('still allows a non-owner developer to PATCH in_progress → done when the LATEST run is completed (regression guard)', async () => {

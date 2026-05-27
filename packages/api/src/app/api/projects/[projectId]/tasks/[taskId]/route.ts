@@ -182,14 +182,68 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
           select: { status: true },
         });
         const hasCompletedRun = latestRun?.status === 'completed';
+
+        // R-192 / closes #1392 — once the R-192 gate has formally
+        // fired on this task at least once (i.e. some prior
+        // `execution_complete` ran and produced a `completed`
+        // ExecutionRun), the human self-complete shortcut must no
+        // longer apply. PR #1321 already closed the agent-task
+        // POST /runs → PATCH done bypass by anchoring
+        // `hasCompletedRun` on the *latest* run; the human-task
+        // counterpart stayed open because the shortcut below was
+        // identity-only:
+        //
+        //   1. Human task parked in `awaiting_evidence` (prior
+        //      completed run on file because R-192 rejected its
+        //      evidence).
+        //   2. Human assignee POSTs /runs to lift the parked task
+        //      back to `in_progress` (R-192 recovery path); the
+        //      new run is `running`, so `hasCompletedRun` is false.
+        //   3. Human assignee PATCHes `status: 'done'`. The source
+        //      state is no longer `awaiting_evidence`, so the
+        //      source guard above does not fire. The shortcut
+        //      `assigneeType === 'human' && assignee === userName`
+        //      matches, and the transition lands — R-192 silently
+        //      bypassed.
+        //
+        // Gate the shortcut on the *absence* of any completed run
+        // in history. When the latest run is itself `completed`,
+        // the `hasCompletedRun` branch above already greenlights
+        // the transition, so the shortcut is only needed (and only
+        // safe) when the task has never been through the gate. We
+        // only issue the COUNT when `hasCompletedRun` is already
+        // false so the documented legitimate flow (latest run is
+        // the completed one) takes no extra DB hit.
+        const hasPriorCompletedRun =
+          !hasCompletedRun &&
+          (await prisma.executionRun.count({
+            where: { taskId: params.taskId, status: 'completed' },
+          })) > 0;
         const isHumanSelfComplete =
-          task.assigneeType === 'human' && task.assignee === auth.userName;
+          task.assigneeType === 'human' && task.assignee === auth.userName && !hasPriorCompletedRun;
 
         if (!isOwner && !hasCompletedRun && !isHumanSelfComplete) {
           if (task.assigneeType === 'agent') {
             throw new AppError(
               ErrorCode.STATE_CONFLICT,
               'Agent task cannot be marked done without a completed execution run.',
+            );
+          }
+          // Human-typed task whose assignee is calling but the
+          // R-192 gate has already fired on this task: surface the
+          // recovery path explicitly so the rejection is not
+          // mistaken for a generic permission error.
+          if (
+            hasPriorCompletedRun &&
+            task.assigneeType === 'human' &&
+            task.assignee === auth.userName
+          ) {
+            throw new AppError(
+              ErrorCode.FORBIDDEN,
+              'This task has already been through the R-192 evidence gate ' +
+                '(a completed execution run is on file). The human self-complete ' +
+                'shortcut is unavailable once the gate has fired; re-run ' +
+                'execution_complete with fresh evidence so R-192 can re-evaluate.',
             );
           }
           throw new AppError(
