@@ -319,6 +319,30 @@ describe('R-156: PlanComment.deliverableId per-deliverable thread', () => {
     }
   });
 
+  it('GET /comments?deliverableId= (empty value) → treated as no filter, plan-level only — Issue #1356', async () => {
+    // Regression for #1356: `?deliverableId=` is a common URL serialization
+    // for "unselected filter" (e.g. an empty form input). Before the fix the
+    // empty string flowed straight into the Prisma `where` clause as a
+    // literal id, returning an empty list rather than the plan-level rows
+    // the caller actually wanted (or a 400). The schema now coerces empty
+    // → undefined, making this URL behave identically to the omitted-param
+    // case enforced by the previous test.
+    const res = await GET(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/comments`, {
+        userName: owner,
+        searchParams: { deliverableId: '' },
+      }),
+      { params: Promise.resolve({ projectId, planId }) },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const items = body.data as Array<{ deliverableId: string | null }>;
+    expect(items.length).toBeGreaterThan(0);
+    for (const item of items) {
+      expect(item.deliverableId).toBeNull();
+    }
+  });
+
   it('GET /comments (no filter) → only plan-level rows (deliverableId IS NULL) — Issue #1256', async () => {
     // Regression for #1256: the legacy plan-level Comments sidebar calls
     // GET /comments without a `deliverableId` query. Per-deliverable rows
