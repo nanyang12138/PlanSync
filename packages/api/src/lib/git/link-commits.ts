@@ -163,12 +163,23 @@ interface LoadedDeliverable {
  * deliverable card has not been agreed on yet — producing misleading
  * evidence the moment plan v3 is activated. See review finding for #1286.
  *
- * Deliverable rows with `status='deprecated'` are NOT filtered out: when
+ * Deliverable rows with `status='deprecated'` are kept ONLY when they sit
+ * inside a supersession chain — i.e. `supersededById IS NOT NULL`. When
  * `supersedeDeliverables` flips an old same-slug row to deprecated and
  * points its `supersededById` at the successor, R-192 still scopes its
  * evidence query by the task's `boundPlanVersion`. Tasks pinned to the
  * old version need the deprecated row's id to appear in
  * `commit_deliverable_links` to satisfy their gate — see #1326.
+ *
+ * Deprecated rows with `supersededById IS NULL` are excluded: these are
+ * manually deprecated / descoped deliverables (e.g. retired mid-iteration
+ * via the R-155 supersede route with no successor body). They have no
+ * downstream task that can legitimately need new evidence, and including
+ * them would let a `[deliverable:<slug>]` commit tag or a stale glob
+ * write evidence against a retired row — letting tasks bound to that
+ * `boundPlanVersion` erroneously satisfy R-192 even though the project
+ * decided that scope is no longer being delivered. See review finding
+ * for PR #1370 / #1417.
  */
 async function loadProjectDeliverables(
   client: Prisma.TransactionClient | PrismaClient,
@@ -180,6 +191,10 @@ async function loadProjectDeliverables(
         projectId,
         status: { in: ['active', 'superseded'] },
       },
+      // Keep all non-deprecated rows; for deprecated rows, require a
+      // successor link so we only include in-chain ancestors and never
+      // orphaned (manually-descoped) retirees.
+      OR: [{ status: { not: 'deprecated' } }, { supersededById: { not: null } }],
     },
     select: { id: true, slug: true, refUri: true, refType: true },
   });
