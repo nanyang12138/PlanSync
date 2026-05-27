@@ -52,6 +52,32 @@ vi.mock('@/lib/ai/client', () => ({
   },
 }));
 
+// Closes #1462 — re-export `createActivity` as a vi.fn that defaults
+// to the real implementation, so the atomicity regression test below
+// can `mockImplementationOnce` to inject a transient failure inside
+// the lift PATCH's $transaction without affecting any other test in
+// this file (every other test goes through the unchanged default
+// implementation). Keep this hoisted at the top of the file: vi.mock
+// only intercepts imports it sees BEFORE the route handlers under
+// test are imported.
+//
+// We stash the original (un-spied) implementation on the shared
+// `realCreateActivity` hoisted ref so the rollback test can restore
+// it after `mockReset()` without triggering the spy on itself
+// (passing the vi.fn back into `mockImplementation` recurses
+// infinitely; passing the captured original delegate does not).
+const realCreateActivityHolder = vi.hoisted(() => ({
+  fn: null as null | typeof import('@/lib/activity').createActivity,
+}));
+vi.mock('@/lib/activity', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('@/lib/activity')>();
+  realCreateActivityHolder.fn = mod.createActivity;
+  return {
+    ...mod,
+    createActivity: vi.fn(mod.createActivity),
+  };
+});
+
 import { POST as runActionPost } from '@/app/api/projects/[projectId]/tasks/[taskId]/runs/[runId]/route';
 import { POST as runsStartPost } from '@/app/api/projects/[projectId]/tasks/[taskId]/runs/route';
 import { PATCH as taskPatch } from '@/app/api/projects/[projectId]/tasks/[taskId]/route';
@@ -2021,5 +2047,182 @@ describe('R-192: PATCH-based awaiting_evidence lift cannot bypass done gate (clo
 
     const after = await testPrisma.task.findUnique({ where: { id: task.id } });
     expect(after?.status).toBe('done');
+  });
+});
+
+// ---------------------------------------------------------------
+// 8. R-192 PATCH lift activity-write race — closes #1462
+// ---------------------------------------------------------------
+//
+// PR #1454 (closes #1404) introduced an activity-log lookup inside
+// the `done`-gate: a `task_status_changed` row with
+// `fromStatus = 'awaiting_evidence'` newer than `latestRun.endedAt`
+// disables both the `hasCompletedRun` and `isHumanSelfComplete`
+// shortcuts. For that derivation to be correct, the activity row
+// MUST become visible no later than the `Task.status` change itself.
+//
+// Pre-fix the PATCH route wrote the two rows as two separate
+// auto-commits:
+//
+//   await prisma.task.update(...)              // commit #1
+//   await createActivity('task_status_changed') // commit #2
+//
+// Any concurrent reader that landed BETWEEN the two commits saw
+// `task.status = 'in_progress'` AND no lift activity, which set
+// `liftedFromAwaitingEvidenceAfterLatestRun = false` and re-enabled
+// the two shortcuts the #1404 fix was meant to disable — the same
+// bypass chain the original review surfaced was re-openable through
+// the race window.
+//
+// The fix wraps the two writes in a single `prisma.$transaction(...)`
+// so they become a single atomic commit; under READ COMMITTED any
+// concurrent reader observes BOTH writes or NEITHER, eliminating the
+// inconsistent middle state. The two tests below pin that invariant:
+//
+//   8.1 If `createActivity` throws inside the transaction, the
+//       `Task.status` change must roll back. Pre-fix the task.update
+//       would have committed independently and we'd observe
+//       'in_progress' despite the activity throw — exactly the racy
+//       state the #1462 reviewer flagged.
+//
+//   8.2 Successful lift PATCH leaves BOTH rows visible to a
+//       follow-up read with no intervening await between the API
+//       response and the assertion. (This is a sanity guard against
+//       a regression that re-splits the writes — the `done`-gate's
+//       activity lookup would silently start missing fresh lifts
+//       again.)
+
+describe('R-192: PATCH lift commits status + task_status_changed atomically (closes #1462)', () => {
+  async function parkedTask(prSuffix: number) {
+    const prUrl = `https://github.com/plansync-test/r192-repo/pull/${1462000 + prSuffix}`;
+    const task = await newTask({ prUrl });
+    await testPrisma.task.update({
+      where: { id: task.id },
+      data: { status: 'awaiting_evidence' },
+    });
+    await testPrisma.executionRun.create({
+      data: {
+        taskId: task.id,
+        status: 'completed',
+        executorType: 'agent',
+        executorName: agentName,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(Date.now() - 120_000),
+        endedAt: new Date(Date.now() - 60_000),
+      },
+    });
+    return task;
+  }
+
+  it('rolls back the Task.status change when the task_status_changed activity insert fails (#1462)', async () => {
+    const task = await parkedTask(1);
+    expect((await testPrisma.task.findUnique({ where: { id: task.id } }))?.status).toBe(
+      'awaiting_evidence',
+    );
+
+    // Make the FIRST createActivity call inside this test throw — the
+    // mock factory at the top of this file already swapped the export
+    // for a `vi.fn(originalImpl)`, so `mockImplementationOnce` here
+    // only affects the very next call (the lift PATCH's
+    // `task_status_changed` write); every other test in this file
+    // keeps the unchanged default implementation.
+    const activityMod = await import('@/lib/activity');
+    const spy = activityMod.createActivity as unknown as ReturnType<typeof vi.fn>;
+    spy.mockImplementationOnce(async () => {
+      throw new Error('#1462 simulated activity write failure');
+    });
+
+    let liftStatus = 0;
+    try {
+      const liftRes = await taskPatch(
+        makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+          method: 'PATCH',
+          userName: agentName,
+          body: { status: 'in_progress' },
+        }),
+        { params: Promise.resolve({ projectId, taskId: task.id }) },
+      );
+      liftStatus = liftRes.status;
+    } finally {
+      // Drain any unused `mockImplementationOnce` queue entries so a
+      // failure earlier in the lift path (validation, auth) does not
+      // leave the throwing impl primed for the next test, then re-arm
+      // the default delegate to the ORIGINAL (un-spied) implementation
+      // captured by the top-of-file `vi.mock` factory. Note: passing
+      // `activityMod.createActivity` here would recurse infinitely
+      // (the named export IS the spy itself), so we use the holder.
+      spy.mockReset();
+      if (realCreateActivityHolder.fn) {
+        spy.mockImplementation(realCreateActivityHolder.fn);
+      }
+    }
+
+    // The PATCH must surface the failure (the activity throw rejects
+    // the enclosing $transaction, which the route catches and reports
+    // via handleApiError). The exact status is the generic 500 path.
+    expect(liftStatus).toBeGreaterThanOrEqual(500);
+
+    // Critical assertion: the task.update was inside the same
+    // transaction as the failing activity insert, so the status MUST
+    // have been rolled back. Pre-fix (two separate auto-commits) the
+    // task.update would have committed first and this assertion would
+    // observe 'in_progress' despite the activity throw — exactly the
+    // racy middle state the #1462 reviewer flagged.
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('awaiting_evidence');
+
+    // No stray lift activity row should have leaked through either.
+    const liftActivity = await testPrisma.activity.findFirst({
+      where: {
+        projectId,
+        type: 'task_status_changed',
+        AND: [
+          { metadata: { path: ['taskId'], equals: task.id } },
+          { metadata: { path: ['fromStatus'], equals: 'awaiting_evidence' } },
+        ],
+      },
+    });
+    expect(liftActivity).toBeNull();
+  });
+
+  it('leaves both status and task_status_changed visible after a successful lift PATCH (no observable split)', async () => {
+    // Sanity guard against a regression that re-splits the two writes
+    // (e.g. moving the activity insert back outside the $transaction).
+    // The `done`-gate's activity-log lookup depends on the lift row
+    // being visible the moment the status flip is — if a future
+    // refactor breaks that invariant the bypass chain re-opens.
+    const task = await parkedTask(2);
+
+    const liftRes = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: agentName,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(liftRes.status).toBe(200);
+
+    // No `await` between the PATCH response and these two reads
+    // beyond the unavoidable Prisma round-trips: both rows must be
+    // observable as soon as the API call resolves.
+    const [statusRow, liftActivity] = await Promise.all([
+      testPrisma.task.findUnique({ where: { id: task.id }, select: { status: true } }),
+      testPrisma.activity.findFirst({
+        where: {
+          projectId,
+          type: 'task_status_changed',
+          AND: [
+            { metadata: { path: ['taskId'], equals: task.id } },
+            { metadata: { path: ['fromStatus'], equals: 'awaiting_evidence' } },
+            { metadata: { path: ['toStatus'], equals: 'in_progress' } },
+          ],
+        },
+        select: { id: true },
+      }),
+    ]);
+    expect(statusRow?.status).toBe('in_progress');
+    expect(liftActivity).not.toBeNull();
   });
 });
