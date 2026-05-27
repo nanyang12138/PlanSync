@@ -35,9 +35,9 @@ export interface ToolDelegationEnvelope {
 
 export interface ToolWrapperOptions {
   /** When set, only tools in this set are registered; others are silently skipped. */
-  execAllowed?: Set<string>;
+  execAllowed?: ReadonlySet<string>;
   /** When set, tools NOT in this set return `DELEGATION_BLOCKED` while delegation is active. */
-  delegationAllowed: Set<string>;
+  delegationAllowed: ReadonlySet<string>;
   /** Returns the active delegation agent name, or undefined when not delegating. */
   getDelegationAgent: () => string | undefined;
   /** Returns the current run-abort reason, or null when the run is healthy. */
