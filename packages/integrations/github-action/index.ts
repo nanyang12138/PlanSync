@@ -427,15 +427,15 @@ async function fetchOpenDrifts(
   return { rows, truncated: true };
 }
 
-// R-157: fetch the active plan's `file_glob` deliverable refUris.
-// Returns `null` when no active plan exists (404 on /plans/active) so the
-// caller can treat "no plan" the same as "no globs configured" and skip
-// the semantic gate gracefully.
-async function fetchActivePlanFileGlobs(
+// R-157: fetch just the active plan row (id + version) from
+// `/api/projects/:projectId/plans/active`. Returns `null` when no active
+// plan exists (404 or empty body) so callers can treat "no plan" the same
+// as "no globs configured" and skip dependent logic gracefully.
+async function fetchActivePlanRow(
   apiUrl: string,
   projectId: string,
   headers: Record<string, string>,
-): Promise<{ planId: string; planVersion: number; globs: string[] } | null> {
+): Promise<PlanRow | null> {
   const planUrl = `${apiUrl}/api/projects/${projectId}/plans/active`;
   const planRes = await fetch(planUrl, { headers });
   if (planRes.status === 404) return null;
@@ -447,6 +447,20 @@ async function fetchActivePlanFileGlobs(
   }
   const plan = planJson?.data;
   if (!plan?.id) return null;
+  return plan;
+}
+
+// R-157: fetch the active plan's `file_glob` deliverable refUris.
+// Returns `null` when no active plan exists so the caller can treat
+// "no plan" the same as "no globs configured" and skip the semantic
+// gate gracefully.
+async function fetchActivePlanFileGlobs(
+  apiUrl: string,
+  projectId: string,
+  headers: Record<string, string>,
+): Promise<{ planId: string; planVersion: number; globs: string[] } | null> {
+  const plan = await fetchActivePlanRow(apiUrl, projectId, headers);
+  if (!plan) return null;
 
   const delUrl = `${apiUrl}/api/projects/${projectId}/plans/${plan.id}/deliverables`;
   const delRes = await fetch(delUrl, { headers });
@@ -611,6 +625,33 @@ export async function run() {
     }
     core.setOutput('semantic-gate', semanticGate);
     status.semanticGate = semanticGate;
+
+    // R-193 (issue #2754): when the semantic gate above was skipped because
+    // `legacy-mode` is on or `pr-files` was empty, we never queried the
+    // active plan, so the rendered status block would falsely advertise
+    // "Active plan: none — activate a plan to enable drift gating" even
+    // when an active plan exists. Do a best-effort plan-version lookup
+    // here so the PR body reflects reality. Gated on PR-body sync being
+    // configured to avoid wasted API calls in vanilla workflows; failures
+    // are non-fatal because the gate verdict is already decided.
+    if (
+      status.planVersion === null &&
+      githubToken &&
+      repoInput &&
+      prNumberInput &&
+      (legacyMode || prFiles.length === 0)
+    ) {
+      try {
+        const plan = await fetchActivePlanRow(apiUrl, projectId, headers);
+        if (plan) {
+          status.planVersion = plan.version;
+        }
+      } catch (err) {
+        core.info(
+          `PlanSync PR-body status: failed to look up active plan version (non-fatal) — ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
 
     // R-094: scope the drift gate to the tasks affected by *this* PR rather
     // than the entire project. Otherwise an unrelated open drift would block

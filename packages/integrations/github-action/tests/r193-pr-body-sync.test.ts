@@ -304,6 +304,9 @@ describe('R-193 run() integration with GitHub API', () => {
     });
 
     // ---- First run: PR body has no PlanSync block ----
+    // Active-plan lookup (issue #2754: empty pr-files + PR-body sync now
+    // best-effort fetches the plan version so the rendered block reflects it).
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: { id: 'p1', version: 2 } }));
     // Drift fetch — single in-scope MEDIUM drift so the gate stays green.
     fetchSpy.mockResolvedValueOnce(
       jsonResponse(200, {
@@ -352,6 +355,9 @@ describe('R-193 run() integration with GitHub API', () => {
       'pr-number': '7',
     });
 
+    // Active-plan lookup (same plan as first run so the rendered block is
+    // byte-identical → no PATCH).
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: { id: 'p1', version: 2 } }));
     // Drift fetch — same state.
     fetchSpy.mockResolvedValueOnce(
       jsonResponse(200, {
@@ -396,6 +402,9 @@ describe('R-193 run() integration with GitHub API', () => {
       repo: 'octo/example',
       'pr-number': '99',
     });
+    // Active-plan lookup (issue #2754: empty pr-files + PR-body sync now
+    // best-effort fetches the plan version).
+    fetchSpy.mockResolvedValueOnce(jsonResponse(404, {}));
     fetchSpy.mockResolvedValueOnce(
       jsonResponse(200, {
         data: [
@@ -477,6 +486,9 @@ describe('R-193 run() integration with GitHub API', () => {
       repo: 'octo/example',
       'pr-number': '5',
     });
+    // Active-plan lookup (issue #2754: empty pr-files + PR-body sync now
+    // best-effort fetches the plan version).
+    fetchSpy.mockResolvedValueOnce(jsonResponse(404, {}));
     // No drifts → green gate.
     fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] }));
     // GitHub GET fails with 502.
@@ -489,6 +501,122 @@ describe('R-193 run() integration with GitHub API', () => {
     expect(coreMock.setFailed).not.toHaveBeenCalled();
     const warnings = coreMock.warning.mock.calls.map((c) => String(c[0]));
     expect(warnings.some((w) => w.includes('PR-body sync failed'))).toBe(true);
+  });
+
+  it('R193-R9 (#2754): legacy-mode with PR-body sync renders the real active plan version, not "none"', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'legacy-mode': 'true',
+      'github-token': 'ghp_test',
+      repo: 'octo/example',
+      'pr-number': '42',
+    });
+    // 1) Active-plan lookup (the new R-2754 best-effort fetch).
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: { id: 'plan-1', version: 5 } }));
+    // 2) Drift fetch (no drifts).
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] }));
+    // 3) GitHub GET.
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { body: '## Description\n\nFixes #99.' }));
+    // 4) GitHub PATCH — capture body.
+    let patchedBody: string | undefined;
+    fetchSpy.mockImplementationOnce(async (_url: string | URL, init?: RequestInit) => {
+      patchedBody = JSON.parse(String(init?.body)).body as string;
+      return jsonResponse(200, {});
+    });
+
+    const { run } = await import('../index');
+    await run();
+
+    expect(patchedBody).toBeDefined();
+    // The rendered block must report the real plan version, not the
+    // fail-open "none — activate a plan" placeholder.
+    expect(patchedBody!).toMatch(/Active plan.*v5/);
+    expect(patchedBody!).not.toMatch(/none — activate a plan/);
+    // Sanity: the request order matches the implementation contract
+    // (plan lookup → drifts → GitHub GET → GitHub PATCH).
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/plans/active');
+    expect(String(fetchSpy.mock.calls[1][0])).toContain('/drifts?status=open');
+  });
+
+  it('R193-R10 (#2754): empty pr-files with PR-body sync also fetches the active plan version', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      // pr-files intentionally omitted
+      'github-token': 'ghp_test',
+      repo: 'octo/example',
+      'pr-number': '42',
+    });
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: { id: 'plan-1', version: 7 } }));
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] }));
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { body: '' }));
+    let patchedBody: string | undefined;
+    fetchSpy.mockImplementationOnce(async (_url: string | URL, init?: RequestInit) => {
+      patchedBody = JSON.parse(String(init?.body)).body as string;
+      return jsonResponse(200, {});
+    });
+
+    const { run } = await import('../index');
+    await run();
+
+    expect(patchedBody).toBeDefined();
+    expect(patchedBody!).toMatch(/Active plan.*v7/);
+    expect(patchedBody!).not.toMatch(/none — activate a plan/);
+  });
+
+  it('R193-R11 (#2754): legacy-mode with PR-body sync — plan-lookup failure is non-fatal and block falls back to "none"', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'legacy-mode': 'true',
+      'github-token': 'ghp_test',
+      repo: 'octo/example',
+      'pr-number': '42',
+    });
+    // Plan lookup blows up (network/5xx). Must NOT fail the gate.
+    fetchSpy.mockResolvedValueOnce(new Response('boom', { status: 502 }));
+    // Drift fetch (still runs because plan-lookup failure is non-fatal).
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] }));
+    // GitHub GET + PATCH.
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { body: '' }));
+    let patchedBody: string | undefined;
+    fetchSpy.mockImplementationOnce(async (_url: string | URL, init?: RequestInit) => {
+      patchedBody = JSON.parse(String(init?.body)).body as string;
+      return jsonResponse(200, {});
+    });
+
+    const { run } = await import('../index');
+    await run();
+
+    // Gate is still green — plan-lookup failure didn't escalate to setFailed.
+    expect(coreMock.setFailed).not.toHaveBeenCalled();
+    expect(patchedBody).toBeDefined();
+    // No active plan known → fall back to placeholder; that's fine because
+    // the lookup truly failed, unlike the original bug where we never even
+    // tried.
+    expect(patchedBody!).toMatch(/none — activate a plan/);
+  });
+
+  it('R193-R12 (#2754): legacy-mode WITHOUT PR-body sync does not perform an extra plan lookup', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'legacy-mode': 'true',
+      // No github-token / repo / pr-number → PR-body sync is disabled.
+    });
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] }));
+
+    const { run } = await import('../index');
+    await run();
+
+    // Only the drift fetch should have happened — no /plans/active call.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/drifts?status=open');
   });
 
   it('R193-R8: masks the github-token via setSecret', async () => {

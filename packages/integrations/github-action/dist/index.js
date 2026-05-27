@@ -21652,7 +21652,7 @@ async function fetchOpenDrifts(apiUrl, projectId, headers) {
   }
   return { rows, truncated: true };
 }
-async function fetchActivePlanFileGlobs(apiUrl, projectId, headers) {
+async function fetchActivePlanRow(apiUrl, projectId, headers) {
   const planUrl = `${apiUrl}/api/projects/${projectId}/plans/active`;
   const planRes = await fetch(planUrl, { headers });
   if (planRes.status === 404) return null;
@@ -21662,6 +21662,11 @@ async function fetchActivePlanFileGlobs(apiUrl, projectId, headers) {
   }
   const plan = planJson?.data;
   if (!plan?.id) return null;
+  return plan;
+}
+async function fetchActivePlanFileGlobs(apiUrl, projectId, headers) {
+  const plan = await fetchActivePlanRow(apiUrl, projectId, headers);
+  if (!plan) return null;
   const delUrl = `${apiUrl}/api/projects/${projectId}/plans/${plan.id}/deliverables`;
   const delRes = await fetch(delUrl, { headers });
   const delJson = await delRes.json();
@@ -21770,6 +21775,18 @@ async function run() {
     }
     core.setOutput("semantic-gate", semanticGate);
     status.semanticGate = semanticGate;
+    if (status.planVersion === null && githubToken && repoInput && prNumberInput && (legacyMode || prFiles.length === 0)) {
+      try {
+        const plan = await fetchActivePlanRow(apiUrl, projectId, headers);
+        if (plan) {
+          status.planVersion = plan.version;
+        }
+      } catch (err) {
+        core.info(
+          `PlanSync PR-body status: failed to look up active plan version (non-fatal) \u2014 ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
     let scopedTaskIds = null;
     const explicitTaskIds = parseTaskIds(taskIdsInput);
     const setScope = (ids) => {
