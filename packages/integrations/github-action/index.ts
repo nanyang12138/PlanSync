@@ -71,6 +71,19 @@ export interface PlansyncStatusInput {
   scopedTaskIds: readonly string[] | null;
   truncatedTaskScan: boolean;
   truncatedDriftScan: boolean;
+  // R-193 (#2768): tri-state lifecycle for the drift query so the rendered
+  // block can distinguish "we asked the API and got nothing" from "we never
+  // got to ask". Without this, every early-return path before the drift
+  // fetch (semantic-gate failure, task-scope truncation, deliverable-fetch
+  // error, …) would still render the default empty `drifts` array as
+  // "no open alerts in scope" — a false-positive that misleads reviewers
+  // into thinking drift was checked.
+  //   'not_run'   — drift query was not attempted (gate aborted earlier).
+  //   'failed'    — drift query started but did not produce an authoritative
+  //                  result (pagination cap hit, network error, …). The
+  //                  `drifts` array may be empty or partial; do not trust it.
+  //   'completed' — drift query finished and `drifts` is authoritative.
+  driftScanStatus: 'not_run' | 'failed' | 'completed';
 }
 
 /**
@@ -100,15 +113,25 @@ export function renderPlansyncStatusBlock(input: PlansyncStatusInput): string {
   } else {
     lines.push('- **PR scope**: project-wide');
   }
-  const highCount = input.drifts.filter((d) => d.severity === 'high').length;
-  const medCount = input.drifts.filter((d) => d.severity === 'medium').length;
-  const lowCount = input.drifts.length - highCount - medCount;
-  if (input.drifts.length === 0) {
-    lines.push('- **Drift**: no open alerts in scope');
+  // R-193 (#2768): render based on the drift query lifecycle, not the array
+  // contents. An empty `drifts` on the `'not_run'` / `'failed'` paths is the
+  // default value, not a real signal — surfacing it as "no open alerts" would
+  // be a false negative.
+  if (input.driftScanStatus === 'not_run') {
+    lines.push('- **Drift**: _not checked — gate aborted before drift query; see action log_');
+  } else if (input.driftScanStatus === 'failed') {
+    lines.push('- **Drift**: _check failed — see action log_');
   } else {
-    lines.push(
-      `- **Drift**: ${input.drifts.length} open alert(s) — ${highCount} high · ${medCount} medium · ${lowCount} other`,
-    );
+    const highCount = input.drifts.filter((d) => d.severity === 'high').length;
+    const medCount = input.drifts.filter((d) => d.severity === 'medium').length;
+    const lowCount = input.drifts.length - highCount - medCount;
+    if (input.drifts.length === 0) {
+      lines.push('- **Drift**: no open alerts in scope');
+    } else {
+      lines.push(
+        `- **Drift**: ${input.drifts.length} open alert(s) — ${highCount} high · ${medCount} medium · ${lowCount} other`,
+      );
+    }
   }
   if (input.deliverableGlobs.length > 0) {
     const previewGlobs = input.deliverableGlobs
@@ -509,6 +532,10 @@ export async function run() {
     scopedTaskIds: null,
     truncatedTaskScan: false,
     truncatedDriftScan: false,
+    // R-193 (#2768): default to 'not_run'. Only the success path below
+    // (after `fetchOpenDrifts` returns an authoritative page set) flips
+    // this to 'completed'; truncation / error paths flip it to 'failed'.
+    driftScanStatus: 'not_run',
   };
   // PR-body sync runs in a `finally` so a thrown error inside the gate
   // logic still leaves the reviewer with the partial status block.
@@ -673,6 +700,10 @@ export async function run() {
       const result = await fetchOpenDrifts(apiUrl, projectId, headers);
       if (result.truncated) {
         status.truncatedDriftScan = true;
+        // R-193 (#2768): a truncated scan is NOT an authoritative empty —
+        // mark 'failed' so the PR body block does not render the partial
+        // (possibly empty) list as "no open alerts in scope".
+        status.driftScanStatus = 'failed';
         core.setFailed(
           'PlanSync drift-check: open drift list exceeds pagination cap; refusing to gate on a partial view (HIGH drifts could be on later pages). Triage backlog or raise the cap.',
         );
@@ -680,6 +711,9 @@ export async function run() {
       }
       allDrifts = result.rows;
     } catch (err) {
+      // R-193 (#2768): network / server error before we got a complete page
+      // set — same reasoning as the truncation branch above.
+      status.driftScanStatus = 'failed';
       core.setFailed(err instanceof Error ? err.message : String(err));
       return;
     }
@@ -692,6 +726,10 @@ export async function run() {
       taskId: d.taskId,
       reason: d.reason,
     }));
+    // R-193 (#2768): drift query finished and `status.drifts` is now the
+    // authoritative scoped list. Everything below this point is local
+    // formatting / output that cannot invalidate the drift result.
+    status.driftScanStatus = 'completed';
 
     if (scopedTaskIds !== null) {
       const filteredOut = allDrifts.length - drifts.length;
