@@ -705,15 +705,17 @@ test('hasSuccessMarkerAfter', async (t) => {
   const MARKER = '<!-- review-dispatch:agent -->';
   const PHRASE = 'Cursor Cloud Agent dispatched';
   const baseIso = (ts) => new Date(ts).toISOString();
-  const mkSuccess = (ts) => ({
+  const mkSuccess = (ts, user = { login: 'github-actions[bot]', type: 'Bot' }) => ({
     body: `${MARKER}\n🚀 **${PHRASE}** (finding)\n- run: r1`,
     created_at: baseIso(ts),
+    user,
   });
-  const mkRaceSkip = (ts) => ({
+  const mkRaceSkip = (ts, user = { login: 'github-actions[bot]', type: 'Bot' }) => ({
     // Real comment shape from main() when the events-API race check
     // detected a peer winning: same MARKER, no SUCCESS phrase.
     body: `${MARKER}\n\n⚠ 检测到并发 dispatch 竞态：另一次 run 已先获取 \`dispatched\` 锁。`,
     created_at: baseIso(ts),
+    user,
   });
 
   await t.test('no comments ⇒ no marker', () => {
@@ -969,6 +971,72 @@ test('hasSuccessMarkerAfter', async (t) => {
         comments: [mkSuccess(t0 - 5)],
         cutoffServerMs: t0,
         sinceMs: t0,
+  // ------------------------------------------------------------------
+  // Trusted-author filtering — #1384
+  // ------------------------------------------------------------------
+  // Comment body is fully user-controllable; without an author filter,
+  // anyone with comment access on the issue could post a comment
+  // carrying the marker + success phrase and:
+  //   (a) at the pre-Cursor-call site, trick the dispatcher into
+  //       skipping the API call (no agent ever starts), or
+  //   (b) in the catch block, trick the dispatcher into NOT releasing
+  //       the lock label (re-dispatch is blocked).
+  // The trusted-author list pins the comment author to the workflow's
+  // own bot identity (`github-actions[bot]`, type `Bot`).
+  await t.test('forged marker from untrusted user ⇒ ignored (#1384)', () => {
+    const since = Date.now();
+    assert.equal(
+      hasSuccessMarkerAfter({
+        comments: [mkSuccess(since + 100, { login: 'attacker', type: 'User' })],
+        sinceMs: since,
+        trustedAuthors: ['github-actions[bot]'],
+      }),
+      false,
+      'a User-type author must never be trusted even if login matches a bot string',
+    );
+  });
+
+  await t.test('forged marker from other bot ⇒ ignored (#1384)', () => {
+    const since = Date.now();
+    assert.equal(
+      hasSuccessMarkerAfter({
+        comments: [mkSuccess(since + 100, { login: 'dependabot[bot]', type: 'Bot' })],
+        sinceMs: since,
+        trustedAuthors: ['github-actions[bot]'],
+      }),
+      false,
+      'only the workflow GITHUB_TOKEN identity should be trusted',
+    );
+  });
+
+  await t.test(
+    'login matches but user.type is not Bot ⇒ ignored (#1384)',
+    () => {
+      const since = Date.now();
+      // Defensive: a future GitHub API change that lets a non-Bot user
+      // claim the `github-actions[bot]` login should still not pass.
+      assert.equal(
+        hasSuccessMarkerAfter({
+          comments: [
+            mkSuccess(since + 100, { login: 'github-actions[bot]', type: 'User' }),
+          ],
+          sinceMs: since,
+          trustedAuthors: ['github-actions[bot]'],
+        }),
+        false,
+      );
+    },
+  );
+
+  await t.test('missing user object ⇒ ignored when trustedAuthors set (#1384)', () => {
+    const since = Date.now();
+    assert.equal(
+      hasSuccessMarkerAfter({
+        comments: [
+          { body: `${MARKER} ${PHRASE}`, created_at: baseIso(since + 100) },
+        ],
+        sinceMs: since,
+        trustedAuthors: ['github-actions[bot]'],
       }),
       false,
     );
@@ -1042,6 +1110,51 @@ test('latestLockLabeledServerTs', async (t) => {
       t0 + 50,
     );
   });
+
+  await t.test('legit marker from github-actions[bot] ⇒ match (#1384)', () => {
+    const since = Date.now();
+    assert.equal(
+      hasSuccessMarkerAfter({
+        comments: [mkSuccess(since + 200)],
+        sinceMs: since,
+        trustedAuthors: ['github-actions[bot]'],
+      }),
+      true,
+    );
+  });
+
+  await t.test(
+    'forged + legit comments together ⇒ legit one still wins (#1384)',
+    () => {
+      const since = Date.now();
+      assert.equal(
+        hasSuccessMarkerAfter({
+          comments: [
+            mkSuccess(since + 100, { login: 'attacker', type: 'User' }),
+            mkSuccess(since + 200),
+          ],
+          sinceMs: since,
+          trustedAuthors: ['github-actions[bot]'],
+        }),
+        true,
+      );
+    },
+  );
+
+  await t.test(
+    'empty trustedAuthors list ⇒ filter skipped (back-compat)',
+    () => {
+      const since = Date.now();
+      assert.equal(
+        hasSuccessMarkerAfter({
+          comments: [mkSuccess(since + 100, { login: 'attacker', type: 'User' })],
+          sinceMs: since,
+          trustedAuthors: [],
+        }),
+        true,
+      );
+    },
+  );
 });
 
 // ---------------------------------------------------------------------
@@ -1479,6 +1592,42 @@ test(
     );
   },
 );
+
+// Static-source guard: dispatchSucceededAlready() MUST forward a
+// non-empty `trustedAuthors` list when invoking hasSuccessMarkerAfter,
+// otherwise the comment-body filter degrades to its pre-#1384 shape
+// (anyone with comment access can forge a success marker to either
+// skip Cursor at the pre-call site or block lock release in the
+// catch). Lock the wiring in source so a drive-by refactor can't
+// silently re-introduce the vulnerability.
+test('review-dispatch.mjs dispatchSucceededAlready forwards trustedAuthors to hasSuccessMarkerAfter (#1384)', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { resolve } = await import('node:path');
+  const src = readFileSync(resolve(import.meta.dirname, 'review-dispatch.mjs'), 'utf-8');
+
+  // Locate the function body and assert it threads `trustedAuthors:`
+  // into the hasSuccessMarkerAfter call. Matching the call argument
+  // shape directly (not the function declaration) is what guards the
+  // wiring — the constant could be renamed but the keyword arg must
+  // stay.
+  const fnMatch = src.match(/async function dispatchSucceededAlready[\s\S]*?\n\}/);
+  assert.ok(fnMatch, 'expected dispatchSucceededAlready() declaration in review-dispatch.mjs');
+  assert.match(
+    fnMatch[0],
+    /hasSuccessMarkerAfter\s*\(\s*\{[\s\S]*?trustedAuthors\s*:/,
+    'dispatchSucceededAlready must pass `trustedAuthors:` into hasSuccessMarkerAfter — required by #1384 (without it, anyone with comment access on the issue can forge a marker and bypass dispatch).',
+  );
+
+  // And the trusted list must actually contain the workflow's bot
+  // identity. We don't pin the exact spelling of the constant name,
+  // but the literal `github-actions[bot]` must appear in the source
+  // and must live near the trusted-authors constant.
+  assert.match(
+    src,
+    /['"]github-actions\[bot\]['"]/,
+    'review-dispatch.mjs must list `github-actions[bot]` as a trusted comment author (#1384).',
+  );
+});
 
 test('review-dispatch.mjs does not send the removed `branchName` field to Cursor v1/agents', async () => {
   const { readFileSync } = await import('node:fs');
