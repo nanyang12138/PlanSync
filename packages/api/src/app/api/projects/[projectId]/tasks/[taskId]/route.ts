@@ -179,11 +179,63 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
         const latestRun = await prisma.executionRun.findFirst({
           where: { taskId: params.taskId },
           orderBy: { startedAt: 'desc' },
-          select: { status: true },
+          select: { status: true, endedAt: true },
         });
-        const hasCompletedRun = latestRun?.status === 'completed';
+
+        // R-192 / closes #1404 — PATCH-based "lift from awaiting_evidence"
+        // does not create a new ExecutionRun (unlike POST /runs, which
+        // #1306 anchored on the latest run). So the latest run remains
+        // the OLD completed run whose evidence R-192 already rejected,
+        // and the bypass chain
+        //
+        //   1. PATCH awaiting_evidence → in_progress  (allowed for the
+        //      assignee since #1434; no new run created)
+        //   2. PATCH in_progress       → done
+        //
+        // sails past both shortcuts below: the source state at step 2
+        // is `in_progress` so the direct-awaiting_evidence guard above
+        // does not fire, `latestRun.status === 'completed'` still
+        // matches (stale run), and `isHumanSelfComplete` matches for
+        // the human assignee variant of the same chain.
+        //
+        // Detect the chain by reading the activity log: a
+        // `task_status_changed` row with `fromStatus = 'awaiting_evidence'`
+        // and `createdAt > latestRun.endedAt` means the lift happened
+        // AFTER the latest completed run finished and no new run has
+        // completed since, so the latest run is no longer authoritative
+        // evidence for the current task lifecycle. We disable BOTH the
+        // hasCompletedRun shortcut and the isHumanSelfComplete shortcut
+        // in that case so the only non-owner exit is to re-run
+        // execution_complete (which writes a new completed run on top
+        // and re-fires the R-192 gate against fresh evidence).
+        //
+        // The legitimate "owner reopens → new run completes → a member
+        // closes the loop" flow is unaffected: the new completed run's
+        // endedAt is later than the lift activity, so the existence
+        // check below misses and the shortcuts stay enabled.
+        let liftedFromAwaitingEvidenceAfterLatestRun = false;
+        if (latestRun?.endedAt) {
+          const liftActivity = await prisma.activity.findFirst({
+            where: {
+              projectId: params.projectId,
+              type: 'task_status_changed',
+              createdAt: { gt: latestRun.endedAt },
+              AND: [
+                { metadata: { path: ['taskId'], equals: params.taskId } },
+                { metadata: { path: ['fromStatus'], equals: 'awaiting_evidence' } },
+              ],
+            },
+            select: { id: true },
+          });
+          liftedFromAwaitingEvidenceAfterLatestRun = liftActivity !== null;
+        }
+
+        const hasCompletedRun =
+          latestRun?.status === 'completed' && !liftedFromAwaitingEvidenceAfterLatestRun;
         const isHumanSelfComplete =
-          task.assigneeType === 'human' && task.assignee === auth.userName;
+          task.assigneeType === 'human' &&
+          task.assignee === auth.userName &&
+          !liftedFromAwaitingEvidenceAfterLatestRun;
 
         if (!isOwner && !hasCompletedRun && !isHumanSelfComplete) {
           if (task.assigneeType === 'agent') {
@@ -257,9 +309,63 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
       }
     }
 
-    const updated = await prisma.task.update({
-      where: { id: params.taskId },
-      data: body,
+    // R-192 / closes #1462 — the `done`-gate above derives part of its
+    // authority from the activity log (a `task_status_changed` row with
+    // `fromStatus = 'awaiting_evidence'` newer than `latestRun.endedAt`
+    // disables both `hasCompletedRun` and `isHumanSelfComplete` — see
+    // closes #1404 block above). For that derivation to be race-free,
+    // the activity row MUST become visible no later than the `Task.status`
+    // change itself. Without atomicity the bypass chain re-opens:
+    //
+    //   T0  PATCH A: tx.task.update(awaiting_evidence → in_progress) commits.
+    //   T1  PATCH B: reads task.status = 'in_progress' (committed at T0),
+    //               source state is no longer `awaiting_evidence` so the
+    //               direct-guard does not fire; queries activity log,
+    //               does NOT see the lift row (PATCH A hasn't reached
+    //               the createActivity call yet).
+    //               → liftedFromAwaitingEvidenceAfterLatestRun = false
+    //               → both shortcuts re-enable → bypass succeeds.
+    //   T2  PATCH A: createActivity(task_status_changed) commits — too late.
+    //
+    // Wrapping the status update and its `task_status_changed` activity
+    // insert in a single $transaction collapses both writes into one
+    // commit, so under READ COMMITTED any concurrent reader observes
+    // BOTH writes or NEITHER. The window between the two writes that
+    // the previous two-statement sequence exposed no longer exists.
+    //
+    // `syncTaskDeliverableLinks` and the reassignment activity are
+    // intentionally kept outside this transaction: neither is read by
+    // the R-192 gate, and pulling them in would unnecessarily widen
+    // the critical section (the deliverable-link sync runs additional
+    // plan / link queries; the reassign activity is independent of
+    // status). External side effects (eventBus, webhooks, sendMail)
+    // also stay outside — never bind external I/O to a DB transaction.
+    const updated = await prisma.$transaction(async (tx) => {
+      const u = await tx.task.update({
+        where: { id: params.taskId },
+        data: body,
+      });
+      if (body.status && body.status !== task.status) {
+        // R-105: audit-log task PATCH status flips. Co-committed with
+        // the status update above so the activity row's visibility
+        // tracks the status field's visibility exactly (closes #1462).
+        await createActivity(
+          {
+            projectId: params.projectId,
+            type: 'task_status_changed',
+            actorName: auth.userName,
+            actorType: 'human',
+            summary: `Task "${u.title}" status ${task.status} → ${body.status}`,
+            metadata: {
+              taskId: params.taskId,
+              fromStatus: task.status,
+              toStatus: body.status,
+            },
+          },
+          tx,
+        );
+      }
+      return u;
     });
 
     // R-153: when the legacy slug array is rewritten by the owner, keep the
@@ -272,29 +378,6 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
         projectId: updated.projectId,
         boundPlanVersion: updated.boundPlanVersion,
         slugs: body.planDeliverableRefs,
-      });
-    }
-
-    // R-105: audit-log task PATCH effects. PATCH is the canonical mutation
-    // surface for status flips and assignee changes, but until now only the
-    // execution-driven mutations (claim, complete-human, execution_complete)
-    // wrote activity rows — owner / member edits via PATCH bypassed the
-    // audit log entirely, which hides accountability for status flips
-    // (todo→blocked, blocked→in_progress) and reassignments from one
-    // member to another. We emit one row per axis that changed so the
-    // activity feed reflects exactly what the caller asked for.
-    if (body.status && body.status !== task.status) {
-      await createActivity({
-        projectId: params.projectId,
-        type: 'task_status_changed',
-        actorName: auth.userName,
-        actorType: 'human',
-        summary: `Task "${updated.title}" status ${task.status} → ${body.status}`,
-        metadata: {
-          taskId: params.taskId,
-          fromStatus: task.status,
-          toStatus: body.status,
-        },
       });
     }
 
