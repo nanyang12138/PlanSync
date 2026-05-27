@@ -65,6 +65,14 @@ const LOCK_LABEL = 'dispatched';
 const FINDING_LABEL = 'review-finding';
 const CLUSTER_LABEL = 'review-cluster';
 const UMBRELLA_LABEL = 'umbrella';
+// Delay before retrying `listIssueEvents` when the first dispatch-lock
+// decision came back negative. GitHub's issue events API typically
+// surfaces a fresh `labeled` event within ~1s of `addLabels`; 1500ms
+// gives propagation a comfortable margin without noticeably slowing
+// the (rare) race-loss path. Used by main() to absorb the #1457
+// ambiguous-state case where the helper sees only a prior cycle's
+// `unlabeled` and conservatively returns false on first call.
+const EVENT_PROPAGATION_RETRY_DELAY_MS = 1500;
 
 async function ghApi(method, path, body) {
   const res = await fetch(`https://api.github.com${path}`, {
@@ -153,6 +161,21 @@ async function listIssueEvents() {
  * barrier. PR #1252 removed `branchName` (Cursor now auto-generates a
  * unique branch server-side), so without an explicit dedup we can spawn
  * duplicate agents / open duplicate PRs for the same issue.
+ *
+ * Why `unlabeled` events also matter (#1457): GitHub's issue events API
+ * lags `addLabels` by up to several seconds. If a peer ran
+ * `addLabels([LOCK_LABEL])` just before us, the label is set server-side
+ * but its corresponding `labeled` event may not be visible yet. Our own
+ * subsequent `addLabels` is idempotent (label already set) so it does NOT
+ * emit a fresh `labeled` event either. In that window, the events list
+ * carries only the previous dispatch cycle's history — whose most recent
+ * lock-label event is an `unlabeled` (the user removing the label to
+ * trigger re-dispatch). The old labeled-only logic saw an empty
+ * `lockedTimestamps`, hit the propagation-lag fallback, and returned
+ * `true` — spawning a duplicate Cursor agent. We now treat
+ * "most-recent visible lock-label event is `unlabeled`" as ambiguous and
+ * conservatively return `false`; the caller (`main()`) retries the
+ * events fetch once to absorb normal propagation delay before giving up.
  */
 export function didWeAcquireDispatchLock({
   events,
@@ -163,22 +186,56 @@ export function didWeAcquireDispatchLock({
   if (!Array.isArray(events) || events.length === 0) return true;
   if (!Number.isFinite(preAddLabelsAtMs)) return true;
   if (!lockLabel) return true;
-  const lockedTimestamps = [];
+  // Walk events ONCE, tracking both (a) the most recent state-change
+  // event for the lock label regardless of direction (labeled or
+  // unlabeled — used to detect the #1457 ambiguity) and (b) the most
+  // recent `labeled` timestamp specifically (used for the win/lose
+  // comparison once we know the label is currently set per events).
+  let mostRecentLockEventType = null; // 'labeled' | 'unlabeled' | null
+  let mostRecentLockEventTs = -Infinity;
+  let mostRecentLabeledTs = null;
   for (const e of events) {
-    if (!e || e.event !== 'labeled') continue;
+    if (!e) continue;
+    if (e.event !== 'labeled' && e.event !== 'unlabeled') continue;
     const name = e.label && typeof e.label === 'object' ? e.label.name : null;
     if (name !== lockLabel) continue;
     const ts = new Date(e.created_at).getTime();
-    if (Number.isFinite(ts)) lockedTimestamps.push(ts);
+    if (!Number.isFinite(ts)) continue;
+    if (ts > mostRecentLockEventTs) {
+      mostRecentLockEventTs = ts;
+      mostRecentLockEventType = e.event;
+    }
+    if (e.event === 'labeled' && (mostRecentLabeledTs === null || ts > mostRecentLabeledTs)) {
+      mostRecentLabeledTs = ts;
+    }
   }
-  if (lockedTimestamps.length === 0) {
-    // No labeled event surfaced yet — likely API propagation lag. Treat as
-    // a win; downstream `dispatchSucceededAlready` check will still catch
-    // a peer that has already posted a SUCCESS marker.
+  if (mostRecentLockEventType === null) {
+    // No labeled/unlabeled events for the lock label visible at all.
+    // Either (a) brand-new issue, our addLabels just created the very
+    // first `labeled` event and it hasn't propagated yet, or (b) we
+    // genuinely beat any peer. Treat as a win — downstream
+    // `dispatchSucceededAlready` is the belt-and-suspenders check. This
+    // is the common path for the first dispatch on a new issue.
     return true;
   }
-  const latestTs = Math.max(...lockedTimestamps);
-  return latestTs >= preAddLabelsAtMs - toleranceMs;
+  if (mostRecentLockEventType === 'unlabeled') {
+    // The most recent visible state-change event for the lock label is
+    // `unlabeled`, but our `addLabels` just succeeded (label IS set
+    // server-side). The corresponding `labeled` event is in flight via
+    // GitHub's events API. We can't tell from this snapshot whether the
+    // pending `labeled` is ours (we won, but our event hasn't propagated)
+    // or a peer's (peer's `addLabels` ran first, our call was idempotent,
+    // peer's `labeled` hasn't propagated). Conservative: return false.
+    // Spawning a duplicate Cursor agent is strictly worse than the
+    // caller falsely losing a non-existent race — and `main()` performs
+    // a single events refetch on false to absorb normal propagation
+    // latency, so the legitimate-win path is preserved in practice.
+    // Fixes #1457.
+    return false;
+  }
+  // mostRecentLockEventType === 'labeled' → label is currently set per
+  // events, and the most recent visible labeled event is our reference.
+  return mostRecentLabeledTs >= preAddLabelsAtMs - toleranceMs;
 }
 
 /**
@@ -571,18 +628,48 @@ async function main() {
     );
     events = null;
   }
-  if (
-    events &&
-    !didWeAcquireDispatchLock({ events, lockLabel: LOCK_LABEL, preAddLabelsAtMs })
-  ) {
-    console.log(
-      `Lost dispatch race for #${ISSUE_NUMBER}: peer run acquired '${LOCK_LABEL}' first. ` +
-        `Exiting without spawning a Cursor agent; lock left in place (peer owns it).`,
-    );
-    await commentIssue(
-      `${DISPATCH_MARKER}\n\n⚠ 检测到并发 dispatch 竞态：另一次 run 已先获取 \`${LOCK_LABEL}\` 锁。本次 run 跳过，未启动 Cursor agent，未摘锁（避免覆盖 peer 的进度）。`,
-    );
-    return;
+  if (events) {
+    let acquired = didWeAcquireDispatchLock({
+      events,
+      lockLabel: LOCK_LABEL,
+      preAddLabelsAtMs,
+    });
+    // Propagation-lag retry (#1457). GitHub's issue events API can lag
+    // a few seconds behind `addLabels`. When the first decision says we
+    // lost, the genuine cause is often that OUR OWN `labeled` event
+    // hasn't surfaced yet (the events snapshot only shows the prior
+    // cycle, whose most-recent lock-label event is an `unlabeled` —
+    // ambiguous, helper returns false). Refetch once after a short
+    // delay before giving up. This absorbs normal propagation latency
+    // without paying the cost on the win path.
+    if (!acquired) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, EVENT_PROPAGATION_RETRY_DELAY_MS),
+      );
+      try {
+        const refetched = await listIssueEvents();
+        if (Array.isArray(refetched) && refetched.length > 0) {
+          events = refetched;
+          acquired = didWeAcquireDispatchLock({
+            events,
+            lockLabel: LOCK_LABEL,
+            preAddLabelsAtMs,
+          });
+        }
+      } catch (err) {
+        console.warn(`listIssueEvents retry failed (#1457): ${err.message}`);
+      }
+    }
+    if (!acquired) {
+      console.log(
+        `Lost dispatch race for #${ISSUE_NUMBER}: peer run acquired '${LOCK_LABEL}' first. ` +
+          `Exiting without spawning a Cursor agent; lock left in place (peer owns it).`,
+      );
+      await commentIssue(
+        `${DISPATCH_MARKER}\n\n⚠ 检测到并发 dispatch 竞态：另一次 run 已先获取 \`${LOCK_LABEL}\` 锁。本次 run 跳过，未启动 Cursor agent，未摘锁（避免覆盖 peer 的进度）。`,
+      );
+      return;
+    }
   }
 
   // Derive the cutoff for the peer-success-marker check.
