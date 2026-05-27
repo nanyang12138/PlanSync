@@ -823,3 +823,204 @@ describe('R-191: link-commits ignores deliverables on draft / proposed plans (#1
     await prisma.plan.delete({ where: { id: v4.id } }).catch(() => {});
   });
 });
+
+// Regression coverage for review finding #1417 (PR #1370 follow-up):
+// PR #1370 dropped the `status != 'deprecated'` filter so that ancestors
+// in a supersession chain (deprecated AND `supersededById IS NOT NULL`)
+// could keep collecting evidence for tasks bound to older plan versions.
+// But the unconditional drop also re-included orphaned deprecated rows —
+// deliverables manually retired via the R-155 supersede route with no
+// successor body (status='deprecated' AND supersededById IS NULL). Those
+// rows represent scope the project explicitly stopped delivering, so a
+// `[deliverable:<slug>]` tag or a stale glob landing afterwards must NOT
+// write a `commit_deliverable_links` row against them, or downstream
+// tasks bound to the same `boundPlanVersion` could erroneously satisfy
+// R-192's evidence gate.
+describe('R-191: link-commits skips orphaned deprecated deliverables (#1417)', () => {
+  it('does not write evidence for status="deprecated" rows with no supersededById', async () => {
+    const suffix = uniqueSuffix();
+    const project = await prisma.project.create({
+      data: {
+        name: `r191-orphan-deprecated-${suffix}`,
+        phase: 'active',
+        createdBy: 'r191-owner',
+      },
+    });
+    try {
+      const plan = await prisma.plan.create({
+        data: {
+          projectId: project.id,
+          version: 1,
+          title: 'orphan deprecated v1',
+          goal: 'g',
+          scope: 's',
+          deliverables: ['orphan', 'kept'],
+          status: 'active',
+          createdBy: 'r191-owner',
+          activatedAt: new Date(),
+          activatedBy: 'r191-owner',
+        },
+      });
+
+      // Manually descoped (deprecated with no successor) — must be ignored.
+      const orphan = await prisma.planDeliverable.create({
+        data: {
+          planId: plan.id,
+          slug: 'orphan-slug',
+          title: 'Orphan',
+          body: 'descoped mid-iteration, no successor',
+          refType: 'file_glob',
+          refUri: 'orphan/**/*.ts',
+          status: 'deprecated',
+          supersededById: null,
+        },
+      });
+
+      // Sanity control on the same project: an active row whose slug a
+      // commit also tags, to prove the linker still runs and writes
+      // legitimate evidence — the orphan is the only thing being filtered.
+      const kept = await prisma.planDeliverable.create({
+        data: {
+          planId: plan.id,
+          slug: 'kept-slug',
+          title: 'Kept',
+          body: 'still active',
+          refType: 'file_glob',
+          refUri: 'kept/**/*.ts',
+          status: 'active',
+        },
+      });
+
+      const sha = ('1417' + suffix.replace(/[^0-9a-f]/g, '')).padEnd(40, '0').slice(0, 40);
+      const result = await linkCommitsFromPushPayload({
+        projectId: project.id,
+        payload: {
+          commits: [
+            {
+              id: sha,
+              // Both signals point at the orphaned deprecated row. The
+              // glob would have matched `orphan/foo.ts`; the message tag
+              // names the orphan slug. Neither must produce a row.
+              message: 'chore: revisit retired scope [deliverable:orphan-slug]',
+              added: ['orphan/foo.ts', 'kept/bar.ts'],
+              modified: [],
+              removed: [],
+            },
+          ],
+        },
+      });
+
+      // Only the `kept` deliverable's glob hit fires. No glob row for
+      // `orphan/foo.ts`, no message row for `[deliverable:orphan-slug]`.
+      expect(result.created).toBe(1);
+      expect(result.byCommit[0]).toMatchObject({
+        sha,
+        globMatches: 1,
+        messageMatches: 0,
+      });
+
+      const rows = await prisma.commitDeliverableLink.findMany({
+        where: { sha },
+      });
+      expect(rows).toHaveLength(1);
+      expect(rows[0].deliverableId).toBe(kept.id);
+      expect(rows.some((r) => r.deliverableId === orphan.id)).toBe(false);
+    } finally {
+      await prisma.commitDeliverableLink.deleteMany({ where: { projectId: project.id } });
+      await prisma.project.delete({ where: { id: project.id } }).catch(() => {});
+    }
+  });
+
+  it('still writes evidence for in-chain deprecated rows (supersededById set) — #1326 stays green', async () => {
+    // Mirror of the #1326 case but anchored on a deliberately-set
+    // supersededById to lock in the contract: deprecated + linked → in
+    // scope; deprecated + orphan → out of scope.
+    const suffix = uniqueSuffix();
+    const project = await prisma.project.create({
+      data: {
+        name: `r191-chain-deprecated-${suffix}`,
+        phase: 'active',
+        createdBy: 'r191-owner',
+      },
+    });
+    try {
+      const planV1 = await prisma.plan.create({
+        data: {
+          projectId: project.id,
+          version: 1,
+          title: 'chain v1',
+          goal: 'g',
+          scope: 's',
+          deliverables: ['chain'],
+          status: 'superseded',
+          createdBy: 'r191-owner',
+          activatedAt: new Date(),
+          activatedBy: 'r191-owner',
+        },
+      });
+      const planV2 = await prisma.plan.create({
+        data: {
+          projectId: project.id,
+          version: 2,
+          title: 'chain v2',
+          goal: 'g',
+          scope: 's',
+          deliverables: ['chain'],
+          status: 'active',
+          createdBy: 'r191-owner',
+          activatedAt: new Date(),
+          activatedBy: 'r191-owner',
+        },
+      });
+      const v2Row = await prisma.planDeliverable.create({
+        data: {
+          planId: planV2.id,
+          slug: 'chain-slug',
+          title: 'Chain v2',
+          body: 'b',
+          refType: 'free',
+          status: 'active',
+        },
+      });
+      const v1Row = await prisma.planDeliverable.create({
+        data: {
+          planId: planV1.id,
+          slug: 'chain-slug',
+          title: 'Chain v1',
+          body: 'b',
+          refType: 'free',
+          status: 'deprecated',
+          supersededById: v2Row.id,
+        },
+      });
+
+      const sha = ('1417b' + suffix.replace(/[^0-9a-f]/g, '')).padEnd(40, '0').slice(0, 40);
+      const result = await linkCommitsFromPushPayload({
+        projectId: project.id,
+        payload: {
+          commits: [
+            {
+              id: sha,
+              message: 'feat: keep chain in scope [deliverable:chain-slug]',
+              added: ['unrelated.ts'],
+              modified: [],
+              removed: [],
+            },
+          ],
+        },
+      });
+
+      // Both ancestors share the slug → both rows fire.
+      expect(result.created).toBe(2);
+      const rows = await prisma.commitDeliverableLink.findMany({
+        where: { sha },
+      });
+      const ids = new Set(rows.map((r) => r.deliverableId));
+      expect(ids.has(v1Row.id)).toBe(true);
+      expect(ids.has(v2Row.id)).toBe(true);
+    } finally {
+      await prisma.commitDeliverableLink.deleteMany({ where: { projectId: project.id } });
+      await prisma.project.delete({ where: { id: project.id } }).catch(() => {});
+    }
+  });
+});
