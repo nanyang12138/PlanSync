@@ -138,21 +138,49 @@ async function listIssueEvents() {
  * whether THIS run is the one that actually acquired the label (versus a
  * concurrent peer that beat us to it).
  *
- * Algorithm: find the most recent `labeled` event for `lockLabel`. If its
- * server-stamped `created_at` is more than `toleranceMs` BEFORE our local
- * pre-call timestamp, a peer added the label first and we should bail. The
- * tolerance is small (default 1500 ms) — it only needs to cover clock skew
- * between the local Node runtime and the GitHub server clock; 1.5 s is
- * generous on NTP-synced GitHub Actions runners (sub-ms drift in practice).
+ * Algorithm: walk the events list and find the most recent event for
+ * `lockLabel` of either kind (`labeled` or `unlabeled`). Three cases:
  *
- * Why this is necessary: before PR #1252 the Cursor `v1/agents` body
- * included a deterministic `branchName: cursor/fix-rf-<n>-d31d`. Two
+ *   1. No event for `lockLabel` at all → propagation lag (our just-added
+ *      label hasn't surfaced yet); assume we won.
+ *   2. Most-recent event is `unlabeled` → the lock was previously removed
+ *      and our re-add has not propagated yet. This is the legitimate
+ *      re-dispatch path: the user removed `dispatched` + `cursor:dispatch`
+ *      then re-applied `cursor:dispatch`, our run did `addLabels` moments
+ *      ago, but the events API still shows the prior cycle's `unlabeled`
+ *      as the newest entry. Treat as propagation lag (#1408).
+ *   3. Most-recent event is `labeled` → compare its server-stamped
+ *      `created_at` against our local pre-call timestamp (with a small
+ *      `toleranceMs` for clock skew, default 1500 ms). Older than us by
+ *      more than the tolerance ⇒ a peer added it first and we lost.
+ *
+ * Why we compare against the most-recent event of EITHER kind (rather than
+ * `Math.max(...labeledTimestamps)`): on a re-dispatch where the events API
+ * is lagging, the list can contain ONLY the prior cycle's `labeled` +
+ * `unlabeled` pair — our new `labeled` from this run isn't visible yet.
+ * Taking the max over `labeled` events alone would surface the **old**
+ * `labeled` (from the prior cycle, hours/days ago), which is far older
+ * than `preAddLabelsAtMs - toleranceMs`, and we'd wrongly conclude a peer
+ * raced us. Checking whether that old `labeled` was followed by an
+ * `unlabeled` (i.e. the label was removed in the meantime) and treating
+ * that as "no current labeled event yet" closes the false-positive
+ * (#1408).
+ *
+ * Why this is necessary at all: before PR #1252 the Cursor `v1/agents`
+ * body included a deterministic `branchName: cursor/fix-rf-<n>-d31d`. Two
  * concurrent dispatch runs that both passed the top-of-main `labelSet`
  * check would race to `createCursorAgent`, but the SECOND Cursor call
  * collided with the first's branch and was rejected — an implicit dedup
  * barrier. PR #1252 removed `branchName` (Cursor now auto-generates a
  * unique branch server-side), so without an explicit dedup we can spawn
  * duplicate agents / open duplicate PRs for the same issue.
+ *
+ * Safety note: the propagation-lag fallback (cases 1 + 2) does NOT remove
+ * the dedup guarantee. After this helper returns true, main() still runs
+ * the belt-and-suspenders `dispatchSucceededAlready` check (a peer that
+ * actually won would post the success-marker comment after `sinceMs`).
+ * The trade-off here is intentional: never deny a legitimate re-dispatch
+ * just because the events API was slow to surface our own label add.
  */
 export function didWeAcquireDispatchLock({
   events,
@@ -163,21 +191,47 @@ export function didWeAcquireDispatchLock({
   if (!Array.isArray(events) || events.length === 0) return true;
   if (!Number.isFinite(preAddLabelsAtMs)) return true;
   if (!lockLabel) return true;
-  const lockedTimestamps = [];
+
+  // Find the most recent labeled-OR-unlabeled event for `lockLabel`.
+  // Tracking unlabeled events too lets us distinguish "stale labeled from
+  // a prior dispatch cycle that was already removed" (events-API lag on
+  // re-dispatch) from "a peer beat us to it just now" — the former MUST
+  // be treated as a win, the latter MUST exit. See #1408.
+  let latestEvent = null;
+  let latestTs = -Infinity;
   for (const e of events) {
-    if (!e || e.event !== 'labeled') continue;
+    if (!e) continue;
+    if (e.event !== 'labeled' && e.event !== 'unlabeled') continue;
     const name = e.label && typeof e.label === 'object' ? e.label.name : null;
     if (name !== lockLabel) continue;
     const ts = new Date(e.created_at).getTime();
-    if (Number.isFinite(ts)) lockedTimestamps.push(ts);
+    if (!Number.isFinite(ts)) continue;
+    if (ts > latestTs) {
+      latestTs = ts;
+      latestEvent = e;
+    }
   }
-  if (lockedTimestamps.length === 0) {
-    // No labeled event surfaced yet — likely API propagation lag. Treat as
-    // a win; downstream `dispatchSucceededAlready` check will still catch
-    // a peer that has already posted a SUCCESS marker.
+
+  if (!latestEvent) {
+    // No `labeled`/`unlabeled` event for the lock surfaced yet — events
+    // API propagation lag. Treat as a win; the downstream
+    // `dispatchSucceededAlready` check still guards against a peer that
+    // has already posted a SUCCESS marker.
     return true;
   }
-  const latestTs = Math.max(...lockedTimestamps);
+
+  if (latestEvent.event === 'unlabeled') {
+    // The lock was most recently REMOVED (e.g. the user did the documented
+    // re-dispatch dance: remove `dispatched` + `cursor:dispatch`, then
+    // re-add `cursor:dispatch`). Our just-issued `addLabels` hasn't
+    // propagated to the events API yet, so the newest visible event is
+    // the prior cycle's removal. Treat as a win — denying here would be
+    // the #1408 false-positive that prevents legitimate re-dispatches.
+    return true;
+  }
+
+  // Most-recent event is `labeled`. If it's older than our pre-call
+  // timestamp by more than the tolerance, a peer added it first.
   return latestTs >= preAddLabelsAtMs - toleranceMs;
 }
 

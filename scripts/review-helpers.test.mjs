@@ -406,6 +406,105 @@ test('didWeAcquireDispatchLock', async (t) => {
     );
   });
 
+  await t.test(
+    're-dispatch with events-API lag: prior labeled + unlabeled visible, our new labeled NOT yet propagated ⇒ win (#1408)',
+    () => {
+      // The legitimate re-dispatch flow: user did the documented
+      // `dispatched` + `cursor:dispatch` remove → re-apply
+      // `cursor:dispatch` dance. Our run just called addLabels, but the
+      // GitHub issue events API is lagging and the events list still
+      // contains ONLY the prior cycle's `labeled` + `unlabeled` pair.
+      //
+      // Old buggy behaviour: `Math.max(...labeled.created_at)` surfaces
+      // the prior cycle's `labeled` (hours/days ago), which is far older
+      // than preAddLabelsAtMs - toleranceMs ⇒ wrongly returns false,
+      // we exit without spawning Cursor (issue #1408).
+      //
+      // Correct behaviour: detect that the most-recent event for the
+      // lock label is `unlabeled` (the prior cycle was already wound
+      // down), treat as propagation lag, return true.
+      const preCall = Date.now();
+      assert.equal(
+        didWeAcquireDispatchLock({
+          events: [
+            { event: 'labeled', label: { name: LOCK }, created_at: baseIso(preCall - 3_600_000) },
+            { event: 'unlabeled', label: { name: LOCK }, created_at: baseIso(preCall - 60_000) },
+            // Note: our new `labeled` event from this run is intentionally
+            // absent — that's the events-API lag scenario.
+          ],
+          lockLabel: LOCK,
+          preAddLabelsAtMs: preCall,
+        }),
+        true,
+      );
+    },
+  );
+
+  await t.test(
+    're-dispatch with full propagation: prior labeled + unlabeled + our new labeled visible ⇒ win',
+    () => {
+      // Same scenario as the #1408 lag case, but the events API has caught
+      // up and our new `labeled` event is now visible. Most-recent event
+      // is our own labeled (after preAddLabelsAtMs) ⇒ win.
+      const preCall = Date.now();
+      assert.equal(
+        didWeAcquireDispatchLock({
+          events: [
+            { event: 'labeled', label: { name: LOCK }, created_at: baseIso(preCall - 3_600_000) },
+            { event: 'unlabeled', label: { name: LOCK }, created_at: baseIso(preCall - 60_000) },
+            { event: 'labeled', label: { name: LOCK }, created_at: baseIso(preCall + 250) },
+          ],
+          lockLabel: LOCK,
+          preAddLabelsAtMs: preCall,
+        }),
+        true,
+      );
+    },
+  );
+
+  await t.test(
+    'legacy lock add long ago, never removed (no unlabeled) ⇒ peer beat us, lose',
+    () => {
+      // Sanity check: when there's an old `labeled` and NO subsequent
+      // `unlabeled`, the lock is still held by whoever added it. That's
+      // a real peer-race loss — the #1408 fallback must NOT swallow it.
+      const preCall = Date.now();
+      assert.equal(
+        didWeAcquireDispatchLock({
+          events: [
+            { event: 'labeled', label: { name: LOCK }, created_at: baseIso(preCall - 3_600_000) },
+          ],
+          lockLabel: LOCK,
+          preAddLabelsAtMs: preCall,
+        }),
+        false,
+      );
+    },
+  );
+
+  await t.test(
+    'unlabeled-then-labeled before us (peer removed + re-added before we ran) ⇒ peer holds lock, lose',
+    () => {
+      // Edge case: a peer ran the same re-dispatch dance ahead of us and
+      // re-added the lock at preCall - 60s. The most-recent event for
+      // the lock is `labeled` (not `unlabeled`), older than our pre-call
+      // timestamp by well over the tolerance ⇒ peer holds the lock.
+      const preCall = Date.now();
+      assert.equal(
+        didWeAcquireDispatchLock({
+          events: [
+            { event: 'labeled', label: { name: LOCK }, created_at: baseIso(preCall - 3_600_000) },
+            { event: 'unlabeled', label: { name: LOCK }, created_at: baseIso(preCall - 1_800_000) },
+            { event: 'labeled', label: { name: LOCK }, created_at: baseIso(preCall - 60_000) },
+          ],
+          lockLabel: LOCK,
+          preAddLabelsAtMs: preCall,
+        }),
+        false,
+      );
+    },
+  );
+
   await t.test('ignores other-label events that share createdAt', () => {
     const preCall = Date.now();
     assert.equal(
