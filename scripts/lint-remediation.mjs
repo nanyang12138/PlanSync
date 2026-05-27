@@ -59,7 +59,7 @@ const REQUIRED_FIELDS = [
   'verification',
 ];
 const DEDUP_FIELDS = ['superseded_by', 'interim_for', 'supersedes'];
-const ID_RE = /^R-\d{3}$/;
+const ID_RE = /^R-\d{3}[a-z]?$/;
 const SEVERITY_WEIGHT = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 };
 
 /**
