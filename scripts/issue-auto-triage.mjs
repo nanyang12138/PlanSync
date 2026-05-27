@@ -91,11 +91,23 @@ const TOKEN = process.env.GITHUB_TOKEN || '';
 //   the Cursor API quota. Negative numbers are rejected for the
 //   same reason (`-1 >= 0` is false → loop never breaks on the
 //   first iteration where count is 0).
+//
+// Why we don't just trust `Number.parseInt` for the non-empty branch:
+//   parseInt is lexically permissive — `parseInt('5abc', 10)` returns
+//   5, and `parseInt('1.5', 10)` returns 1. Both of those are exactly
+//   the "garbage input → silent rate-limit change" the rest of this
+//   guard is here to prevent: the user typed `max_dispatch=5abc` or
+//   `max_dispatch=1.5` expecting it to be rejected, and instead we'd
+//   quietly run with a different limit than intended. So we
+//   pre-validate with a strict `/^\d+$/` after trim before handing
+//   off to parseInt — only fully-numeric, non-negative strings get
+//   through; everything else routes to the default + warning path.
 function parseLimitEnv(name, raw, defaultValue) {
   if (raw === undefined || raw === null || raw === '') {
     return defaultValue;
   }
-  const parsed = Number.parseInt(raw, 10);
+  const trimmed = typeof raw === 'string' ? raw.trim() : String(raw);
+  const parsed = /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : NaN;
   if (!Number.isFinite(parsed) || parsed < 0) {
     console.warn(
       `[triage] ${name}=${JSON.stringify(raw)} is not a non-negative integer; ` +
