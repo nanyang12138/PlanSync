@@ -70,6 +70,7 @@ describe('R-193 pure helpers', () => {
       scopedTaskIds: ['t1', 't2'],
       truncatedTaskScan: false,
       truncatedDriftScan: false,
+      driftScanStatus: 'completed',
     });
 
     // Tag delimiters present (parser anchor).
@@ -99,11 +100,45 @@ describe('R-193 pure helpers', () => {
       scopedTaskIds: null,
       truncatedTaskScan: false,
       truncatedDriftScan: false,
+      driftScanStatus: 'completed',
     });
     expect(block).toMatch(/none — activate a plan/);
     expect(block).toContain('project-wide');
     expect(block).toContain('no open alerts in scope');
     expect(block).toContain('skipped');
+  });
+
+  it('R193-P2b (#2768): renderPlansyncStatusBlock does NOT render "no open alerts" when drift was not run', async () => {
+    const { renderPlansyncStatusBlock } = await import('../index');
+    const notRun = renderPlansyncStatusBlock({
+      projectId: 'proj-x',
+      planVersion: 1,
+      drifts: [],
+      semanticGate: 'failed',
+      deliverableGlobs: ['src/**/*.ts'],
+      unmatchedFiles: ['rogue.txt'],
+      scopedTaskIds: null,
+      truncatedTaskScan: false,
+      truncatedDriftScan: false,
+      driftScanStatus: 'not_run',
+    });
+    expect(notRun).not.toContain('no open alerts in scope');
+    expect(notRun).toMatch(/Drift.*not checked/);
+
+    const failed = renderPlansyncStatusBlock({
+      projectId: 'proj-x',
+      planVersion: 1,
+      drifts: [],
+      semanticGate: 'passed',
+      deliverableGlobs: [],
+      unmatchedFiles: [],
+      scopedTaskIds: null,
+      truncatedTaskScan: false,
+      truncatedDriftScan: true,
+      driftScanStatus: 'failed',
+    });
+    expect(failed).not.toContain('no open alerts in scope');
+    expect(failed).toMatch(/Drift.*check failed/);
   });
 
   it('R193-P3: injectPlansyncBlock appends when the markers are absent', async () => {
@@ -163,6 +198,7 @@ describe('R-193 syncPrBody (mocked GitHub API)', () => {
         scopedTaskIds: null,
         truncatedTaskScan: false,
         truncatedDriftScan: false,
+        driftScanStatus: 'completed',
       },
       { repo: 'org/repo', prNumber: 42, token: 'ghp_test', fetchImpl },
     );
@@ -196,6 +232,7 @@ describe('R-193 syncPrBody (mocked GitHub API)', () => {
       scopedTaskIds: null,
       truncatedTaskScan: false,
       truncatedDriftScan: false,
+      driftScanStatus: 'completed' as const,
     };
     const block = renderPlansyncStatusBlock(status);
     const existing = injectPlansyncBlock('## Description\n\nFixes #1', block);
@@ -234,6 +271,7 @@ describe('R-193 syncPrBody (mocked GitHub API)', () => {
           scopedTaskIds: null,
           truncatedTaskScan: false,
           truncatedDriftScan: false,
+          driftScanStatus: 'completed',
         },
         { repo: 'org/repo', prNumber: 42, token: 'ghp_test', fetchImpl },
       ),
@@ -489,6 +527,110 @@ describe('R-193 run() integration with GitHub API', () => {
     expect(coreMock.setFailed).not.toHaveBeenCalled();
     const warnings = coreMock.warning.mock.calls.map((c) => String(c[0]));
     expect(warnings.some((w) => w.includes('PR-body sync failed'))).toBe(true);
+  });
+
+  it('R193-R7b (#2768): renders "check failed" instead of "no open alerts" when the drift query is truncated', async () => {
+    // Spec: a truncated drift scan is an early-return path. Before the fix
+    // the default `status.drifts = []` would render as "no open alerts in
+    // scope" — a false-positive that misleads reviewers. The block must
+    // surface that the check did not produce an authoritative result.
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'github-token': 'ghp_test',
+      repo: 'octo/example',
+      'pr-number': '11',
+    });
+
+    // Every drift page returns a full page with the totalPages field
+    // pointing past the cap → `isLastPage` keeps returning false and the
+    // loop exits with `truncated: true`.
+    const fullPage = {
+      data: Array.from({ length: 100 }, (_, i) => ({
+        id: `d${i}`,
+        taskId: `t${i}`,
+        severity: 'medium',
+        taskBoundVersion: 1,
+        currentPlanVersion: 2,
+      })),
+      pagination: { page: 1, pageSize: 100, total: 999999, totalPages: 9999 },
+    };
+    // DRIFT_PAGE_CAP = 50 iterations before the loop bails out.
+    for (let i = 0; i < 50; i += 1) {
+      fetchSpy.mockResolvedValueOnce(jsonResponse(200, fullPage));
+    }
+    // GitHub GET — body is empty so the block will be appended.
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { body: '' }));
+    // GitHub PATCH — capture the body so we can assert on the rendered block.
+    let patchBody: string | undefined;
+    fetchSpy.mockImplementationOnce(async (_url: string | URL, init?: RequestInit) => {
+      patchBody = JSON.parse(String(init?.body)).body as string;
+      return jsonResponse(200, {});
+    });
+
+    const { run } = await import('../index');
+    await run();
+
+    // The gate failed loudly (the existing behaviour we must preserve).
+    expect(coreMock.setFailed).toHaveBeenCalledWith(
+      expect.stringContaining('exceeds pagination cap'),
+    );
+    // The status block was still written (so reviewers see context)…
+    expect(patchBody).toBeDefined();
+    expect(patchBody!).toContain('<!-- plansync-status -->');
+    // …but it must NOT lie about the drift state.
+    expect(patchBody!).not.toContain('no open alerts in scope');
+    expect(patchBody!).toMatch(/Drift.*check failed/);
+    expect(patchBody!).toContain('truncated its scan');
+  });
+
+  it('R193-R7c (#2768): renders "not checked" when the gate aborts before the drift query', async () => {
+    // Spec: when the deliverable-load step errors out we bail before
+    // calling `fetchOpenDrifts`. The status block must reflect that drift
+    // was never checked, not that there were "no open alerts".
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'pr-files': 'src/foo.ts\nsrc/bar.ts',
+      'github-token': 'ghp_test',
+      repo: 'octo/example',
+      'pr-number': '12',
+    });
+
+    // The /plans/active fetch returns 500 — `fetchActivePlanFileGlobs`
+    // throws and the gate hits `core.setFailed` + early-return before any
+    // drift fetch.
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { message: 'boom' } }), {
+        status: 500,
+        statusText: 'Internal Server Error',
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    // GitHub GET + PATCH (the `finally` block still syncs the body).
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { body: '' }));
+    let patchBody: string | undefined;
+    fetchSpy.mockImplementationOnce(async (_url: string | URL, init?: RequestInit) => {
+      patchBody = JSON.parse(String(init?.body)).body as string;
+      return jsonResponse(200, {});
+    });
+
+    const { run } = await import('../index');
+    await run();
+
+    expect(coreMock.setFailed).toHaveBeenCalledWith(expect.stringContaining('semantic gate'));
+    expect(patchBody).toBeDefined();
+    expect(patchBody!).toContain('<!-- plansync-status -->');
+    expect(patchBody!).not.toContain('no open alerts in scope');
+    expect(patchBody!).toMatch(/Drift.*not checked/);
+
+    // Sanity: confirm the drift endpoint was never hit.
+    const driftCalls = fetchSpy.mock.calls.filter((c) =>
+      String(c[0]).includes('/drifts?status=open'),
+    );
+    expect(driftCalls).toHaveLength(0);
   });
 
   it('R193-R8: masks the github-token via setSecret', async () => {
