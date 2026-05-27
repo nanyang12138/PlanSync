@@ -31,6 +31,7 @@ import {
 } from '@/app/api/projects/[projectId]/plans/[planId]/deliverables/[deliverableId]/route';
 import { POST as deliverableSupersede } from '@/app/api/projects/[projectId]/plans/[planId]/deliverables/[deliverableId]/supersede/route';
 import { POST as suggestionPost } from '@/app/api/projects/[projectId]/plans/[planId]/suggestions/route';
+import { POST as suggestionResolve } from '@/app/api/projects/[projectId]/plans/[planId]/suggestions/[suggestionId]/route';
 import {
   makeReq,
   createTestProject,
@@ -263,6 +264,128 @@ describe('R-155: deliverable CRUD routes', () => {
     const bareBody = await bare.json();
     expect(bareBody.data.status).toBe('deprecated');
     expect(bareBody.data.supersededById).toBeNull();
+  });
+
+  it('issue #1146: accepting a suggestion with deliverableId mutates the targeted row, not the legacy array', async () => {
+    const { planId } = await freshDraft();
+
+    // Two deliverables; we'll touch the second one via a scoped suggestion.
+    const keep = await deliverablePost(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/deliverables`, {
+        method: 'POST',
+        userName: owner,
+        body: { slug: 'kept', title: 'Kept', body: 'kept body' },
+      }),
+      { params: Promise.resolve({ projectId, planId }) },
+    );
+    const keepId = (await keep.json()).data.id as string;
+
+    const target = await deliverablePost(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/deliverables`, {
+        method: 'POST',
+        userName: owner,
+        body: { slug: 'target', title: 'Target', body: 'original body' },
+      }),
+      { params: Promise.resolve({ projectId, planId }) },
+    );
+    const targetId = (await target.json()).data.id as string;
+
+    // --- accept(append + deliverableId) overwrites the row's body and
+    //     leaves all *other* rows untouched (the legacy append path used
+    //     to push `value` onto the array, polluting plan.deliverables).
+    const appendSugg = await suggestionPost(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/suggestions`, {
+        method: 'POST',
+        userName: owner,
+        body: {
+          field: 'deliverables',
+          action: 'append',
+          value: 'patched body content',
+          reason: 'update body for target',
+          deliverableId: targetId,
+        },
+      }),
+      { params: Promise.resolve({ projectId, planId }) },
+    );
+    const appendId = (await appendSugg.json()).data.id as string;
+
+    const acceptAppend = await suggestionResolve(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/suggestions/${appendId}?action=accept`, {
+        method: 'POST',
+        userName: owner,
+        body: {},
+      }),
+      {
+        params: Promise.resolve({ projectId, planId, suggestionId: appendId }),
+      },
+    );
+    expect(acceptAppend.status).toBe(200);
+
+    const targetAfterAppend = await prisma.planDeliverable.findUniqueOrThrow({
+      where: { id: targetId },
+    });
+    expect(targetAfterAppend.body).toBe('patched body content');
+    expect(targetAfterAppend.status).toBe('active');
+
+    // Other rows untouched.
+    const keepAfterAppend = await prisma.planDeliverable.findUniqueOrThrow({
+      where: { id: keepId },
+    });
+    expect(keepAfterAppend.body).toBe('kept body');
+
+    // Legacy array does NOT have `value` appended to it (that would be the
+    // old broken behavior); it stays as the per-row mirror of titles.
+    const planAfterAppend = await prisma.plan.findUniqueOrThrow({ where: { id: planId } });
+    expect(planAfterAppend.deliverables).not.toContain('patched body content');
+    expect(planAfterAppend.deliverables).toEqual(['Kept', 'Target']);
+
+    // --- accept(remove + deliverableId) deprecates the targeted row in
+    //     place (preserves identity for task-/commit-link audit trails)
+    //     instead of array-filter-removing.
+    const removeSugg = await suggestionPost(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/suggestions`, {
+        method: 'POST',
+        userName: owner,
+        body: {
+          field: 'deliverables',
+          action: 'remove',
+          value: 'irrelevant for per-row path',
+          reason: 'no longer needed',
+          deliverableId: targetId,
+        },
+      }),
+      { params: Promise.resolve({ projectId, planId }) },
+    );
+    const removeId = (await removeSugg.json()).data.id as string;
+
+    const acceptRemove = await suggestionResolve(
+      makeReq(`/api/projects/${projectId}/plans/${planId}/suggestions/${removeId}?action=accept`, {
+        method: 'POST',
+        userName: owner,
+        body: {},
+      }),
+      {
+        params: Promise.resolve({ projectId, planId, suggestionId: removeId }),
+      },
+    );
+    expect(acceptRemove.status).toBe(200);
+
+    const targetAfterRemove = await prisma.planDeliverable.findUniqueOrThrow({
+      where: { id: targetId },
+    });
+    expect(targetAfterRemove.status).toBe('deprecated');
+
+    // Row still exists (identity preserved); the kept row is unchanged.
+    const keepAfterRemove = await prisma.planDeliverable.findUniqueOrThrow({
+      where: { id: keepId },
+    });
+    expect(keepAfterRemove.status).toBe('active');
+
+    // Suggestion was marked accepted (not silently no-op'd).
+    const resolved = await prisma.planSuggestion.findUniqueOrThrow({
+      where: { id: removeId },
+    });
+    expect(resolved.status).toBe('accepted');
   });
 
   it('plansync_plan_suggest accepts deliverableId pointing at a row on the same plan', async () => {

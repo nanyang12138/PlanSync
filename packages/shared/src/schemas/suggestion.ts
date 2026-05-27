@@ -22,10 +22,21 @@ export const createSuggestionSchema = z
     value: z.string().min(1),
     reason: z.string().min(1),
     // R-155: optional pointer at a specific PlanDeliverable row this
-    // suggestion is about. Lets an agent target one item ("change refUri on
-    // auth/oidc-callback") rather than rewriting the whole deliverables[]
-    // array. The API verifies the deliverable belongs to the same plan; if
-    // omitted the suggestion behaves exactly as before (field-level patch).
+    // suggestion is about. Lets an agent target one row instead of
+    // rewriting the whole deliverables[] array. The API verifies the
+    // deliverable belongs to the same plan; if omitted the suggestion
+    // behaves exactly as before (field-level patch).
+    //
+    // Issue #1146: when `field='deliverables'` AND `deliverableId` is set,
+    // the owner accept path mutates the targeted PlanDeliverable row
+    // instead of the legacy array:
+    //   - action='remove' → set the row's `status` to 'deprecated'
+    //     (preserves row identity, supersede chain, task / commit links).
+    //   - action='append' → overwrite the row's `body` with `value`.
+    //   - action='set'    → rejected at validation (set only on goal/scope).
+    // Richer per-row mutations (title / refType / refUri) still flow
+    // through `plansync_deliverable_update`; the suggestion shape only
+    // carries one `value` so it cannot encode multi-field patches.
     deliverableId: z.string().min(1).optional(),
   })
   .refine(

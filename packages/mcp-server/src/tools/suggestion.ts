@@ -15,17 +15,21 @@ export function registerSuggestionTools(server: McpServer, api: ApiClient) {
         .describe('set: replace field value, append: add to array, remove: remove from array'),
       value: z.string().describe('The suggested content'),
       reason: z.string().describe('Why this change is needed'),
-      // R-155: optional pointer at a specific PlanDeliverable row this
-      // suggestion targets. Lets an agent propose "change refUri on
-      // auth/oidc-callback" without rewriting the whole deliverables array.
-      // The API verifies the deliverable belongs to the same plan; omit it
-      // and the suggestion behaves exactly as before (field-level patch).
+      // R-155 / issue #1146: optional pointer at a specific PlanDeliverable
+      // row this suggestion targets. When set together with
+      // `field='deliverables'` the owner accept path mutates that row in
+      // place instead of rewriting the legacy array. Omit it and the
+      // suggestion behaves as before (field-level patch).
       deliverableId: z
         .string()
         .optional()
         .describe(
           'Optional PlanDeliverable row id to scope the suggestion to a single deliverable. ' +
-            'Use plansync_deliverable_list to discover ids. Validated server-side.',
+            'Use plansync_deliverable_list to discover ids. ' +
+            'On accept (with field="deliverables"): action="remove" deprecates the row ' +
+            '(status="deprecated", row identity preserved); action="append" overwrites ' +
+            'the row body with `value`. For richer per-field patches (title / refType / ' +
+            'refUri) call plansync_deliverable_update directly.',
         ),
     },
     async (args) => {
