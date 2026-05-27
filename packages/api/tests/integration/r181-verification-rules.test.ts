@@ -454,6 +454,138 @@ describe('R-181: verification rules gate', () => {
     expect(agentJson.data).toHaveLength(1);
   });
 
+  // #1411 (PR #1447): GET widened to any project member must NOT leak
+  // owner-writable JSONB `params` (or `createdBy`) to non-owner members
+  // / exec agents. Owners on a non-exec session still receive the full
+  // row for the rule-edit UI/CLI.
+  it('#1411: non-owner GET response strips params and createdBy; owner sees full row', async () => {
+    await testPrisma.verificationRule.create({
+      data: {
+        projectId,
+        kind: 'min_output_summary_chars',
+        scope: 'project',
+        // Deliberately put a recognisable, "sensitive-looking" key in
+        // params so a regression that returns the JSONB to non-owners
+        // would obviously fail this assertion.
+        params: { min: 100, internalSecret: 's3cret-do-not-leak' },
+        enabled: true,
+        createdBy: owner,
+      },
+    });
+
+    const ownerRes = await listRulesGet(
+      makeReq(`/api/projects/${projectId}/verification-rules`, {
+        method: 'GET',
+        userName: owner,
+      }),
+      { params: Promise.resolve({ projectId }) },
+    );
+    expect(ownerRes.status).toBe(200);
+    const ownerJson = await ownerRes.json();
+    expect(ownerJson.data).toHaveLength(1);
+    expect(ownerJson.data[0].params).toEqual({
+      min: 100,
+      internalSecret: 's3cret-do-not-leak',
+    });
+    expect(ownerJson.data[0].createdBy).toBe(owner);
+
+    const devRes = await listRulesGet(
+      makeReq(`/api/projects/${projectId}/verification-rules`, {
+        method: 'GET',
+        userName: developer,
+      }),
+      { params: Promise.resolve({ projectId }) },
+    );
+    expect(devRes.status).toBe(200);
+    const devJson = await devRes.json();
+    expect(devJson.data).toHaveLength(1);
+    const devRule = devJson.data[0];
+    expect(devRule.params).toBeUndefined();
+    expect(devRule.createdBy).toBeUndefined();
+    // Fields R-184 `/explain rule <id>` actually needs are still present.
+    expect(devRule.id).toEqual(expect.any(String));
+    expect(devRule.kind).toBe('min_output_summary_chars');
+    expect(devRule.scope).toBe('project');
+    expect(devRule.enabled).toBe(true);
+
+    const agentRes = await listRulesGet(
+      makeReq(`/api/projects/${projectId}/verification-rules`, {
+        method: 'GET',
+        userName: agentName,
+      }),
+      { params: Promise.resolve({ projectId }) },
+    );
+    expect(agentRes.status).toBe(200);
+    const agentJson = await agentRes.json();
+    expect(agentJson.data[0].params).toBeUndefined();
+    expect(agentJson.data[0].createdBy).toBeUndefined();
+  });
+
+  // #1452: closes the hole left open in PR #1447 — projectRole === 'owner'
+  // alone is not enough trust for the full row. An owner-issued exec-scoped
+  // token (the kind /exec / /worker hand to a Genie sub-agent) must be
+  // treated like any other exec caller and receive only the public
+  // projection. Otherwise a compromised exec session keeps reading
+  // owner-only `params` JSONB.
+  it('#1452: owner-issued exec-scoped token still gets the redacted projection (no params/createdBy)', async () => {
+    await testPrisma.verificationRule.create({
+      data: {
+        projectId,
+        kind: 'min_output_summary_chars',
+        scope: 'project',
+        params: { min: 100, internalSecret: 's3cret-do-not-leak' },
+        enabled: true,
+        createdBy: owner,
+      },
+    });
+
+    // Mint an exec-scoped API key for the owner via the same path
+    // /exec-sessions/issue-token uses in production. The key carries
+    // both (projectId, execRunId) so requireProjectRole accepts it for
+    // this project but auth.execRunId is set.
+    const { POST: issueTokenPost } = await import('@/app/api/exec-sessions/issue-token/route');
+    const ownerRun = await testPrisma.executionRun.create({
+      data: {
+        taskId,
+        status: 'running',
+        executorType: 'human',
+        executorName: owner,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(),
+      },
+    });
+    const issueRes = await issueTokenPost(
+      makeReq('/api/exec-sessions/issue-token', {
+        method: 'POST',
+        userName: owner,
+        body: { runId: ownerRun.id, taskId, projectId },
+      }),
+    );
+    expect(issueRes.status).toBe(201);
+    const issued = await issueRes.json();
+    const ownerExecKey = issued.data.key as string;
+    expect(ownerExecKey).toMatch(/^ps_key_exec_/);
+
+    const ownerExecRes = await listRulesGet(
+      makeReq(`/api/projects/${projectId}/verification-rules`, {
+        method: 'GET',
+        userName: owner,
+        authToken: ownerExecKey,
+      }),
+      { params: Promise.resolve({ projectId }) },
+    );
+    expect(ownerExecRes.status).toBe(200);
+    const ownerExecJson = await ownerExecRes.json();
+    expect(ownerExecJson.data).toHaveLength(1);
+    // Even though the underlying user is the project owner, the exec
+    // session must see the same redacted projection a non-owner agent
+    // would get — owner-only params/createdBy stay server-side.
+    expect(ownerExecJson.data[0].params).toBeUndefined();
+    expect(ownerExecJson.data[0].createdBy).toBeUndefined();
+    expect(ownerExecJson.data[0].kind).toBe('min_output_summary_chars');
+  });
+
   it('#1220: a non-member of the project still gets 403 on GET (membership gate stays on)', async () => {
     const stranger = 'r181-stranger';
     const res = await listRulesGet(

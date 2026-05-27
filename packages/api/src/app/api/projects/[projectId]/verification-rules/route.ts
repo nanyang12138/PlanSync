@@ -13,10 +13,27 @@
  *     `/explain rule <id>` (R-184) MUST be callable by the same audience.
  *     Forcing owner-only here breaks #1220: non-owners get 403 and cannot
  *     self-serve the rule explanation that the gate error points them at.
- *     The rule rows hold no secrets — only `kind`, `scope`, `params`,
- *     `enabled`, `createdBy`, timestamps — and project members already
- *     observe `kind`/`message` via the gate response, so widening read
- *     access here strictly matches the existing disclosure surface.
+ *
+ *     Response shape is role-aware AND session-aware (#1411 + #1452):
+ *       - Full-trust readers receive the full row, including `params`
+ *         JSONB and `createdBy`. "Full trust" means the caller is an
+ *         owner-role member AND is NOT using an exec-scoped API key.
+ *       - Everyone else (non-owner members, AND owner-role members
+ *         calling through an exec-scoped key issued for a single
+ *         /exec or /worker run) receives the public projection
+ *         `{ id, projectId, kind, scope, scopeValue, enabled,
+ *         createdAt, updatedAt }`. We strip `params` and `createdBy`
+ *         because `params` is owner-writable JSONB and may hold
+ *         internal configuration (file paths, prompt fragments,
+ *         arbitrary keys) that the broader execution audience never
+ *         needs — the gate's `failedRules[].message` already surfaces
+ *         the human-readable consequence (e.g. "required 100 chars").
+ *
+ *     The exec-scope guard (#1452) closes a hole noted on PR #1447:
+ *     `projectRole === 'owner'` alone would let an owner-issued
+ *     exec-scoped token (the kind /exec / /worker hand to a Genie
+ *     sub-agent) keep reading owner-only `params`. The /exec session
+ *     should never have wider read access than a non-owner agent.
  *   - POST stays owner-only and is also blocked for exec-scoped keys
  *     (`requireNotExecScoped`); same goes for PATCH/DELETE in [ruleId]/.
  *
@@ -25,7 +42,7 @@
  * the project on the same request.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { Prisma } from '@prisma/client';
+import { Prisma, type VerificationRule } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { authenticate, requireProjectRole, requireNotExecScoped } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
@@ -33,6 +50,25 @@ import { AppError, ErrorCode } from '@plansync/shared';
 import { VERIFICATION_RULE_KINDS } from '@/lib/verification-rules';
 
 type Params = { params: Promise<{ projectId: string }> };
+
+/**
+ * Public projection of a VerificationRule shown to non-owner project
+ * members AND to owners who are calling through an exec-scoped API key.
+ * See file header (#1411 + #1452) — owner-writable JSONB `params` and
+ * `createdBy` are deliberately omitted from this surface.
+ */
+function publicRuleProjection(rule: VerificationRule) {
+  return {
+    id: rule.id,
+    projectId: rule.projectId,
+    kind: rule.kind,
+    scope: rule.scope,
+    scopeValue: rule.scopeValue,
+    enabled: rule.enabled,
+    createdAt: rule.createdAt,
+    updatedAt: rule.updatedAt,
+  };
+}
 
 const SCOPES = ['project', 'task_type', 'task'] as const;
 
@@ -82,13 +118,20 @@ export async function GET(req: NextRequest, ctx: Params) {
     // #1220: any project member can read the rule list so the CLI
     // `/explain rule <id>` (R-184) works for non-owner agents/developers
     // who hit a gate=rule 422 on complete. Mutations stay owner-only.
-    await requireProjectRole(auth, params.projectId);
+    const scopedAuth = await requireProjectRole(auth, params.projectId);
 
     const rules = await prisma.verificationRule.findMany({
       where: { projectId: params.projectId },
       orderBy: { createdAt: 'asc' },
     });
-    return NextResponse.json({ data: rules });
+    // #1411 + #1452: only owner-role members on a non-exec-scoped session
+    // see the full row (params + createdBy). Owner-issued exec-scoped
+    // tokens — handed to /exec / /worker sub-agents — fall through to
+    // the public projection so a compromised Genie or any code path
+    // reusing the exec key cannot read owner-only `params`.
+    const isFullTrust = scopedAuth.projectRole === 'owner' && !scopedAuth.execRunId;
+    const data = isFullTrust ? rules : rules.map(publicRuleProjection);
+    return NextResponse.json({ data });
   } catch (error) {
     return handleApiError(error);
   }
