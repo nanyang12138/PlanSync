@@ -988,6 +988,14 @@ test('hasSuccessMarkerAfter', async (t) => {
         comments: [mkSuccess(t0 - 5)],
         cutoffServerMs: t0,
         sinceMs: t0,
+      }),
+      // cutoffServerMs is not a recognised parameter (production uses notBeforeMs);
+      // with sinceMs: t0 and default toleranceMs: 1500, t0 - 5 is inside the
+      // tolerance window, so the result is true (#2058 — syntax-error fix).
+      true,
+    );
+  });
+
   // ------------------------------------------------------------------
   // Trusted-author filtering — #1384
   // ------------------------------------------------------------------
@@ -1054,6 +1062,13 @@ test('hasSuccessMarkerAfter', async (t) => {
         ],
         sinceMs: since,
         trustedAuthors: ['github-actions[bot]'],
+      }),
+      // A comment body without a user object cannot be author-verified;
+      // treated as unverifiable → ignored (#2058 syntax-error fix).
+      false,
+    );
+  });
+
   // ---- #1407: rapid re-dispatch within tolerance window --------------
   //
   // The `sinceMs - toleranceMs` clock-skew cutoff isn't enough on its
@@ -1146,6 +1161,8 @@ test('latestLockLabeledServerTs', async (t) => {
         lockLabel: LOCK,
       }),
       t0 + 50,
+    );
+  });
 
   await t.test('notBeforeMs still admits a peer marker from the current cycle', () => {
     const lockReacquired = Date.now() - 100;
