@@ -6,6 +6,20 @@
 // — end-to-end against the real DB. That guarantees the membership check
 // can never silently regress without flipping at least one of these cases
 // red.
+//
+// Coverage index for adjacent issues that target the same helper, so future
+// grep-by-issue lands in the right place instead of re-adding duplicate
+// `describe` blocks (which is exactly what produced the must-severity
+// JSDoc-opener syntax error reported in #1628 against PR #1315):
+//   - #1287 (R-137 / SSR scoped-key cross-project boundary, fixed by PR
+//     #1314) — covered by the `Issue #1287: SSR membership helper enforces
+//     API-key project / exec scope` describe below; that block already
+//     exercises cross-project block, same-project allow, exec-scoped block,
+//     dirty-data (execRunId without projectId) block, and unscoped allow.
+//   - #1293 (re-report of the same scoped-key cross-project boundary)
+//     resolves to the SAME helper change shipped by PR #1314 and is fully
+//     covered by the #1287 describe above. No additional describe block is
+//     needed — adding one would just duplicate every assertion verbatim.
 import crypto from 'crypto';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import {
