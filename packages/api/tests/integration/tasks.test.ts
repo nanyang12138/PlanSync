@@ -781,14 +781,24 @@ describe('F: Task Management', () => {
 
   it('F45e: PATCH task → done with completed run by non-owner → 200 (R-045)', async () => {
     const id = await makeHumanTaskInProgress({ assignee: dev });
-    // Simulate a completed execution run exists for this task.
+    // Resolve the task's *actual* bound plan version — the F8 test
+    // above may have moved the project to a newer plan version, so
+    // the `activePlanVersion` variable captured in beforeAll is stale.
+    // hasCompletedRun (closes #1399) requires the run's
+    // boundPlanVersion to match the task's boundPlanVersion, so we
+    // anchor the run on the task's actual binding to keep the
+    // "completed run exists" shortcut applicable.
+    const taskRow = await testPrisma.task.findUnique({
+      where: { id },
+      select: { boundPlanVersion: true },
+    });
     await testPrisma.executionRun.create({
       data: {
         taskId: id,
         executorName: dev,
         executorType: 'human',
         status: 'completed',
-        boundPlanVersion: activePlanVersion,
+        boundPlanVersion: taskRow!.boundPlanVersion,
         taskPackSnapshot: {},
         endedAt: new Date(),
       },

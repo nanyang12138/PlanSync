@@ -176,12 +176,96 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
         // recent run already `completed` → a member closes the loop)
         // is unchanged because in that scenario the latest run *is*
         // the completed one.
+        //
+        // closes #1399 — Additionally require the latest completed run
+        // to be bound to the task's CURRENT `boundPlanVersion`. Without
+        // this check, the following drift-rebind bypass still works:
+        //
+        //   1. Task in `awaiting_evidence` with a completed run on
+        //      plan v1 (the latest run).
+        //   2. Owner activates plan v2 → drift alert raised against
+        //      this task.
+        //   3. Non-owner calls `POST /tasks/:id/rebind` to clear the
+        //      drift. Rebind sets `task.boundPlanVersion = v2` and
+        //      resets `task.status` to `todo` (non-terminal source);
+        //      it intentionally does NOT supersede `completed` runs
+        //      (those are historical evidence). The latest run is
+        //      therefore still the v1 completed run.
+        //   4. Non-owner PATCHes `todo → in_progress` then
+        //      `in_progress → done`. Pre-fix, the v1 completed run
+        //      satisfies `hasCompletedRun` even though the task is
+        //      now bound to v2 — the member silently closes the task
+        //      under v2 without anyone ever executing a run against
+        //      v2. That defeats the whole point of rebind ("this task
+        //      starts over against the new plan", R-004).
+        //
+        // closes #1471 — The cross-version check on its own is not
+        // sufficient: SAME-version stale evidence can still be
+        // reused after a manual parked-task reopen. Concretely:
+        //
+        //   1. Task in `awaiting_evidence` with a completed run on
+        //      plan v1 (R-192 rejected this run's evidence).
+        //   2. The task assignee — or the owner — PATCHes
+        //      `awaiting_evidence → in_progress` (legitimate per the
+        //      #1429 owner-or-assignee gate). Crucially this transition
+        //      does NOT start a new execution run, so the OLD completed
+        //      run is still the latest, still bound to v1, and now the
+        //      task is also still v1: both the latest-run and the
+        //      same-version checks above are satisfied.
+        //   3. ANY non-owner third party then PATCHes
+        //      `in_progress → done`. `hasCompletedRun` matches the
+        //      v1-on-v1 stale completed run and R-192 is bypassed
+        //      exactly as in the parked-PATCH attack — only with one
+        //      extra hop through `in_progress` to dodge the
+        //      `awaiting_evidence → done` owner-only guard above.
+        //
+        // The fix is a third condition on `hasCompletedRun`: the task
+        // must not have been moved out of `awaiting_evidence` since
+        // the latest completed run finalized. If it has, R-192 already
+        // judged that completed run insufficient and the only way back
+        // into `in_progress` (without a fresh run via POST /runs) was a
+        // manual PATCH; the stale completed run must not silently
+        // satisfy this shortcut a second time. The PATCH-status writer
+        // below records `task_status_changed` activities with
+        // `metadata.fromStatus`, which gives us a precise "was the
+        // task reopened after the run ended?" probe. The legitimate
+        // POST-/runs recovery path is unaffected because it creates a
+        // fresh `running` run that supersedes the old completed one as
+        // the latest, so the outer `latestRun?.status === 'completed'`
+        // check already fails before this probe runs.
         const latestRun = await prisma.executionRun.findFirst({
           where: { taskId: params.taskId },
           orderBy: { startedAt: 'desc' },
-          select: { status: true },
+          select: { status: true, boundPlanVersion: true, endedAt: true },
         });
-        const hasCompletedRun = latestRun?.status === 'completed';
+        let hasCompletedRun =
+          latestRun?.status === 'completed' && latestRun.boundPlanVersion === task.boundPlanVersion;
+        if (hasCompletedRun && latestRun?.endedAt) {
+          // PostgreSQL JSON-path filter on Activity.metadata. The
+          // `path: ['taskId']` form is the documented Prisma shape for
+          // postgres JSON columns; we additionally filter on
+          // `fromStatus === 'awaiting_evidence'` to scope strictly to
+          // R-192 parking exits — todo/blocked/in_progress reopens
+          // unrelated to R-192 (which never had stale evidence in the
+          // first place) intentionally do not invalidate the shortcut.
+          const reopenedSinceCompletion = await prisma.activity.findFirst({
+            where: {
+              projectId: params.projectId,
+              type: 'task_status_changed',
+              createdAt: { gt: latestRun.endedAt },
+              AND: [
+                { metadata: { path: ['taskId'], equals: params.taskId } },
+                {
+                  metadata: { path: ['fromStatus'], equals: 'awaiting_evidence' },
+                },
+              ],
+            },
+            select: { id: true },
+          });
+          if (reopenedSinceCompletion) {
+            hasCompletedRun = false;
+          }
+        }
         const isHumanSelfComplete =
           task.assigneeType === 'human' && task.assignee === auth.userName;
 

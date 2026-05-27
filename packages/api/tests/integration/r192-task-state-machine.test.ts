@@ -1276,6 +1276,279 @@ describe('R-192: awaiting_evidence → done PATCH is owner-only (closes #1227 #1
     expect(after?.status).toBe('in_progress');
   });
 
+  // ---- (C) drift-rebind bypass — closes #1399 -------------------
+
+  it('rejects PATCH→done when the latest completed run was on a superseded plan version (closes #1399)', async () => {
+    // Reproduce the drift-rebind bypass:
+    //   1. Task parked in awaiting_evidence with a completed run on
+    //      plan v1 (the latest run).
+    //   2. Owner activates plan v2 → drift on this task.
+    //   3. Non-owner calls rebind: task.boundPlanVersion=v2,
+    //      task.status='todo'. Rebind intentionally does NOT touch
+    //      completed runs (they're historical evidence), so the
+    //      latest run is still the v1 completed run.
+    //   4. Non-owner PATCHes todo→in_progress (no identity gate on
+    //      that transition) and then in_progress→done.
+    //
+    // Pre-fix, step 4 succeeds because hasCompletedRun only looked at
+    // the latest run's status — the v1 completed run silently
+    // satisfies the shortcut even though the task is bound to v2 and
+    // no run against v2 has ever been executed. The fix anchors the
+    // shortcut on `latestRun.boundPlanVersion === task.boundPlanVersion`
+    // so the cross-version completion no longer counts.
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/620';
+    const task = await newTask({ prUrl });
+
+    // Latest run is a completed run bound to the task's ORIGINAL plan
+    // version (v1 — `planVersion`). This is the run that previously
+    // satisfied hasCompletedRun.
+    await testPrisma.executionRun.create({
+      data: {
+        taskId: task.id,
+        status: 'completed',
+        executorType: 'agent',
+        executorName: agentName,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(Date.now() - 60_000),
+        endedAt: new Date(Date.now() - 30_000),
+      },
+    });
+
+    // Simulate the post-rebind state directly to keep the test
+    // hermetic: a second plan version exists, the task has been
+    // rebound to it, and the task is back in `in_progress` (a member
+    // who flipped todo→in_progress after rebind). We don't drive the
+    // rebind route here because rebind's reset-to-todo + run-status
+    // touchups are already covered by r004; this test is about the
+    // PATCH→done shortcut treating a cross-version completed run as
+    // valid evidence.
+    const newVersion = planVersion + 1;
+    // Move the seeded v1 plan out of `active` first — the partial
+    // unique index on (projectId) where status='active' (R-048)
+    // forbids two active rows in the same project, so v2 cannot be
+    // inserted as `active` until v1 steps aside.
+    await testPrisma.plan.updateMany({
+      where: { projectId, version: planVersion },
+      data: { status: 'superseded' },
+    });
+    await testPrisma.plan.create({
+      data: {
+        projectId,
+        version: newVersion,
+        status: 'active',
+        title: 'r192 #1399 rebind probe plan',
+        goal: 'g',
+        scope: 's',
+        constraints: [],
+        standards: [],
+        deliverables: [],
+        openQuestions: [],
+        createdBy: owner,
+      },
+    });
+    await testPrisma.task.update({
+      where: { id: task.id },
+      data: { boundPlanVersion: newVersion, status: 'in_progress' },
+    });
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: developerName,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    // Agent-typed task with no current-version completed run → 409
+    // STATE_CONFLICT, same shape as the other agent-bypass paths.
+    expect(res.status).toBe(409);
+    const json = await res.json();
+    expect(JSON.stringify(json)).toMatch(/completed execution run/i);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('in_progress');
+
+    // Restore the v1 → active invariant so later tests in this file
+    // (which still reference `planVersion` as the active plan)
+    // continue to operate against a sane fixture.
+    await testPrisma.plan.updateMany({
+      where: { projectId, version: newVersion },
+      data: { status: 'superseded' },
+    });
+    await testPrisma.plan.updateMany({
+      where: { projectId, version: planVersion },
+      data: { status: 'active' },
+    });
+  });
+
+  // ---- (D) same-version stale-evidence attack — closes #1471 --
+
+  it('rejects PATCH in_progress → done after the assignee reopened a parked task via PATCH without a fresh run (closes #1471)', async () => {
+    // Same-version stale-evidence bypass:
+    //   1. Task parked in awaiting_evidence with a completed run on
+    //      the current plan version.
+    //   2. Assignee PATCHes awaiting_evidence → in_progress (legitimate
+    //      per #1429 owner-or-assignee gate). Crucially this PATCH does
+    //      NOT start a new run, so the OLD completed run is still the
+    //      latest and still bound to the current plan version.
+    //   3. Non-owner third party then PATCHes in_progress → done. The
+    //      latest-run and same-version checks both pass; pre-#1471 the
+    //      stale completed run satisfies the shortcut and R-192 is
+    //      bypassed with one extra hop.
+    //
+    // The fix queries Activity for `task_status_changed` rows with
+    // fromStatus='awaiting_evidence' since the latest completed run
+    // ended; one or more such rows means R-192 already rejected this
+    // run's evidence and the shortcut must not match.
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/611';
+    const task = await newTask({ prUrl });
+    await testPrisma.task.update({
+      where: { id: task.id },
+      data: { status: 'awaiting_evidence' },
+    });
+    await testPrisma.executionRun.create({
+      data: {
+        taskId: task.id,
+        status: 'completed',
+        executorType: 'agent',
+        executorName: agentName,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(Date.now() - 120_000),
+        endedAt: new Date(Date.now() - 60_000),
+      },
+    });
+
+    // Step 2 — assignee reopens via PATCH (NOT POST /runs). This
+    // writes a `task_status_changed` activity with
+    // fromStatus='awaiting_evidence' which the fix uses to detect
+    // stale evidence.
+    const reopenRes = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: agentName,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(reopenRes.status).toBe(200);
+
+    // Step 3 — non-owner attempts the close bypass.
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: developerName,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    // Agent-typed task with stale evidence → STATE_CONFLICT (409)
+    // via the "Agent task cannot be marked done without a completed
+    // execution run" branch. The transition must NOT land.
+    expect(res.status).toBe(409);
+    const json = await res.json();
+    expect(JSON.stringify(json)).toMatch(/completed execution run/i);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('in_progress');
+  });
+
+  it('rejects the same-version stale-evidence close even when the owner did the parked-task reopen (closes #1471)', async () => {
+    // Variant of the #1471 bypass: it is the *third-party close*
+    // that the R-192 gate has to reject, not the reopen. Owner-led
+    // reopen (legitimate, e.g. "let me look at this again before
+    // marking done") + third-party close must still trip the
+    // stale-evidence detection.
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/612';
+    const task = await newTask({ prUrl });
+    await testPrisma.task.update({
+      where: { id: task.id },
+      data: { status: 'awaiting_evidence' },
+    });
+    await testPrisma.executionRun.create({
+      data: {
+        taskId: task.id,
+        status: 'completed',
+        executorType: 'agent',
+        executorName: agentName,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(Date.now() - 120_000),
+        endedAt: new Date(Date.now() - 60_000),
+      },
+    });
+
+    const reopenRes = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: owner,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(reopenRes.status).toBe(200);
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: developerName,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(409);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('in_progress');
+  });
+
+  it('still lets the owner close a reopened parked task (owner override is unchanged by #1471)', async () => {
+    // The #1471 fix only narrows the non-owner shortcut. The owner's
+    // administrative-close branch (`isOwner` short-circuits before
+    // any of the run/evidence checks) must keep working — otherwise
+    // the only legitimate exit for "I looked at this again and yes
+    // it's done" would also disappear.
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/613';
+    const task = await newTask({ prUrl });
+    await testPrisma.task.update({
+      where: { id: task.id },
+      data: { status: 'awaiting_evidence' },
+    });
+    await testPrisma.executionRun.create({
+      data: {
+        taskId: task.id,
+        status: 'completed',
+        executorType: 'agent',
+        executorName: agentName,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(Date.now() - 120_000),
+        endedAt: new Date(Date.now() - 60_000),
+      },
+    });
+    await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: owner,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: owner,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(200);
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('done');
+  });
+
   // ---- regression guard — normal flow still works --------------
 
   it('still allows a non-owner developer to PATCH in_progress → done when the LATEST run is completed (regression guard)', async () => {
