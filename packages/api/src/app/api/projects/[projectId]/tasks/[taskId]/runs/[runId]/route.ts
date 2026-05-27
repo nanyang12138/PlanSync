@@ -162,11 +162,15 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
         );
       }
 
+      // R-006: defensive redundancy on top of the R-003 version check above.
+      // Only HIGH and MEDIUM severity alerts block completion. LOW-severity
+      // drift (title-only changes) is intentionally non-gating — it records
+      // the version bump in the activity log but should not stop an agent
+      // from completing work (#1068; see persistDriftAlerts comment line ~347).
       const openDrifts = await prisma.driftAlert.findMany({
-        where: { taskId: params.taskId, status: 'open' },
+        where: { taskId: params.taskId, status: 'open', severity: { not: 'low' } },
         select: { id: true, severity: true, reason: true },
       });
-      // R-006: defensive redundancy on top of the R-003 version check above.
       // If a drift alert was externally resolved as `no_impact` (which clears
       // the open-drift status but does NOT realign the run's boundPlanVersion
       // with the task's current boundPlanVersion), the open-drift check alone
