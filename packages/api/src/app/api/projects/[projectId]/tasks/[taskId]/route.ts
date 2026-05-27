@@ -11,6 +11,7 @@ import { logger } from '@/lib/logger';
 import { auditCrossProjectTaskIfNeeded } from '@/lib/task-scope';
 import { createActivity } from '@/lib/activity';
 import { syncTaskDeliverableLinks } from '@/lib/task-deliverable-links';
+import { deriveTaskCompletionState } from '@/lib/task-state-machine';
 
 type Params = { params: Promise<{ projectId: string; taskId: string }> };
 
@@ -196,6 +197,59 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
             ErrorCode.FORBIDDEN,
             'Only the project owner, the current assignee (for human tasks), or execution_complete can mark a task done.',
           );
+        }
+
+        // R-192 / closes #1395 — re-derive the evidence gate for every
+        // non-owner shortcut path. PR #1306 anchored `hasCompletedRun`
+        // on the *latest* run to close the "POST /runs lift → PATCH→done"
+        // bypass, but the bypass chain
+        //
+        //   awaiting_evidence  --(PATCH, allowed for assignee per #1429)-->  in_progress
+        //                      --(PATCH, allowed by hasCompletedRun)----->  done
+        //
+        // remains open against the assignee. The PATCH that revives the
+        // parked task does NOT create a new ExecutionRun, so the latest
+        // run is still the OLD `completed` run that R-192 already
+        // rejected (parking the task to `awaiting_evidence` in the
+        // first place). `hasCompletedRun` therefore silently matches
+        // and the second PATCH flips the task to `done` without R-192
+        // ever re-evaluating the evidence. The same shape holds for
+        // the `isHumanSelfComplete` shortcut on human-typed tasks
+        // where the assignee is both the parker and the closer.
+        //
+        // Defense: any non-owner caller that the shortcut layer is
+        // about to greenlit must additionally pass a fresh R-192
+        // check. If the gate currently still judges the evidence
+        // insufficient (`status === 'awaiting_evidence'`), the
+        // transition is rejected and the caller is steered back to
+        // the documented recovery shape (start a new run, supply the
+        // missing evidence via execution_complete, which is the
+        // canonical path that re-runs the gate against fresh
+        // evidence). Owner remains the documented administrative
+        // override and is excluded above.
+        //
+        // The check is intentionally a no-op for projects/tasks that
+        // never opted into git integration (`gateApplied === false`),
+        // so legacy flows are unaffected.
+        if (!isOwner) {
+          const r192State = await deriveTaskCompletionState({
+            projectId: params.projectId,
+            task: {
+              id: task.id,
+              prUrl: task.prUrl,
+              planDeliverableRefs: task.planDeliverableRefs ?? [],
+              boundPlanVersion: task.boundPlanVersion,
+            },
+          });
+          if (r192State.gateApplied && r192State.status === 'awaiting_evidence') {
+            const missingCodes = r192State.missing.map((m) => m.code).join(', ');
+            throw new AppError(
+              ErrorCode.FORBIDDEN,
+              `R-192 evidence gate still parks this task in awaiting_evidence (missing: ${missingCodes || 'unknown'}). ` +
+                'Only the project owner can override. Otherwise start a new execution run and call execution_complete after the missing evidence lands.',
+              { missing: r192State.missing },
+            );
+          }
         }
       }
 
