@@ -64,6 +64,7 @@ export const domainEventTypeSchema = z.enum([
   'task_deleted',
   // Execution lifecycle
   'execution_started',
+  'execution_completed',
   'execution_stale',
   'execution_failed',
   'execution_superseded',
