@@ -55,39 +55,53 @@ export function normalizeRunToolNameForFsm(toolName: string, args: unknown): str
   return toolName;
 }
 
-const startArgsSchema = z.object({
-  action: z.literal('start'),
-  projectId: z.string(),
-  taskId: z.string(),
-  executorType: z.enum(['human', 'agent']),
-  executorName: z.string(),
-});
+// Each per-action schema is `.strict()` so unknown / cross-action fields
+// fail `safeParse` instead of being silently stripped (Zod's default
+// `strip` policy would otherwise accept e.g. `{action:'heartbeat',
+// executorName:'…'}` and run the heartbeat handler with the stray field
+// silently dropped — see issue #2757). The outer SDK shape (registered
+// in `registerRunTool` below) intentionally stays loose so a single tool
+// surface can advertise the union; this inner layer is what actually
+// enforces "no cross-action fields".
+const startArgsSchema = z
+  .object({
+    action: z.literal('start'),
+    projectId: z.string(),
+    taskId: z.string(),
+    executorType: z.enum(['human', 'agent']),
+    executorName: z.string(),
+  })
+  .strict();
 
-const heartbeatArgsSchema = z.object({
-  action: z.literal('heartbeat'),
-  projectId: z.string(),
-  taskId: z.string(),
-  runId: z.string(),
-});
+const heartbeatArgsSchema = z
+  .object({
+    action: z.literal('heartbeat'),
+    projectId: z.string(),
+    taskId: z.string(),
+    runId: z.string(),
+  })
+  .strict();
 
-const completeArgsSchema = z.object({
-  action: z.literal('complete'),
-  projectId: z.string(),
-  taskId: z.string(),
-  runId: z.string(),
-  status: z.enum(['completed', 'failed']),
-  outputSummary: z.string().optional(),
-  filesChanged: z.array(z.string()).optional(),
-  blockers: z.array(z.string()).optional(),
-  driftSignals: z.array(z.string()).optional(),
-  branchName: z.string().optional().describe('Git branch name where changes were committed.'),
-  deliverablesMet: z
-    .array(z.string())
-    .optional()
-    .describe(
-      'Required when status=completed. List each plan deliverable and confirm it was met. Will be AI-verified for agent executors.',
-    ),
-});
+const completeArgsSchema = z
+  .object({
+    action: z.literal('complete'),
+    projectId: z.string(),
+    taskId: z.string(),
+    runId: z.string(),
+    status: z.enum(['completed', 'failed']),
+    outputSummary: z.string().optional(),
+    filesChanged: z.array(z.string()).optional(),
+    blockers: z.array(z.string()).optional(),
+    driftSignals: z.array(z.string()).optional(),
+    branchName: z.string().optional().describe('Git branch name where changes were committed.'),
+    deliverablesMet: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Required when status=completed. List each plan deliverable and confirm it was met. Will be AI-verified for agent executors.',
+      ),
+  })
+  .strict();
 
 const runArgsSchema = z.discriminatedUnion('action', [
   startArgsSchema,

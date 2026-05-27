@@ -187,6 +187,24 @@ describe('R-204: plansync_run(action, ...) — unified execution tool', () => {
       ).rejects.toThrow(/invalid arguments/);
     });
 
+    it('R204-S4: rejects start carrying complete-only fields (#2757)', async () => {
+      // Same root cause as R204-H3 — `.strict()` on startArgsSchema must
+      // reject a `runId` (or any other complete-only field) tagging
+      // along on a start call, instead of letting Zod silently drop it
+      // and bind a brand-new run with stray arguments mixed in.
+      await expect(
+        callTool(server, 'plansync_run', {
+          action: 'start',
+          projectId: 'p1',
+          taskId: 't1',
+          executorType: 'agent',
+          executorName: 'alice',
+          runId: 'run-1',
+        }),
+      ).rejects.toThrow(/invalid arguments.*runId/);
+      expect(mocks.post).not.toHaveBeenCalled();
+    });
+
     it('R204-S3: DRIFT_UNRESOLVED is translated to the same envelope as the legacy alias', async () => {
       mocks.post.mockRejectedValueOnce(
         new ApiError('drift', 'DRIFT_UNRESOLVED', 409, {
@@ -242,6 +260,30 @@ describe('R-204: plansync_run(action, ...) — unified execution tool', () => {
           taskId: 't1',
         }),
       ).rejects.toThrow(/invalid arguments/);
+    });
+
+    it('R204-H3: schema rejects heartbeat carrying cross-action fields (#2757)', async () => {
+      // Issue #2757: the outer SDK shape advertises a superset of every
+      // action's fields (so a single tool registration can carry the
+      // discriminated union), and Zod's default strip-unknown policy
+      // would otherwise silently drop start-only / complete-only fields
+      // for a heartbeat call. With `.strict()` on the inner
+      // heartbeatArgsSchema, those stray fields must now surface as a
+      // validation error so the wrong action can never run on
+      // accidentally-mixed arguments.
+      await expect(
+        callTool(server, 'plansync_run', {
+          action: 'heartbeat',
+          projectId: 'p1',
+          taskId: 't1',
+          runId: 'run-1',
+          executorName: 'alice',
+        }),
+      ).rejects.toThrow(/invalid arguments.*executorName/);
+      // The handler must not have hit the API at all — we don't want
+      // the heartbeat POST firing on an arguments object the user
+      // actually meant for a different action.
+      expect(mocks.post).not.toHaveBeenCalled();
     });
   });
 
@@ -299,6 +341,25 @@ describe('R-204: plansync_run(action, ...) — unified execution tool', () => {
         }),
       ).rejects.toThrow('Internal');
       expect(intervals.has('run-stop-204')).toBe(false);
+    });
+
+    it('R204-C4: rejects complete carrying start-only fields (#2757)', async () => {
+      // Final variant of the strict-schema cross-action guard. A
+      // complete call that smuggles in `executorType` / `executorName`
+      // (start-only fields) must be rejected outright instead of being
+      // silently stripped and posted to the complete endpoint.
+      await expect(
+        callTool(server, 'plansync_run', {
+          action: 'complete',
+          projectId: 'p1',
+          taskId: 't1',
+          runId: 'run-1',
+          status: 'completed',
+          deliverablesMet: ['done'],
+          executorName: 'alice',
+        }),
+      ).rejects.toThrow(/invalid arguments.*executorName/);
+      expect(mocks.post).not.toHaveBeenCalled();
     });
 
     it('R204-C3: COMPLETION_VERIFICATION_FAILED keeps heartbeat alive (parity with legacy)', async () => {
