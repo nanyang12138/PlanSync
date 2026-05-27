@@ -953,7 +953,7 @@ function preserveAndRemoveWorktree(
 
 // ─── Autonomous execution prompt ─────────────────────────────────────────────
 
-function buildAutonomousPrompt(worktreeDir: string): string {
+export function buildAutonomousPrompt(worktreeDir: string): string {
   const projectRoot = path.resolve(worktreeDir, '../../');
   return [
     'You are in AUTONOMOUS execution mode. Do NOT wait for user approval.',
@@ -977,7 +977,9 @@ function buildAutonomousPrompt(worktreeDir: string): string {
     '4. Implement using your available tools (file editing, shell commands, search)',
     '   (all file edit paths must start with your worktree dir above)',
     '5. Run tests. If they fail: fix and retry (max 3 attempts)',
-    '6. Call plansync_execution_complete with SPECIFIC deliverablesMet:',
+    '6. Call plansync_run with action="complete" and SPECIFIC deliverablesMet:',
+    '   (legacy alias plansync_execution_complete is deprecated and will be removed —',
+    '    always use plansync_run({action:"complete", ...}) so this prompt keeps working)',
     '   GOOD: "Implemented POST /auth/login with JWT; 12/12 tests pass (npm test)"',
     '   BAD: "all done", "completed", "requirements met" → REJECTED by verifier',
     '',
