@@ -421,6 +421,14 @@ describe('R-155: deliverable CRUD routes', () => {
       where: { id: removeId },
     });
     expect(resolved.status).toBe('accepted');
+
+    // Issue #1640: legacy `plan.deliverables` mirror must drop the
+    // deprecated row's title, otherwise legacy readers (plansync_plan_show,
+    // CLI banner, drift-engine fallback paths) keep displaying the removed
+    // deliverable even though the structured row is marked deprecated.
+    const planAfterRemove = await prisma.plan.findUniqueOrThrow({ where: { id: planId } });
+    expect(planAfterRemove.deliverables).not.toContain('Target');
+    expect(planAfterRemove.deliverables).toEqual(['Kept']);
   });
 
   it('plansync_plan_suggest accepts deliverableId pointing at a row on the same plan', async () => {
