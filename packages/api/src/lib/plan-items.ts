@@ -391,6 +391,18 @@ export async function supersedeDeliverables(
  * lean on `plan.deliverables` (CLI banner, drift legacy paths, plan_show)
  * see no shape change — only newly created rows show up at the array tail.
  *
+ * Rows with `status='deprecated'` are intentionally excluded from the mirror.
+ * Issue #1640: when a `remove + deliverableId` suggestion is accepted (or any
+ * other path flips a row to `deprecated`), the row is preserved in the split
+ * table for audit-chain reasons (R-152 supersede chain, R-153 task links,
+ * R-191 commit links) but it is logically removed from the user's view. Re-
+ * writing its title back into the legacy String[] would surface the "removed"
+ * deliverable again on every legacy reader (`plansync_plan_show`, CLI banner,
+ * drift-engine fallback paths), which is exactly the contract break reported
+ * by cursor-review (fingerprint f128a221b74e). Filtering deprecated rows out
+ * here is the single point of truth — every caller of this helper gets the
+ * correct mirror without having to remember to filter themselves.
+ *
  * Always called inside the route's transaction (the per-row write and this
  * mirror sync must commit together) so plan_show can never observe a
  * window where the array and the rows diverge.
@@ -400,7 +412,7 @@ export async function syncDeliverableArrayMirror(
   tx: PrismaClient | Prisma.TransactionClient,
 ): Promise<void> {
   const rows = await tx.planDeliverable.findMany({
-    where: { planId },
+    where: { planId, status: { not: 'deprecated' } },
     orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
     select: { title: true },
   });
