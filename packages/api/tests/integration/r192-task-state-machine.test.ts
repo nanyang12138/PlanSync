@@ -881,4 +881,106 @@ describe('R-192 evidence-gate bypass via PATCH (closes #1342)', () => {
     const after = await testPrisma.task.findUnique({ where: { id: legacy.id } });
     expect(after?.status).toBe('done');
   });
+
+  // closes #1381 — the R-192 recheck must judge the **post-update
+  // candidate** snapshot. Pre-fix it used `task.prUrl` from the row
+  // fetched at the top of PATCH, so a non-owner who attached the PR
+  // URL atomically with the done flip (`{ prUrl, status: 'done' }`)
+  // was rejected with R192_EVIDENCE_MISSING even though the new
+  // `prUrl` would have satisfied the gate immediately after the
+  // write. The fix merges `body.prUrl` over `task.prUrl` before
+  // calling `deriveTaskCompletionState` so the gate sees the row
+  // exactly as it will land.
+  it('uses the post-update candidate prUrl in the R-192 recheck (closes #1381)', async () => {
+    // Build a task that has *no* prUrl yet, so the gate would say
+    // pr_merged-missing if it judged the pre-update row. The
+    // deliverable evidence and the merged-PR webhook are pre-staged
+    // so the only signal that matters for this test is whether the
+    // recheck looks at `body.prUrl` or `task.prUrl`.
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/1381';
+    await emitMergedPrEvent(prUrl);
+    await linkCommitToDeliverable(deliverableA.id, '1381138113811381138113811381138113811381');
+
+    const task = await testPrisma.task.create({
+      data: {
+        projectId,
+        title: 'r192-1381-same-request-pr-attach',
+        type: 'code',
+        priority: 'p1',
+        // We park the task in `in_progress` so we don't trip the
+        // separate `awaiting_evidence → done` owner-only guard above;
+        // the bug here is purely about whose `prUrl` the recheck reads,
+        // not about which source state is permitted.
+        status: 'in_progress',
+        assignee: dev,
+        assigneeType: 'human',
+        boundPlanVersion: planVersion,
+        agentConstraints: [],
+        planDeliverableRefs: [deliverableA.slug],
+        prUrl: null,
+      },
+    });
+    // A prior completed run is the bypass-vector that PR #1354 closes;
+    // we need one on file so the route's earlier `hasCompletedRun`
+    // branch lets the request reach the R-192 recheck (otherwise it
+    // would short-circuit on the "no completed run" 409 above).
+    await testPrisma.executionRun.create({
+      data: {
+        taskId: task.id,
+        status: 'completed',
+        executorType: 'agent',
+        executorName: agentName,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(),
+        endedAt: new Date(),
+      },
+    });
+
+    // Pre-fix: rejected with 409 R192_EVIDENCE_MISSING because the
+    // recheck saw `task.prUrl === null` and reported `pr_merged`
+    // missing. Post-fix: the recheck merges `body.prUrl` over
+    // `task.prUrl`, sees the merged PR, and lets the transition land.
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: dev,
+        body: { prUrl, status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(200);
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('done');
+    // The prUrl write must have actually landed — proves we used the
+    // merged candidate, not just a transient in-memory override.
+    expect(after?.prUrl).toBe(prUrl);
+  });
+
+  // Counterpart sanity check: when the candidate prUrl is also
+  // missing (e.g. the caller submits `{ status: 'done' }` only, or
+  // `{ prUrl: null, status: 'done' }`), the recheck must still
+  // reject. This guards against the candidate-merge accidentally
+  // turning a legitimate evidence-gap into a silent pass.
+  it('still rejects when the post-update candidate prUrl is also unmerged (closes #1381 negative)', async () => {
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/1381-neg';
+    const { task } = await parkInAwaitingEvidence(prUrl);
+    // The PR URL is set on the row but never merged via webhook,
+    // so the gate must still report pr_merged-missing. The body
+    // does not touch `prUrl`, so the candidate equals `task.prUrl`.
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: dev,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(409);
+    const errJson = await res.json();
+    expect(errJson.error.details?.code).toBe('R192_EVIDENCE_MISSING');
+    expect(errJson.error.details.missing.map((m: { code: string }) => m.code)).toContain(
+      'pr_merged',
+    );
+  });
 });

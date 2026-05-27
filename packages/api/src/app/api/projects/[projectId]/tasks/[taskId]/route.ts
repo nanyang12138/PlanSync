@@ -162,12 +162,36 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
         // branches decide as before so projects that never opted into git
         // wiring are byte-for-byte unaffected.
         if (!isOwner) {
+          // closes #1381 — re-check the gate against the **post-update
+          // candidate** snapshot, not the pre-update row. Without this,
+          // a non-owner who submits `{ prUrl, status: 'done' }` in the
+          // SAME PATCH would be judged on the old (typically empty)
+          // `task.prUrl` and the gate would falsely report `pr_merged`
+          // missing — rejecting a legitimate completion path where the
+          // caller is attaching the merged PR URL atomically with the
+          // status flip. The route persists `body` via `task.update`
+          // below, so the gate must judge the row as it will exist
+          // after the write.
+          //
+          // `planDeliverableRefs` is owner-only earlier in the route
+          // (returns FORBIDDEN before we get here), so for `!isOwner`
+          // the body value is always `undefined` — but we still merge
+          // it defensively in case that guard ever loosens. `prUrl` is
+          // intentionally not owner-gated (any member can attach a PR
+          // to a task), which is exactly the path this fix unblocks.
+          // `boundPlanVersion` is not in `updateTaskShape`, so the
+          // task-row value is authoritative.
+          const candidatePrUrl = body.prUrl !== undefined ? body.prUrl : task.prUrl;
+          const candidateDeliverableRefs =
+            body.planDeliverableRefs !== undefined
+              ? body.planDeliverableRefs
+              : (task.planDeliverableRefs ?? []);
           const r192 = await deriveTaskCompletionState({
             projectId: params.projectId,
             task: {
               id: task.id,
-              prUrl: task.prUrl,
-              planDeliverableRefs: task.planDeliverableRefs ?? [],
+              prUrl: candidatePrUrl,
+              planDeliverableRefs: candidateDeliverableRefs,
               boundPlanVersion: task.boundPlanVersion,
             },
           });
