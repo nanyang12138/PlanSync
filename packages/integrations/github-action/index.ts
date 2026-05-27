@@ -71,6 +71,20 @@ export interface PlansyncStatusInput {
   scopedTaskIds: readonly string[] | null;
   truncatedTaskScan: boolean;
   truncatedDriftScan: boolean;
+  /**
+   * Discriminator for the drift-scan stage so the rendered block can tell
+   * "we scanned and found zero" apart from "we never scanned". Without this
+   * the block would default to "no open alerts in scope" on any early-return
+   * path (semantic-gate failure, active-plan load failure, branch scope
+   * matched zero tasks, pagination cap exceeded, drift fetch error), which
+   * is a correctness defect — reviewers would be told the PR is drift-clean
+   * when in fact the drift list was never consulted (#2753).
+   *
+   *   `not_run`   — no drift fetch ran (initial value; early-return paths).
+   *   `truncated` — fetch ran but exceeded the pagination cap; counts unknown.
+   *   `ok`        — fetch + scoping completed; `drifts` is authoritative.
+   */
+  driftScan: 'not_run' | 'truncated' | 'ok';
 }
 
 /**
@@ -100,15 +114,27 @@ export function renderPlansyncStatusBlock(input: PlansyncStatusInput): string {
   } else {
     lines.push('- **PR scope**: project-wide');
   }
-  const highCount = input.drifts.filter((d) => d.severity === 'high').length;
-  const medCount = input.drifts.filter((d) => d.severity === 'medium').length;
-  const lowCount = input.drifts.length - highCount - medCount;
-  if (input.drifts.length === 0) {
-    lines.push('- **Drift**: no open alerts in scope');
-  } else {
+  // #2753: only claim "no open alerts in scope" when we actually completed
+  // a drift scan. The early-return paths in `run()` leave `drifts: []` and
+  // `driftScan: 'not_run'`, in which case saying the PR is drift-clean
+  // would be a lie that misleads reviewers.
+  if (input.driftScan === 'not_run') {
+    lines.push('- **Drift**: _not evaluated this run — see action log_');
+  } else if (input.driftScan === 'truncated') {
     lines.push(
-      `- **Drift**: ${input.drifts.length} open alert(s) — ${highCount} high · ${medCount} medium · ${lowCount} other`,
+      '- **Drift**: _partial scan — open-alert count unknown (pagination cap exceeded; see warning below)_',
     );
+  } else {
+    const highCount = input.drifts.filter((d) => d.severity === 'high').length;
+    const medCount = input.drifts.filter((d) => d.severity === 'medium').length;
+    const lowCount = input.drifts.length - highCount - medCount;
+    if (input.drifts.length === 0) {
+      lines.push('- **Drift**: no open alerts in scope');
+    } else {
+      lines.push(
+        `- **Drift**: ${input.drifts.length} open alert(s) — ${highCount} high · ${medCount} medium · ${lowCount} other`,
+      );
+    }
   }
   if (input.deliverableGlobs.length > 0) {
     const previewGlobs = input.deliverableGlobs
@@ -509,6 +535,11 @@ export async function run() {
     scopedTaskIds: null,
     truncatedTaskScan: false,
     truncatedDriftScan: false,
+    // #2753: stays `not_run` until the drift fetch + scoping completes.
+    // Every early-return path below leaves this untouched so the rendered
+    // PR-body block correctly reports "not evaluated" instead of falsely
+    // claiming the PR is drift-clean.
+    driftScan: 'not_run',
   };
   // PR-body sync runs in a `finally` so a thrown error inside the gate
   // logic still leaves the reviewer with the partial status block.
@@ -673,6 +704,10 @@ export async function run() {
       const result = await fetchOpenDrifts(apiUrl, projectId, headers);
       if (result.truncated) {
         status.truncatedDriftScan = true;
+        // #2753: partial drift list — flag the discriminator so the rendered
+        // block does not fall through to "no open alerts in scope" on a
+        // page-2 HIGH drift.
+        status.driftScan = 'truncated';
         core.setFailed(
           'PlanSync drift-check: open drift list exceeds pagination cap; refusing to gate on a partial view (HIGH drifts could be on later pages). Triage backlog or raise the cap.',
         );
@@ -692,6 +727,10 @@ export async function run() {
       taskId: d.taskId,
       reason: d.reason,
     }));
+    // #2753: drift fetch + scoping completed without throwing — `drifts` is
+    // now authoritative, so the rendered block can safely show counts (or
+    // "no open alerts in scope" when truly zero).
+    status.driftScan = 'ok';
 
     if (scopedTaskIds !== null) {
       const filteredOut = allDrifts.length - drifts.length;

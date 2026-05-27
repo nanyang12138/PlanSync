@@ -70,6 +70,7 @@ describe('R-193 pure helpers', () => {
       scopedTaskIds: ['t1', 't2'],
       truncatedTaskScan: false,
       truncatedDriftScan: false,
+      driftScan: 'ok',
     });
 
     // Tag delimiters present (parser anchor).
@@ -99,6 +100,9 @@ describe('R-193 pure helpers', () => {
       scopedTaskIds: null,
       truncatedTaskScan: false,
       truncatedDriftScan: false,
+      // #2753: caller observed a clean drift scan, so the block should
+      // explicitly say "no open alerts in scope" (not "not evaluated").
+      driftScan: 'ok',
     });
     expect(block).toMatch(/none — activate a plan/);
     expect(block).toContain('project-wide');
@@ -163,6 +167,7 @@ describe('R-193 syncPrBody (mocked GitHub API)', () => {
         scopedTaskIds: null,
         truncatedTaskScan: false,
         truncatedDriftScan: false,
+        driftScan: 'ok',
       },
       { repo: 'org/repo', prNumber: 42, token: 'ghp_test', fetchImpl },
     );
@@ -196,6 +201,7 @@ describe('R-193 syncPrBody (mocked GitHub API)', () => {
       scopedTaskIds: null,
       truncatedTaskScan: false,
       truncatedDriftScan: false,
+      driftScan: 'ok' as const,
     };
     const block = renderPlansyncStatusBlock(status);
     const existing = injectPlansyncBlock('## Description\n\nFixes #1', block);
@@ -234,10 +240,196 @@ describe('R-193 syncPrBody (mocked GitHub API)', () => {
           scopedTaskIds: null,
           truncatedTaskScan: false,
           truncatedDriftScan: false,
+          driftScan: 'not_run',
         },
         { repo: 'org/repo', prNumber: 42, token: 'ghp_test', fetchImpl },
       ),
     ).rejects.toThrow(/403/);
+  });
+});
+
+describe('R-193 #2753 drift-scan discriminator', () => {
+  // Regression: before #2753 every early-return path in run() left
+  // `status.drifts = []` and the rendered block silently claimed
+  // "no open alerts in scope", lying to reviewers that the PR was
+  // drift-clean when in fact the drift list was never consulted. These
+  // tests pin the three terminal states for the new `driftScan` field.
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    Object.values(coreMock).forEach((fn) => fn.mockReset());
+    fetchSpy = vi.spyOn(globalThis, 'fetch');
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it('R193-#2753-P1: renderPlansyncStatusBlock reports "not evaluated" when driftScan=not_run, even with drifts=[]', async () => {
+    const { renderPlansyncStatusBlock } = await import('../index');
+    const block = renderPlansyncStatusBlock({
+      projectId: 'proj-skipped',
+      planVersion: 4,
+      drifts: [],
+      semanticGate: 'failed',
+      deliverableGlobs: ['src/**/*.ts'],
+      unmatchedFiles: ['stray.md'],
+      scopedTaskIds: null,
+      truncatedTaskScan: false,
+      truncatedDriftScan: false,
+      driftScan: 'not_run',
+    });
+    expect(block).toContain('not evaluated');
+    // The misleading legacy phrasing must NOT appear when no scan ran.
+    expect(block).not.toContain('no open alerts in scope');
+    // Other status lines (semantic gate, plan version, unmatched files)
+    // are still rendered so the reviewer can see WHY drift was skipped.
+    expect(block).toContain('v4');
+    expect(block).toContain('failed');
+    expect(block).toContain('stray.md');
+  });
+
+  it('R193-#2753-P2: renderPlansyncStatusBlock reports "partial scan" when driftScan=truncated', async () => {
+    const { renderPlansyncStatusBlock } = await import('../index');
+    const block = renderPlansyncStatusBlock({
+      projectId: 'proj-trunc',
+      planVersion: 1,
+      drifts: [],
+      semanticGate: 'passed',
+      deliverableGlobs: [],
+      unmatchedFiles: [],
+      scopedTaskIds: null,
+      truncatedTaskScan: false,
+      truncatedDriftScan: true,
+      driftScan: 'truncated',
+    });
+    expect(block).toContain('partial scan');
+    expect(block).not.toContain('no open alerts in scope');
+    // The footer warning is independently driven by truncatedDriftScan
+    // and should still appear.
+    expect(block).toContain('truncated its scan');
+  });
+
+  it('R193-#2753-R1: when the semantic gate FAILS, the PR body says "not evaluated" (not "no open alerts")', async () => {
+    // This is the load-bearing regression: the original bug let a PR with
+    // a failed deliverable gate write "Drift: no open alerts in scope"
+    // into the PR body, telling reviewers the drift list was clean even
+    // though `fetchOpenDrifts` was never called.
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'pr-files': 'random/stray.md',
+      'github-token': 'ghp_test',
+      repo: 'octo/example',
+      'pr-number': '11',
+    });
+    // /plans/active → returns an active plan ...
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(200, { data: { id: 'plan-1', version: 2 } }),
+    );
+    // ... whose deliverables only cover src/**/*.ts, so `stray.md` is
+    // unmatched and the semantic gate fails fast — short-circuiting the
+    // drift fetch entirely.
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(200, {
+        data: [{ id: 'd-1', slug: 'core', refType: 'file_glob', refUri: 'src/**/*.ts', status: 'active' }],
+      }),
+    );
+    // GitHub GET / PATCH for the finally-block PR-body sync.
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { body: '' }));
+    let patchBody: string | undefined;
+    fetchSpy.mockImplementationOnce(async (_url: string | URL, init?: RequestInit) => {
+      patchBody = JSON.parse(String(init?.body)).body as string;
+      return jsonResponse(200, {});
+    });
+
+    const { run } = await import('../index');
+    await run();
+
+    // The gate failed (so the action set its own failure verdict).
+    expect(coreMock.setFailed).toHaveBeenCalled();
+    // And the PR body got the block — but it must NOT lie about drift.
+    expect(patchBody).toBeDefined();
+    expect(patchBody!).toContain('<!-- plansync-status -->');
+    expect(patchBody!).toContain('not evaluated');
+    expect(patchBody!).not.toContain('no open alerts in scope');
+    // No drift fetch should have been issued.
+    const driftCalls = fetchSpy.mock.calls.filter((c) =>
+      String(c[0]).includes('/drifts?status=open'),
+    );
+    expect(driftCalls).toHaveLength(0);
+  });
+
+  it('R193-#2753-R2: when the drift fetch throws, the PR body says "not evaluated"', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'github-token': 'ghp_test',
+      repo: 'octo/example',
+      'pr-number': '12',
+    });
+    // /drifts → 500 so fetchOpenDrifts throws.
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(500, { error: { message: 'boom' } }),
+    );
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { body: '' }));
+    let patchBody: string | undefined;
+    fetchSpy.mockImplementationOnce(async (_url: string | URL, init?: RequestInit) => {
+      patchBody = JSON.parse(String(init?.body)).body as string;
+      return jsonResponse(200, {});
+    });
+
+    const { run } = await import('../index');
+    await run();
+
+    expect(coreMock.setFailed).toHaveBeenCalled();
+    expect(patchBody).toBeDefined();
+    expect(patchBody!).toContain('not evaluated');
+    expect(patchBody!).not.toContain('no open alerts in scope');
+  });
+
+  it('R193-#2753-R3: when the drift scan is truncated, the PR body says "partial scan" (not "no open alerts")', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'github-token': 'ghp_test',
+      repo: 'octo/example',
+      'pr-number': '13',
+    });
+    // Return a full page on every drift fetch so the pagination cap trips
+    // (DRIFT_PAGE_SIZE=100, DRIFT_PAGE_CAP=50). Omitting `pagination`
+    // exercises the legacy-server "partial-page heuristic" fallback.
+    const fullPage = Array.from({ length: 100 }, (_, i) => ({
+      id: `d-${i}`,
+      taskId: `t-${i}`,
+      severity: 'medium',
+      taskBoundVersion: 1,
+      currentPlanVersion: 2,
+    }));
+    for (let i = 0; i < 50; i += 1) {
+      fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: fullPage }));
+    }
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { body: '' }));
+    let patchBody: string | undefined;
+    fetchSpy.mockImplementationOnce(async (_url: string | URL, init?: RequestInit) => {
+      patchBody = JSON.parse(String(init?.body)).body as string;
+      return jsonResponse(200, {});
+    });
+
+    const { run } = await import('../index');
+    await run();
+
+    expect(coreMock.setFailed).toHaveBeenCalledWith(
+      expect.stringContaining('pagination cap'),
+    );
+    expect(patchBody).toBeDefined();
+    expect(patchBody!).toContain('partial scan');
+    expect(patchBody!).not.toContain('no open alerts in scope');
+    // The footer truncation warning should also be present.
+    expect(patchBody!).toContain('truncated its scan');
   });
 });
 
