@@ -18,6 +18,7 @@ import { COMPLETION_VERIFY_TOOL, completionVerifyResultZ } from '@/lib/ai/schema
 import { applyCompletionVerifyConsistency } from '@/lib/ai/completion-verify-consistency';
 import { evaluateProjectVerificationRules } from '@/lib/verification-rules';
 import { deriveTaskCompletionState } from '@/lib/task-state-machine';
+import { auditCrossProjectTaskIfNeeded } from '@/lib/task-scope';
 
 type Params = { params: Promise<{ projectId: string; taskId: string; runId: string }> };
 
@@ -35,6 +36,11 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
     });
     if (!run) throw new AppError(ErrorCode.NOT_FOUND, 'ExecutionRun not found');
     if (run.taskId !== params.taskId || run.task.projectId !== params.projectId) {
+      await auditCrossProjectTaskIfNeeded(
+        params.taskId,
+        params.projectId,
+        'POST /tasks/:taskId/runs/:runId',
+      );
       throw new AppError(ErrorCode.NOT_FOUND, 'ExecutionRun not found');
     }
 
