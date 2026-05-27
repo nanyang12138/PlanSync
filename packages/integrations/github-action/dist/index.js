@@ -21707,6 +21707,7 @@ async function run() {
     truncatedDriftScan: false
   };
   core.setOutput("pr-body-updated", "false");
+  let plansyncApiFailure = null;
   try {
     const headers = {
       Authorization: `Bearer ${apiKey}`,
@@ -21725,8 +21726,10 @@ async function run() {
       try {
         activePlan = await fetchActivePlanFileGlobs(apiUrl, projectId, headers);
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        plansyncApiFailure = `semantic-gate /plans/active fetch failed: ${message}`;
         core.setFailed(
-          `PlanSync semantic gate: failed to load active plan deliverables \u2014 ${err instanceof Error ? err.message : String(err)}`
+          `PlanSync semantic gate: failed to load active plan deliverables \u2014 ${message}`
         );
         return;
       }
@@ -21836,7 +21839,9 @@ async function run() {
       }
       allDrifts = result.rows;
     } catch (err) {
-      core.setFailed(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      plansyncApiFailure = `/drifts fetch failed: ${message}`;
+      core.setFailed(message);
       return;
     }
     const drifts = scopedTaskIds === null ? allDrifts : allDrifts.filter((d) => scopedTaskIds.has(d.taskId));
@@ -21876,6 +21881,7 @@ async function run() {
     }
   } catch (error2) {
     const message = error2 instanceof Error ? error2.message : String(error2);
+    plansyncApiFailure = `gate aborted by unexpected error: ${message}`;
     core.setFailed(message);
   } finally {
     if (!githubToken || !repoInput || !prNumberInput) {
@@ -21884,6 +21890,10 @@ async function run() {
           "PlanSync PR-body sync skipped: provide all three of `github-token`, `repo`, and `pr-number` to enable the R-193 block injection."
         );
       }
+    } else if (plansyncApiFailure !== null) {
+      core.warning(
+        `PlanSync PR-body sync skipped: ${plansyncApiFailure}. The status block was not written because the gate did not produce a verdict \u2014 see the failure above.`
+      );
     } else {
       const prNumber = Number.parseInt(prNumberInput, 10);
       if (!Number.isFinite(prNumber) || prNumber <= 0) {

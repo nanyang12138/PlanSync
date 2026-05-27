@@ -529,6 +529,21 @@ export async function run() {
   // Default-false output keeps existing workflows wire-compatible.
   core.setOutput('pr-body-updated', 'false');
 
+  // Issue #2761: when a PlanSync API call itself throws (e.g. `/drifts` or
+  // `/plans/active` returns 5xx mid-run), the `status` accumulator is left
+  // with its placeholder fields — `drifts: []`, `semanticGate: 'skipped'`,
+  // `planVersion: null` — which the renderer would print as "Drift: no open
+  // alerts in scope" / "Active plan: none". That block is actively
+  // misleading: the gate did NOT determine "no open alerts", it failed to
+  // ask. The flag below lets the `finally` block tell those two situations
+  // apart and skip the cosmetic PR-body sync when the input data is known
+  // to be unreliable. Holds the underlying message so the skip-log can
+  // point a human at the right log line. Stays `null` on the happy path
+  // and on gate-FAIL paths where `status` IS populated correctly (e.g.
+  // semantic-gate unmatched-files, HIGH drift) — those still render the
+  // block so reviewers see the failure context (preserves R193-R4).
+  let plansyncApiFailure: string | null = null;
+
   try {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${apiKey}`,
@@ -566,8 +581,10 @@ export async function run() {
       try {
         activePlan = await fetchActivePlanFileGlobs(apiUrl, projectId, headers);
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        plansyncApiFailure = `semantic-gate /plans/active fetch failed: ${message}`;
         core.setFailed(
-          `PlanSync semantic gate: failed to load active plan deliverables — ${err instanceof Error ? err.message : String(err)}`,
+          `PlanSync semantic gate: failed to load active plan deliverables — ${message}`,
         );
         return;
       }
@@ -721,7 +738,9 @@ export async function run() {
       }
       allDrifts = result.rows;
     } catch (err) {
-      core.setFailed(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      plansyncApiFailure = `/drifts fetch failed: ${message}`;
+      core.setFailed(message);
       return;
     }
 
@@ -768,6 +787,11 @@ export async function run() {
     }
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
+    // Issue #2761: any unexpected exception inside the gate (most commonly
+    // `fetchTaskIdsForBranch` throwing on a 5xx) leaves `status` partially
+    // populated, so flag the run as untrustworthy for the PR-body sync
+    // below. Preserves the gate's red verdict via `setFailed`.
+    plansyncApiFailure = `gate aborted by unexpected error: ${message}`;
     core.setFailed(message);
   } finally {
     // R-193: write the PlanSync status block onto the PR body, in place,
@@ -783,6 +807,17 @@ export async function run() {
           'PlanSync PR-body sync skipped: provide all three of `github-token`, `repo`, and `pr-number` to enable the R-193 block injection.',
         );
       }
+    } else if (plansyncApiFailure !== null) {
+      // Issue #2761: a PlanSync API call failed mid-gate, so `status` only
+      // contains placeholder values (`drifts: []`, `planVersion: null`).
+      // Rendering that block would tell the reviewer "Drift: no open alerts
+      // in scope" / "Active plan: none" even though we never actually
+      // checked — an actively misleading state worse than leaving the
+      // existing block stale. Skip the PATCH and surface a warning so the
+      // reason is visible in the job log next to the gate's `setFailed`.
+      core.warning(
+        `PlanSync PR-body sync skipped: ${plansyncApiFailure}. The status block was not written because the gate did not produce a verdict — see the failure above.`,
+      );
     } else {
       const prNumber = Number.parseInt(prNumberInput, 10);
       if (!Number.isFinite(prNumber) || prNumber <= 0) {

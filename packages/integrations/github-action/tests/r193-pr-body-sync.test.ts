@@ -445,6 +445,12 @@ describe('R-193 run() integration with GitHub API', () => {
       repo: 'just-a-slug-no-slash',
       'pr-number': '1',
     });
+    // Empty pr-files + PR-body sync configured ⇒ R-2754 best-effort plan
+    // lookup fires before /drifts. Mock both so the gate reaches the
+    // `finally` cleanly and exercises the malformed-input branch (rather
+    // than tripping the #2761 API-failure skip, which would mask this
+    // test's intent).
+    fetchSpy.mockResolvedValueOnce(jsonResponse(404, {}));
     fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] }));
 
     const { run } = await import('../index');
@@ -468,6 +474,10 @@ describe('R-193 run() integration with GitHub API', () => {
       repo: 'octo/example',
       'pr-number': 'not-a-number',
     });
+    // Same setup note as R193-R5: mock R-2754 plan lookup + drift fetch so
+    // the test reaches the malformed-pr-number warning instead of being
+    // short-circuited by the #2761 API-failure skip.
+    fetchSpy.mockResolvedValueOnce(jsonResponse(404, {}));
     fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] }));
 
     const { run } = await import('../index');
@@ -636,5 +646,132 @@ describe('R-193 run() integration with GitHub API', () => {
     await run();
 
     expect(coreMock.setSecret).toHaveBeenCalledWith('ghp_supersecret_value');
+  });
+
+  // ---- Issue #2761 regression: do NOT write a misleading status block when
+  // a PlanSync API call failed and `status` is still placeholder data. ----
+
+  it('R193-R13 (#2761): /drifts fetch failure skips PR-body sync (no misleading "no open alerts" block)', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'legacy-mode': 'true',
+      'github-token': 'ghp_test',
+      repo: 'octo/example',
+      'pr-number': '42',
+    });
+    // 1) Best-effort plan lookup (legacy-mode + PR-body sync configured).
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: { id: 'p1', version: 3 } }));
+    // 2) /drifts blows up — fetchOpenDrifts throws because res.ok is false.
+    fetchSpy.mockResolvedValueOnce(jsonResponse(503, { error: { message: 'database unreachable' } }));
+
+    const { run } = await import('../index');
+    await run();
+
+    // Drift gate failed loudly — the verdict is preserved.
+    const failed = coreMock.setFailed.mock.calls.map((c) => String(c[0]));
+    expect(failed.some((m) => m.includes('database unreachable'))).toBe(true);
+
+    // Critically: no GitHub API calls were attempted, so the existing PR
+    // body keeps whatever previous (or empty) block it had instead of being
+    // overwritten with `Drift: no open alerts in scope` / `Active plan: none`.
+    const githubCalls = fetchSpy.mock.calls.filter((c) =>
+      String(c[0]).startsWith('https://api.github.com/'),
+    );
+    expect(githubCalls).toHaveLength(0);
+
+    // And the operator gets a clear warning explaining the skip, citing the
+    // upstream `/drifts` failure so it lines up with the gate's setFailed.
+    const warnings = coreMock.warning.mock.calls.map((c) => String(c[0]));
+    expect(
+      warnings.some(
+        (w) =>
+          w.includes('PR-body sync skipped') &&
+          w.includes('/drifts') &&
+          w.includes('did not produce a verdict'),
+      ),
+    ).toBe(true);
+
+    // pr-body-updated stays false (the output we initialise the run with).
+    expect(coreMock.setOutput).toHaveBeenCalledWith('pr-body-updated', 'false');
+  });
+
+  it('R193-R14 (#2761): semantic-gate /plans/active fetch failure skips PR-body sync', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      // Non-empty pr-files so we go through fetchActivePlanFileGlobs (not the
+      // R-2754 best-effort branch which catches its own errors as `core.info`).
+      'pr-files': 'src/foo.ts',
+      'github-token': 'ghp_test',
+      repo: 'octo/example',
+      'pr-number': '7',
+    });
+    // /plans/active returns 500 → fetchActivePlanFileGlobs throws.
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(500, { error: { message: 'plans index corrupted' } }),
+    );
+
+    const { run } = await import('../index');
+    await run();
+
+    const failed = coreMock.setFailed.mock.calls.map((c) => String(c[0]));
+    expect(failed.some((m) => m.includes('failed to load active plan deliverables'))).toBe(true);
+
+    // No /drifts call (we returned early), and crucially no GitHub PATCH —
+    // the placeholder `status` would have rendered "no open alerts" / "none".
+    const githubCalls = fetchSpy.mock.calls.filter((c) =>
+      String(c[0]).startsWith('https://api.github.com/'),
+    );
+    expect(githubCalls).toHaveLength(0);
+
+    const warnings = coreMock.warning.mock.calls.map((c) => String(c[0]));
+    expect(
+      warnings.some(
+        (w) => w.includes('PR-body sync skipped') && w.includes('/plans/active'),
+      ),
+    ).toBe(true);
+  });
+
+  it('R193-R15 (#2761): outer-catch path (unexpected exception) skips PR-body sync', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'legacy-mode': 'true',
+      // `branch-name` routes us through fetchTaskIdsForBranch, which has no
+      // local try/catch — its exception bubbles up to the outer `catch` and
+      // exercises that branch of the #2761 fix.
+      'branch-name': 'feature/x',
+      'github-token': 'ghp_test',
+      repo: 'octo/example',
+      'pr-number': '88',
+    });
+    // 1) Best-effort plan lookup succeeds.
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: { id: 'p1', version: 4 } }));
+    // 2) fetchTaskIdsForBranch's first request throws synchronously.
+    fetchSpy.mockRejectedValueOnce(new Error('socket hang up'));
+
+    const { run } = await import('../index');
+    await run();
+
+    // setFailed fired with the underlying message.
+    const failed = coreMock.setFailed.mock.calls.map((c) => String(c[0]));
+    expect(failed.some((m) => m.includes('socket hang up'))).toBe(true);
+
+    // No GitHub PATCH attempted — block would otherwise lie about scope/drift.
+    const githubCalls = fetchSpy.mock.calls.filter((c) =>
+      String(c[0]).startsWith('https://api.github.com/'),
+    );
+    expect(githubCalls).toHaveLength(0);
+
+    const warnings = coreMock.warning.mock.calls.map((c) => String(c[0]));
+    expect(
+      warnings.some(
+        (w) => w.includes('PR-body sync skipped') && w.includes('gate aborted'),
+      ),
+    ).toBe(true);
   });
 });
