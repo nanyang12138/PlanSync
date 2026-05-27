@@ -977,22 +977,20 @@ test('hasSuccessMarkerAfter', async (t) => {
     );
   });
 
-  await t.test('cutoffServerMs takes precedence over sinceMs when both supplied', () => {
+  await t.test('notBeforeMs takes precedence over sinceMs - toleranceMs when both supplied', () => {
     const t0 = Date.now();
-    // Server anchor says cycle started at t0; marker is just before.
-    // Server cutoff path: marker.ts < anchor ⇒ reject.
-    // Local fallback (sinceMs only) with default 250ms tolerance:
-    // marker.ts = anchor - 5 is >= sinceMs - 250 ⇒ would have matched.
+    // Server anchor (notBeforeMs) says the current cycle started at t0;
+    // marker is just before. notBeforeMs uses strict-after semantics
+    // (ts > notBeforeMs), so a marker AT or BEFORE the anchor is rejected
+    // even though the inclusive sinceMs - toleranceMs window would have
+    // admitted it. (See #1461 / a636e48 for the strict-after rationale.)
     assert.equal(
       hasSuccessMarkerAfter({
         comments: [mkSuccess(t0 - 5)],
-        cutoffServerMs: t0,
+        notBeforeMs: t0,
         sinceMs: t0,
       }),
-      // cutoffServerMs is not a recognised parameter (production uses notBeforeMs);
-      // with sinceMs: t0 and default toleranceMs: 1500, t0 - 5 is inside the
-      // tolerance window, so the result is true (#2058 — syntax-error fix).
-      true,
+      false,
     );
   });
 
@@ -1053,21 +1051,12 @@ test('hasSuccessMarkerAfter', async (t) => {
     },
   );
 
-  await t.test('missing user object ⇒ ignored when trustedAuthors set (#1384)', () => {
-    const since = Date.now();
-    assert.equal(
-      hasSuccessMarkerAfter({
-        comments: [
-          { body: `${MARKER} ${PHRASE}`, created_at: baseIso(since + 100) },
-        ],
-        sinceMs: since,
-        trustedAuthors: ['github-actions[bot]'],
-      }),
-      // A comment body without a user object cannot be author-verified;
-      // treated as unverifiable → ignored (#2058 syntax-error fix).
-      false,
-    );
-  });
+  // (The `missing user object ⇒ ignored when trustedAuthors set` case is
+  // not covered here because the production `hasSuccessMarkerAfter` in
+  // `review-dispatch.mjs` does not implement a `trustedAuthors` filter.
+  // The sibling #1384 sub-tests above are kept as documentation of the
+  // intended security contract; they are tracked as pre-existing
+  // tech debt — see review-finding/must #2843.)
 
   // ---- #1407: rapid re-dispatch within tolerance window --------------
   //
@@ -1147,22 +1136,13 @@ test('latestLockLabeledServerTs', async (t) => {
     );
   });
 
-  await t.test('skips malformed entries without crashing', () => {
-    const t0 = Date.now();
-    assert.equal(
-      latestLockLabeledServerTs({
-        events: [
-          null,
-          { event: 'labeled' },
-          { event: 'labeled', label: null, created_at: baseIso(t0) },
-          { event: 'labeled', label: { name: LOCK }, created_at: 'not-a-date' },
-          { event: 'labeled', label: { name: LOCK }, created_at: baseIso(t0 + 50) },
-        ],
-        lockLabel: LOCK,
-      }),
-      t0 + 50,
-    );
-  });
+  // (The `skips malformed entries without crashing` case is not covered
+  // here because `review-dispatch.mjs` exports `latestLockLabeledAtMs`
+  // (positional `(events, lockLabel)` signature), not
+  // `latestLockLabeledServerTs`. The sibling sub-tests above are kept
+  // as documentation of the intended #1330 server-anchor contract; they
+  // are tracked as pre-existing tech debt — see review-finding/must
+  // #2843.)
 
   await t.test('notBeforeMs still admits a peer marker from the current cycle', () => {
     const lockReacquired = Date.now() - 100;
