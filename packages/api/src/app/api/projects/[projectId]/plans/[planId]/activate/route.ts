@@ -149,6 +149,73 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
         // pre-validated snapshot and surfaces as STATE_CONFLICT
         // so the operator re-reads and decides explicitly.
         const observedStatus = plan.status;
+
+        // Closes #1642 — the status-only in-tx guard below is necessary
+        // but not sufficient. Both reviewer-add paths
+        // (POST .../plans/[planId]/reviews and
+        // PATCH .../plans/[planId] with `requiredReviewers`) create a
+        // new pending PlanReview WITHOUT changing plan.status. If one
+        // of them lands between the outer review-gate (L67–L87,
+        // evaluated against the outer-read snapshot `plan.reviews`)
+        // and the flip below, the status guard still matches
+        // ('proposed' === 'proposed') and the route silently
+        // activates a plan whose review set just gained a pending
+        // reviewer who never approved.
+        //
+        // Re-validate the review gate INSIDE the transaction. First
+        // acquire `FOR UPDATE` on the plan row: both reviewer-add
+        // paths write `plan` in the same tx as their `planReview`
+        // write (POST: `plan.update({ requiredReviewers: { push } })`;
+        // PATCH: scalar `plan.update` before `planReview.createMany`),
+        // so taking the row lock here forces any in-flight
+        // reviewer-add to either commit before our re-read (then we
+        // see the new pending row and 409) or after our tx releases
+        // (then it lost the race and our activate is correct against
+        // the state we observed). The status-only `updateMany` below
+        // is kept as a defense-in-depth check, but the review-set
+        // re-validation is the one that actually closes #1642.
+        await tx.$executeRaw`SELECT id FROM "plans" WHERE id = ${params.planId} FOR UPDATE`;
+
+        if (observedStatus === 'proposed') {
+          const txReviews = await tx.planReview.findMany({
+            where: { planId: params.planId },
+            select: { status: true },
+          });
+          if (forceUsed) {
+            // Outer gate was bypassed via ?force=true because reviews
+            // were empty at outer-read time. If reviewers were added
+            // concurrently, force can no longer apply — the operator
+            // must observe the new reviewer set and decide explicitly
+            // (re-issue force, or wait for approvals).
+            if (txReviews.length !== 0) {
+              throw new AppError(
+                ErrorCode.STATE_CONFLICT,
+                `Concurrent reviewer change: activate was validated with 0 reviewers ` +
+                  `(force=true), but the plan now has ${txReviews.length} reviewer(s). ` +
+                  `Re-read the plan and either wait for the new reviewer(s) to approve or re-issue activate.`,
+              );
+            }
+          } else {
+            // Outer gate passed because all reviews at outer-read time
+            // were approved. If a new pending/rejected review snuck in,
+            // the gate is now stale; reject.
+            const allApproved =
+              txReviews.length > 0 && txReviews.every((r) => r.status === 'approved');
+            if (!allApproved) {
+              const outerCount = plan.reviews.length;
+              const txTotal = txReviews.length;
+              const txPending = txReviews.filter((r) => r.status !== 'approved').length;
+              throw new AppError(
+                ErrorCode.STATE_CONFLICT,
+                `Concurrent reviewer change: the review gate was validated with ` +
+                  `${outerCount} approved reviewer(s), but the plan now has ` +
+                  `${txTotal} reviewer(s) (${txPending} not yet approved). ` +
+                  `Re-read the plan and either wait for the new reviewer(s) to approve or re-issue activate.`,
+              );
+            }
+          }
+        }
+
         const flip = await tx.plan.updateMany({
           where: { id: params.planId, status: observedStatus },
           data: {
