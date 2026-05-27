@@ -180,64 +180,138 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
       );
     }
 
-    if (task.status === 'todo') {
-      // Atomic claim: transition from 'todo' → 'in_progress' in a single DB operation.
-      // If two operators race on the same todo task, only one wins — the other gets count=0.
-      const claimed = await prisma.task.updateMany({
-        where: { id: params.taskId, status: 'todo' },
-        data: {
-          status: 'in_progress',
-          assignee: body.executorName,
-          assigneeType: body.executorType,
-        },
-      });
-      if (claimed.count === 0) {
-        throw new AppError(
-          ErrorCode.STATE_CONFLICT,
-          `Task was just claimed by another executor — only one executor at a time`,
-        );
-      }
-    } else if (task.status === 'in_progress' || task.status === 'awaiting_evidence') {
-      // Mutex: only one running run per task. Stale/failed/completed runs allow retry.
-      // task.assignee is preserved — set on the original todo→in_progress claim, not rewritten here.
-      const activeRun = await prisma.executionRun.findFirst({
-        where: { taskId: params.taskId, status: 'running' },
-        select: { id: true, executorName: true, lastHeartbeatAt: true },
-      });
-      if (activeRun) {
-        throw new AppError(
-          ErrorCode.STATE_CONFLICT,
-          `Task already has an active execution by "${activeRun.executorName}" (runId: ${activeRun.id}). Wait for it to complete, fail, or go stale (5min heartbeat timeout).`,
-        );
-      }
-      // R-192: a fresh run after an `awaiting_evidence` parking lifts the
-      // task back into `in_progress` so the rest of the route (event
-      // payloads, drift gating, status displays) sees a normal run/task
-      // pair. The next `execution_complete` re-derives the R-192 state
-      // and will flip to `done` once the missing evidence is in place.
-      if (task.status === 'awaiting_evidence') {
-        await prisma.task.updateMany({
-          where: { id: params.taskId, status: 'awaiting_evidence' },
-          data: { status: 'in_progress' },
-        });
-      }
-    }
-
+    // Fixes #1467 — the upfront `task` read at the top of this handler
+    // happens OUTSIDE any transaction, so a concurrent `PATCH /tasks/:id`
+    // that lands between the read and the writes below can leave us
+    // creating a `running` execution_run on a task that is no longer in
+    // a legal source state (e.g. PATCH already advanced it to
+    // `done`/`cancelled`/`blocked`). Two specific gaps existed pre-fix:
+    //
+    //   1. The `awaiting_evidence` branch called `updateMany` with a
+    //      `status: 'awaiting_evidence'` guard but never inspected
+    //      `count`. If the guard matched zero rows (because PATCH had
+    //      already flipped status), the code silently fell through and
+    //      created a running run — violating the R-054 state invariant.
+    //
+    //   2. The `in_progress` branch performed no state write at all, so
+    //      a PATCH that flipped `in_progress → done` between the upfront
+    //      read and the `executionRun.create` would still produce a
+    //      running run hanging off a `done` task.
+    //
+    // The fix wraps the state-transition decisions and the run create in
+    // a single `$transaction` and, inside it, re-evaluates task.status
+    // with `findUnique` plus uses conditional `updateMany` writes with
+    // explicit `count` checks (PostgreSQL takes a row-level write lock
+    // on UPDATE — including no-op self-sets — so subsequent reads in the
+    // same tx see a stable view). Concurrent PATCHes now either lose the
+    // race (we throw STATE_CONFLICT) or commit cleanly before this tx
+    // starts (we observe their result on re-read and reject appropriately).
     let run;
     try {
-      run = await prisma.executionRun.create({
-        data: {
-          taskId: params.taskId,
-          executorType: body.executorType,
-          executorName: body.executorName,
-          boundPlanVersion: task.boundPlanVersion,
-          status: 'running',
-          taskPackSnapshot: taskPack as object,
-          lastHeartbeatAt: new Date(),
-          filesChanged: [],
-          blockers: [],
-          driftSignals: [],
-        },
+      run = await prisma.$transaction(async (tx) => {
+        const liveTask = await tx.task.findUnique({
+          where: { id: params.taskId },
+          select: { status: true, boundPlanVersion: true },
+        });
+        if (!liveTask) {
+          throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+        }
+
+        if (liveTask.status === 'todo') {
+          // Atomic claim: transition from 'todo' → 'in_progress' in a single DB operation.
+          // If two operators race on the same todo task, only one wins — the other gets count=0.
+          const claimed = await tx.task.updateMany({
+            where: { id: params.taskId, status: 'todo' },
+            data: {
+              status: 'in_progress',
+              assignee: body.executorName,
+              assigneeType: body.executorType,
+            },
+          });
+          if (claimed.count === 0) {
+            throw new AppError(
+              ErrorCode.STATE_CONFLICT,
+              `Task was just claimed by another executor — only one executor at a time`,
+            );
+          }
+        } else if (liveTask.status === 'in_progress' || liveTask.status === 'awaiting_evidence') {
+          // Mutex: only one running run per task. Stale/failed/completed runs allow retry.
+          // task.assignee is preserved — set on the original todo→in_progress claim, not rewritten here.
+          const activeRun = await tx.executionRun.findFirst({
+            where: { taskId: params.taskId, status: 'running' },
+            select: { id: true, executorName: true, lastHeartbeatAt: true },
+          });
+          if (activeRun) {
+            throw new AppError(
+              ErrorCode.STATE_CONFLICT,
+              `Task already has an active execution by "${activeRun.executorName}" (runId: ${activeRun.id}). Wait for it to complete, fail, or go stale (5min heartbeat timeout).`,
+            );
+          }
+          if (liveTask.status === 'awaiting_evidence') {
+            // R-192: a fresh run after an `awaiting_evidence` parking lifts the
+            // task back into `in_progress` so the rest of the route (event
+            // payloads, drift gating, status displays) sees a normal run/task
+            // pair. The next `execution_complete` re-derives the R-192 state
+            // and will flip to `done` once the missing evidence is in place.
+            //
+            // Fixes #1467 — guard on `awaiting_evidence` AND check count. A
+            // concurrent PATCH that flipped the task to `done`/`cancelled`/
+            // `blocked` would otherwise let us fall through to a running-run
+            // INSERT on a terminal task.
+            const lifted = await tx.task.updateMany({
+              where: { id: params.taskId, status: 'awaiting_evidence' },
+              data: { status: 'in_progress' },
+            });
+            if (lifted.count === 0) {
+              throw new AppError(
+                ErrorCode.STATE_CONFLICT,
+                `Task status changed during execution start — retry after re-reading task state`,
+              );
+            }
+          } else {
+            // liveTask.status === 'in_progress' — no transition needed, but we
+            // still must guarantee status doesn't flip out from under us
+            // before the run INSERT. A no-op self-set updateMany with the
+            // `status: 'in_progress'` guard (a) takes a row-level write lock
+            // on the task for the rest of the tx and (b) lets us detect a
+            // racing PATCH via count=0. Fixes #1467.
+            const verified = await tx.task.updateMany({
+              where: { id: params.taskId, status: 'in_progress' },
+              data: { status: 'in_progress' },
+            });
+            if (verified.count === 0) {
+              throw new AppError(
+                ErrorCode.STATE_CONFLICT,
+                `Task status changed during execution start — retry after re-reading task state`,
+              );
+            }
+          }
+        } else {
+          // Status changed between the upfront read (which passed the R-054
+          // gate above) and the tx (e.g. PATCH set it to 'done' /
+          // 'cancelled' / 'blocked'). Reject rather than silently create a
+          // running run on a now-illegal source state.
+          throw new AppError(
+            ErrorCode.STATE_CONFLICT,
+            `Task status changed to "${liveTask.status}" during execution start — retry after re-reading task state`,
+            { taskStatus: liveTask.status },
+          );
+        }
+
+        return await tx.executionRun.create({
+          data: {
+            taskId: params.taskId,
+            executorType: body.executorType,
+            executorName: body.executorName,
+            boundPlanVersion: liveTask.boundPlanVersion,
+            status: 'running',
+            taskPackSnapshot: taskPack as object,
+            lastHeartbeatAt: new Date(),
+            filesChanged: [],
+            blockers: [],
+            driftSignals: [],
+          },
+        });
       });
     } catch (err) {
       // P2002 = unique constraint violation from the partial index
