@@ -1666,7 +1666,6 @@ test('review-dispatch.mjs dispatchSucceededAlready call sites share a single sco
       `dispatchSucceededAlready call site must pass a single identifier (the shared peerSuccessCutoff variable) — required by #1278/#1396/#1461; offending call: ${m[0]}`,
     );
     argIdentifiers.add(argMatch[1]);
-    sinceMsValues.add(sinceMatch[1]);
     // #1407: also forward `events` so the helper can anchor a GitHub-
     // clock `notBeforeMs` lower bound and reject stale prior-cycle
     // markers that would otherwise fall inside the tolerance window
