@@ -65,6 +65,22 @@ describe('buildExecPrompt (R-062 shared prompt)', () => {
     expect(prompt).toMatch(/plansync_exec_context/);
   });
 
+  // R-204 / fix #1436: the previous prompt told the LLM to call the
+  // deprecated `plansync_execution_complete` alias. Once that alias is
+  // removed the prompt would silently leave runs hanging forever. Lock the
+  // prompt to the unified `plansync_run({action:"complete", ...})` surface
+  // and forbid the bare legacy call site from re-introducing itself as a
+  // positive instruction.
+  it('instructs the LLM to complete via plansync_run({action:"complete"}), not the deprecated alias', () => {
+    const prompt = buildExecPrompt({ taskId: 't1', taskPack: {} });
+    expect(prompt).toMatch(/plansync_run/);
+    expect(prompt).toMatch(/action="complete"/);
+    // Permit the prompt to *mention* the legacy name (to warn the LLM
+    // that it's deprecated) but disallow a positive "call X" directive.
+    expect(prompt).not.toMatch(/call plansync_execution_complete/);
+    expect(prompt).not.toMatch(/then call plansync_execution_complete/);
+  });
+
   it('forbids plan_create / plan_propose / plan_activate / plan_reactivate', () => {
     const prompt = buildExecPrompt({ taskId: 't1', taskPack: {} });
     expect(prompt).toMatch(/plansync_plan_create/);
