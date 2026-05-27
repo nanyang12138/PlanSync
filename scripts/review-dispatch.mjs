@@ -181,32 +181,70 @@ export function didWeAcquireDispatchLock({
   return latestTs >= preAddLabelsAtMs - toleranceMs;
 }
 
+/**
+ * Pure helper: returns the server-stamped `created_at` (ms) of the
+ * most recent `labeled` event for `lockLabel` in `events`, or `null`
+ * when no matching event exists / the list is empty / malformed.
+ *
+ * Used by `main()` to derive a server-time cutoff for peer-success
+ * marker detection — preferred over the local `preAddLabelsAtMs`
+ * timestamp because it eliminates clock-skew tolerance entirely and
+ * (fixing #1396) prevents the PRIOR dispatch cycle's success marker
+ * from sneaking inside the `preAddLabelsAtMs - toleranceMs` window
+ * during a fast re-dispatch. The current cycle is delimited by the
+ * most recent `labeled` event for `LOCK_LABEL` (the previous cycle's
+ * `unlabeled` + any comments from that cycle necessarily precede it),
+ * so any success marker posted strictly before this timestamp belongs
+ * to a prior cycle and must be ignored.
+ */
+export function latestLockLabeledAtMs(events, lockLabel) {
+  if (!Array.isArray(events) || events.length === 0) return null;
+  if (!lockLabel) return null;
+  let latest = null;
+  for (const e of events) {
+    if (!e || e.event !== 'labeled') continue;
+    const name = e.label && typeof e.label === 'object' ? e.label.name : null;
+    if (name !== lockLabel) continue;
+    const ts = new Date(e.created_at).getTime();
+    if (!Number.isFinite(ts)) continue;
+    if (latest === null || ts > latest) latest = ts;
+  }
+  return latest;
+}
+
 const DISPATCH_SUCCESS_PHRASE = 'Cursor Cloud Agent dispatched';
 
 /**
  * Pure decision helper for the "did a peer dispatch already succeed?"
  * check. Given the issue's `comments` list (as returned by the GitHub
- * issue comments API) and the local clock timestamp captured *just
- * before* this run called `addLabels([LOCK_LABEL])`, return whether any
- * comment posted **at or after** that timestamp (minus a small clock-
+ * issue comments API) and a `sinceMs` cutoff, return whether any
+ * comment posted **at or after** that cutoff (minus an optional clock-
  * skew tolerance) carries both the dispatch marker and the SUCCESS
  * phrase.
  *
- * Why the `sinceMs` filter matters (fixes #1278): the previous
- * implementation matched ANY historic success-marker comment on the
- * issue. If a user removed both `dispatched` and `cursor:dispatch`
- * labels and re-applied `cursor:dispatch` to re-dispatch (the
- * re-dispatch flow documented in the success comment itself), the OLD
- * success marker from the prior successful run was still present, and
- * the new run would short-circuit before ever calling Cursor — no new
- * agent would start. Scoping the check to comments newer than our
- * pre-lock timestamp restores the documented re-dispatch contract
- * while keeping the original peer-race guard intact (a peer that wins
- * the same race we're in posts its success marker *after* our
- * `preAddLabelsAtMs`, so we still see it).
+ * Caller contract — `sinceMs` should be one of:
  *
- * Tolerance covers clock skew between the local Node runtime and the
- * GitHub server clock, matching `didWeAcquireDispatchLock`'s default.
+ *   (preferred) the server-stamped `created_at` of the most recent
+ *     `labeled` event for the lock label (see `latestLockLabeledAtMs`).
+ *     Since this is server time, pass `toleranceMs: 0` — no clock-skew
+ *     allowance is needed and any tolerance > 0 would re-open the
+ *     #1396 fast-re-dispatch leak (prior cycle's marker creeping in).
+ *
+ *   (fallback) the local `preAddLabelsAtMs` timestamp captured just
+ *     before `addLabels([LOCK_LABEL])`. Use this only when the events
+ *     API fetch failed; pair it with the default `toleranceMs` (1500)
+ *     to absorb local-vs-server clock skew.
+ *
+ * Why the `sinceMs` filter exists (fixes #1278): the original
+ * implementation matched ANY historic success-marker comment on the
+ * issue. After a successful dispatch, the documented re-dispatch flow
+ * (remove `dispatched` + `cursor:dispatch`, re-apply `cursor:dispatch`)
+ * would re-enter `main()` and short-circuit on the *prior* cycle's
+ * success marker — no new agent would ever start. Scoping the check to
+ * comments newer than the (re)lock acquisition restores the
+ * re-dispatch contract while keeping the peer-race guard intact (a
+ * concurrent peer's success marker is necessarily posted *after* the
+ * lock was acquired).
  */
 export function hasSuccessMarkerAfter({
   comments,
@@ -228,21 +266,21 @@ export function hasSuccessMarkerAfter({
   });
 }
 
-async function dispatchSucceededAlready({ sinceMs } = {}) {
+async function dispatchSucceededAlready({ sinceMs, toleranceMs } = {}) {
   // Look for a SUCCESS marker comment from a peer run that won the same
   // race we're currently in. Used both pre-Cursor-call (belt-and-
   // suspenders after the events-based lock check) and in the catch block
   // (to avoid releasing the lock if a peer already succeeded).
   //
-  // `sinceMs` MUST be the timestamp captured just before our
-  // addLabels(LOCK_LABEL) call so we ignore success markers from PRIOR
-  // dispatch cycles (see hasSuccessMarkerAfter / #1278). Without it, a
-  // user re-dispatching by removing+re-adding the lock + trigger labels
-  // would see the previous cycle's marker and the new run would skip
-  // Cursor.
+  // `sinceMs` MUST be the (re)lock-acquisition timestamp — prefer the
+  // server-stamped `labeled` event time (toleranceMs: 0), fall back to
+  // local `preAddLabelsAtMs` (toleranceMs: 1500) only when the events
+  // fetch failed. See hasSuccessMarkerAfter for the rationale (#1278,
+  // #1396). Without proper scoping, a fast re-dispatch would see the
+  // previous cycle's success marker and the new run would skip Cursor.
   try {
     const cs = await listIssueComments();
-    return hasSuccessMarkerAfter({ comments: cs, sinceMs });
+    return hasSuccessMarkerAfter({ comments: cs, sinceMs, toleranceMs });
   } catch (err) {
     console.warn(`dispatchSucceededAlready check failed (assuming no): ${err.message}`);
     return false;
@@ -531,13 +569,37 @@ async function main() {
     return;
   }
 
+  // Derive the cutoff for the peer-success-marker check.
+  //
+  // Preferred: the server-stamped `created_at` of the most recent
+  // `labeled` event for LOCK_LABEL (from the events fetch above). Using
+  // server time eliminates clock-skew tolerance entirely and — fixing
+  // #1396 — closes the fast-re-dispatch leak where the PRIOR cycle's
+  // success marker, posted slightly before the user removed+re-added the
+  // lock labels, fell inside `preAddLabelsAtMs - 1500ms` and was
+  // mis-attributed to the current cycle's peer.
+  //
+  // Fallback: when the events fetch failed (`events == null`), retain
+  // the original local-time cutoff with the 1500ms clock-skew tolerance.
+  // The fallback path is strictly degraded — it preserves the prior
+  // behaviour (including the #1396 edge case) only on a path we already
+  // log a warning for.
+  const serverLockedAtMs = events ? latestLockLabeledAtMs(events, LOCK_LABEL) : null;
+  const peerSuccessSinceMs = serverLockedAtMs !== null ? serverLockedAtMs : preAddLabelsAtMs;
+  const peerSuccessToleranceMs = serverLockedAtMs !== null ? 0 : 1500;
+
   // Belt-and-suspenders: if a peer raced ahead, won the lock, AND already
   // posted the SUCCESS marker comment between our addLabels and now, exit
   // before calling Cursor so we don't spawn a duplicate agent. Scope the
-  // check to markers newer than `preAddLabelsAtMs` so stale markers from
-  // a PRIOR (already-completed) dispatch cycle don't block a legitimate
-  // re-dispatch — see #1278 and hasSuccessMarkerAfter.
-  if (await dispatchSucceededAlready({ sinceMs: preAddLabelsAtMs })) {
+  // check by `peerSuccessSinceMs` so stale markers from a PRIOR
+  // (already-completed) dispatch cycle don't block a legitimate
+  // re-dispatch — see #1278, #1396 and hasSuccessMarkerAfter.
+  if (
+    await dispatchSucceededAlready({
+      sinceMs: peerSuccessSinceMs,
+      toleranceMs: peerSuccessToleranceMs,
+    })
+  ) {
     console.log(
       `Peer dispatch already posted SUCCESS marker for #${ISSUE_NUMBER}; skipping Cursor call.`,
     );
@@ -553,11 +615,14 @@ async function main() {
     // peer run may have succeeded between our addLabels and this catch.
     // Releasing then would let the user re-dispatch and spawn a duplicate
     // agent. Re-check for a SUCCESS marker comment first; only release if
-    // no peer succeeded. Same `sinceMs` filter as the pre-call check
-    // (see #1278) so we don't mistake an OLD success marker from a prior
+    // no peer succeeded. Same scoping as the pre-call check (see #1278,
+    // #1396) so we don't mistake an OLD success marker from a prior
     // dispatch cycle for a current peer's success and refuse to release
     // the lock.
-    const peerSucceeded = await dispatchSucceededAlready({ sinceMs: preAddLabelsAtMs });
+    const peerSucceeded = await dispatchSucceededAlready({
+      sinceMs: peerSuccessSinceMs,
+      toleranceMs: peerSuccessToleranceMs,
+    });
     if (!peerSucceeded) {
       await removeLabel(LOCK_LABEL);
       await commentIssue(
