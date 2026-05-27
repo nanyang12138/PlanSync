@@ -174,7 +174,8 @@ function parseLimitEnv(name, raw, defaultValue, warn = () => {}) {
   if (raw === undefined || raw === null || raw === '') {
     return defaultValue;
   }
-  const parsed = Number.parseInt(raw, 10);
+  const trimmed = typeof raw === 'string' ? raw.trim() : String(raw);
+  const parsed = /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : NaN;
   if (!Number.isFinite(parsed) || parsed < 0) {
     warn(
       `[triage] ${name}=${JSON.stringify(raw)} is not a non-negative integer; ` +
@@ -195,9 +196,29 @@ test('parseLimitEnv parses valid non-negative integers', () => {
   assert.equal(parseLimitEnv('X', '0', 3), 0);
   assert.equal(parseLimitEnv('X', '5', 3), 5);
   assert.equal(parseLimitEnv('X', '25', 3), 25);
-  // parseInt is permissive about trailing non-digits — that's fine
-  // for our use-case (`'5\n'` from a heredoc still means 5).
-  assert.equal(parseLimitEnv('X', '5abc', 3), 5);
+  // Surrounding whitespace (e.g. `'5\n'` from a shell heredoc) is
+  // still accepted — we trim before validating.
+  assert.equal(parseLimitEnv('X', '  5  ', 3), 5);
+  assert.equal(parseLimitEnv('X', '5\n', 3), 5);
+});
+
+test('parseLimitEnv rejects partial / non-integer numeric input (the partial-parse bug)', () => {
+  // Previously `Number.parseInt('5abc', 10)` returned 5 and
+  // `Number.parseInt('1.5', 10)` returned 1 — both silently changed
+  // the rate-limit value compared to what the user typed in
+  // workflow_dispatch, violating the "garbage input → default"
+  // contract advertised in the helper's doc-comment. Strict
+  // pre-validation now routes them through the default + warning.
+  const warnings = [];
+  const warn = (msg) => warnings.push(msg);
+  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', '5abc', 3, warn), 3);
+  assert.equal(parseLimitEnv('TRIAGE_MAX_CLOSE', '1.5', 25, warn), 25);
+  assert.equal(parseLimitEnv('X', '1e2', 3, warn), 3);
+  assert.equal(parseLimitEnv('X', '0x10', 3, warn), 3);
+  assert.equal(parseLimitEnv('X', '3 4', 3, warn), 3);
+  assert.equal(warnings.length, 5);
+  assert.match(warnings[0], /TRIAGE_MAX_DISPATCH/);
+  assert.match(warnings[1], /TRIAGE_MAX_CLOSE/);
 });
 
 test('parseLimitEnv falls back to default on NaN input (the rate-limit-bypass bug)', () => {
@@ -230,7 +251,7 @@ test('parseLimitEnv: rate-limit comparison is sound for every fallback path', ()
   // value parseLimitEnv returns. count is 0 at the start of the
   // loop; `0 >= LIMIT` must be a real boolean (never NaN-poisoned)
   // so the loop terminates after exactly LIMIT iterations.
-  for (const raw of ['abc', '', undefined, null, '-5', 'NaN']) {
+  for (const raw of ['abc', '', undefined, null, '-5', 'NaN', '5abc', '1.5', '1e2']) {
     const limit = parseLimitEnv('X', raw, 3);
     assert.equal(typeof limit, 'number');
     assert.ok(Number.isFinite(limit), `limit must be finite for raw=${JSON.stringify(raw)}`);
@@ -252,5 +273,15 @@ test('static guard: issue-auto-triage.mjs still defines parseLimitEnv and uses i
     src,
     /MAX_CLOSE\s*=\s*parseLimitEnv\(\s*'TRIAGE_MAX_CLOSE'/,
     'MAX_CLOSE must go through parseLimitEnv to reject NaN/negative',
+  );
+  // Pin the strict `/^\d+$/` pre-validation — without it,
+  // `parseInt('5abc', 10)` returns 5 and silently changes the
+  // user-supplied rate-limit. The doc-comment + this guard both
+  // call out that contract; a refactor that drops the regex would
+  // re-introduce the partial-parse bug.
+  assert.match(
+    src,
+    /\/\^\\d\+\$\/\.test\(/,
+    'parseLimitEnv must pre-validate with /^\\d+$/ to reject partial-numeric input like "5abc" / "1.5"',
   );
 });
