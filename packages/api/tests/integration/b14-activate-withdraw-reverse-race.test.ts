@@ -11,9 +11,16 @@
  * BETWEEN the read and the update would be silently overwritten,
  * resurrecting a freshly-withdrawn plan back to 'active'.
  *
- * The fix mirrors the withdraw side: `updateMany` scoped to
+ * The current fix mirrors the withdraw side: `updateMany` scoped to
  * `status: 'draft' | 'proposed'` with a count check that
- * STATE_CONFLICTs when a concurrent writer changed the row.
+ * STATE_CONFLICTs when a concurrent writer changed the row. NOTE:
+ * this scope is itself the subject of #1167 — the proposed→draft
+ * race specifically is NOT closed because 'draft' is still inside
+ * the allowed-set, so the in-tx updateMany still matches a row
+ * that withdraw just flipped to 'draft'. Tests in this file do
+ * NOT pin "withdraw then activate succeeds" as expected behaviour
+ * (#1168) — see the comments on each test for what is and isn't
+ * covered here.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { POST as plansPost } from '@/app/api/projects/[projectId]/plans/route';
@@ -68,10 +75,24 @@ describe('B14 / closes #903 #984 — activate cannot resurrect a withdrawn plan'
     return planId;
   }
 
-  it('activate after withdraw flipped the plan to draft → 409 STATE_CONFLICT, not 200', async () => {
+  it('sequential happy-path: drafts ARE activatable, so withdraw → activate?force=true returns 200 (NOT a race-fix assertion)', async () => {
+    // IMPORTANT: this test is NOT validation that the in-tx race is
+    // fixed. It's a sequential happy-path sanity check. The plan
+    // state machine intentionally allows drafts to be activated
+    // (route.ts L50 accepts both 'draft' and 'proposed'), so a
+    // legitimate withdraw → re-propose → withdraw → activate flow
+    // succeeds end-to-end — and SHOULD continue to succeed after
+    // any tightening of the in-tx guard for #1167. The 200 here is
+    // correct sequential behaviour; do NOT read it as "withdraw
+    // followed by activate is the documented happy-path".
+    //
+    // Real coverage of the proposed→draft→active race must observe
+    // the route's outer L50 read returning 'proposed' and the
+    // in-tx update happening AFTER a concurrent withdraw committed
+    // a 'draft' status. That deterministic interleave is sketched
+    // in the it.todo below and tracked under #1167.
     const planId = await makeProposedPlan('B14-direct');
 
-    // Step 1: withdraw flips the plan to draft.
     const withdraw = await withdrawPost(
       makeReq(`/api/projects/${projectId}/plans/${planId}/withdraw`, {
         method: 'POST',
@@ -85,16 +106,6 @@ describe('B14 / closes #903 #984 — activate cannot resurrect a withdrawn plan'
     const afterWithdraw = await testPrisma.plan.findUnique({ where: { id: planId } });
     expect(afterWithdraw?.status).toBe('draft');
 
-    // Step 2: an activate that doesn't pass ?force=true on a draft is
-    // allowed by the existing path (drafts are activatable). To cover
-    // the ACTUAL race (#984), use an activate with `force=true`
-    // semantics by going through the proposed-zero-reviewers branch.
-    // For this test we simulate the race more directly: re-propose
-    // the plan, hold a STATE_CONFLICT-able snapshot, then activate
-    // after withdraw lands.
-
-    // Re-propose so we have a 'proposed' baseline the next activate
-    // would normally accept.
     const propose2 = await proposePost(
       makeReq(`/api/projects/${projectId}/plans/${planId}/propose`, {
         method: 'POST',
@@ -105,8 +116,6 @@ describe('B14 / closes #903 #984 — activate cannot resurrect a withdrawn plan'
     );
     expect(propose2.status).toBe(200);
 
-    // Withdraw it again right before activate fires — this is the
-    // race window the bug used to widen.
     const withdraw2 = await withdrawPost(
       makeReq(`/api/projects/${projectId}/plans/${planId}/withdraw`, {
         method: 'POST',
@@ -123,17 +132,6 @@ describe('B14 / closes #903 #984 — activate cannot resurrect a withdrawn plan'
     });
     expect(afterWithdraw2?.status).toBe('draft');
 
-    // Activate would have flipped status='active' regardless of the
-    // current 'draft' state pre-fix (the route didn't gate on
-    // current status inside the tx). Now that activate's update is
-    // scoped to status: 'draft' | 'proposed' AND the activate path
-    // STILL accepts drafts (the route's L50 check), this single
-    // activate should succeed — drafts ARE activatable. The race
-    // we're really testing is "withdraw flips proposed→draft after
-    // route's L50 read but before the in-tx update". That requires
-    // racing in real time which is flaky in unit tests; the
-    // STATE_CONFLICT path is exercised below by manually flipping
-    // the row to a non-activatable state.
     const goodActivate = await activatePost(
       makeReq(`/api/projects/${projectId}/plans/${planId}/activate?force=true`, {
         method: 'POST',
@@ -142,37 +140,27 @@ describe('B14 / closes #903 #984 — activate cannot resurrect a withdrawn plan'
       }),
       { params: Promise.resolve({ projectId, planId }) },
     );
+    // Sequential happy-path only — see the long comment above.
     expect(goodActivate.status).toBe(200);
     const afterActivate = await testPrisma.plan.findUnique({ where: { id: planId } });
     expect(afterActivate?.status).toBe('active');
   });
 
-  it('activate with stale snapshot (DB row already superseded) → 409 STATE_CONFLICT', async () => {
-    // This is the cleanest way to drive the new in-tx guard. Create
-    // two plans, activate p1, then try to activate p1 a SECOND time
-    // — its DB status is now 'superseded' (because… wait, single
-    // activate). Better: bypass the route's L50 read by directly
-    // flipping the DB row to a non-activatable status mid-route.
+  it("OUTER guard only: row already in a non-activatable status (superseded) → activate route's L50 check rejects with 4xx", async () => {
+    // What this test actually covers: the route's OUTER L50 check
+    // (`if (plan.status !== 'draft' && plan.status !== 'proposed')`).
+    // The row is flipped to 'superseded' BEFORE activate runs, so
+    // by the time `requirePlanInProject` reads the row, the L50
+    // branch fires and we never even enter the $transaction. That
+    // means this test does NOT exercise the in-tx updateMany +
+    // count check at all.
     //
-    // We can simulate that by creating a draft, manually flipping
-    // its DB status to 'superseded' (a state activate's new updateMany
-    // does NOT match), then calling activate. The route's L50 read
-    // observes 'superseded' and bails with STATE_CONFLICT BEFORE
-    // even entering the tx. That confirms the L50 outer guard, but
-    // not the in-tx guard. The in-tx guard fires only on a true
-    // mid-tx flip, which is hard to simulate in a single-process
-    // test.
-    //
-    // For coverage of the in-tx guard specifically, we rely on
-    // R-128 stress (already passing on this branch) which throws
-    // 50 concurrent activates and expects exactly one to win — that
-    // path exercises the same updateMany count-check codepath.
+    // Real in-tx coverage requires the L50 read to observe one
+    // status and the in-tx update to land on a different status —
+    // i.e. a concurrent writer between the read and the update.
+    // That deterministic interleave is the it.todo below.
+    const planId = await makeProposedPlan('B14-outer-guard-rejects-superseded');
 
-    const planId = await makeProposedPlan('B14-stale-snapshot');
-
-    // Manually flip status to 'superseded' to simulate the row
-    // having been activated and superseded by some other writer
-    // BETWEEN the route's L50 read and the in-tx update.
     await testPrisma.plan.update({
       where: { id: planId },
       data: { status: 'superseded' },
@@ -186,20 +174,24 @@ describe('B14 / closes #903 #984 — activate cannot resurrect a withdrawn plan'
       }),
       { params: Promise.resolve({ projectId, planId }) },
     );
-    // The route's L50 outer check catches this with STATE_CONFLICT
-    // because plan.status is neither 'draft' nor 'proposed'. 4xx is
-    // the right answer; we don't pin to a specific code so the test
-    // survives an error-mapping refactor.
     expect(res.status).toBeGreaterThanOrEqual(400);
     expect(res.status).toBeLessThan(500);
 
     const after = await testPrisma.plan.findUnique({ where: { id: planId } });
     // Crucially: status was NOT silently flipped back to 'active'.
-    // Pre-fix the in-tx update would have done exactly that.
+    // Pre-fix the in-tx update would have done exactly that, but
+    // here it's the OUTER guard catching it — see comment above.
     expect(after?.status).toBe('superseded');
   });
 
-  it('static guard: activate route uses updateMany with status guard + count check', async () => {
+  it('static guard: activate route uses an in-tx updateMany + count===0 STATE_CONFLICT branch', async () => {
+    // Deliberately permissive on the WHERE shape: #1167 may
+    // tighten `status: { in: ['draft','proposed'] }` to something
+    // narrower (e.g. matching exactly the L50-observed status).
+    // We pin the *intent* — there must be a status-scoped
+    // updateMany inside the $transaction with a count===0 →
+    // STATE_CONFLICT branch — without locking the specific
+    // status set so that #1167's fix isn't blocked by this test.
     const fs = await import('node:fs');
     const path = await import('node:path');
     const src = fs.readFileSync(
@@ -209,12 +201,39 @@ describe('B14 / closes #903 #984 — activate cannot resurrect a withdrawn plan'
       ),
       'utf-8',
     );
-    // The flip must be `updateMany` scoped to status in
-    // ['draft','proposed'] inside the $transaction, plus a
-    // count===0 → STATE_CONFLICT branch.
     expect(src).toMatch(/tx\.plan\.updateMany\(/);
-    expect(src).toMatch(/status:\s*\{\s*in:\s*\['draft',\s*'proposed'\]\s*\}/);
-    expect(src).toMatch(/flip\.count\s*===\s*0/);
+    // Some status-narrowing predicate must be present on the
+    // in-tx updateMany — we don't pin its exact shape.
+    expect(src).toMatch(/status:/);
+    expect(src).toMatch(/\.count\s*===\s*0/);
+    expect(src).toMatch(/STATE_CONFLICT/);
     expect(src).toMatch(/Closes #903 #984/);
   });
+
+  // Tracked in #1167. Currently NOT implemented because adding a
+  // deterministic in-tx race test now would either (a) assert the
+  // buggy current behaviour and re-introduce the same lock-in
+  // problem #1168 flagged, or (b) assert the post-fix behaviour
+  // and conflict with the in-flight #1167 fix landing in a
+  // separate PR. Once #1167 lands, the next maintainer should
+  // unskip this and implement it as follows:
+  //
+  //   1. Create a 'proposed' plan p.
+  //   2. Open an external testPrisma.$transaction T1 that does
+  //      `SELECT id FROM plans WHERE id = p FOR UPDATE` to grab
+  //      a row lock, then awaits an external "release" signal.
+  //   3. Fire activatePost(p) — its outer L50 read sees
+  //      'proposed', then its $transaction enters and the in-tx
+  //      updateMany blocks on T1's row lock.
+  //   4. While the activate is blocked, T1 updates the row to
+  //      `status: 'draft'` (mimicking withdraw's effect) and
+  //      commits, releasing the lock.
+  //   5. Activate's updateMany unblocks; under READ COMMITTED it
+  //      re-evaluates the WHERE against the post-T1 row.
+  //   6. Assert: activateRes.status === 409 STATE_CONFLICT, plan
+  //      stays 'draft'. Pre-#1167-fix this fails (route flips
+  //      'draft' → 'active' silently); post-fix this holds.
+  it.todo(
+    "in-tx race coverage (#1167): withdraw committing between activate's L50 read and in-tx updateMany must STATE_CONFLICT, not silently re-activate",
+  );
 });
