@@ -367,6 +367,7 @@ function parseLimitEnv(name, raw, defaultValue, warn = () => {}) {
     return defaultValue;
   }
   if (!NON_NEGATIVE_INT_RE.test(trimmed)) {
+  if (!/^\d+$/.test(trimmed)) {
     warn(
       `[triage] ${name}=${JSON.stringify(raw)} is not a non-negative integer; ` +
         `falling back to default=${defaultValue} to preserve rate-limit semantics.`,
@@ -417,6 +418,43 @@ test('parseLimitEnv rejects partial / non-integer numeric input (the partial-par
   assert.equal(warnings.length, 5);
   assert.match(warnings[0], /TRIAGE_MAX_DISPATCH/);
   assert.match(warnings[1], /TRIAGE_MAX_CLOSE/);
+  // Surrounding whitespace (heredoc trailing '\n', workflow_dispatch
+  // form leading space) is trimmed before validation — the trimmed
+  // value is still a valid digits-only integer.
+  assert.equal(parseLimitEnv('X', '5\n', 3), 5);
+  assert.equal(parseLimitEnv('X', '  25  ', 3), 25);
+});
+
+test('parseLimitEnv rejects numeric-prefix garbage (review-finding #1397)', () => {
+  // Pre-fix, Number.parseInt('5abc', 10) returned 5 — silently
+  // truncating a user typo to a number that "happens to work".
+  // The documented contract is "invalid input falls back to
+  // default"; numeric-prefix garbage must take the fallback path
+  // and emit a warning, identical to the full-garbage / NaN case.
+  const warnings = [];
+  const warn = (msg) => warnings.push(msg);
+  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', '5abc', 3, warn), 3);
+  assert.equal(parseLimitEnv('TRIAGE_MAX_CLOSE', '25xyz', 25, warn), 25);
+  assert.equal(parseLimitEnv('X', '3 4', 7, warn), 7);
+  assert.equal(parseLimitEnv('X', '5.5', 7, warn), 7);
+  assert.equal(parseLimitEnv('X', '0xA', 7, warn), 7);
+  assert.equal(parseLimitEnv('X', '+5', 7, warn), 7);
+  assert.equal(warnings.length, 6);
+  // The warning must still name the offending env var so the CI
+  // log makes the misconfigured workflow_dispatch input obvious.
+  assert.match(warnings[0], /TRIAGE_MAX_DISPATCH/);
+  assert.match(warnings[1], /TRIAGE_MAX_CLOSE/);
+});
+
+test('parseLimitEnv treats whitespace-only input as empty (default fallback, no warning)', () => {
+  // '   ' is morally the same as '' — empty input means "I did not
+  // configure this knob", not "I configured it to garbage". Take
+  // the default silently; reserve the warning for actively bad input.
+  const warnings = [];
+  const warn = (msg) => warnings.push(msg);
+  assert.equal(parseLimitEnv('X', '   ', 3, warn), 3);
+  assert.equal(parseLimitEnv('X', '\n', 3, warn), 3);
+  assert.equal(warnings.length, 0);
 });
 
 test('parseLimitEnv trims surrounding whitespace (heredoc / shell-export quirks)', () => {
@@ -507,6 +545,7 @@ test('parseLimitEnv: rate-limit comparison is sound for every fallback path', ()
     '0x10',
     '   ',
   ]) {
+  for (const raw of ['abc', '', undefined, null, '-5', 'NaN', '5abc', '3 4', '5.5', '0xA']) {
     const limit = parseLimitEnv('X', raw, 3);
     assert.equal(typeof limit, 'number');
     assert.ok(Number.isFinite(limit), `limit must be finite for raw=${JSON.stringify(raw)}`);
@@ -545,5 +584,13 @@ test('static guard: issue-auto-triage.mjs still defines parseLimitEnv and uses i
     src,
     /\/\^\\d\+\$\//,
     'parseLimitEnv must validate the trimmed string with /^\\d+$/ — bare Number.parseInt is prefix-permissive and silently amplifies rate limits on garbage input',
+  // Strict digits-only validation must remain in parseLimitEnv —
+  // without it, Number.parseInt('5abc', 10) silently returns 5 and
+  // the documented "invalid input → default" contract is broken
+  // again (review-finding #1397).
+  assert.match(
+    src,
+    /\/\^\\d\+\$\//,
+    'parseLimitEnv must strict-validate trimmed input against /^\\d+$/ so numeric-prefix garbage (e.g. "5abc") falls back to the default',
   );
 });
