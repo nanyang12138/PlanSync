@@ -3201,7 +3201,7 @@
 
 #### R-193 [MEDIUM] PR template 自动注入 deliverable refs + drift 状态
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B17
 - **depends_on**: R-157, R-191
 - **effort**: small

@@ -21424,10 +21424,121 @@ Support boolean input list: \`true | True | TRUE | false | False | FALSE\``);
 // github-action/index.ts
 var index_exports = {};
 __export(index_exports, {
-  run: () => run
+  injectPlansyncBlock: () => injectPlansyncBlock,
+  renderPlansyncStatusBlock: () => renderPlansyncStatusBlock,
+  run: () => run,
+  syncPrBody: () => syncPrBody
 });
 module.exports = __toCommonJS(index_exports);
 var core = __toESM(require_core());
+var PLANSYNC_BLOCK_START = "<!-- plansync-status -->";
+var PLANSYNC_BLOCK_END = "<!-- /plansync-status -->";
+function escapeForRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+var PLANSYNC_BLOCK_RE = new RegExp(
+  `${escapeForRegExp(PLANSYNC_BLOCK_START)}[\\s\\S]*?${escapeForRegExp(PLANSYNC_BLOCK_END)}`
+);
+function renderPlansyncStatusBlock(input) {
+  const lines = [];
+  lines.push(PLANSYNC_BLOCK_START);
+  lines.push("## PlanSync Status");
+  lines.push("");
+  if (input.planVersion != null) {
+    lines.push(`- **Active plan**: v${input.planVersion}`);
+  } else {
+    lines.push("- **Active plan**: _none \u2014 activate a plan to enable drift gating_");
+  }
+  if (input.scopedTaskIds && input.scopedTaskIds.length > 0) {
+    const preview = input.scopedTaskIds.slice(0, 5).join(", ");
+    const more = input.scopedTaskIds.length > 5 ? ` (+${input.scopedTaskIds.length - 5} more)` : "";
+    lines.push(`- **PR scope**: ${input.scopedTaskIds.length} task(s) \u2014 ${preview}${more}`);
+  } else {
+    lines.push("- **PR scope**: project-wide");
+  }
+  const highCount = input.drifts.filter((d) => d.severity === "high").length;
+  const medCount = input.drifts.filter((d) => d.severity === "medium").length;
+  const lowCount = input.drifts.length - highCount - medCount;
+  if (input.drifts.length === 0) {
+    lines.push("- **Drift**: no open alerts in scope");
+  } else {
+    lines.push(
+      `- **Drift**: ${input.drifts.length} open alert(s) \u2014 ${highCount} high \xB7 ${medCount} medium \xB7 ${lowCount} other`
+    );
+  }
+  if (input.deliverableGlobs.length > 0) {
+    const previewGlobs = input.deliverableGlobs.slice(0, 6).map((g) => `\`${g}\``).join(", ");
+    const moreGlobs = input.deliverableGlobs.length > 6 ? ` (+${input.deliverableGlobs.length - 6} more)` : "";
+    lines.push(`- **Deliverable globs**: ${previewGlobs}${moreGlobs}`);
+  }
+  const gateIcon = input.semanticGate === "passed" ? "\u2705" : input.semanticGate === "failed" ? "\u274C" : "\u2796";
+  lines.push(`- **Deliverable gate**: ${gateIcon} ${input.semanticGate}`);
+  if (input.semanticGate === "failed" && input.unmatchedFiles.length > 0) {
+    const previewFiles = input.unmatchedFiles.slice(0, 10).map((f) => `  - \`${f}\``).join("\n");
+    lines.push("");
+    lines.push("Files outside any active deliverable glob:");
+    lines.push(previewFiles);
+    if (input.unmatchedFiles.length > 10) {
+      lines.push(`  - \u2026 (+${input.unmatchedFiles.length - 10} more)`);
+    }
+  }
+  if (input.truncatedTaskScan || input.truncatedDriftScan) {
+    lines.push("");
+    lines.push(
+      "> \u26A0 PlanSync truncated its scan \u2014 the figures above are partial. See the action log."
+    );
+  }
+  lines.push("");
+  lines.push(
+    `<sub>_Updated automatically by PlanSync GitHub Action \u2014 project \`${input.projectId}\`. Re-runs replace this block in place; do not edit between the markers._</sub>`
+  );
+  lines.push(PLANSYNC_BLOCK_END);
+  return lines.join("\n");
+}
+function injectPlansyncBlock(body, block) {
+  const existing = body ?? "";
+  if (PLANSYNC_BLOCK_RE.test(existing)) {
+    return existing.replace(PLANSYNC_BLOCK_RE, block);
+  }
+  if (existing.length === 0) return block;
+  const sep = existing.endsWith("\n\n") ? "" : existing.endsWith("\n") ? "\n" : "\n\n";
+  return `${existing}${sep}${block}`;
+}
+async function syncPrBody(status, opts) {
+  const fetchFn = opts.fetchImpl ?? globalThis.fetch;
+  const url = `https://api.github.com/repos/${opts.repo}/pulls/${opts.prNumber}`;
+  const headers = {
+    Authorization: `Bearer ${opts.token}`,
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": "plansync-github-action"
+  };
+  const getRes = await fetchFn(url, { headers });
+  if (!getRes.ok) {
+    const text = await getRes.text().catch(() => "");
+    throw new Error(
+      `GitHub API GET ${url} returned ${getRes.status} ${getRes.statusText}: ${text.slice(0, 200)}`
+    );
+  }
+  const prJson = await getRes.json();
+  const block = renderPlansyncStatusBlock(status);
+  const nextBody = injectPlansyncBlock(prJson.body ?? "", block);
+  if (nextBody === (prJson.body ?? "")) {
+    return { updated: false, reason: "no-op (block already up to date)" };
+  }
+  const patchRes = await fetchFn(url, {
+    method: "PATCH",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify({ body: nextBody })
+  });
+  if (!patchRes.ok) {
+    const text = await patchRes.text().catch(() => "");
+    throw new Error(
+      `GitHub API PATCH ${url} returned ${patchRes.status} ${patchRes.statusText}: ${text.slice(0, 200)}`
+    );
+  }
+  return { updated: true, reason: "wrote new block" };
+}
 function parseTaskIds(input) {
   return input.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
 }
@@ -21562,18 +21673,36 @@ async function fetchActivePlanFileGlobs(apiUrl, projectId, headers) {
   return { planId: plan.id, planVersion: plan.version, globs };
 }
 async function run() {
+  const apiUrl = core.getInput("api-url").replace(/\/$/, "");
+  const apiKey = core.getInput("api-key");
+  const projectId = core.getInput("project");
+  const taskIdsInput = core.getInput("task-ids");
+  const branchNameInput = core.getInput("branch-name");
+  const prFilesInput = core.getInput("pr-files");
+  const legacyModeRaw = core.getInput("legacy-mode").trim().toLowerCase();
+  const legacyMode = legacyModeRaw === "true" || legacyModeRaw === "1" || legacyModeRaw === "yes";
+  const githubToken = core.getInput("github-token");
+  const repoInput = core.getInput("repo").trim();
+  const prNumberInput = core.getInput("pr-number").trim();
+  if (githubToken) {
+    core.setSecret(githubToken);
+  }
+  if (apiKey) {
+    core.setSecret(apiKey);
+  }
+  const status = {
+    projectId,
+    planVersion: null,
+    drifts: [],
+    semanticGate: "skipped",
+    deliverableGlobs: [],
+    unmatchedFiles: [],
+    scopedTaskIds: null,
+    truncatedTaskScan: false,
+    truncatedDriftScan: false
+  };
+  core.setOutput("pr-body-updated", "false");
   try {
-    const apiUrl = core.getInput("api-url").replace(/\/$/, "");
-    const apiKey = core.getInput("api-key");
-    const projectId = core.getInput("project");
-    const taskIdsInput = core.getInput("task-ids");
-    const branchNameInput = core.getInput("branch-name");
-    const prFilesInput = core.getInput("pr-files");
-    const legacyModeRaw = core.getInput("legacy-mode").trim().toLowerCase();
-    const legacyMode = legacyModeRaw === "true" || legacyModeRaw === "1" || legacyModeRaw === "yes";
-    if (apiKey) {
-      core.setSecret(apiKey);
-    }
     const headers = {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json"
@@ -21601,14 +21730,19 @@ async function run() {
           "PlanSync semantic gate skipped: no active plan for this project. Activate a plan to enable the R-157 deliverable check."
         );
       } else if (activePlan.globs.length === 0) {
+        status.planVersion = activePlan.planVersion;
         core.info(
           `PlanSync semantic gate skipped: active plan v${activePlan.planVersion} has no \`file_glob\` deliverables. Add file_glob deliverables to enable the R-157 check.`
         );
       } else {
+        status.planVersion = activePlan.planVersion;
+        status.deliverableGlobs = activePlan.globs;
         const compiled = activePlan.globs.map(globToRegExp);
         const unmatched = prFiles.filter((f) => !matchesAnyGlob(f, compiled));
         if (unmatched.length > 0) {
           semanticGate = "failed";
+          status.semanticGate = semanticGate;
+          status.unmatchedFiles = unmatched;
           core.setOutput("semantic-gate", semanticGate);
           core.setOutput("unmatched-files", unmatched.join("\n"));
           core.error(
@@ -21628,17 +21762,23 @@ async function run() {
           return;
         }
         semanticGate = "passed";
+        status.semanticGate = semanticGate;
         core.info(
           `PlanSync semantic gate passed: all ${prFiles.length} PR file(s) match at least one of ${compiled.length} active deliverable glob(s) on plan v${activePlan.planVersion}.`
         );
       }
     }
     core.setOutput("semantic-gate", semanticGate);
+    status.semanticGate = semanticGate;
     let scopedTaskIds = null;
     const explicitTaskIds = parseTaskIds(taskIdsInput);
+    const setScope = (ids) => {
+      scopedTaskIds = ids === null ? null : new Set(ids);
+      status.scopedTaskIds = ids === null ? null : [...ids];
+    };
     const branchName = branchNameInput.trim();
     if (explicitTaskIds.length > 0) {
-      scopedTaskIds = new Set(explicitTaskIds);
+      setScope(explicitTaskIds);
       core.info(`Scoping drift check to ${explicitTaskIds.length} explicit task id(s).`);
     } else if (branchName) {
       const { matched, truncated } = await fetchTaskIdsForBranch(
@@ -21648,6 +21788,7 @@ async function run() {
         branchName
       );
       if (truncated) {
+        status.truncatedTaskScan = true;
         core.setFailed(
           `PlanSync drift-check refused to run: scanning more than ${TASK_PAGE_CAP * TASK_PAGE_SIZE} tasks for branch "${branchName}" \u2014 scope would be incomplete and could miss in-scope HIGH drifts. Pass \`task-ids\` explicitly or ask the API to expose a server-side branchName filter.`
         );
@@ -21659,7 +21800,7 @@ async function run() {
         );
         return;
       }
-      scopedTaskIds = new Set(matched);
+      setScope(matched);
       core.info(`Scoping drift check to ${matched.length} task(s) on branch "${branchName}".`);
     } else {
       core.warning(
@@ -21670,6 +21811,7 @@ async function run() {
     try {
       const result = await fetchOpenDrifts(apiUrl, projectId, headers);
       if (result.truncated) {
+        status.truncatedDriftScan = true;
         core.setFailed(
           "PlanSync drift-check: open drift list exceeds pagination cap; refusing to gate on a partial view (HIGH drifts could be on later pages). Triage backlog or raise the cap."
         );
@@ -21681,6 +21823,12 @@ async function run() {
       return;
     }
     const drifts = scopedTaskIds === null ? allDrifts : allDrifts.filter((d) => scopedTaskIds.has(d.taskId));
+    status.drifts = drifts.map((d) => ({
+      id: d.id,
+      severity: d.severity,
+      taskId: d.taskId,
+      reason: d.reason
+    }));
     if (scopedTaskIds !== null) {
       const filteredOut = allDrifts.length - drifts.length;
       if (filteredOut > 0) {
@@ -21712,6 +21860,41 @@ async function run() {
   } catch (error2) {
     const message = error2 instanceof Error ? error2.message : String(error2);
     core.setFailed(message);
+  } finally {
+    if (!githubToken || !repoInput || !prNumberInput) {
+      if (githubToken || repoInput || prNumberInput) {
+        core.info(
+          "PlanSync PR-body sync skipped: provide all three of `github-token`, `repo`, and `pr-number` to enable the R-193 block injection."
+        );
+      }
+    } else {
+      const prNumber = Number.parseInt(prNumberInput, 10);
+      if (!Number.isFinite(prNumber) || prNumber <= 0) {
+        core.warning(
+          `PlanSync PR-body sync skipped: \`pr-number\` input "${prNumberInput}" is not a positive integer.`
+        );
+      } else if (!/^[^/\s]+\/[^/\s]+$/.test(repoInput)) {
+        core.warning(
+          `PlanSync PR-body sync skipped: \`repo\` input "${repoInput}" must be in "owner/name" form.`
+        );
+      } else {
+        try {
+          const result = await syncPrBody(status, {
+            repo: repoInput,
+            prNumber,
+            token: githubToken
+          });
+          core.setOutput("pr-body-updated", String(result.updated));
+          core.info(
+            result.updated ? `PlanSync PR-body sync: updated PR #${prNumber} (${result.reason}).` : `PlanSync PR-body sync: ${result.reason}.`
+          );
+        } catch (err) {
+          core.warning(
+            `PlanSync PR-body sync failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      }
+    }
   }
 }
 if (!process.env.VITEST) {
@@ -21719,7 +21902,10 @@ if (!process.env.VITEST) {
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
-  run
+  injectPlansyncBlock,
+  renderPlansyncStatusBlock,
+  run,
+  syncPrBody
 });
 /*! Bundled license information:
 
