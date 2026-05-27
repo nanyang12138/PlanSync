@@ -14,6 +14,18 @@
 > New callers should use `plansync_run({action: "start" | "heartbeat" |
 "complete", ...})`; the FSM continues to gate the underlying actions
 > identically.
+>
+> **R-205 (2026-05-27)**: the five task lifecycle tools have been
+> collapsed into a single `plansync_task(action, ...)` tool with
+> `action ∈ {create, update, claim, decline, rebind}`. The legacy tool
+> names (`plansync_task_create / update / claim / decline / rebind`)
+> remain registered as deprecated aliases for one release so this doc
+> still uses them in the diagrams and FSM table — that's the literal
+> tool name the server's `OUT_OF_SEQUENCE.allowedTools` /
+> `requiredNextOneOf` arrays return today. New callers should use
+> `plansync_task({action: "rebind", ...})` (etc.); the FSM continues to
+> gate the underlying actions identically via the same name-translation
+> pattern as R-204.
 
 ## Why this exists
 

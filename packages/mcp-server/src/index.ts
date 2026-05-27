@@ -12,7 +12,7 @@ import { registerPlanTools } from './tools/plan';
 import { registerDeliverableTools } from './tools/deliverable';
 import { registerSuggestionTools } from './tools/suggestion';
 import { registerCommentTools } from './tools/comment';
-import { registerTaskTools } from './tools/task';
+import { registerTaskTools, registerUnifiedTaskTool } from './tools/task';
 import { registerExecutionTools, heartbeatManager } from './tools/execution';
 import { registerRunTool } from './tools/run';
 import { registerDriftTools } from './tools/drift';
@@ -104,6 +104,14 @@ async function main() {
     'plansync_comment_delete',
     'plansync_plan_suggest',
     'plansync_drift_resolve',
+    // R-205: unified task surface — only the rebind action is exec-mode
+    // safe (mirrors `plansync_task_rebind`). The other actions
+    // (create/update/claim/decline) are owner-only and would be rejected
+    // by the API anyway, so we still register `plansync_task` here so
+    // exec-mode agents can call it for rebinds without seeing a "tool
+    // not found" error. The legacy `plansync_task_rebind` alias stays
+    // registered alongside.
+    'plansync_task',
     'plansync_task_rebind',
   ]);
 
@@ -147,6 +155,9 @@ async function main() {
     'plansync_comment_delete',
     'plansync_plan_suggest',
     'plansync_drift_resolve',
+    // R-205: unified task surface (delegation-mode equivalent of the
+    // legacy task_claim / decline / update / rebind aliases below).
+    'plansync_task',
     'plansync_task_rebind',
     // Agent task operations (claim, decline, update own task)
     'plansync_task_claim',
@@ -235,6 +246,11 @@ async function main() {
   registerDeliverableTools(server, api);
   registerSuggestionTools(server, api);
   registerCommentTools(server, api);
+  // R-205: register `plansync_task` first so the unified surface shows
+  // up before its deprecated aliases in `tools/list`. The five legacy
+  // aliases (`plansync_task_create / update / claim / decline / rebind`)
+  // are registered after.
+  registerUnifiedTaskTool(server, api);
   registerTaskTools(server, api);
   // R-204: register `plansync_run` first so the new surface shows up
   // before its deprecated aliases in `tools/list`. Both write into the
