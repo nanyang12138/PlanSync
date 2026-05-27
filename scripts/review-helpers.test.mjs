@@ -662,23 +662,81 @@ test('hasSuccessMarkerAfter', async (t) => {
     },
   );
 
-  await t.test('cutoffServerMs: peer marker at or after anchor ⇒ match', () => {
-    const cutoff = Date.now();
-    assert.equal(
-      hasSuccessMarkerAfter({
-        comments: [mkSuccess(cutoff)],
-        cutoffServerMs: cutoff,
-      }),
-      true,
-    );
-    assert.equal(
-      hasSuccessMarkerAfter({
-        comments: [mkSuccess(cutoff + 5)],
-        cutoffServerMs: cutoff,
-      }),
-      true,
-    );
-  });
+  await t.test(
+    'cutoffServerMs: peer marker strictly after anchor ⇒ match; at anchor ⇒ no match (#1383)',
+    () => {
+      // Strict-after semantic — see hasSuccessMarkerAfter jsdoc cutoff
+      // path #1. GitHub timestamps are second-precision so a marker
+      // bucketed to the same second as the cycle's `labeled` event is
+      // necessarily from a PRIOR cycle (the user must remove
+      // `dispatched` between cycles, generating an `unlabeled` event
+      // in between, so a current-cycle peer marker is always at least
+      // one server-bucketed second after the cycle's labeled event).
+      const cutoff = Date.now();
+      assert.equal(
+        hasSuccessMarkerAfter({
+          comments: [mkSuccess(cutoff)],
+          cutoffServerMs: cutoff,
+        }),
+        false,
+      );
+      assert.equal(
+        hasSuccessMarkerAfter({
+          comments: [mkSuccess(cutoff + 1)],
+          cutoffServerMs: cutoff,
+        }),
+        true,
+      );
+      assert.equal(
+        hasSuccessMarkerAfter({
+          comments: [mkSuccess(cutoff + 5)],
+          cutoffServerMs: cutoff,
+        }),
+        true,
+      );
+    },
+  );
+
+  await t.test(
+    'cutoffServerMs: same-second OLD marker (server-bucketed equality) ⇒ rejected (#1383)',
+    () => {
+      // Realistic regression guard for #1383. GitHub stamps both the
+      // `labeled` event's `created_at` and each comment's `created_at`
+      // to whole seconds (ISO 8601 with no millis). When a fast
+      // re-dispatch lands the new cycle's `labeled` event in the SAME
+      // wall-clock second as a still-on-the-issue OLD success marker
+      // from a prior cycle, both parse to identical ms after
+      // `new Date(...).getTime()`. The previous `ts >= cutoffServerMs`
+      // comparison classified that as a current peer's success — pre-
+      // call site silently skipped Cursor, catch-block site refused to
+      // release the lock. Strict-after semantic catches it.
+      const isoSecond = '2026-05-26T14:35:50Z'; // both stamped to the same second
+      const cutoffServerMs = new Date(isoSecond).getTime();
+      const oldMarker = {
+        body: `${MARKER}\n🚀 **${PHRASE}** (finding)\n- run: r-old`,
+        created_at: isoSecond,
+      };
+      assert.equal(
+        hasSuccessMarkerAfter({
+          comments: [oldMarker],
+          cutoffServerMs,
+        }),
+        false,
+      );
+      // Sanity: a marker stamped to the NEXT second is correctly accepted.
+      const peerMarker = {
+        body: `${MARKER}\n🚀 **${PHRASE}** (finding)\n- run: r-peer`,
+        created_at: '2026-05-26T14:35:51Z',
+      };
+      assert.equal(
+        hasSuccessMarkerAfter({
+          comments: [peerMarker],
+          cutoffServerMs,
+        }),
+        true,
+      );
+    },
+  );
 
   await t.test('cutoffServerMs takes precedence over sinceMs when both supplied', () => {
     const t0 = Date.now();
