@@ -52,7 +52,9 @@ export function middleware(request: NextRequest) {
 
   // Redirect unauthenticated web requests to /login (only when auth is enabled)
   if (!authDisabled && !apiKey && !isPublic && !isApiRoute) {
-    return NextResponse.redirect(new URL('/login', request.url));
+    const redirect = NextResponse.redirect(new URL('/login', request.url));
+    redirect.headers.set(REQUEST_ID_HEADER, reqId);
+    return redirect;
   }
 
   const response = NextResponse.next({
