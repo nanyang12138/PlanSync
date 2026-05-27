@@ -343,12 +343,12 @@ describe('R-156: PlanComment.deliverableId per-deliverable thread', () => {
     }
   });
 
-  it('GET /comments (no filter) → only plan-level rows (deliverableId IS NULL) — Issue #1256', async () => {
+  it('GET /comments (no filter) → only plan-level rows (deliverableId IS NULL) — Issue #1256/#1260', async () => {
     // Regression for #1256: the legacy plan-level Comments sidebar calls
     // GET /comments without a `deliverableId` query. Per-deliverable rows
     // must NOT bleed into that response — they have their own focused
     // thread on the deliverable timeline page.
-  it('GET /comments (no filter) → only plan-level rows, no deliverable bleed (#1260)', async () => {
+    //
     // Regression guard for #1260: returning the full planId set caused
     // deliverable-level comments to double-render — once on the plan
     // thread and again on each deliverable timeline. The default surface
