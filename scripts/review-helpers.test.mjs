@@ -608,22 +608,215 @@ test('hasSuccessMarkerAfter', async (t) => {
   });
 });
 
+// ---------------------------------------------------------------------
+// review-dispatch.mjs fast-re-dispatch success-marker scoping — #1396
+// ---------------------------------------------------------------------
+//
+// After #1278 fixed the long-stale-marker case by scoping the peer
+// success check to `preAddLabelsAtMs - toleranceMs`, a narrower bug
+// remained: on a FAST re-dispatch (user removes `dispatched` +
+// `cursor:dispatch` and re-applies `cursor:dispatch` within the 1500ms
+// tolerance window), the PRIOR cycle's success marker — posted just
+// before the labels were removed — falls inside the tolerance window
+// and is mis-attributed to the current cycle's peer. The new run then
+// short-circuits before calling Cursor and no agent ever starts.
+//
+// The fix uses the server-stamped `created_at` of the most recent
+// `labeled` event for the lock label as the cutoff (with 0 tolerance
+// — both timestamps are now server time), so prior-cycle markers
+// cannot leak in regardless of how fast the user re-dispatches.
+// `latestLockLabeledAtMs` is the pure helper that computes that
+// timestamp; this block exercises it.
+test('latestLockLabeledAtMs', async (t) => {
+  const { latestLockLabeledAtMs } = await import('./review-dispatch.mjs');
+  const LOCK = 'dispatched';
+  const baseIso = (ts) => new Date(ts).toISOString();
+
+  await t.test('no events ⇒ null', () => {
+    assert.equal(latestLockLabeledAtMs([], LOCK), null);
+    assert.equal(latestLockLabeledAtMs(null, LOCK), null);
+    assert.equal(latestLockLabeledAtMs(undefined, LOCK), null);
+  });
+
+  await t.test('missing lockLabel ⇒ null', () => {
+    assert.equal(
+      latestLockLabeledAtMs(
+        [{ event: 'labeled', label: { name: LOCK }, created_at: baseIso(Date.now()) }],
+        null,
+      ),
+      null,
+    );
+  });
+
+  await t.test('no labeled events for the lock ⇒ null', () => {
+    const now = Date.now();
+    assert.equal(
+      latestLockLabeledAtMs(
+        [
+          { event: 'labeled', label: { name: 'review-finding' }, created_at: baseIso(now) },
+          { event: 'commented', created_at: baseIso(now) },
+        ],
+        LOCK,
+      ),
+      null,
+    );
+  });
+
+  await t.test('single labeled event ⇒ its timestamp', () => {
+    const now = Date.now();
+    assert.equal(
+      latestLockLabeledAtMs(
+        [{ event: 'labeled', label: { name: LOCK }, created_at: baseIso(now) }],
+        LOCK,
+      ),
+      now,
+    );
+  });
+
+  await t.test('multiple labeled events (label removed and re-added) ⇒ most recent', () => {
+    const now = Date.now();
+    // Historic: peer added long ago, user later removed (unlabeled),
+    // we just re-added. Want the most recent — that delimits the
+    // current cycle.
+    assert.equal(
+      latestLockLabeledAtMs(
+        [
+          { event: 'labeled', label: { name: LOCK }, created_at: baseIso(now - 3_600_000) },
+          { event: 'unlabeled', label: { name: LOCK }, created_at: baseIso(now - 1_800_000) },
+          { event: 'labeled', label: { name: LOCK }, created_at: baseIso(now + 200) },
+        ],
+        LOCK,
+      ),
+      now + 200,
+    );
+  });
+
+  await t.test('ignores other labels at same timestamp', () => {
+    const now = Date.now();
+    assert.equal(
+      latestLockLabeledAtMs(
+        [
+          { event: 'labeled', label: { name: 'auto-triaged' }, created_at: baseIso(now) },
+          { event: 'labeled', label: { name: LOCK }, created_at: baseIso(now - 100) },
+        ],
+        LOCK,
+      ),
+      now - 100,
+    );
+  });
+
+  await t.test('malformed entries are skipped, not crashed on', () => {
+    const now = Date.now();
+    assert.equal(
+      latestLockLabeledAtMs(
+        [
+          null,
+          { event: 'labeled' },
+          { event: 'labeled', label: null, created_at: baseIso(now) },
+          { event: 'labeled', label: { name: LOCK }, created_at: 'not-a-date' },
+          { event: 'labeled', label: { name: LOCK }, created_at: baseIso(now + 100) },
+        ],
+        LOCK,
+      ),
+      now + 100,
+    );
+  });
+});
+
+test('hasSuccessMarkerAfter — #1396 fast re-dispatch regression', async (t) => {
+  const { hasSuccessMarkerAfter } = await import('./review-dispatch.mjs');
+  const MARKER = '<!-- review-dispatch:agent -->';
+  const PHRASE = 'Cursor Cloud Agent dispatched';
+  const baseIso = (ts) => new Date(ts).toISOString();
+  const mkSuccess = (ts) => ({
+    body: `${MARKER}\n🚀 **${PHRASE}** (finding)\n- run: r1`,
+    created_at: baseIso(ts),
+  });
+
+  await t.test(
+    'fast re-dispatch: prior-cycle marker inside default tolerance ⇒ FALSE POSITIVE under local-time cutoff',
+    () => {
+      // Demonstrates the original bug. Without the server-time fix,
+      // this is how the leak presented:
+      //   - prior cycle posted SUCCESS at T-500ms
+      //   - user removed labels and re-applied within ~500ms
+      //   - new run captured preAddLabelsAtMs = T
+      //   - cutoff = T - 1500 → prior marker (T-500) passes → false match
+      const preCall = Date.now();
+      assert.equal(
+        hasSuccessMarkerAfter({
+          comments: [mkSuccess(preCall - 500)],
+          sinceMs: preCall,
+          // default toleranceMs = 1500
+        }),
+        true,
+        'sanity: with local-time cutoff + default tolerance, a marker 500ms before is matched (the bug)',
+      );
+    },
+  );
+
+  await t.test(
+    'fast re-dispatch: prior-cycle marker rejected when cutoff is server-time of new labeled event (#1396 fix)',
+    () => {
+      // With the fix, main() passes `sinceMs = server_created_at` of our
+      // own `labeled` event (which is necessarily AFTER the prior
+      // cycle's `unlabeled` event) and `toleranceMs = 0`. Even though
+      // the prior marker is only 500ms before our local preAddLabelsAtMs,
+      // it is strictly before the server-stamped labeled event ⇒ no match.
+      const priorCycleMarkerAtMs = Date.now();
+      // Simulate the fix-path inputs: server labeled at T+200, prior
+      // marker posted 500ms earlier (which would have leaked under the
+      // old local-time + 1500ms tolerance scheme).
+      const serverLabeledAtMs = priorCycleMarkerAtMs + 200;
+      assert.equal(
+        hasSuccessMarkerAfter({
+          comments: [mkSuccess(priorCycleMarkerAtMs)],
+          sinceMs: serverLabeledAtMs,
+          toleranceMs: 0,
+        }),
+        false,
+      );
+    },
+  );
+
+  await t.test(
+    'fast re-dispatch: current-cycle peer marker (after server labeled) still matched with tolerance=0',
+    () => {
+      // Counterpart to the previous case — the fix must not regress the
+      // legitimate peer-success path. Peer's success marker is posted
+      // strictly after the labeled event ⇒ still matched even with
+      // tolerance disabled.
+      const serverLabeledAtMs = Date.now();
+      assert.equal(
+        hasSuccessMarkerAfter({
+          comments: [mkSuccess(serverLabeledAtMs + 50)],
+          sinceMs: serverLabeledAtMs,
+          toleranceMs: 0,
+        }),
+        true,
+      );
+    },
+  );
+});
+
 // Static-source guard: regardless of how future maintainers refactor
 // the helper, both call sites of `dispatchSucceededAlready` in main()
-// MUST forward `sinceMs: preAddLabelsAtMs`. Without it, the #1278
-// regression returns: an OLD success marker from a prior re-dispatch
-// cycle would once again short-circuit the new run before Cursor is
-// called (pre-call site) or block the lock release on failure (catch
-// site). Lock the contract in source so a "simplify the call sites"
-// drive-by can't silently re-introduce the bug.
-test('review-dispatch.mjs dispatchSucceededAlready call sites scope by preAddLabelsAtMs (#1278)', async () => {
+// MUST forward the SAME (re)lock-acquisition timestamp variable (we
+// no longer require the literal `preAddLabelsAtMs` here because #1396
+// switched the preferred cutoff to a server-time value derived from
+// the events fetch). Without scoping, the #1278 regression returns
+// (old success marker short-circuits the new run); without using a
+// single shared variable, the two call sites can drift apart and one
+// of them can re-open the #1396 leak.
+test('review-dispatch.mjs dispatchSucceededAlready call sites share a single scoped cutoff (#1278, #1396)', async () => {
   const { readFileSync } = await import('node:fs');
   const { resolve } = await import('node:path');
   const src = readFileSync(resolve(import.meta.dirname, 'review-dispatch.mjs'), 'utf-8');
 
   // Match only invocation sites (preceded by `await`); the function's
-  // own declaration is excluded by this anchor.
-  const calls = [...src.matchAll(/await\s+dispatchSucceededAlready\s*\(([^)]*)\)/g)];
+  // own declaration is excluded by this anchor. Use [\s\S]+? to span
+  // multi-line argument objects.
+  const calls = [...src.matchAll(/await\s+dispatchSucceededAlready\s*\(([\s\S]+?)\)/g)];
   // Expected: exactly two call sites in main() — pre-Cursor-call and
   // the catch block.
   assert.equal(
@@ -631,13 +824,29 @@ test('review-dispatch.mjs dispatchSucceededAlready call sites scope by preAddLab
     2,
     `expected exactly 2 invocations of dispatchSucceededAlready() in main(), got ${calls.length}`,
   );
+  const sinceMsValues = new Set();
   for (const m of calls) {
-    assert.match(
-      m[1],
-      /sinceMs\s*:\s*preAddLabelsAtMs/,
-      `dispatchSucceededAlready call site must pass { sinceMs: preAddLabelsAtMs } — required by #1278; offending call: ${m[0]}`,
+    const sinceMatch = m[1].match(/sinceMs\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)/);
+    assert.ok(
+      sinceMatch,
+      `dispatchSucceededAlready call site must pass { sinceMs: <identifier>, ... } — required by #1278/#1396; offending call: ${m[0]}`,
     );
+    sinceMsValues.add(sinceMatch[1]);
   }
+  assert.equal(
+    sinceMsValues.size,
+    1,
+    `both dispatchSucceededAlready call sites must forward the SAME sinceMs variable — required by #1278/#1396; saw: ${[...sinceMsValues].join(', ')}`,
+  );
+
+  // #1396: main() must derive the cutoff from the events fetch's
+  // server-stamped labeled event timestamp (preferred path), not just
+  // the local preAddLabelsAtMs. Lock the helper invocation in source.
+  assert.match(
+    src,
+    /latestLockLabeledAtMs\s*\(\s*events\s*,\s*LOCK_LABEL\s*\)/,
+    'main() must derive the peer-success cutoff via latestLockLabeledAtMs(events, LOCK_LABEL) — required by #1396 (avoids fast-re-dispatch leak).',
+  );
 });
 
 test('review-dispatch.mjs does not send the removed `branchName` field to Cursor v1/agents', async () => {
