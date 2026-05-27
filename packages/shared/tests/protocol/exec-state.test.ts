@@ -218,6 +218,25 @@ describe('checkTransition', () => {
     }
   });
 
+  // Closes #1145 — R-155 added plansync_deliverable_list / _show to the
+  // mcp-server EXEC_ALLOWED + DELEGATION_ALLOWED whitelists but missed
+  // READ_ONLY_TOOLS, so PLANSYNC_EXEC_STATE_ENFORCE=enforce sessions had
+  // these GET-only tools blocked with OUT_OF_SEQUENCE the moment an
+  // agent inspected structured deliverables.
+  it('treats plansync_deliverable_list / _show as read-only from every state (#1145)', () => {
+    for (const tool of ['plansync_deliverable_list', 'plansync_deliverable_show']) {
+      expect(READ_ONLY_TOOLS).toContain(tool);
+      for (const state of EXEC_STATES) {
+        const r = checkTransition(state, tool);
+        expect(r.ok, `${tool} should be allowed from ${state}`).toBe(true);
+        if (r.ok) {
+          expect(r.nextState).toBe(state);
+          expect(r.readOnly).toBe(true);
+        }
+      }
+    }
+  });
+
   it('lets idempotent calls (heartbeat / drift_resolve) stay in RUN_STARTED', () => {
     for (const tool of [
       'plansync_execution_heartbeat',
