@@ -83,6 +83,15 @@ export const READ_ONLY_TOOLS: readonly string[] = [
   'plansync_suggestion_list',
   'plansync_comment_list',
   'plansync_check_task_conflicts',
+  // R-155 follow-up (issue #1145): the deliverable read tools are pure
+  // GETs (any project member can call; no state side-effects) and are
+  // registered in EXEC_ALLOWED / DELEGATION_ALLOWED in mcp-server. They
+  // were missed when R-155 landed, so PLANSYNC_EXEC_STATE_ENFORCE=enforce
+  // sessions hit OUT_OF_SEQUENCE the moment an agent asked to see
+  // structured deliverables. PROTOCOL.md already documents `*_list` and
+  // `*_show` as read-only, so this is an omission, not a policy change.
+  'plansync_deliverable_list',
+  'plansync_deliverable_show',
 ] as const;
 
 /**
