@@ -2134,7 +2134,8 @@
 
 #### R-119 [HIGH] MCP execution\_\* 工具单测
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#1063
 - **batch**: B12
 - **depends_on**: R-005, R-019, R-020
 - **effort**: medium
@@ -2719,7 +2720,8 @@
 
 #### R-154 [HIGH] drift-engine 切换为图 diff：基于 Deliverable.id 而非文本哈希
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#1067
 - **batch**: B13
 - **depends_on**: R-152, R-153
 - **effort**: medium
@@ -2749,7 +2751,8 @@
 
 #### R-156 [MEDIUM] Web UI Deliverable 状态时间线 + per-deliverable 评论
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#1254, PR#1263, PR#1264, PR#1274
 - **batch**: B13
 - **depends_on**: R-155
 - **effort**: medium
@@ -2765,7 +2768,8 @@
 
 #### R-157 [HIGH] GitHub Action drift-gate 升级为语义 gate
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#1262, PR#1268
 - **batch**: B13
 - **depends_on**: R-150, R-152, R-155
 - **effort**: medium
@@ -3001,7 +3005,8 @@
 
 #### R-204 [HIGH] MCP execution\_\* tools → run(runId, action) (R-175 step 2)
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#1271
 - **batch**: B15
 - **depends_on**: —
 - **effort**: medium
@@ -3126,7 +3131,9 @@
 
 #### R-184 [MEDIUM] UI/CLI 区分 "AI 建议" vs "规则 gate"
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#1073
+- **note**: UI step (run-status.tsx) skipped because the file did not exist in the codebase; the parallel CLI surface (`/explain rule <id>`) was implemented instead, plus the route-level envelope discriminator (`error.gate === 'rule'` vs `advisory.kind === 'ai_low_score'`) — both verified by `tests/integration/r184-advisory-vs-rule-envelope.test.ts` and `packages/cli/tests/explain-rule.test.ts`.
 - **batch**: B16
 - **depends_on**: R-180, R-181
 - **effort**: small
