@@ -103,6 +103,12 @@ export class EventBusPG implements EventBusInterface {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /** Whether we have ever successfully connected at least once. */
   private everConnected = false;
+  /**
+   * In-flight listenChannel operations keyed by channel name.
+   * unlistenChannel awaits these to prevent UNLISTEN from racing ahead of
+   * the matching LISTEN when a subscriber is added then immediately removed.
+   */
+  private readonly pendingListens = new Map<string, Promise<void>>();
 
   constructor(opts: { connectionString?: string } = {}) {
     this.connectionString = opts.connectionString ?? process.env.DATABASE_URL;
@@ -390,18 +396,28 @@ export class EventBusPG implements EventBusInterface {
   }
 
   private async listenChannel(channel: string): Promise<void> {
-    if (this.subscribedChannels.has(channel)) return;
+    if (this.subscribedChannels.has(channel) || this.pendingListens.has(channel)) return;
     this.subscribedChannels.add(channel);
-    try {
-      await this.ensureConnected();
-      if (!this.listenClient) return;
-      await this.listenClient.query(`LISTEN ${quoteIdent(channel)}`);
-    } catch (err) {
-      logger.warn({ err, channel }, 'EventBusPG LISTEN failed; will retry on reconnect');
-    }
+    const listenOp = (async () => {
+      try {
+        await this.ensureConnected();
+        if (!this.listenClient) return;
+        await this.listenClient.query(`LISTEN ${quoteIdent(channel)}`);
+      } catch (err) {
+        logger.warn({ err, channel }, 'EventBusPG LISTEN failed; will retry on reconnect');
+      } finally {
+        this.pendingListens.delete(channel);
+      }
+    })();
+    this.pendingListens.set(channel, listenOp);
+    await listenOp;
   }
 
   private async unlistenChannel(channel: string): Promise<void> {
+    // Wait for any in-flight LISTEN to settle before UNLISTENing so we never
+    // send UNLISTEN before the matching LISTEN has been sent to Postgres.
+    const pending = this.pendingListens.get(channel);
+    if (pending) await pending;
     if (!this.subscribedChannels.has(channel)) return;
     this.subscribedChannels.delete(channel);
     if (!this.listenClient) return;
