@@ -245,6 +245,51 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
       }
     }
 
+    // closes #1437 — third-party bypass via "reassign-to-self, then PATCH".
+    // The per-status owner-or-assignee gates on `awaiting_evidence` exits
+    // (PR #1428 `→ cancelled`, PR #1434 `→ in_progress|blocked`, the
+    // `→ done` gate above) all read `task.assignee` from the loaded row.
+    // Without an authority gate on the assignee axis itself, any project
+    // member can two-step a parked task:
+    //
+    //   1. PATCH `{ assignee: <self> }` — passes because reassignment
+    //      only validated "is the new assignee a project member".
+    //   2. PATCH `{ status: 'in_progress' | 'blocked' | 'cancelled' }` —
+    //      now passes the owner-or-assignee gate because the DB row's
+    //      assignee is the attacker.
+    //
+    // Pin the assignee axis with the same owner-or-current-assignee
+    // model while the task sits in `awaiting_evidence`, so the bypass
+    // is rejected at the reassignment step itself. The legitimate
+    // use cases are unaffected: the project owner can still
+    // administratively reassign (e.g. the previous assignee is no
+    // longer available), and the current assignee can still hand off
+    // to another member (the "I give up, please someone else pick
+    // this up" path that already exists alongside the `→ cancelled`
+    // self-release escape hatch). Unassign (`assignee: null`) is
+    // gated the same way for the same reason — a third party flipping
+    // assignee to null and then re-PATCHing `{ assignee: <self> }`
+    // would otherwise be a trivial workaround.
+    //
+    // Other task states are intentionally untouched: tasks in `todo`,
+    // `in_progress`, `blocked`, `done`, `cancelled` keep the existing
+    // member-can-reassign behaviour so this fix is scoped to the R-192
+    // parked state where the bypass actually exists.
+    if (
+      body.assignee !== undefined &&
+      body.assignee !== task.assignee &&
+      task.status === 'awaiting_evidence'
+    ) {
+      const isOwner = authed.projectRole === 'owner';
+      const isCurrentAssignee = task.assignee !== null && auth.userName === task.assignee;
+      if (!isOwner && !isCurrentAssignee) {
+        throw new AppError(
+          ErrorCode.FORBIDDEN,
+          'Only the project owner or the current assignee can reassign an awaiting_evidence task.',
+        );
+      }
+    }
+
     if (body.assignee !== undefined && body.assignee !== null && body.assignee !== task.assignee) {
       const member = await prisma.projectMember.findUnique({
         where: { projectId_name: { projectId: params.projectId, name: body.assignee } },

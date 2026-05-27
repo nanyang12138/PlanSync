@@ -1712,3 +1712,212 @@ describe('R-192: awaiting_evidence → in_progress|blocked is owner-or-assignee 
     expect(after?.status).toBe('awaiting_evidence');
   });
 });
+
+// ---------------------------------------------------------------
+// 7. R-192 awaiting_evidence assignee axis is owner-or-current-assignee
+//    (closes #1437 — third-party "reassign-to-self, then PATCH" bypass
+//    of PR #1428 / PR #1434 status gates)
+// ---------------------------------------------------------------
+//
+// PR #1428 / PR #1434 added owner-or-assignee gates on the three
+// non-`done` exits of `awaiting_evidence` (`→ cancelled`,
+// `→ in_progress`, `→ blocked`). All three gates read `task.assignee`
+// from the DB row, so without an authority gate on the assignee axis
+// itself any project member can two-step the parked task:
+//
+//   1. PATCH `{ assignee: <self> }` — passes because reassignment
+//      previously only validated "is the new assignee a project member".
+//   2. PATCH `{ status: 'in_progress' }` — passes the owner-or-assignee
+//      gate because the DB row's assignee is now the attacker.
+//
+// This describe pins the fix: while the task sits in `awaiting_evidence`,
+// only the project owner or the current assignee can change the
+// assignee. The bypass is rejected at step 1 so step 2 is unreachable.
+
+describe('R-192: awaiting_evidence assignee axis is owner-or-current-assignee (closes #1437)', () => {
+  const thirdParty = 'r1437-third-party';
+  const otherMember = 'r1437-other-member';
+  const humanAssignee = 'r1437-human-assignee';
+
+  beforeAll(async () => {
+    for (const name of [thirdParty, otherMember, humanAssignee]) {
+      await testPrisma.projectMember.upsert({
+        where: { projectId_name: { projectId, name } },
+        update: { role: 'developer', type: 'human' },
+        create: { projectId, name, role: 'developer', type: 'human' },
+      });
+    }
+  });
+
+  async function parkedAgentTask(prSuffix: number) {
+    const prUrl = `https://github.com/plansync-test/r192-repo/pull/${1437000 + prSuffix}`;
+    const task = await newTask({ prUrl });
+    await testPrisma.task.update({
+      where: { id: task.id },
+      data: { status: 'awaiting_evidence' },
+    });
+    return task;
+  }
+
+  it('rejects a third-party developer PATCHing assignee → self on an awaiting_evidence task (the bypass step 1)', async () => {
+    const task = await parkedAgentTask(1);
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: thirdParty,
+        body: { assignee: thirdParty },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(403);
+    const json = await res.json();
+    expect(JSON.stringify(json)).toMatch(/owner or the current assignee/i);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.assignee).toBe(agentName);
+  });
+
+  it('rejects the full reassign-then-PATCH bypass at step 1 so step 2 is unreachable', async () => {
+    // End-to-end reproduction of the #1437 bypass shape:
+    //   1. third party PATCHes `{ assignee: <self> }`   ← must reject
+    //   2. (if step 1 succeeded) third party PATCHes status: 'in_progress'
+    //
+    // The fix closes step 1, so the task remains assigned to the
+    // original agent and parked. Step 2 still rejects because the
+    // attacker is neither owner nor the current assignee — but the
+    // contract this test pins is "step 1 is unreachable".
+    const task = await parkedAgentTask(2);
+
+    const step1 = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: thirdParty,
+        body: { assignee: thirdParty },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(step1.status).toBe(403);
+
+    const afterStep1 = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(afterStep1?.assignee).toBe(agentName);
+    expect(afterStep1?.status).toBe('awaiting_evidence');
+
+    // Belt-and-braces: a follow-up status PATCH from the same third
+    // party is still rejected by the PR #1434 status gate, exactly
+    // because step 1 did not move the assignee.
+    const step2 = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: thirdParty,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(step2.status).toBe(403);
+
+    const afterStep2 = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(afterStep2?.status).toBe('awaiting_evidence');
+  });
+
+  it('rejects a third party setting assignee to null (unassign) on an awaiting_evidence task', async () => {
+    // The unassign variant of the bypass: clear the assignee to null
+    // (no membership check fires for null), then in a follow-up PATCH
+    // re-set it to self. Closing only the "assign-to-self" half would
+    // leave this open, so the gate covers any assignee-axis change.
+    const task = await parkedAgentTask(3);
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: thirdParty,
+        body: { assignee: null },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(403);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.assignee).toBe(agentName);
+  });
+
+  it('allows the current assignee to hand off an awaiting_evidence task to another member', async () => {
+    // Legitimate hand-off path: the current human assignee gives up
+    // on the parked task and reassigns to another member. This must
+    // remain allowed (it sits alongside the `→ cancelled` self-release
+    // escape hatch in the same owner-or-assignee authority model).
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/1437004';
+    const task = await testPrisma.task.create({
+      data: {
+        projectId,
+        title: 'r1437-handoff',
+        type: 'code',
+        priority: 'p1',
+        status: 'awaiting_evidence',
+        assignee: humanAssignee,
+        assigneeType: 'human',
+        boundPlanVersion: planVersion,
+        agentConstraints: [],
+        planDeliverableRefs: [deliverableA.slug],
+        prUrl,
+      },
+    });
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: humanAssignee,
+        body: { assignee: otherMember },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(200);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.assignee).toBe(otherMember);
+  });
+
+  it('allows the project owner to administratively reassign an awaiting_evidence task', async () => {
+    // Owner administrative reassignment is the other legitimate path
+    // — e.g. the previous assignee is no longer available, so the
+    // owner moves the parked task to someone who can chase down the
+    // missing evidence.
+    const task = await parkedAgentTask(5);
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: owner,
+        body: { assignee: otherMember },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(200);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.assignee).toBe(otherMember);
+  });
+
+  it('does NOT regress reassignment on non-awaiting_evidence tasks (regression guard)', async () => {
+    // The new gate is intentionally scoped to `awaiting_evidence`
+    // (that is the state where the bypass exists). Make sure a third
+    // party reassigning an `in_progress` task is still accepted —
+    // otherwise this fix silently locks down the general member
+    // reassignment workflow, which is out of scope for #1437.
+    const task = await newTask({ prUrl: null });
+
+    const res = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: thirdParty,
+        body: { assignee: otherMember },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(res.status).toBe(200);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.assignee).toBe(otherMember);
+    expect(after?.status).toBe('in_progress');
+  });
+});
