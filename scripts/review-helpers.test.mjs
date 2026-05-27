@@ -1037,6 +1037,27 @@ test('hasSuccessMarkerAfter', async (t) => {
         ],
         sinceMs: since,
         trustedAuthors: ['github-actions[bot]'],
+  // ---- #1407: rapid re-dispatch within tolerance window --------------
+  //
+  // The `sinceMs - toleranceMs` clock-skew cutoff isn't enough on its
+  // own. If the user removes `dispatched` + `cursor:dispatch` and re-
+  // applies `cursor:dispatch` within `toleranceMs` (1500 ms by default)
+  // of the prior cycle's success-marker comment, the new run captures
+  // a `preAddLabelsAtMs` that, after tolerance subtraction, falls
+  // BEFORE the old marker — so the old marker matches again and the
+  // new run silently skips Cursor. Adding `notBeforeMs` (anchored at
+  // the current cycle's GitHub-stamped `labeled LOCK_LABEL` event)
+  // closes that hole without weakening the clock-skew tolerance.
+  await t.test('rapid re-dispatch within tolerance: notBeforeMs rejects stale marker', () => {
+    const oldSuccess = Date.now() - 200; // prior cycle's marker
+    const lockReacquired = oldSuccess + 100; // current cycle's labeled event (after marker)
+    const since = lockReacquired + 50; // local clock at our addLabels (≈now)
+    // Without notBeforeMs the old marker would slip through: since - 1500 = oldSuccess - 1350 < oldSuccess.
+    assert.equal(
+      hasSuccessMarkerAfter({
+        comments: [mkSuccess(oldSuccess)],
+        sinceMs: since,
+        notBeforeMs: lockReacquired,
       }),
       false,
     );
@@ -1108,6 +1129,128 @@ test('latestLockLabeledServerTs', async (t) => {
         lockLabel: LOCK,
       }),
       t0 + 50,
+
+  await t.test('notBeforeMs still admits a peer marker from the current cycle', () => {
+    const lockReacquired = Date.now() - 100;
+    const peerSuccess = lockReacquired + 80; // peer posted after the current cycle's lock event
+    const since = lockReacquired + 10;
+    assert.equal(
+      hasSuccessMarkerAfter({
+        comments: [mkSuccess(peerSuccess)],
+        sinceMs: since,
+        notBeforeMs: lockReacquired,
+      }),
+      true,
+    );
+  });
+
+  await t.test('notBeforeMs without sinceMs acts as the sole cutoff', () => {
+    const cycleStart = Date.now();
+    assert.equal(
+      hasSuccessMarkerAfter({
+        comments: [mkSuccess(cycleStart - 1000)],
+        notBeforeMs: cycleStart,
+      }),
+      false,
+    );
+    assert.equal(
+      hasSuccessMarkerAfter({
+        comments: [mkSuccess(cycleStart + 1000)],
+        notBeforeMs: cycleStart,
+      }),
+      true,
+    );
+  });
+
+  await t.test('notBeforeMs LOWER than sinceMs - tolerance is a no-op (tolerance wins)', () => {
+    // notBeforeMs only tightens the window; it never widens it.
+    const since = Date.now();
+    const peerWithinSkew = since - 500;
+    assert.equal(
+      hasSuccessMarkerAfter({
+        comments: [mkSuccess(peerWithinSkew)],
+        sinceMs: since,
+        notBeforeMs: since - 60_000, // way back
+      }),
+      true,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------
+// review-dispatch.mjs latestLockLabeledAtMs — #1407
+// ---------------------------------------------------------------------
+//
+// Returns the GitHub-stamped epoch-ms of the most recent `labeled
+// LOCK_LABEL` event, i.e. when the current dispatch cycle's lock was
+// acquired on GitHub's clock. Used to anchor hasSuccessMarkerAfter's
+// `notBeforeMs` so the tolerance window can't reach back into a prior
+// cycle during a rapid re-dispatch.
+test('latestLockLabeledAtMs', async (t) => {
+  const { latestLockLabeledAtMs } = await import('./review-dispatch.mjs');
+  const LOCK = 'dispatched';
+  const baseIso = (ts) => new Date(ts).toISOString();
+
+  await t.test('no events ⇒ null', () => {
+    assert.equal(latestLockLabeledAtMs({ events: [], lockLabel: LOCK }), null);
+    assert.equal(latestLockLabeledAtMs({ events: null, lockLabel: LOCK }), null);
+    assert.equal(latestLockLabeledAtMs(), null);
+  });
+
+  await t.test('missing lockLabel ⇒ null', () => {
+    assert.equal(
+      latestLockLabeledAtMs({
+        events: [{ event: 'labeled', label: { name: LOCK }, created_at: baseIso(Date.now()) }],
+      }),
+      null,
+    );
+  });
+
+  await t.test('returns latest labeled-event timestamp for the lock label', () => {
+    const t1 = Date.now() - 60_000;
+    const t2 = Date.now() - 10_000;
+    assert.equal(
+      latestLockLabeledAtMs({
+        events: [
+          { event: 'labeled', label: { name: LOCK }, created_at: baseIso(t1) },
+          { event: 'unlabeled', label: { name: LOCK }, created_at: baseIso(t1 + 5_000) },
+          { event: 'labeled', label: { name: LOCK }, created_at: baseIso(t2) },
+        ],
+        lockLabel: LOCK,
+      }),
+      t2,
+    );
+  });
+
+  await t.test('ignores events for other labels and non-labeled events', () => {
+    const t1 = Date.now() - 5_000;
+    assert.equal(
+      latestLockLabeledAtMs({
+        events: [
+          { event: 'labeled', label: { name: 'cursor:dispatch' }, created_at: baseIso(Date.now()) },
+          { event: 'commented', created_at: baseIso(Date.now()) },
+          { event: 'labeled', label: { name: LOCK }, created_at: baseIso(t1) },
+        ],
+        lockLabel: LOCK,
+      }),
+      t1,
+    );
+  });
+
+  await t.test('malformed entries are skipped', () => {
+    const ts = Date.now() - 2_000;
+    assert.equal(
+      latestLockLabeledAtMs({
+        events: [
+          null,
+          { event: 'labeled' },
+          { event: 'labeled', label: null, created_at: baseIso(Date.now()) },
+          { event: 'labeled', label: { name: LOCK }, created_at: 'not-a-date' },
+          { event: 'labeled', label: { name: LOCK }, created_at: baseIso(ts) },
+        ],
+        lockLabel: LOCK,
+      }),
+      ts,
     );
   });
 
@@ -1506,6 +1649,16 @@ test('review-dispatch.mjs dispatchSucceededAlready call sites share a single sco
       `dispatchSucceededAlready call site must pass a single identifier (the shared peerSuccessCutoff variable) — required by #1278/#1396/#1461; offending call: ${m[0]}`,
     );
     argIdentifiers.add(argMatch[1]);
+    sinceMsValues.add(sinceMatch[1]);
+    // #1407: also forward `events` so the helper can anchor a GitHub-
+    // clock `notBeforeMs` lower bound and reject stale prior-cycle
+    // markers that would otherwise fall inside the tolerance window
+    // after a rapid re-dispatch.
+    assert.match(
+      m[1],
+      /\bevents\b/,
+      `dispatchSucceededAlready call site must forward \`events\` — required by #1407; offending call: ${m[0]}`,
+    );
   }
   assert.equal(
     argIdentifiers.size,
