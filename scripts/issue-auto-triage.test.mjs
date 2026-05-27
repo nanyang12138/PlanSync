@@ -170,12 +170,25 @@ test('static guard: skip-label list covers every label that should freeze triage
 // inline-mirror pattern as extractClosesRefs above — the script
 // can't be imported (it spawns gh at module load when env is set)
 // so we re-declare the pure helper and pin it with a static guard.
+const NON_NEGATIVE_INT_RE = /^\d+$/;
 function parseLimitEnv(name, raw, defaultValue, warn = () => {}) {
-  if (raw === undefined || raw === null || raw === '') {
+  if (raw === undefined || raw === null) {
     return defaultValue;
   }
   const trimmed = typeof raw === 'string' ? raw.trim() : String(raw);
   const parsed = /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : NaN;
+  const trimmed = String(raw).trim();
+  if (trimmed === '') {
+    return defaultValue;
+  }
+  if (!NON_NEGATIVE_INT_RE.test(trimmed)) {
+    warn(
+      `[triage] ${name}=${JSON.stringify(raw)} is not a non-negative integer; ` +
+        `falling back to default=${defaultValue} to preserve rate-limit semantics.`,
+    );
+    return defaultValue;
+  }
+  const parsed = Number.parseInt(trimmed, 10);
   if (!Number.isFinite(parsed) || parsed < 0) {
     warn(
       `[triage] ${name}=${JSON.stringify(raw)} is not a non-negative integer; ` +
@@ -221,6 +234,50 @@ test('parseLimitEnv rejects partial / non-integer numeric input (the partial-par
   assert.match(warnings[1], /TRIAGE_MAX_CLOSE/);
 });
 
+test('parseLimitEnv trims surrounding whitespace (heredoc / shell-export quirks)', () => {
+  // `'5\n'` from a heredoc, `' 5 '` from a copy-paste — both should
+  // still mean 5. The trim happens BEFORE strict-integer validation
+  // so the user-facing behaviour is "whitespace doesn't matter".
+  assert.equal(parseLimitEnv('X', '5\n', 3), 5);
+  assert.equal(parseLimitEnv('X', '  5  ', 3), 5);
+  assert.equal(parseLimitEnv('X', '\t10\t', 3), 10);
+  // All-whitespace is treated the same as empty: fall back to default.
+  assert.equal(parseLimitEnv('X', '   ', 3), 3);
+});
+
+test('parseLimitEnv rejects prefix-numbers / decimals / exponents (Number.parseInt footgun)', () => {
+  // The finding: Number.parseInt is prefix-permissive, so the old
+  // implementation accepted '999abc' → 999, '3.5' → 3, '1e2' → 1.
+  // That silently AMPLIFIES the rate-limit on garbage input (a
+  // workflow_dispatch typo like max_dispatch='999abc' would dispatch
+  // 999 issues in a single run). Reject every parseInt-quirk shape
+  // and fall back to the default instead.
+  const warnings = [];
+  const warn = (msg) => warnings.push(msg);
+  for (const raw of [
+    '999abc', // prefix-number  → parseInt returns 999
+    '3.5', // decimal        → parseInt returns 3
+    '1e2', // scientific     → parseInt returns 1
+    '0x10', // hex            → parseInt returns 0 (radix=10)
+    '5 abc', // space-separated → parseInt returns 5
+    '+5', // signed positive → parseInt returns 5; reject for strictness
+    '--5', // double-negative → parseInt returns NaN; reject loudly
+    '5.0', // even integer-valued decimal must be rejected
+  ]) {
+    assert.equal(
+      parseLimitEnv('TRIAGE_MAX_DISPATCH', raw, 3, warn),
+      3,
+      `raw=${JSON.stringify(raw)} must fall back to default, not silently parse as a number`,
+    );
+  }
+  assert.equal(warnings.length, 8);
+  // Every warning must name the env var so a CI log skim-reader can
+  // spot the misconfigured workflow_dispatch input.
+  for (const msg of warnings) {
+    assert.match(msg, /TRIAGE_MAX_DISPATCH/);
+  }
+});
+
 test('parseLimitEnv falls back to default on NaN input (the rate-limit-bypass bug)', () => {
   // This is the actual finding: workflow_dispatch input "abc" would
   // produce NaN, and `count >= NaN` is always false, so the loop
@@ -252,6 +309,19 @@ test('parseLimitEnv: rate-limit comparison is sound for every fallback path', ()
   // loop; `0 >= LIMIT` must be a real boolean (never NaN-poisoned)
   // so the loop terminates after exactly LIMIT iterations.
   for (const raw of ['abc', '', undefined, null, '-5', 'NaN', '5abc', '1.5', '1e2']) {
+  for (const raw of [
+    'abc',
+    '',
+    undefined,
+    null,
+    '-5',
+    'NaN',
+    '999abc',
+    '3.5',
+    '1e2',
+    '0x10',
+    '   ',
+  ]) {
     const limit = parseLimitEnv('X', raw, 3);
     assert.equal(typeof limit, 'number');
     assert.ok(Number.isFinite(limit), `limit must be finite for raw=${JSON.stringify(raw)}`);
@@ -283,5 +353,12 @@ test('static guard: issue-auto-triage.mjs still defines parseLimitEnv and uses i
     src,
     /\/\^\\d\+\$\/\.test\(/,
     'parseLimitEnv must pre-validate with /^\\d+$/ to reject partial-numeric input like "5abc" / "1.5"',
+  // Pin the strict-integer regex so a future "simplification" back
+  // to bare Number.parseInt reintroduces the prefix-parse footgun
+  // ('999abc' → 999, '3.5' → 3, '1e2' → 1) and fails this test.
+  assert.match(
+    src,
+    /\/\^\\d\+\$\//,
+    'parseLimitEnv must validate the trimmed string with /^\\d+$/ — bare Number.parseInt is prefix-permissive and silently amplifies rate limits on garbage input',
   );
 });
