@@ -26,6 +26,18 @@ inputs:
     description: 'When `true`, disables the R-157 semantic deliverable gate and only runs the legacy open-drift-count check. Use this only as an emergency rollback.'
     required: false
     default: 'false'
+  github-token:
+    description: 'GitHub token (typically `${{ secrets.GITHUB_TOKEN }}`) used to PATCH the PR body with the R-193 `<!-- plansync-status -->` block. Optional — all three of `github-token`, `repo`, and `pr-number` must be set together to enable the body sync.'
+    required: false
+    default: ''
+  repo:
+    description: 'Repository in `owner/name` form (typically `${{ github.repository }}`). Required for R-193 PR-body sync.'
+    required: false
+    default: ''
+  pr-number:
+    description: 'Pull request number (typically `${{ github.event.pull_request.number }}`). Required for R-193 PR-body sync.'
+    required: false
+    default: ''
 outputs:
   drift-count:
     description: 'Number of open drift alerts'
@@ -35,6 +47,8 @@ outputs:
     description: 'Outcome of the R-157 semantic gate: `skipped` (no globs / legacy mode / no files), `passed`, or `failed`.'
   unmatched-files:
     description: 'Newline-separated list of PR files that did not match any active deliverable glob (only populated when `semantic-gate=failed`).'
+  pr-body-updated:
+    description: 'R-193: `"true"` when the action updated the PR body with the PlanSync status block; `"false"` when the body was already in sync or PR-body sync was not configured.'
 runs:
   using: 'node20'
   main: 'dist/index.js'
