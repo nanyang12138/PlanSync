@@ -207,6 +207,32 @@ export class CliSseListener extends EventEmitter {
 }
 
 /**
+ * Event types that warrant the 30s red flash in the Ink prompt area above
+ * the input line (vs. only being appended to `/notifs`).
+ *
+ * Must stay in sync with the browser-side "sticky warning" set in
+ * `packages/api/src/components/notifications.tsx` so the CLI and Web UI
+ * give the same urgency signal for the same event. In particular:
+ *
+ * - Fixes #1348 — `task_awaiting_evidence` (introduced by PR #1223 for the
+ *   R-192 gate) is a sticky `warning` toast in the browser: the run
+ *   reported `complete` but the task is parked until evidence (PR merge,
+ *   deliverable commit, etc.) arrives. The CLI must flash red too,
+ *   otherwise the owner has no signal that work is *not* actually closed.
+ */
+export const URGENT_EVENTS: ReadonlySet<string> = new Set([
+  'drift_detected',
+  'execution_stale',
+  'plan_activated',
+  'review_requested',
+  'review_approved',
+  'review_rejected',
+  'task_assigned',
+  'task_awaiting_evidence',
+  'suggestion_created',
+]);
+
+/**
  * Render a one-line human-readable description of an event for the CLI
  * notification bar. Returns null for low-signal events (e.g. task_started).
  *

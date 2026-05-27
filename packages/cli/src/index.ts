@@ -30,7 +30,7 @@ import {
 } from './exec.js';
 import { startSession, appendToSession, loadInputHistory } from './session.js';
 import { InkSession, SlashCmd } from './prompt.js';
-import { CliSseListener, describeEvent } from './sse-listener.js';
+import { CliSseListener, describeEvent, URGENT_EVENTS } from './sse-listener.js';
 import { apiEvents, type AuthFailurePayload } from './api-errors.js';
 
 // ─── Genie settings writer ────────────────────────────────────────────────────
@@ -177,18 +177,10 @@ async function main() {
 
   // ─── Notification engine ──────────────────────────────────────────────────
   // All events go to notifLog (visible in banner + /notifs).
-  // Urgent events trigger a 30s flash in the Ink prompt area above the input line.
-  const URGENT_EVENTS = new Set([
-    'drift_detected',
-    'execution_stale',
-    'plan_activated',
-    'review_requested',
-    'review_approved',
-    'review_rejected',
-    'task_assigned',
-    'suggestion_created',
-  ]);
-
+  // Urgent events trigger a 30s flash in the Ink prompt area above the input
+  // line. The set itself lives in `sse-listener.ts` next to `describeEvent`
+  // so the urgency policy stays co-located with event rendering and can be
+  // unit-tested without booting the REPL.
   const notify = (msg: string, urgent: boolean) => {
     rawInput.setNotifyLine(msg, urgent);
   };
