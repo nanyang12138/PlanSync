@@ -92,6 +92,191 @@ test('static guard: issue-auto-triage.mjs still defines the canonical helpers', 
   assert.match(src, /dispatch/);
 });
 
+// Mirror of parseLimitEnv from scripts/issue-auto-triage.mjs. Tested
+// in isolation because importing the script triggers top-level `gh`
+// calls. The static guard further down asserts the canonical source
+// stays in sync with this mirror.
+function parseLimitEnv(name, raw, defaultValue) {
+  if (raw === undefined || raw === null) return defaultValue;
+  const trimmed = String(raw).trim();
+  if (trimmed === '') return defaultValue;
+  if (!/^\d+$/.test(trimmed)) {
+    return defaultValue;
+  }
+  const n = Number(trimmed);
+  if (!Number.isInteger(n) || n < 0 || n > Number.MAX_SAFE_INTEGER) {
+    return defaultValue;
+  }
+  return n;
+}
+
+test('parseLimitEnv: undefined / null / empty falls back to default', () => {
+  assert.equal(parseLimitEnv('X', undefined, 3), 3);
+  assert.equal(parseLimitEnv('X', null, 3), 3);
+  assert.equal(parseLimitEnv('X', '', 3), 3);
+  assert.equal(parseLimitEnv('X', '   ', 3), 3);
+});
+
+test('parseLimitEnv: pure non-negative integer string is accepted', () => {
+  assert.equal(parseLimitEnv('X', '0', 3), 0);
+  assert.equal(parseLimitEnv('X', '7', 3), 7);
+  assert.equal(parseLimitEnv('X', '100', 3), 100);
+  assert.equal(parseLimitEnv('X', '  42  ', 3), 42);
+});
+
+test('parseLimitEnv: rejects numeric prefix with garbage trailer (the #1328 finding)', () => {
+  // Number.parseInt('100abc', 10) silently returns 100 — that is the
+  // exact bypass this finding is about. The strict regex must reject
+  // anything that is not entirely digits and fall back to the default
+  // so a workflow_dispatch typo like `max_dispatch=100abc` cannot
+  // inflate the rate limit past the documented value.
+  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', '100abc', 3), 3);
+  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', '3 ; rm -rf /', 3), 3);
+  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', '5.0', 3), 3);
+  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', '0x10', 3), 3);
+  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', '1e3', 3), 3);
+});
+
+test('parseLimitEnv: rejects non-numeric, negative, and fractional input', () => {
+  assert.equal(parseLimitEnv('X', 'abc', 25), 25);
+  assert.equal(parseLimitEnv('X', 'unlimited', 25), 25);
+  assert.equal(parseLimitEnv('X', '-5', 25), 25);
+  assert.equal(parseLimitEnv('X', '-0', 25), 25);
+  assert.equal(parseLimitEnv('X', '3.7', 25), 25);
+  assert.equal(parseLimitEnv('X', '+3', 25), 25);
+  assert.equal(parseLimitEnv('X', 'NaN', 25), 25);
+  assert.equal(parseLimitEnv('X', 'Infinity', 25), 25);
+});
+
+test('static guard: parseLimitEnv stays in the canonical source (no silent revert to bare parseInt)', () => {
+  const src = readFileSync(SCRIPT_PATH, 'utf-8');
+  assert.match(
+    src,
+    /function parseLimitEnv\s*\(/,
+    'parseLimitEnv must remain defined in issue-auto-triage.mjs — finding #1328 documents why a bare Number.parseInt is unsafe',
+  );
+  // The strict-numeric regex is the load-bearing piece — without
+  // `^\d+$` (or a stricter equivalent), parseInt-style prefix
+  // matching accepts `100abc` and the rate-limit cap can be inflated
+  // by typos in workflow_dispatch inputs.
+  assert.match(
+    src,
+    /\/\^\\d\+\$\//,
+    'parseLimitEnv must use a full-string digits regex (/^\\d+$/) so prefix-numeric garbage like "100abc" is rejected',
+  );
+  // The MAX_* env vars MUST be routed through the helper. A future
+  // refactor that re-introduces bare `Number.parseInt(process.env.TRIAGE_MAX_*` would
+  // resurrect the exact #1328 finding.
+  assert.match(
+    src,
+    /MAX_DISPATCH\s*=\s*parseLimitEnv\(\s*'TRIAGE_MAX_DISPATCH'/,
+    'MAX_DISPATCH must go through parseLimitEnv',
+  );
+  assert.match(
+    src,
+    /MAX_CLOSE\s*=\s*parseLimitEnv\(\s*'TRIAGE_MAX_CLOSE'/,
+    'MAX_CLOSE must go through parseLimitEnv',
+  );
+  assert.doesNotMatch(
+    src,
+    /Number\.parseInt\(\s*process\.env\.TRIAGE_MAX_/,
+    'TRIAGE_MAX_* must not be parsed with bare Number.parseInt — that is the #1328 regression',
+// Mirror of parsePositiveIntEnv in scripts/issue-auto-triage.mjs. Kept
+// inline so the test can exercise the helper without importing the
+// script (which spawns `gh` at import-time when env is set). The
+// static-source guard below asserts the canonical implementation
+// still exists.
+function parsePositiveIntEnv(name, raw, fallback) {
+  const warnings = [];
+  const warn = (msg) => warnings.push(msg);
+  if (raw === undefined || raw === null || raw === '') return { value: fallback, warnings };
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isInteger(n) || n < 0) {
+    warn(
+      `[warn] ${name}=${JSON.stringify(raw)} is not a non-negative integer; falling back to ${fallback}`,
+    );
+    return { value: fallback, warnings };
+  }
+  return { value: n, warnings };
+}
+
+test('parsePositiveIntEnv: undefined / empty string falls back without warning', () => {
+  for (const raw of [undefined, null, '']) {
+    const r = parsePositiveIntEnv('TRIAGE_MAX_DISPATCH', raw, 3);
+    assert.equal(r.value, 3);
+    assert.equal(r.warnings.length, 0);
+  }
+});
+
+test('parsePositiveIntEnv: valid non-negative integer string is parsed', () => {
+  assert.deepEqual(parsePositiveIntEnv('X', '7', 3), { value: 7, warnings: [] });
+  assert.deepEqual(parsePositiveIntEnv('X', '0', 3), { value: 0, warnings: [] });
+  assert.deepEqual(parsePositiveIntEnv('X', '  12  ', 3), { value: 12, warnings: [] });
+});
+
+test('parsePositiveIntEnv: NaN-producing input falls back to default and warns', () => {
+  // This is the exact failure mode the finding flags: a non-numeric
+  // env var made parseInt return NaN, which silently disabled both
+  // rate-limit checks because `count >= NaN` is always false.
+  for (const raw of ['abc', 'unlimited', 'NaN', '--', 'true']) {
+    const r = parsePositiveIntEnv('TRIAGE_MAX_DISPATCH', raw, 3);
+    assert.equal(r.value, 3, `expected NaN input ${JSON.stringify(raw)} to fall back to 3`);
+    assert.equal(r.warnings.length, 1);
+    assert.match(r.warnings[0], /TRIAGE_MAX_DISPATCH/);
+  }
+});
+
+test('parsePositiveIntEnv: negative integer falls back to default and warns', () => {
+  // `parseInt('-5', 10)` is -5. Without the guard, `0 >= -5` is true
+  // immediately so the loop short-circuits and the script silently
+  // does nothing. The fallback restores the documented default.
+  const r = parsePositiveIntEnv('TRIAGE_MAX_CLOSE', '-5', 25);
+  assert.equal(r.value, 25);
+  assert.equal(r.warnings.length, 1);
+});
+
+test('parsePositiveIntEnv: parseInt-truncated floats are accepted (parseInt drops the fractional part)', () => {
+  // `parseInt('3.7', 10)` is 3 — this is intentional Node behaviour
+  // and matches how the original code parsed env vars. We don't
+  // reject it because it doesn't trigger the NaN failure mode this
+  // helper is here to guard against.
+  const r = parsePositiveIntEnv('X', '3.7', 99);
+  assert.equal(r.value, 3);
+  assert.equal(r.warnings.length, 0);
+});
+
+test('static guard: issue-auto-triage.mjs still validates env-var caps for NaN', () => {
+  // Regression guard for the finding in issue #1239: a bare
+  // `Number.parseInt(envVar || fallback, 10)` silently produced NaN
+  // for non-numeric input, and every `count >= NaN` comparison
+  // evaluated to false so the loops processed the whole backlog.
+  // The canonical fix is parsePositiveIntEnv() — this guard fails
+  // if a future refactor drops it or reverts the call sites.
+  const src = readFileSync(SCRIPT_PATH, 'utf-8');
+  assert.match(src, /function parsePositiveIntEnv\s*\(/);
+  assert.match(
+    src,
+    /const MAX_DISPATCH\s*=\s*parsePositiveIntEnv\(\s*'TRIAGE_MAX_DISPATCH'/,
+    'MAX_DISPATCH must be parsed through parsePositiveIntEnv so non-numeric env vars cannot disable the cap',
+  );
+  assert.match(
+    src,
+    /const MAX_CLOSE\s*=\s*parsePositiveIntEnv\(\s*'TRIAGE_MAX_CLOSE'/,
+    'MAX_CLOSE must be parsed through parsePositiveIntEnv so non-numeric env vars cannot disable the cap',
+  );
+  // The helper must reject NaN. Number.isInteger() returns false for
+  // NaN, which is the chokepoint — guarding the method name keeps
+  // the test specific to the actual fix instead of any later rewrite
+  // that happens to use a different sentinel.
+  const helperBody = src.match(/function parsePositiveIntEnv\s*\([\s\S]*?\n\}/);
+  assert.ok(helperBody, 'parsePositiveIntEnv body must be present');
+  assert.match(
+    helperBody[0],
+    /Number\.isInteger\s*\(/,
+    'parsePositiveIntEnv must use Number.isInteger() (or equivalent) to reject NaN',
+  );
+});
+
 test('static guard: cursor:dispatch is added with triggersDownstreamWorkflow=true (closes the GITHUB_TOKEN recursion-guard footgun)', () => {
   // Production hit on 2026-05-26: the script added cursor:dispatch
   // labels successfully with GITHUB_TOKEN, but GitHub silently
