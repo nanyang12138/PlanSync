@@ -179,11 +179,63 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
         const latestRun = await prisma.executionRun.findFirst({
           where: { taskId: params.taskId },
           orderBy: { startedAt: 'desc' },
-          select: { status: true },
+          select: { status: true, endedAt: true },
         });
-        const hasCompletedRun = latestRun?.status === 'completed';
+
+        // R-192 / closes #1404 — PATCH-based "lift from awaiting_evidence"
+        // does not create a new ExecutionRun (unlike POST /runs, which
+        // #1306 anchored on the latest run). So the latest run remains
+        // the OLD completed run whose evidence R-192 already rejected,
+        // and the bypass chain
+        //
+        //   1. PATCH awaiting_evidence → in_progress  (allowed for the
+        //      assignee since #1434; no new run created)
+        //   2. PATCH in_progress       → done
+        //
+        // sails past both shortcuts below: the source state at step 2
+        // is `in_progress` so the direct-awaiting_evidence guard above
+        // does not fire, `latestRun.status === 'completed'` still
+        // matches (stale run), and `isHumanSelfComplete` matches for
+        // the human assignee variant of the same chain.
+        //
+        // Detect the chain by reading the activity log: a
+        // `task_status_changed` row with `fromStatus = 'awaiting_evidence'`
+        // and `createdAt > latestRun.endedAt` means the lift happened
+        // AFTER the latest completed run finished and no new run has
+        // completed since, so the latest run is no longer authoritative
+        // evidence for the current task lifecycle. We disable BOTH the
+        // hasCompletedRun shortcut and the isHumanSelfComplete shortcut
+        // in that case so the only non-owner exit is to re-run
+        // execution_complete (which writes a new completed run on top
+        // and re-fires the R-192 gate against fresh evidence).
+        //
+        // The legitimate "owner reopens → new run completes → a member
+        // closes the loop" flow is unaffected: the new completed run's
+        // endedAt is later than the lift activity, so the existence
+        // check below misses and the shortcuts stay enabled.
+        let liftedFromAwaitingEvidenceAfterLatestRun = false;
+        if (latestRun?.endedAt) {
+          const liftActivity = await prisma.activity.findFirst({
+            where: {
+              projectId: params.projectId,
+              type: 'task_status_changed',
+              createdAt: { gt: latestRun.endedAt },
+              AND: [
+                { metadata: { path: ['taskId'], equals: params.taskId } },
+                { metadata: { path: ['fromStatus'], equals: 'awaiting_evidence' } },
+              ],
+            },
+            select: { id: true },
+          });
+          liftedFromAwaitingEvidenceAfterLatestRun = liftActivity !== null;
+        }
+
+        const hasCompletedRun =
+          latestRun?.status === 'completed' && !liftedFromAwaitingEvidenceAfterLatestRun;
         const isHumanSelfComplete =
-          task.assigneeType === 'human' && task.assignee === auth.userName;
+          task.assigneeType === 'human' &&
+          task.assignee === auth.userName &&
+          !liftedFromAwaitingEvidenceAfterLatestRun;
 
         if (!isOwner && !hasCompletedRun && !isHumanSelfComplete) {
           if (task.assigneeType === 'agent') {

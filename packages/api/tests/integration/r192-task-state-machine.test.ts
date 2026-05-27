@@ -1712,3 +1712,314 @@ describe('R-192: awaiting_evidence → in_progress|blocked is owner-or-assignee 
     expect(after?.status).toBe('awaiting_evidence');
   });
 });
+
+// ---------------------------------------------------------------
+// 7. R-192 PATCH-based lift bypass — closes #1404
+// ---------------------------------------------------------------
+//
+// PR #1306 closed the POST-/runs variant of the awaiting_evidence
+// bypass by anchoring `hasCompletedRun` on the LATEST run (because
+// POST /runs creates a new `running` run on top of the stale
+// `completed` one, so `latestRun.status` is no longer 'completed').
+// PR #1434 closed the third-party variant of the PATCH lift by
+// gating `awaiting_evidence → in_progress|blocked` on
+// owner-or-assignee.
+//
+// Both fixes together still leave a residual bypass for the assignee
+// (or the owner-as-non-owner-of-the-done-decision) shape:
+//
+//   1. Task is parked in `awaiting_evidence` (the originating run is
+//      `completed`; R-192 rejected its evidence).
+//   2. The assignee PATCHes `awaiting_evidence → in_progress` — this
+//      is legitimate per #1434 (assignee resume), and crucially does
+//      NOT create a new ExecutionRun (unlike POST /runs).
+//   3. A non-owner caller PATCHes `in_progress → done`. The source
+//      state is now `in_progress`, so the direct-awaiting_evidence
+//      guard doesn't fire; `latestRun` is still the OLD completed
+//      run (step 2 didn't write one), so `hasCompletedRun` matches
+//      and the shortcut greenlits the flip. R-192 is bypassed
+//      exactly the same way as the original parked-PATCH attack.
+//
+// The same chain bypasses the `isHumanSelfComplete` shortcut for
+// human-typed tasks (the human assignee can themselves do steps 2
+// and 3 with no completed run needed at all).
+//
+// Fix: when a `task_status_changed` activity with
+// `fromStatus = 'awaiting_evidence'` exists after `latestRun.endedAt`,
+// the latest run is no longer authoritative for the current task
+// lifecycle. Disable BOTH shortcuts (`hasCompletedRun` and
+// `isHumanSelfComplete`) so the only non-owner exit is to re-run
+// execution_complete (which writes a new completed run on top and
+// re-fires the R-192 gate against fresh evidence).
+
+describe('R-192: PATCH-based awaiting_evidence lift cannot bypass done gate (closes #1404)', () => {
+  const assignee = 'r1404-assignee';
+  const thirdParty = 'r1404-third-party';
+  const humanAssignee = 'r1404-human-assignee';
+
+  beforeAll(async () => {
+    // The agent assignee for the bypass chain. We reuse agentName for
+    // the parked tasks below (set by newTask()), so the assignee here
+    // is just registered for symmetry with future tests if they need a
+    // distinct identity.
+    await testPrisma.projectMember.upsert({
+      where: { projectId_name: { projectId, name: assignee } },
+      update: { role: 'developer', type: 'agent' },
+      create: { projectId, name: assignee, role: 'developer', type: 'agent' },
+    });
+    await testPrisma.projectMember.upsert({
+      where: { projectId_name: { projectId, name: thirdParty } },
+      update: { role: 'developer', type: 'human' },
+      create: { projectId, name: thirdParty, role: 'developer', type: 'human' },
+    });
+    await testPrisma.projectMember.upsert({
+      where: { projectId_name: { projectId, name: humanAssignee } },
+      update: { role: 'developer', type: 'human' },
+      create: { projectId, name: humanAssignee, role: 'developer', type: 'human' },
+    });
+  });
+
+  async function parkedAgentTaskWithCompletedRun(prSuffix: number) {
+    const prUrl = `https://github.com/plansync-test/r192-repo/pull/${1404000 + prSuffix}`;
+    const task = await newTask({ prUrl });
+    await testPrisma.task.update({
+      where: { id: task.id },
+      data: { status: 'awaiting_evidence' },
+    });
+    await testPrisma.executionRun.create({
+      data: {
+        taskId: task.id,
+        status: 'completed',
+        executorType: 'agent',
+        executorName: agentName,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(Date.now() - 120_000),
+        endedAt: new Date(Date.now() - 60_000),
+      },
+    });
+    return task;
+  }
+
+  it('rejects the agent-assignee → PATCH in_progress → PATCH done bypass chain (agent-task variant)', async () => {
+    // Reproduce the exact #1404 bypass shape on an agent-typed task:
+    //   step 1 — agent assignee lifts awaiting_evidence → in_progress
+    //            (allowed for the assignee per #1434, no new run).
+    //   step 2 — agent assignee attempts PATCH `done`. Pre-fix the
+    //            OLD completed run satisfied hasCompletedRun and the
+    //            transition silently landed, bypassing R-192.
+    const task = await parkedAgentTaskWithCompletedRun(1);
+
+    const liftRes = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: agentName,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(liftRes.status).toBe(200);
+    const lifted = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(lifted?.status).toBe('in_progress');
+
+    const doneRes = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: agentName,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    // Agent-typed task with a stale completed run → STATE_CONFLICT
+    // (409) with the agent-specific message (same branch the #1306
+    // POST-/runs guard exercises). The transition must NOT land.
+    expect(doneRes.status).toBe(409);
+    const json = await doneRes.json();
+    expect(JSON.stringify(json)).toMatch(/completed execution run/i);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('in_progress');
+  });
+
+  it('rejects the human-assignee variant of the same chain (closes the isHumanSelfComplete shortcut)', async () => {
+    // Same chain, but the task is human-typed so the second PATCH
+    // would otherwise sail through via `isHumanSelfComplete = true`
+    // even if hasCompletedRun were tightened in isolation. The fix
+    // disables both shortcuts when the lift happened post-completion.
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/1404100';
+    const task = await testPrisma.task.create({
+      data: {
+        projectId,
+        title: 'r1404-human-bypass',
+        type: 'code',
+        priority: 'p1',
+        status: 'awaiting_evidence',
+        assignee: humanAssignee,
+        assigneeType: 'human',
+        boundPlanVersion: planVersion,
+        agentConstraints: [],
+        planDeliverableRefs: [deliverableA.slug],
+        prUrl,
+      },
+    });
+    await testPrisma.executionRun.create({
+      data: {
+        taskId: task.id,
+        status: 'completed',
+        executorType: 'human',
+        executorName: humanAssignee,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(Date.now() - 120_000),
+        endedAt: new Date(Date.now() - 60_000),
+      },
+    });
+
+    const liftRes = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: humanAssignee,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(liftRes.status).toBe(200);
+
+    const doneRes = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: humanAssignee,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    // Human-typed task with the human-self-complete shortcut
+    // disabled → FORBIDDEN (403). The transition must NOT land.
+    expect(doneRes.status).toBe(403);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('in_progress');
+  });
+
+  it('rejects the third-party-after-owner-lift variant (owner reopens via PATCH; no new run; third party tries to close)', async () => {
+    // Owner reopening via PATCH is the documented legitimate use of
+    // `awaiting_evidence → in_progress`, but it does NOT relieve the
+    // R-192 gate on its own — the next done-decision still needs
+    // either a fresh completed run or owner authority. Pre-fix the
+    // third party could ride the owner's reopen to satisfy
+    // hasCompletedRun against the stale run; the new gate blocks
+    // that.
+    const task = await parkedAgentTaskWithCompletedRun(2);
+
+    // Owner reopens the parked task via PATCH (allowed; no new run).
+    const liftRes = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: owner,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(liftRes.status).toBe(200);
+
+    const doneRes = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: thirdParty,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(doneRes.status).toBe(409);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('in_progress');
+  });
+
+  it('still allows the owner to PATCH done after lifting via PATCH (owner override is the documented exit)', async () => {
+    // The owner-only direct-PATCH exit out of awaiting_evidence is
+    // already covered by the guard at line ~148. We re-assert that
+    // the owner's own two-step PATCH (lift → done) also works, since
+    // the new gate sits on the second PATCH and must not over-reach
+    // and block the owner's administrative close.
+    const task = await parkedAgentTaskWithCompletedRun(3);
+
+    const liftRes = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: owner,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(liftRes.status).toBe(200);
+
+    const doneRes = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: owner,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(doneRes.status).toBe(200);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('done');
+  });
+
+  it('still allows a non-owner to PATCH done after a fresh completed run lands post-lift (regression guard)', async () => {
+    // The fix only blocks the bypass shape (lift without a new
+    // completed run on top). The legitimate recovery shape — owner
+    // reopens → agent runs a fresh execution → that run completes →
+    // a member closes the loop — must remain unblocked because the
+    // new completed run's endedAt is later than the lift activity,
+    // so the activity-log check misses and hasCompletedRun stays
+    // enabled.
+    const task = await parkedAgentTaskWithCompletedRun(4);
+
+    // Owner lifts the parked task.
+    const liftRes = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: owner,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(liftRes.status).toBe(200);
+
+    // A fresh execution starts and completes — this writes a NEW
+    // `completed` run with endedAt clearly later than the lift
+    // activity timestamp. We add a small (+1s) offset so the
+    // `gt` comparison in the route's activity-log check is
+    // unambiguously after the lift even if both rows land in the
+    // same wall-clock millisecond.
+    const freshlyEnded = new Date(Date.now() + 1_000);
+    await testPrisma.executionRun.create({
+      data: {
+        taskId: task.id,
+        status: 'completed',
+        executorType: 'agent',
+        executorName: agentName,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: freshlyEnded,
+        endedAt: freshlyEnded,
+      },
+    });
+
+    const doneRes = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: thirdParty,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(doneRes.status).toBe(200);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('done');
+  });
+});
