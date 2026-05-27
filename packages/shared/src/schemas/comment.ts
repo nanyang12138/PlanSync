@@ -40,6 +40,18 @@ export const commentSchema = z.object({
 //     sidebar wants. We deliberately do NOT return a mixed listing here:
 //     mixing per-deliverable threads into the plan sidebar broke the
 //     "one discussion per surface" UX (Issue #1256).
+//
+// Issue #1356: `?deliverableId=` (empty value, common URL serialization
+// for an unselected filter) MUST be treated as "no filter" — without the
+// transform below the empty string flows into the Prisma `where` clause
+// as a literal id, silently returning an empty list instead of either
+// plan-level comments or a 400. Coercing empty → undefined picks the
+// more user-friendly of the two acceptable behaviours called out in the
+// finding (plan-level comments), and keeps the contract symmetric with
+// the omitted-param case.
 export const listCommentsQuerySchema = z.object({
-  deliverableId: z.string().optional(),
+  deliverableId: z
+    .string()
+    .optional()
+    .transform((v) => (v === '' ? undefined : v)),
 });
