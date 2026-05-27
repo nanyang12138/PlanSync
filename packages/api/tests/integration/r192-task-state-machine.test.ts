@@ -1339,6 +1339,299 @@ describe('R-192: awaiting_evidence → done PATCH is owner-only (closes #1227 #1
 });
 
 // ---------------------------------------------------------------
+// 5b. R-192 evidence-gate bypass via chained PATCH out of
+//     awaiting_evidence (closes #1362)
+// ---------------------------------------------------------------
+//
+// PR #1306 anchored `hasCompletedRun` on the *latest* run so the
+// POST /runs lift attack (a fresh `running` run rotates the OLD
+// completed run out of "latest") can't reach `done` via the
+// member shortcut. That fix relies on a new run rotating in.
+//
+// PR #1428/#1434 added an owner-or-assignee gate on the three
+// non-`done` exits of `awaiting_evidence` (`→ cancelled`,
+// `→ in_progress`, `→ blocked`) so a third-party member can no
+// longer flip the parked task out of awaiting_evidence at all.
+//
+// What remains is the assignee themselves doing the flip without
+// touching POST /runs. Because no new run rotates in, the OLD
+// completed run is still the latest run and `hasCompletedRun`
+// matches; for human-typed tasks `isHumanSelfComplete` also
+// matches. Both shortcuts then green-light the assignee's PATCH
+// `→ done` from `in_progress` (or `blocked → in_progress`),
+// bypassing R-192's evidence judgment on the same completed run.
+//
+// Fix: when a `task_status_changed` activity left
+// `awaiting_evidence` AFTER the latest completed run finished,
+// treat the run as evidence-poisoned for non-owner shortcuts.
+// The legitimate POST /runs recovery flow is unaffected because
+// it writes `execution_started` (not `task_status_changed`) and
+// later rotates a fresh completed run into `latestRun.endedAt`.
+describe('R-192: chained-PATCH escape from awaiting_evidence does not bypass the evidence gate (closes #1362)', () => {
+  const humanAssignee = 'r1362-human-assignee';
+  const developer = 'r1362-developer';
+
+  beforeAll(async () => {
+    await testPrisma.projectMember.upsert({
+      where: { projectId_name: { projectId, name: humanAssignee } },
+      update: { role: 'developer', type: 'human' },
+      create: { projectId, name: humanAssignee, role: 'developer', type: 'human' },
+    });
+    await testPrisma.projectMember.upsert({
+      where: { projectId_name: { projectId, name: developer } },
+      update: { role: 'developer', type: 'human' },
+      create: { projectId, name: developer, role: 'developer', type: 'human' },
+    });
+  });
+
+  // Park an agent-assigned task in awaiting_evidence with the OLD
+  // completed run on file (the canonical "parked" shape).
+  async function parkedAgentTask(prSuffix: number) {
+    const prUrl = `https://github.com/plansync-test/r192-repo/pull/${1362000 + prSuffix}`;
+    const task = await newTask({ prUrl });
+    await testPrisma.executionRun.create({
+      data: {
+        taskId: task.id,
+        status: 'completed',
+        executorType: 'agent',
+        executorName: agentName,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(Date.now() - 120_000),
+        endedAt: new Date(Date.now() - 60_000),
+      },
+    });
+    // Use the real PATCH route to flip into awaiting_evidence so the
+    // bypass setup matches what an attacker would actually see — a
+    // task in awaiting_evidence with a recorded `task_status_changed`
+    // entry leaving `awaiting_evidence` is the post-step-2 shape.
+    // Park first via direct DB write (no activity yet) so the
+    // "parking-exit" activity is the assignee's PATCH, not test fixture.
+    await testPrisma.task.update({
+      where: { id: task.id },
+      data: { status: 'awaiting_evidence' },
+    });
+    return task;
+  }
+
+  it('rejects an agent assignee chain-PATCHing awaiting_evidence → in_progress → done (the #1362 bypass)', async () => {
+    const task = await parkedAgentTask(1);
+
+    // Step 1: assignee flips the parked task back to in_progress.
+    // PR #1434's owner-or-assignee gate allows this — the assignee
+    // resuming their own task is a documented legitimate transition.
+    const step1 = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: agentName,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(step1.status).toBe(200);
+
+    // Step 2: assignee PATCHes `→ done`. The OLD completed run is
+    // still the latest run, so pre-fix hasCompletedRun matches and
+    // the agent reaches `done` without R-192 ever re-evaluating the
+    // (still-insufficient) evidence. The fix flags the run as
+    // evidence-poisoned because the parking-exit activity in step 1
+    // is newer than the latest completed run.
+    const step2 = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: agentName,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(step2.status).toBe(409);
+    const json = await step2.json();
+    expect(JSON.stringify(json)).toMatch(/completed execution run/i);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('in_progress');
+  });
+
+  it('rejects a human assignee chain-PATCHing their own awaiting_evidence → in_progress → done (isHumanSelfComplete must not free-ride a poisoned run)', async () => {
+    // The human-assignee variant matters because `isHumanSelfComplete`
+    // is a separate non-owner shortcut: a human assignee can normally
+    // close their own task even without a completed run on file. The
+    // fix must poison BOTH shortcuts when the latest completed run
+    // has been R-192-rejected — otherwise the assignee can simply
+    // ride the human-self-complete path past the gate.
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/1362100';
+    const task = await testPrisma.task.create({
+      data: {
+        projectId,
+        title: 'r1362-human-bypass-task',
+        type: 'code',
+        priority: 'p1',
+        status: 'awaiting_evidence',
+        assignee: humanAssignee,
+        assigneeType: 'human',
+        boundPlanVersion: planVersion,
+        agentConstraints: [],
+        planDeliverableRefs: [deliverableA.slug],
+        prUrl,
+      },
+    });
+    await testPrisma.executionRun.create({
+      data: {
+        taskId: task.id,
+        status: 'completed',
+        executorType: 'human',
+        executorName: humanAssignee,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(Date.now() - 120_000),
+        endedAt: new Date(Date.now() - 60_000),
+      },
+    });
+
+    const step1 = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: humanAssignee,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(step1.status).toBe(200);
+
+    const step2 = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: humanAssignee,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    // Human-typed task with poisoned run: shortcut path closes with
+    // 403 FORBIDDEN (the agent path returns 409 STATE_CONFLICT
+    // because the message "no completed execution run" is more
+    // actionable for agents). Either way the task does not advance.
+    expect(step2.status).toBe(403);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('in_progress');
+  });
+
+  it('rejects the longer awaiting_evidence → blocked → in_progress → done chain too (any post-parking activity poisons the shortcut)', async () => {
+    // Same bypass shape with one extra hop — the parked task is
+    // routed through `blocked` first. Each PATCH writes a
+    // `task_status_changed` activity, but the fix only needs one
+    // `fromStatus=awaiting_evidence` row to exist after the latest
+    // completed run; subsequent flips from `blocked → in_progress`
+    // do not re-arm the bypass because their `fromStatus` is not
+    // `awaiting_evidence`.
+    const task = await parkedAgentTask(2);
+
+    const toBlocked = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: agentName,
+        body: { status: 'blocked' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(toBlocked.status).toBe(200);
+
+    const toInProgress = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: agentName,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(toInProgress.status).toBe(200);
+
+    const toDone = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: agentName,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(toDone.status).toBe(409);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('in_progress');
+  });
+
+  it('still allows the legitimate POST /runs recovery (fresh completed run rotates the parking-exit out of the lookup window)', async () => {
+    // Regression: the documented R-192 recovery flow lifts the
+    // parked task via POST /runs (which writes `execution_started`,
+    // NOT `task_status_changed`), the agent supplies fresh
+    // evidence, and the new run completes. After the new completed
+    // run lands, `latestRun.endedAt` is newer than any prior
+    // parking-exit activity (in this scenario there are none at
+    // all because the lift goes through the runs route, not PATCH).
+    // A non-owner closing the task at that point must still
+    // succeed via `hasCompletedRun`.
+    const prUrl = 'https://github.com/plansync-test/r192-repo/pull/1362200';
+    const task = await newTask({ prUrl });
+    const mergeCommitSha = defaultMergeShaFor(prUrl);
+    await linkCommitToDeliverable(deliverableA.id, mergeCommitSha);
+    // Old completed run from a previous attempt.
+    await testPrisma.executionRun.create({
+      data: {
+        taskId: task.id,
+        status: 'completed',
+        executorType: 'agent',
+        executorName: agentName,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date(Date.now() - 240_000),
+        endedAt: new Date(Date.now() - 180_000),
+      },
+    });
+    await testPrisma.task.update({
+      where: { id: task.id },
+      data: { status: 'awaiting_evidence' },
+    });
+
+    // Lift the task via POST /runs — does NOT write a
+    // `task_status_changed` activity (it writes `execution_started`).
+    const startRes = await runsStartPost(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}/runs`, {
+        method: 'POST',
+        userName: agentName,
+        body: { executorName: agentName, executorType: 'agent' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(startRes.status).toBe(201);
+    const newRunId: string = (await startRes.json()).data.id;
+
+    // Mark the new run as completed with `endedAt` AFTER any (none
+    // here) parking-exit activity would be — this is the rotation
+    // the fix relies on.
+    await testPrisma.executionRun.update({
+      where: { id: newRunId },
+      data: { status: 'completed', endedAt: new Date() },
+    });
+
+    // Non-owner closes the task. With a fresh completed run as the
+    // latest run AND no parking-exit activity newer than its
+    // `endedAt`, the fix must NOT poison the shortcut.
+    const closeRes = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: developer,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(closeRes.status).toBe(200);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('done');
+  });
+});
+
+// ---------------------------------------------------------------
 // 6. R-192 awaiting_evidence → cancelled is owner-or-assignee only
 //    (closes #1431)
 // ---------------------------------------------------------------
