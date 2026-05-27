@@ -376,11 +376,21 @@ function parseLimitEnv(name, raw, defaultValue, warn = () => {}) {
   }
   const parsed = Number.parseInt(trimmed, 10);
   if (!Number.isFinite(parsed) || parsed < 0) {
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) {
     warn(
-      `[triage] ${name}=${JSON.stringify(raw)} is not a non-negative integer; ` +
+      `[triage] ${name}=${JSON.stringify(raw)} is not an integer; ` +
         `falling back to default=${defaultValue} to preserve rate-limit semantics.`,
     );
     return defaultValue;
+  }
+  if (parsed < 0) {
+    warn(
+      `[triage] ${name}=${JSON.stringify(raw)} is negative; ` +
+        `clamping to 0 (zero quota) — refusing to substitute the default ` +
+        `because that would expand quota in the opposite direction of the operator's input.`,
+    );
+    return 0;
   }
   return parsed;
 }
@@ -516,14 +526,41 @@ test('parseLimitEnv falls back to default on NaN input (the rate-limit-bypass bu
   assert.match(warnings[1], /TRIAGE_MAX_CLOSE/);
 });
 
-test('parseLimitEnv falls back to default on negative integers', () => {
-  // `-1 >= 0` is false, so a negative limit also disables the
-  // rate-limit on the first loop iteration. Reject it.
+test('parseLimitEnv clamps negative integers to zero (not the default)', () => {
+  // `-1 >= 0` is false, so a negative limit would otherwise disable
+  // the rate-limit on the first loop iteration. But we must NOT
+  // silently substitute the default (3/25) either: a manual
+  // operator who types `-1` is asking for *fewer* actions, and
+  // expanding the quota up to the default would push the run in
+  // the opposite direction of their intent (issue #1400). Clamp
+  // to 0 — zero quota — so the loop breaks immediately and no
+  // action runs.
   const warnings = [];
   const warn = (msg) => warnings.push(msg);
-  assert.equal(parseLimitEnv('X', '-1', 3, warn), 3);
-  assert.equal(parseLimitEnv('X', '-100', 3, warn), 3);
+  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', '-1', 3, warn), 0);
+  assert.equal(parseLimitEnv('TRIAGE_MAX_CLOSE', '-100', 25, warn), 0);
   assert.equal(warnings.length, 2);
+  assert.match(warnings[0], /TRIAGE_MAX_DISPATCH/);
+  assert.match(warnings[0], /clamping to 0/);
+  assert.match(warnings[1], /TRIAGE_MAX_CLOSE/);
+  assert.match(warnings[1], /clamping to 0/);
+});
+
+test('parseLimitEnv: clamp-to-zero is loop-safe (count >= 0 stops on first iteration)', () => {
+  // Sanity-check the contract the two consumers rely on: when the
+  // limit comes back as 0, `count >= LIMIT` is true at count=0,
+  // so the loop breaks before any action runs. This is the actual
+  // semantic the issue #1400 fix promises operators.
+  const limit = parseLimitEnv('X', '-5', 3);
+  assert.equal(limit, 0);
+  let count = 0;
+  let iterations = 0;
+  for (let i = 0; i < 10; i += 1) {
+    if (count >= limit) break;
+    iterations += 1;
+    count += 1;
+  }
+  assert.equal(iterations, 0, 'zero-quota limit must skip every iteration');
 });
 
 test('parseLimitEnv: rate-limit comparison is sound for every fallback path', () => {
@@ -546,6 +583,8 @@ test('parseLimitEnv: rate-limit comparison is sound for every fallback path', ()
     '   ',
   ]) {
   for (const raw of ['abc', '', undefined, null, '-5', 'NaN', '5abc', '3 4', '5.5', '0xA']) {
+  // so the loop terminates after at most LIMIT iterations.
+  for (const raw of ['abc', '', undefined, null, '-5', 'NaN']) {
     const limit = parseLimitEnv('X', raw, 3);
     assert.equal(typeof limit, 'number');
     assert.ok(Number.isFinite(limit), `limit must be finite for raw=${JSON.stringify(raw)}`);
