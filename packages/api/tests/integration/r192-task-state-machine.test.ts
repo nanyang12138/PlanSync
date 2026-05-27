@@ -1737,6 +1737,95 @@ describe('R-192: awaiting_evidence → in_progress|blocked is owner-or-assignee 
     const after = await testPrisma.task.findUnique({ where: { id: task.id } });
     expect(after?.status).toBe('awaiting_evidence');
   });
+
+  it('belt-and-braces: a third party that retries the laundering chain at step 2 (→ done) is also rejected — closes #1651', async () => {
+    // Companion to the previous test: that one stops after step 1 is
+    // rejected and notes "step 2 is intentionally not asserted because
+    // the contract is that step 1 is unreachable". A separate review
+    // finding (#1651, triaged from PR #1425) flagged that the explicit
+    // two-hop laundering shape was never pinned in the suite, leaving
+    // ambiguity about what happens if a buggy / malicious client
+    // ignores the step-1 403 and immediately retries with `→ done`.
+    //
+    // The actual end-to-end contract: because step 1 did not move the
+    // task out of `awaiting_evidence`, the step-2 PATCH is still a
+    // direct `awaiting_evidence → done` attempt and falls into the
+    // owner-only `→ done` guard from #1227/#1306 (not the assignee-
+    // permissive #1429 gate). So step 2 also 403s — but for a
+    // different reason than step 1. Asserting both pins the composed
+    // behaviour of the #1429 + #1227/#1306 gates explicitly so a
+    // future refactor of either gate cannot silently reopen the
+    // chain.
+    //
+    // The two-hop shape is intentionally distinct from PR #1425's
+    // `'preserves the assignee-release escape hatch'` test, which
+    // (incorrectly) asserted `non-owner → cancelled` returns 200 —
+    // contradicting the #1431 cancel gate already on master. The
+    // legitimate-cancel-by-assignee path is exercised in describe
+    // (6) `closes #1431` above; this test pins down only the
+    // third-party laundering route.
+    const task = await parkedAgentTask(7);
+
+    const step1 = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: thirdParty,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(step1.status).toBe(403);
+
+    const step2 = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: thirdParty,
+        body: { status: 'done' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(step2.status).toBe(403);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('awaiting_evidence');
+  });
+
+  it('and a third party that retries step 2 with `→ cancelled` is rejected by the #1431 cancel gate — closes #1651', async () => {
+    // Companion of the test above: the other shape of the same retry
+    // is `→ cancelled` instead of `→ done`. Because step 1 was
+    // rejected, the source state is still `awaiting_evidence`, so
+    // step 2 is a direct `awaiting_evidence → cancelled` attempt and
+    // falls into the #1431 cancel gate (owner-or-assignee). The
+    // third party is neither, so step 2 also 403s. Asserting this
+    // explicitly closes the second possible step-2 shape the
+    // laundering chain could attempt and removes the ambiguity from
+    // PR #1425's `nonOwner → cancelled` test (which incorrectly
+    // expected 200).
+    const task = await parkedAgentTask(8);
+
+    const step1 = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: thirdParty,
+        body: { status: 'in_progress' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(step1.status).toBe(403);
+
+    const step2 = await taskPatch(
+      makeReq(`/api/projects/${projectId}/tasks/${task.id}`, {
+        method: 'PATCH',
+        userName: thirdParty,
+        body: { status: 'cancelled' },
+      }),
+      { params: Promise.resolve({ projectId, taskId: task.id }) },
+    );
+    expect(step2.status).toBe(403);
+
+    const after = await testPrisma.task.findUnique({ where: { id: task.id } });
+    expect(after?.status).toBe('awaiting_evidence');
+  });
 });
 
 // ---------------------------------------------------------------
