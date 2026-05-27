@@ -136,10 +136,28 @@ if (APPLY && (!REPO || !TOKEN)) {
 //   uses TRIGGER_TOKEN (`CURSOR_REVIEW_PAT` in the workflow env) and
 //   falls back to GITHUB_TOKEN with a warning so a misconfigured repo
 //   still does *something* visible instead of silently failing.
+// Node's `spawnSync` defaults `maxBuffer` to 1 MiB; once the gh JSON
+// output passes that line, the child is killed with ENOBUFS and stdout
+// is silently truncated mid-string. Production hit: 2026-05-26 the
+// `severity:must` backlog grew past 800 open issues and `gh issue list
+// --limit 1500 --json number,title,labels,body,createdAt` started
+// returning ~1.1 MB of JSON. Every other workflow run died with
+// `SyntaxError: Unterminated string in JSON at position ~870000`
+// because `r.status` is still `0` in the ENOBUFS case (gh exited
+// cleanly before SIGTERM landed) so this wrapper handed the truncated
+// buffer to JSON.parse. We now (a) raise the cap to 64 MiB — plenty
+// of headroom even if the backlog 50x's — and (b) explicitly surface
+// `r.error` so any spawn-level failure (ENOBUFS, ENOENT, signal kill)
+// becomes a thrown error instead of silently-truncated output.
+const GH_MAX_BUFFER = 64 * 1024 * 1024;
+
 function gh(args, { allowFail = false } = {}) {
   const env = { ...process.env };
   if (TOKEN) env.GH_TOKEN = TOKEN;
-  const r = spawnSync('gh', args, { encoding: 'utf-8', env });
+  const r = spawnSync('gh', args, { encoding: 'utf-8', env, maxBuffer: GH_MAX_BUFFER });
+  if (r.error && !allowFail) {
+    throw new Error(`gh ${args.join(' ')} -> spawn error: ${r.error.message}`);
+  }
   if (r.status !== 0 && !allowFail) {
     throw new Error(`gh ${args.join(' ')} -> exit ${r.status}: ${r.stderr}`);
   }
@@ -166,7 +184,10 @@ function ghAsUser(args, { allowFail = false } = {}) {
     }
     if (TOKEN) env.GH_TOKEN = TOKEN;
   }
-  const r = spawnSync('gh', args, { encoding: 'utf-8', env });
+  const r = spawnSync('gh', args, { encoding: 'utf-8', env, maxBuffer: GH_MAX_BUFFER });
+  if (r.error && !allowFail) {
+    throw new Error(`gh ${args.join(' ')} -> spawn error: ${r.error.message}`);
+  }
   if (r.status !== 0 && !allowFail) {
     throw new Error(`gh ${args.join(' ')} -> exit ${r.status}: ${r.stderr}`);
   }
