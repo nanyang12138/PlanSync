@@ -110,7 +110,7 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
           data: { status: 'superseded' },
         });
 
-        // Closes #903 #984 — the previous activate path read
+        // Closes #903 #984 #1167 — the previous activate path read
         // plan.status OUTSIDE the transaction (via
         // requirePlanInProject), then unconditionally ran
         // `tx.plan.update({ where: { id } })` here. A concurrent
@@ -124,14 +124,33 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
         // lock only excludes other activates, not other write
         // paths.
         //
-        // Mirror the withdraw fix: use updateMany scoped to
-        // status: 'draft' | 'proposed' so the row only flips when
-        // its state still matches what we observed. count===0
-        // means a concurrent writer (almost certainly withdraw)
-        // changed it; surface as STATE_CONFLICT so the operator
-        // re-reads and decides explicitly.
+        // First-pass fix (#903 #984) used `status: { in: ['draft',
+        // 'proposed'] }` as the in-tx guard. That tightened the
+        // 'proposed → superseded' race but, as #1167 pointed out,
+        // STILL allowed the concrete withdraw race the fix
+        // claimed to close: outer read sees 'proposed', passes the
+        // review gate (L67–L87), concurrent withdraw flips it to
+        // 'draft' (and deletes PlanReview rows), the in-tx
+        // updateMany matches the now-'draft' row and silently
+        // activates a plan whose review-gate evaluation is now
+        // stale. The 'force=true' branch is even worse: a
+        // proposed-with-zero-reviewers row that got withdrawn
+        // would be activated without re-reading the review state.
+        //
+        // Tighten the guard to the EXACT status we observed and
+        // gated against at L50–L87 (`plan.status`, the snapshot
+        // from requirePlanInProject). The in-tx update only flips
+        // a row whose state is STILL identical to what passed the
+        // review gate, which is the strongest invariant we can
+        // assert without re-running the gate inside the tx.
+        // Any mid-flight transition — proposed→draft (withdraw),
+        // draft→proposed (propose), proposed→active/superseded
+        // (concurrent activate), etc. — invalidates the
+        // pre-validated snapshot and surfaces as STATE_CONFLICT
+        // so the operator re-reads and decides explicitly.
+        const observedStatus = plan.status;
         const flip = await tx.plan.updateMany({
-          where: { id: params.planId, status: { in: ['draft', 'proposed'] } },
+          where: { id: params.planId, status: observedStatus },
           data: {
             status: 'active',
             activatedAt: new Date(),
@@ -145,8 +164,8 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
           });
           throw new AppError(
             ErrorCode.STATE_CONFLICT,
-            `Concurrent state change: plan is no longer 'draft' or 'proposed' (now ` +
-              `'${fresh?.status ?? 'unknown'}'). ` +
+            `Concurrent state change: plan was '${observedStatus}' when the activate ` +
+              `request was validated, but is now '${fresh?.status ?? 'unknown'}'. ` +
               'Re-read the plan and decide whether to re-propose / re-activate or take a different action.',
           );
         }
