@@ -237,7 +237,70 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
           task.assignee === auth.userName &&
           !liftedFromAwaitingEvidenceAfterLatestRun;
 
-        if (!isOwner && !hasCompletedRun && !isHumanSelfComplete) {
+        // R-192 / closes #1362 — chained-PATCH bypass of the
+        // awaiting_evidence-source guard.
+        //
+        // PR #1306 anchored `hasCompletedRun` on the *latest* run so
+        // that lifting a parked task via POST /runs (which creates a
+        // new `running` run) invalidates the OLD completed run as a
+        // bypass shortcut. That fix relies on a new run rotating in.
+        // It does NOT cover the pure-PATCH bypass shape:
+        //
+        //   1. Task parks in `awaiting_evidence` (R-192 rejected the
+        //      latest completed run's evidence).
+        //   2. The assignee — newly allowed to flip parked tasks
+        //      out by PR #1434's owner-or-assignee gate on the
+        //      `awaiting_evidence → in_progress|blocked` transitions
+        //      — PATCHes `awaiting_evidence → in_progress` (or
+        //      `→ blocked → in_progress`). NO new run is started, so
+        //      the OLD completed run is still the latest run on file.
+        //   3. The assignee PATCHes `status: 'done'`. Source state is
+        //      now `in_progress`, so the awaiting_evidence-source
+        //      guard above does not fire; the OLD completed run still
+        //      satisfies `hasCompletedRun`; for human-typed tasks,
+        //      `isHumanSelfComplete` also matches. R-192 is bypassed
+        //      with no fresh evidence.
+        //
+        // Detect the pattern by looking for a `task_status_changed`
+        // activity row that left `awaiting_evidence` AFTER the latest
+        // completed run finished. Such a row implies the latest
+        // completed run has already been judged insufficient by
+        // R-192 (the parking is what wrote it), so the run cannot
+        // legitimately satisfy the non-owner shortcuts to `done`.
+        // Owner administrative override is unaffected because we
+        // gate on `!isOwner`.
+        //
+        // Why this is safe for the legitimate recovery flow:
+        //   * POST /runs lift creates a fresh `running` run but does
+        //     NOT write a `task_status_changed` activity (it writes
+        //     `execution_started` instead). When that new run later
+        //     completes, `latestRun.endedAt` is newer than any prior
+        //     parking-exit activity, so the lookup window is empty.
+        //   * Owner reopens (`awaiting_evidence → in_progress`) DOES
+        //     write a `task_status_changed` row — but the owner is
+        //     allowed to close the task regardless, and a non-owner
+        //     trying to free-ride on the owner's reopen still has to
+        //     wait for a fresh completed run, which is the correct
+        //     behaviour (the reopen explicitly says "go do more
+        //     work").
+        let evidenceGatePoisoned = false;
+        if (!isOwner && latestRun?.status === 'completed' && latestRun.endedAt) {
+          const parkingExit = await prisma.activity.findFirst({
+            where: {
+              projectId: params.projectId,
+              type: 'task_status_changed',
+              createdAt: { gt: latestRun.endedAt },
+              AND: [
+                { metadata: { path: ['taskId'], equals: params.taskId } },
+                { metadata: { path: ['fromStatus'], equals: 'awaiting_evidence' } },
+              ],
+            },
+            select: { id: true },
+          });
+          evidenceGatePoisoned = parkingExit !== null;
+        }
+
+        if (!isOwner && (evidenceGatePoisoned || (!hasCompletedRun && !isHumanSelfComplete))) {
           if (task.assigneeType === 'agent') {
             throw new AppError(
               ErrorCode.STATE_CONFLICT,
