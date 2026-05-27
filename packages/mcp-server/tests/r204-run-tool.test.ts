@@ -187,6 +187,31 @@ describe('R-204: plansync_run(action, ...) — unified execution tool', () => {
       ).rejects.toThrow(/invalid arguments/);
     });
 
+    it('R204-S4: schema rejects start mixed with foreign-action fields (#1291)', async () => {
+      // Regression for #1291: without strict() on each branch of the
+      // discriminated union, zod's default behaviour silently strips
+      // unknown keys, so a caller could pass `runId` / `status` /
+      // `deliverablesMet` alongside `action="start"` and the handler
+      // would happily start a run while dropping the user's intent.
+      // The branch schemas are now `.strict()` so the safeParse layer
+      // surfaces the mismatch instead, and the action handler is never
+      // reached.
+      const before = mocks.post.mock.calls.length;
+      await expect(
+        callTool(server, 'plansync_run', {
+          action: 'start',
+          projectId: 'p1',
+          taskId: 't1',
+          executorType: 'agent',
+          executorName: 'alice',
+          runId: 'should-not-be-here',
+        }),
+      ).rejects.toThrow(/invalid arguments/);
+      // Confirm the request never made it to the API layer — i.e. the
+      // mixed-field call did not silently trigger a start.
+      expect(mocks.post.mock.calls.length).toBe(before);
+    });
+
     it('R204-S3: DRIFT_UNRESOLVED is translated to the same envelope as the legacy alias', async () => {
       mocks.post.mockRejectedValueOnce(
         new ApiError('drift', 'DRIFT_UNRESOLVED', 409, {
@@ -242,6 +267,20 @@ describe('R-204: plansync_run(action, ...) — unified execution tool', () => {
           taskId: 't1',
         }),
       ).rejects.toThrow(/invalid arguments/);
+    });
+
+    it('R204-H3: schema rejects heartbeat mixed with foreign-action fields (#1291)', async () => {
+      const before = mocks.post.mock.calls.length;
+      await expect(
+        callTool(server, 'plansync_run', {
+          action: 'heartbeat',
+          projectId: 'p1',
+          taskId: 't1',
+          runId: 'run-9',
+          executorName: 'alice',
+        }),
+      ).rejects.toThrow(/invalid arguments/);
+      expect(mocks.post.mock.calls.length).toBe(before);
     });
   });
 
@@ -299,6 +338,21 @@ describe('R-204: plansync_run(action, ...) — unified execution tool', () => {
         }),
       ).rejects.toThrow('Internal');
       expect(intervals.has('run-stop-204')).toBe(false);
+    });
+
+    it('R204-C4: schema rejects complete mixed with foreign-action fields (#1291)', async () => {
+      const before = mocks.post.mock.calls.length;
+      await expect(
+        callTool(server, 'plansync_run', {
+          action: 'complete',
+          projectId: 'p1',
+          taskId: 't1',
+          runId: 'run-7',
+          status: 'completed',
+          executorType: 'agent',
+        }),
+      ).rejects.toThrow(/invalid arguments/);
+      expect(mocks.post.mock.calls.length).toBe(before);
     });
 
     it('R204-C3: COMPLETION_VERIFICATION_FAILED keeps heartbeat alive (parity with legacy)', async () => {

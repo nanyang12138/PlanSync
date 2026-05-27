@@ -55,39 +55,52 @@ export function normalizeRunToolNameForFsm(toolName: string, args: unknown): str
   return toolName;
 }
 
-const startArgsSchema = z.object({
-  action: z.literal('start'),
-  projectId: z.string(),
-  taskId: z.string(),
-  executorType: z.enum(['human', 'agent']),
-  executorName: z.string(),
-});
+// Each branch is `.strict()` so that fields belonging to a *different*
+// action variant (e.g. passing `runId` alongside `action='start'`, or
+// `executorName` alongside `action='heartbeat'`) are surfaced as
+// validation errors instead of being silently stripped. Without strict
+// mode zod's default `z.object` drops unknown keys, which would let a
+// caller mix incompatible arguments and still reach the action handler
+// — exactly the failure mode #1291 describes. Closes #1291.
+const startArgsSchema = z
+  .object({
+    action: z.literal('start'),
+    projectId: z.string(),
+    taskId: z.string(),
+    executorType: z.enum(['human', 'agent']),
+    executorName: z.string(),
+  })
+  .strict();
 
-const heartbeatArgsSchema = z.object({
-  action: z.literal('heartbeat'),
-  projectId: z.string(),
-  taskId: z.string(),
-  runId: z.string(),
-});
+const heartbeatArgsSchema = z
+  .object({
+    action: z.literal('heartbeat'),
+    projectId: z.string(),
+    taskId: z.string(),
+    runId: z.string(),
+  })
+  .strict();
 
-const completeArgsSchema = z.object({
-  action: z.literal('complete'),
-  projectId: z.string(),
-  taskId: z.string(),
-  runId: z.string(),
-  status: z.enum(['completed', 'failed']),
-  outputSummary: z.string().optional(),
-  filesChanged: z.array(z.string()).optional(),
-  blockers: z.array(z.string()).optional(),
-  driftSignals: z.array(z.string()).optional(),
-  branchName: z.string().optional().describe('Git branch name where changes were committed.'),
-  deliverablesMet: z
-    .array(z.string())
-    .optional()
-    .describe(
-      'Required when status=completed. List each plan deliverable and confirm it was met. Will be AI-verified for agent executors.',
-    ),
-});
+const completeArgsSchema = z
+  .object({
+    action: z.literal('complete'),
+    projectId: z.string(),
+    taskId: z.string(),
+    runId: z.string(),
+    status: z.enum(['completed', 'failed']),
+    outputSummary: z.string().optional(),
+    filesChanged: z.array(z.string()).optional(),
+    blockers: z.array(z.string()).optional(),
+    driftSignals: z.array(z.string()).optional(),
+    branchName: z.string().optional().describe('Git branch name where changes were committed.'),
+    deliverablesMet: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Required when status=completed. List each plan deliverable and confirm it was met. Will be AI-verified for agent executors.',
+      ),
+  })
+  .strict();
 
 const runArgsSchema = z.discriminatedUnion('action', [
   startArgsSchema,
@@ -115,10 +128,15 @@ export function registerRunTool(server: McpServer, api: ApiClient): void {
   // union via the shared `action` discriminator and let the runtime
   // validator narrow based on the value the caller actually passed.
   //
-  // The shape below is a *superset* of all three action variants. zod's
-  // discriminated-union `safeParse` below the SDK boundary rejects payloads
-  // that mix fields from incompatible variants (e.g. `action='heartbeat'`
-  // with an `executorName`).
+  // The shape below is a *superset* of all three action variants — the
+  // SDK shape exists only to advertise every possible field in
+  // `tools/list`. The strict per-action schemas in `runArgsSchema`
+  // (`.strict()` on each branch) are what actually enforce the
+  // contract: payloads that mix fields from incompatible variants
+  // (e.g. `action='heartbeat'` with an `executorName`, or
+  // `action='start'` with a `runId`) are rejected by safeParse below
+  // rather than being silently stripped (the default `z.object`
+  // behaviour). See `r204-run-tool.test.ts` for the mixed-field cases.
   server.tool(
     'plansync_run',
     'Manage an execution run via a single tool. `action` discriminator: ' +
