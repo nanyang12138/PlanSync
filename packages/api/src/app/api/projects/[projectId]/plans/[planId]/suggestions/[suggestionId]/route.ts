@@ -7,7 +7,7 @@ import { resolveSuggestionSchema, AppError, ErrorCode } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
-import { writeBoth, type SplitField } from '@/lib/plan-items';
+import { writeBoth, syncDeliverableArrayMirror, type SplitField } from '@/lib/plan-items';
 
 const SPLIT_FIELDS = new Set<SplitField>(['constraints', 'standards', 'deliverables']);
 
@@ -18,13 +18,28 @@ type SuggestionTx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
 async function applySuggestion(
   tx: SuggestionTx,
   planId: string,
-  suggestion: { field: string; action: string; value: string },
+  suggestion: { field: string; action: string; value: string; deliverableId: string | null },
 ): Promise<boolean> {
   const plan = await tx.plan.findUnique({ where: { id: planId } });
   if (!plan) return false;
 
   const arrayFields = ['constraints', 'standards', 'deliverables', 'openQuestions'] as const;
   const stringFields = ['goal', 'scope'] as const;
+
+  // R-155 follow-up (issue #1146): when the suggestion is scoped to a
+  // specific PlanDeliverable row, route the accept through the split
+  // table instead of munging the legacy `plan.deliverables` String[].
+  // Without this branch the deliverableId was silently dropped on accept
+  // and we'd fall back to `array.filter(v !== value)` / `[...arr, value]`,
+  // which left the targeted row untouched — directly the contract break
+  // reported in the cursor-review finding (fingerprint dd28352640c8).
+  if (suggestion.deliverableId && suggestion.field === 'deliverables') {
+    return applyDeliverableScopedSuggestion(tx, planId, {
+      action: suggestion.action,
+      value: suggestion.value,
+      deliverableId: suggestion.deliverableId,
+    });
+  }
 
   if (
     suggestion.action === 'set' &&
@@ -60,6 +75,76 @@ async function applySuggestion(
     const currentArr = (plan as Record<string, unknown>)[suggestion.field] as string[];
     const next = currentArr.filter((v) => v !== suggestion.value);
     await applyArrayWrite(tx, planId, suggestion.field, next);
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Per-row apply path for suggestions that carry `deliverableId`.
+ *
+ * Mapping rationale — the existing `(field, action, value)` shape does
+ * not carry which property to mutate, so we pick the cleanest natural
+ * semantics that the legacy whole-array path was *trying* to express:
+ *
+ *   - action='remove': mark the targeted row as `status='deprecated'`.
+ *     Preserves row identity (so the supersede chain in R-152, the
+ *     TaskDeliverableLink rows in R-153, and the CommitDeliverableLink
+ *     rows in R-191 are all kept intact), unlike the old path which
+ *     re-wrote the legacy array and let writeBoth wipe+recreate every
+ *     PlanDeliverable row.
+ *
+ *   - action='append': overwrite the targeted row's `body` with `value`.
+ *     Append semantics on a single row are ambiguous; the closest match
+ *     to "agent has new content for this deliverable" (the use-case
+ *     called out in the deliverableId comment) is to treat `value` as
+ *     the new body. Title / refUri / status need richer per-row mutation
+ *     than (field, action, value) can carry — those continue to go
+ *     through `plansync_deliverable_update` directly.
+ *
+ *   - any other action is rejected (returns false → BAD_REQUEST upstream),
+ *     so a stale or malformed suggestion does not silently no-op.
+ *
+ * In both supported branches we re-derive the legacy `plan.deliverables`
+ * String[] mirror via `syncDeliverableArrayMirror` so plan_show / drift /
+ * CLI banner readers (which still read the legacy array) observe a
+ * consistent view after accept commits.
+ */
+async function applyDeliverableScopedSuggestion(
+  tx: SuggestionTx,
+  planId: string,
+  suggestion: { action: string; value: string; deliverableId: string },
+): Promise<boolean> {
+  // Re-check the deliverable still belongs to this plan inside the
+  // transaction — between the create-time validation (suggestions/route.ts)
+  // and accept-time the owner could have rebound the suggestion's plan or
+  // deleted the deliverable; SetNull on PlanSuggestion.deliverableId means
+  // a deleted row would already null this out, so a missing match here is
+  // a real "row was moved out" race rather than a permissions probe.
+  const deliverable = await tx.planDeliverable.findUnique({
+    where: { id: suggestion.deliverableId },
+    select: { id: true, planId: true },
+  });
+  if (!deliverable || deliverable.planId !== planId) {
+    return false;
+  }
+
+  if (suggestion.action === 'remove') {
+    await tx.planDeliverable.update({
+      where: { id: deliverable.id },
+      data: { status: 'deprecated' },
+    });
+    await syncDeliverableArrayMirror(planId, tx);
+    return true;
+  }
+
+  if (suggestion.action === 'append') {
+    await tx.planDeliverable.update({
+      where: { id: deliverable.id },
+      data: { body: suggestion.value },
+    });
+    await syncDeliverableArrayMirror(planId, tx);
     return true;
   }
 
