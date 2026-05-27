@@ -111,6 +111,7 @@ for (const e of entries) {
   if (e.id === "R-XXX") continue;
   if (e.status === "done") continue;
   if (e.status === "cancelled") continue;
+  if (e.status === "blocked") continue;
   const ev = strongEvidence.get(e.id);
   if (!ev || ev.size === 0) continue;
   toUpdate.push({ entry: e, prs: [...ev].sort((a, b) => a - b) });
