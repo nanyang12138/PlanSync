@@ -23,7 +23,16 @@
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// `@plansync/cli` is an ESM package (`"type": "module"`), so `__dirname` is
+// not defined at module-evaluation time in a true ESM environment. Derive it
+// from `import.meta.url` instead — this matches the pattern already used by
+// every other test in this directory and avoids relying on Vitest's CJS
+// polyfill, which is a tool-specific implementation detail.
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 const BIN_PATH = join(REPO_ROOT, 'bin', 'plansync');
