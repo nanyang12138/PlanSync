@@ -465,6 +465,127 @@ test('didWeAcquireDispatchLock', async (t) => {
       true,
     );
   });
+
+  // -------------------------------------------------------------------
+  // #1457 — events-API propagation lag with stale `unlabeled` visible
+  // -------------------------------------------------------------------
+  //
+  // Scenario: a prior dispatch cycle completed (labeled → unlabeled), a
+  // peer just called `addLabels([LOCK_LABEL])` but the new `labeled`
+  // event hasn't propagated through GitHub's events API yet. We then
+  // call `addLabels` (idempotent — label already set, no new event
+  // generated for us either). Our events snapshot shows only the prior
+  // cycle's history whose MOST RECENT lock-label event is the
+  // `unlabeled`. The legacy labeled-only logic ignored `unlabeled`,
+  // saw an empty / fully-stale `lockedTimestamps`, hit the propagation-
+  // lag fallback, and returned `true` — spawning a duplicate Cursor
+  // agent. Helper must now return `false` in this case (caller retries
+  // events fetch to absorb propagation lag before giving up).
+
+  await t.test(
+    'most recent visible lock event is `unlabeled` (peer addLabels in flight) ⇒ lose conservatively (#1457)',
+    () => {
+      const preCall = Date.now();
+      assert.equal(
+        didWeAcquireDispatchLock({
+          events: [
+            // Prior cycle: peer labeled, then user/system unlabeled.
+            { event: 'labeled', label: { name: LOCK }, created_at: baseIso(preCall - 3_600_000) },
+            { event: 'unlabeled', label: { name: LOCK }, created_at: baseIso(preCall - 60_000) },
+            // Peer's just-now `addLabels` not yet surfaced; our own
+            // call was idempotent (label already set) so no fresh
+            // labeled event from us either.
+          ],
+          lockLabel: LOCK,
+          preAddLabelsAtMs: preCall,
+        }),
+        false,
+      );
+    },
+  );
+
+  await t.test(
+    'only `unlabeled` visible for the lock (no labeled at all) ⇒ lose conservatively (#1457)',
+    () => {
+      // Defensive corner: pagination dropped the older labeled event but
+      // the unlabeled survived. With nothing to anchor a labeled
+      // timestamp to and a visible unlabeled, treat as ambiguous → lose.
+      const preCall = Date.now();
+      assert.equal(
+        didWeAcquireDispatchLock({
+          events: [
+            { event: 'unlabeled', label: { name: LOCK }, created_at: baseIso(preCall - 60_000) },
+          ],
+          lockLabel: LOCK,
+          preAddLabelsAtMs: preCall,
+        }),
+        false,
+      );
+    },
+  );
+
+  await t.test(
+    'unlabeled then fresh labeled (events refetch caught up) ⇒ decide on labeled timestamp (#1457)',
+    () => {
+      // After the caller's retry fetch, the missing labeled event has
+      // surfaced. Helper must fall through to the normal labeled-time
+      // comparison instead of staying stuck on the unlabeled signal.
+      const preCall = Date.now();
+      assert.equal(
+        didWeAcquireDispatchLock({
+          events: [
+            { event: 'labeled', label: { name: LOCK }, created_at: baseIso(preCall - 3_600_000) },
+            { event: 'unlabeled', label: { name: LOCK }, created_at: baseIso(preCall - 60_000) },
+            { event: 'labeled', label: { name: LOCK }, created_at: baseIso(preCall + 200) },
+          ],
+          lockLabel: LOCK,
+          preAddLabelsAtMs: preCall,
+        }),
+        true,
+      );
+    },
+  );
+
+  await t.test(
+    'unlabeled then peer labeled well before pre-call ts ⇒ lose (normal labeled-time loss preserved)',
+    () => {
+      // Counterpart to the case above: after the retry the labeled
+      // event surfaced, but it predates our addLabels by enough that
+      // the labeled-time comparison correctly rules it as the peer's.
+      const preCall = Date.now();
+      assert.equal(
+        didWeAcquireDispatchLock({
+          events: [
+            { event: 'unlabeled', label: { name: LOCK }, created_at: baseIso(preCall - 120_000) },
+            { event: 'labeled', label: { name: LOCK }, created_at: baseIso(preCall - 30_000) },
+          ],
+          lockLabel: LOCK,
+          preAddLabelsAtMs: preCall,
+        }),
+        false,
+      );
+    },
+  );
+
+  await t.test(
+    'only `unlabeled` events for OTHER labels (non-lock) ⇒ still win (defensive — unrelated history)',
+    () => {
+      // Sanity: the unlabeled-guard must be scoped to the lock label.
+      // Unrelated labels removing/adding must not affect the decision.
+      const preCall = Date.now();
+      assert.equal(
+        didWeAcquireDispatchLock({
+          events: [
+            { event: 'unlabeled', label: { name: 'review-finding' }, created_at: baseIso(preCall - 60_000) },
+            { event: 'labeled', label: { name: 'auto-triaged' }, created_at: baseIso(preCall - 30_000) },
+          ],
+          lockLabel: LOCK,
+          preAddLabelsAtMs: preCall,
+        }),
+        true,
+      );
+    },
+  );
 });
 
 // ---------------------------------------------------------------------
