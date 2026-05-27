@@ -67,10 +67,45 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
     const reviewerNames = reviewerSpecs.map((r) => r.name);
 
     const updated = await prisma.$transaction(async (tx) => {
-      const p = await tx.plan.update({
-        where: { id: params.planId },
+      // Closes #1638 — mirror the activate / withdraw in-tx state guard.
+      //
+      // Pre-fix the route read plan.status OUTSIDE the transaction (via
+      // requirePlanInProject above), then unconditionally ran
+      // `tx.plan.update({ where: { id } })` here. A concurrent writer
+      // that flipped the row between the read and the in-tx update
+      // (e.g. activate succeeded after this request's outer read but
+      // before this update) would be silently overwritten — a stale
+      // propose could clobber a freshly-activated plan back to
+      // 'proposed', leaving the project with no active plan and
+      // resurrecting PlanReview rows for an already-decided cycle.
+      //
+      // Scope the update to `status: 'draft'` so the row only flips
+      // when its state still matches what we observed. count===0
+      // means a concurrent writer changed it; surface as
+      // STATE_CONFLICT so the operator re-reads and decides
+      // explicitly. Mirrors the pattern in
+      // packages/api/src/app/api/projects/[projectId]/plans/[planId]/activate/route.ts
+      // and …/withdraw/route.ts.
+      const flip = await tx.plan.updateMany({
+        where: { id: params.planId, status: 'draft' },
         data: { status: 'proposed', requiredReviewers: reviewerNames },
       });
+      if (flip.count === 0) {
+        const fresh = await tx.plan.findUnique({
+          where: { id: params.planId },
+          select: { status: true },
+        });
+        throw new AppError(
+          ErrorCode.STATE_CONFLICT,
+          `Concurrent state change: plan is no longer 'draft' (now ` +
+            `'${fresh?.status ?? 'unknown'}'). ` +
+            'Re-read the plan and decide whether to re-propose or take a different action.',
+        );
+      }
+      // Re-read the post-update row so the route can return the
+      // canonical proposed plan, byte-equivalent to the previous
+      // `update`'s return value.
+      const p = await tx.plan.findUniqueOrThrow({ where: { id: params.planId } });
 
       if (reviewerSpecs.length > 0) {
         await tx.planReview.createMany({
