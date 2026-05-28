@@ -111,6 +111,7 @@ stateDiagram-v2
 | `RUN_STARTED`    | `plansync_execution_heartbeat`, `plansync_execution_complete`, `plansync_drift_resolve`, `plansync_task_rebind`, `plansync_comment_create`, `plansync_comment_edit`, `plansync_comment_delete`, `plansync_plan_suggest`                   | `plansync_execution_heartbeat`, `plansync_execution_complete` |
 | `COMPLETED`      | `plansync_exec_context`                                                                                                                                                                                                                   | `plansync_exec_context`                                       |
 | `ABORTED`        | `plansync_exec_context`                                                                                                                                                                                                                   | `plansync_exec_context`                                       |
+
 Read-only tools (`plansync_status`, `plansync_who`, `plansync_*_list`,
 `plansync_*_show`, `plansync_plan_active`, `plansync_plan_diff`,
 `plansync_my_work`, `plansync_check_task_conflicts`, …) are accepted from
