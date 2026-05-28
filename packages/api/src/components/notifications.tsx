@@ -372,6 +372,15 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
               scheduleReconnect();
             }
 
+            // bus_resync_required is an infrastructure signal that the event
+            // bus reconnected and may have missed events — not a user-facing
+            // notification. Trigger a reconnect to re-subscribe fresh instead
+            // of falling through to the no-op !handler early return.
+            if (type === 'bus_resync_required') {
+              scheduleReconnect();
+              return;
+            }
+
             const handler = EVENT_HANDLERS[type];
             if (!handler) return;
             const result = handler(data);
