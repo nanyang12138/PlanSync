@@ -520,13 +520,14 @@ describe('R5: runAction stale-success guard (#940)', () => {
   });
 });
 
-// R5b / closes #996 — stale-failure must still invoke onFailure so
-// the caller's rollback runs. Pre-fix, a stale failure just `throw`'d,
-// leaving its optimistic delta in state indefinitely. Probe via a
-// custom store with explicit optimistic + onFailure + a slow action,
-// rather than relying on TaskStore semantics that may evolve.
+// R5b / closes #996 + #1045 — stale-failure must NOT invoke onFailure.
+// Pre-#1045, a stale failure called opts.onFailure which restored the
+// pre-action snapshot, silently erasing results a concurrently succeeding
+// newer action had already committed (#1045). The correct behaviour is to
+// leave state untouched: the newer action owns the optimistic state and its
+// own onSuccess/onFailure will clean up when it settles.
 describe('R5b: stale-failure invokes onFailure rollback (#996)', () => {
-  it('runs onFailure even when the failed action was superseded by a newer one', async () => {
+  it('does NOT run onFailure when the failed action was superseded by a newer one (#1045)', async () => {
     interface ProbeState {
       status: 'idle' | 'loading' | 'ready' | 'error';
       error?: string;
@@ -588,6 +589,7 @@ describe('R5b: stale-failure invokes onFailure rollback (#996)', () => {
     rejectA(new Error('A failed late'));
     await aPromise;
 
-    expect(onFailureCalled).toBe(true);
+    // #1045: stale failures must NOT call onFailure (would erase newer action's results)
+    expect(onFailureCalled).toBe(false);
   });
 });
