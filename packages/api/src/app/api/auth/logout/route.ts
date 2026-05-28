@@ -1,6 +1,8 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
+import { enterRequestContextFromHeaders } from '@/lib/request-context';
 
-export async function POST() {
+export async function POST(req: NextRequest) {
+  enterRequestContextFromHeaders(req.headers);
   const response = NextResponse.json({ success: true });
 
   // #347: must clear the cookies with the SAME sameSite + secure attributes

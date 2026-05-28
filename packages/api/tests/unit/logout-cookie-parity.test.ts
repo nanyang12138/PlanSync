@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { NextRequest } from 'next/server';
 import { POST as logoutPost } from '../../src/app/api/auth/logout/route';
 
 describe('POST /api/auth/logout — cookie clearing parity (#347)', () => {
@@ -31,7 +32,7 @@ describe('POST /api/auth/logout — cookie clearing parity (#347)', () => {
   }
 
   it('default mode (lax, non-secure) clears with matching attributes', async () => {
-    const res = await logoutPost();
+    const res = await logoutPost(new NextRequest('http://localhost/api/auth/logout'));
     const cookies = readSetCookies(res);
     const apiKey = cookies.find((c) => c.startsWith('plansync-apikey='));
     const user = cookies.find((c) => c.startsWith('plansync-user='));
@@ -46,7 +47,7 @@ describe('POST /api/auth/logout — cookie clearing parity (#347)', () => {
 
   it('cross-site mode (PLANSYNC_COOKIE_CROSS_SITE=true) clears with SameSite=None; Secure', async () => {
     process.env.PLANSYNC_COOKIE_CROSS_SITE = 'true';
-    const res = await logoutPost();
+    const res = await logoutPost(new NextRequest('http://localhost/api/auth/logout'));
     const cookies = readSetCookies(res);
     const apiKey = cookies.find((c) => c.startsWith('plansync-apikey='));
     const user = cookies.find((c) => c.startsWith('plansync-user='));
@@ -60,7 +61,7 @@ describe('POST /api/auth/logout — cookie clearing parity (#347)', () => {
 
   it('production mode (NODE_ENV=production) issues Secure even without cross-site flag', async () => {
     Reflect.set(process.env, 'NODE_ENV', 'production');
-    const res = await logoutPost();
+    const res = await logoutPost(new NextRequest('http://localhost/api/auth/logout'));
     const cookies = readSetCookies(res);
     const apiKey = cookies.find((c) => c.startsWith('plansync-apikey='));
     expect(apiKey!.toLowerCase()).toContain('secure');
