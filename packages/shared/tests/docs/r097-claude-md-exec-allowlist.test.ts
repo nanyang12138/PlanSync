@@ -34,8 +34,12 @@ function readRepoFile(rel: string): string {
 }
 
 function parseExecAllowed(source: string): Set<string> {
-  const start = source.indexOf('const EXEC_ALLOWED = new Set([');
-  if (start < 0) throw new Error('EXEC_ALLOWED literal not found in index.ts');
+  // EXEC_ALLOWED may be defined inline in index.ts or extracted to exec-allowlist.ts
+  // (PR #2756 moved it to exec-allowlist.ts for testability). Try both patterns.
+  const inlineStart = source.indexOf('const EXEC_ALLOWED = new Set([');
+  const exportStart = source.indexOf('export const EXEC_ALLOWED: ReadonlySet<string> = new Set([');
+  const start = inlineStart >= 0 ? inlineStart : exportStart;
+  if (start < 0) throw new Error('EXEC_ALLOWED literal not found');
   const end = source.indexOf(']);', start);
   if (end < 0) throw new Error('EXEC_ALLOWED closing bracket not found');
   const body = source.slice(start, end);
@@ -48,8 +52,14 @@ function parseExecAllowed(source: string): Set<string> {
 
 describe('R-097 — CLAUDE.md exec-mode tool table matches EXEC_ALLOWED', () => {
   const claudeMd = readRepoFile('CLAUDE.md');
-  const indexTs = readRepoFile('packages/mcp-server/src/index.ts');
-  const execAllowed = parseExecAllowed(indexTs);
+  // EXEC_ALLOWED is in exec-allowlist.ts when PR #2756 is applied, otherwise in index.ts
+  let execAllowlistSource: string;
+  try {
+    execAllowlistSource = readRepoFile('packages/mcp-server/src/exec-allowlist.ts');
+  } catch {
+    execAllowlistSource = readRepoFile('packages/mcp-server/src/index.ts');
+  }
+  const execAllowed = parseExecAllowed(execAllowlistSource);
 
   it('EXEC_ALLOWED whitelist excludes plansync_task_update', () => {
     expect(execAllowed.has('plansync_task_update')).toBe(false);
