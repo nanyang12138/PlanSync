@@ -2,17 +2,15 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { createTaskShape, updateTaskShape } from '@plansync/shared';
 import { ApiClient } from '../api-client';
-import { getDelegationAgent } from './status';
+import { logger } from '../logger';
+import {
+  handleTaskCreate,
+  handleTaskUpdate,
+  handleTaskClaim,
+  handleTaskDecline,
+} from './task-handlers';
 
 export function registerTaskTools(server: McpServer, api: ApiClient) {
-  // In delegation mode ("work as <agent>"), any write that records the caller's
-  // identity (claim/decline/update task) must be issued as that agent — not as
-  // the human owner who is driving the session. Without this, claims land on
-  // the owner's name and tasks look like the wrong person picked them up.
-  const effectiveApi = (): ApiClient => {
-    const agent = getDelegationAgent();
-    return agent ? api.withUser(agent) : api;
-  };
   server.tool(
     'plansync_task_list',
     'List tasks for a project with optional filters',
@@ -49,21 +47,35 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
     },
   );
 
+  // R-205 — legacy aliases. These four tool names stay registered for one
+  // release so any agent prompt that hasn't migrated to
+  // `plansync_task(action, ...)` (CLAUDE.md / AGENTS.md / cli ai-loop /
+  // third-party MCP clients) keeps working. The handlers delegate to the
+  // same `handleTask*` helpers as `plansync_task`, so wire behaviour is
+  // bit-identical across the two surfaces. Each handler also emits a
+  // deprecation warning to the server log on every call — ops can grep
+  // `R-205 deprecated alias` to identify callers that still need
+  // migration before the next release drops the aliases.
+
   // R-028: input schema reuses @plansync/shared `createTaskShape` so MCP and
   // the API stay in lockstep — adding a field to the contract automatically
   // surfaces it here (previously the MCP copy lacked `branchName`, `startDate`,
   // `dueDate`, and was missing the `test` / `docs` task types).
   server.tool(
     'plansync_task_create',
-    'Create a new task (auto-binds to active plan version). OWNER ONLY.',
+    '[DEPRECATED — use plansync_task({action:"create", ...})] Create a new task ' +
+      '(auto-binds to active plan version). OWNER ONLY. Will be removed in the next release.',
     {
       projectId: z.string(),
       ...createTaskShape,
     },
     async (args) => {
+      logger.warn(
+        { tool: 'plansync_task_create' },
+        'R-205 deprecated alias called — migrate to plansync_task({action:"create", ...})',
+      );
       const { projectId, ...body } = args;
-      const result = await effectiveApi().post(`/api/projects/${projectId}/tasks`, body);
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      return handleTaskCreate({ projectId, body }, { api });
     },
   );
 
@@ -73,26 +85,33 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
   // could not update those fields through MCP at all.
   //
   // Note: shared schema accepts status='done' (the API rejects it at the route
-  // layer with a "use plansync_execution_complete" error). We rely on the API
-  // to enforce that rule rather than re-validating here.
+  // layer with a "use plansync_run({action:'complete', ...})" error). We rely
+  // on the API to enforce that rule rather than re-validating here.
   server.tool(
     'plansync_task_update',
-    'Update a task (supports reassignment via assignee/assigneeType). "done" status cannot be set directly — use plansync_execution_complete instead.',
+    '[DEPRECATED — use plansync_task({action:"update", ...})] Update a task ' +
+      '(supports reassignment via assignee/assigneeType). "done" status cannot be set directly ' +
+      '— use plansync_run({action:"complete", ...}) instead. Will be removed in the next release.',
     {
       projectId: z.string(),
       taskId: z.string(),
       ...updateTaskShape,
     },
     async (args) => {
+      logger.warn(
+        { tool: 'plansync_task_update' },
+        'R-205 deprecated alias called — migrate to plansync_task({action:"update", ...})',
+      );
       const { projectId, taskId, ...body } = args;
-      const result = await effectiveApi().patch(`/api/projects/${projectId}/tasks/${taskId}`, body);
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      return handleTaskUpdate({ projectId, taskId, body }, { api });
     },
   );
 
   server.tool(
     'plansync_task_claim',
-    'Claim an unassigned task. After claiming, call plansync_task_pack to receive your task brief and plan context.',
+    '[DEPRECATED — use plansync_task({action:"claim", ...})] Claim an unassigned task. ' +
+      'After claiming, call plansync_task_pack to receive your task brief and plan context. ' +
+      'Will be removed in the next release.',
     {
       projectId: z.string(),
       taskId: z.string(),
@@ -103,67 +122,28 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
         .describe('If false, accept assignment but keep status as todo. Default: true'),
     },
     async (args) => {
-      const client = effectiveApi();
-      const result = await client.post(
-        `/api/projects/${args.projectId}/tasks/${args.taskId}/claim`,
-        {
-          assigneeType: args.assigneeType || 'agent',
-          ...(args.startImmediately !== undefined
-            ? { startImmediately: args.startImmediately }
-            : {}),
-        },
+      logger.warn(
+        { tool: 'plansync_task_claim' },
+        'R-205 deprecated alias called — migrate to plansync_task({action:"claim", ...})',
       );
-      const verify = await client.get<{ data?: { status?: string } }>(
-        `/api/projects/${args.projectId}/tasks/${args.taskId}`,
-      );
-      const verifiedStatus = verify.data?.status ?? 'unknown';
-      const expectedStatus = args.startImmediately === false ? 'todo' : 'in_progress';
-      if (verifiedStatus !== expectedStatus) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text:
-                `Claim call succeeded but task status is still "${verifiedStatus}", not "${expectedStatus}". ` +
-                `Tell the user the claim may have failed.`,
-            },
-          ],
-        };
-      }
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      return handleTaskClaim(args, { api });
     },
   );
 
   server.tool(
     'plansync_task_decline',
-    'Release a task you cannot complete. Task returns to unassigned and can be reassigned.',
+    '[DEPRECATED — use plansync_task({action:"decline", ...})] Release a task you cannot ' +
+      'complete. Task returns to unassigned and can be reassigned. Will be removed in the next release.',
     {
       projectId: z.string(),
       taskId: z.string(),
     },
     async (args) => {
-      const client = effectiveApi();
-      const result = await client.post(
-        `/api/projects/${args.projectId}/tasks/${args.taskId}/decline`,
-        {},
+      logger.warn(
+        { tool: 'plansync_task_decline' },
+        'R-205 deprecated alias called — migrate to plansync_task({action:"decline", ...})',
       );
-      const verify = await client.get<{ data?: { assignee?: string | null } }>(
-        `/api/projects/${args.projectId}/tasks/${args.taskId}`,
-      );
-      const verifiedAssignee = verify.data?.assignee;
-      if (verifiedAssignee !== null && verifiedAssignee !== undefined && verifiedAssignee !== '') {
-        return {
-          content: [
-            {
-              type: 'text',
-              text:
-                `Decline call succeeded but task still has assignee "${verifiedAssignee}". ` +
-                `Tell the user the decline may have failed.`,
-            },
-          ],
-        };
-      }
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      return handleTaskDecline(args, { api });
     },
   );
 
