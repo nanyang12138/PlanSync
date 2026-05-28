@@ -71,7 +71,9 @@ console.error(`Excluded ${metaPrs.size} meta-doc PRs: ${[...metaPrs].sort((a,b)=
 
 const R_RE = /\bR-\d+[a-z]?(?:\.[a-z0-9]+)?\b/g;
 const STRONG_RE = /(?:close[sd]?|fix(?:e[sd])?|implement[sd]?|resolve[sd]?|address(?:e[sd])?|finish(?:e[sd])?|complete[sd]?)\b[^\n.]{0,200}?(R-\d+[a-z]?(?:\.[a-z0-9]+)?)/gi;
-const REVERSE_STRONG_RE = /(R-\d+[a-z]?(?:\.[a-z0-9]+)?)\b[^\n.]{0,80}?(?:done|implemented|fixed|closed|resolved|completed?)/gi;
+// REVERSE_STRONG_RE removed (#639): "R-XXX … done" in PR bodies matched
+// checklist/status lines and caused false-positive evidence for entries that
+// were only referenced, not implemented, by those PRs.
 // Rule 3 — conventional commit scope. Matches at start of title only, after
 // the meta-PR exclusion above (so `chore(R-xxx): mark as blocked` is gone).
 const CONVENTIONAL_COMMIT_RE = /^(?:feat|fix|chore|refactor|perf|test|docs|ci|build|style)\((R-\d+[a-z]?(?:\.[a-z0-9]+)?)\)\s*[:!]/i;
@@ -91,7 +93,6 @@ for (const pr of prs) {
   const strong = new Set();
   // Rule 1 — strong verb adjacent to R-ID anywhere in title/body/branch.
   for (const m of blob.matchAll(STRONG_RE)) strong.add(m[1]);
-  for (const m of blob.matchAll(REVERSE_STRONG_RE)) strong.add(m[1]);
   // Rule 2 — branch named after the R-ID.
   const branch = (pr.headRefName || "").toLowerCase();
   for (const rid of mentions) {
