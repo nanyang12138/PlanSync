@@ -14,20 +14,23 @@
  *     Forcing owner-only here breaks #1220: non-owners get 403 and cannot
  *     self-serve the rule explanation that the gate error points them at.
  *
- *     Response shape is role-aware AND session-aware (#1411 + #1452):
- *       - Full-trust readers receive the full row, including `params`
- *         JSONB and `createdBy`. "Full trust" means the caller is an
- *         owner-role member AND is NOT using an exec-scoped API key.
+ *     Response shape is role-aware AND session-aware (#1411 + #1452 + #2830):
+ *       - Full-trust readers receive the full row, including the raw
+ *         `params` JSONB and `createdBy`. "Full trust" means the caller
+ *         is an owner-role member AND is NOT using an exec-scoped API key.
  *       - Everyone else (non-owner members, AND owner-role members
  *         calling through an exec-scoped key issued for a single
  *         /exec or /worker run) receives the public projection
- *         `{ id, projectId, kind, scope, scopeValue, enabled,
- *         createdAt, updatedAt }`. We strip `params` and `createdBy`
- *         because `params` is owner-writable JSONB and may hold
- *         internal configuration (file paths, prompt fragments,
- *         arbitrary keys) that the broader execution audience never
- *         needs — the gate's `failedRules[].message` already surfaces
- *         the human-readable consequence (e.g. "required 100 chars").
+ *         `{ id, projectId, kind, scope, scopeValue, enabled, params,
+ *         createdAt, updatedAt }`. `createdBy` is stripped and `params`
+ *         is reduced by `publicParamsForKind` to only the evaluator-
+ *         relevant keys for that rule kind (e.g. `{ min }` for
+ *         `min_output_summary_chars`). Arbitrary owner-written keys
+ *         in the JSONB column — file paths, prompt fragments, credentials,
+ *         anything not part of the kind's allowlist — are NEVER returned
+ *         on this surface. This lets R-184's `/explain rule <id>` show
+ *         agents the threshold they need to satisfy (#1504) without
+ *         re-opening the JSONB-leak hole #1411/#1452 originally closed.
  *
  *     The exec-scope guard (#1452) closes a hole noted on PR #1447:
  *     `projectRole === 'owner'` alone would let an owner-issued
@@ -52,10 +55,47 @@ import { VERIFICATION_RULE_KINDS } from '@/lib/verification-rules';
 type Params = { params: Promise<{ projectId: string }> };
 
 /**
+ * Per-kind allowlist for the public `params` projection (#2830 follow-up to
+ * #1411/#1452). Returns only the fields that the evaluator in
+ * `@/lib/verification-rules` actually reads for a given rule kind, so that:
+ *
+ *   - Agents who hit a `VERIFICATION_RULE_FAILED` 422 can call `/explain
+ *     rule <id>` (R-184) and see the relevant config (e.g. `min: 100` for
+ *     `min_output_summary_chars`) — this is the original #1504 ask.
+ *   - Arbitrary extra keys an owner may have written into the JSONB column
+ *     (file paths, prompt fragments, credentials, anything) are NEVER
+ *     reflected back to non-owner members or to exec-scoped sessions.
+ *
+ * Adding a new kind: extend `VERIFICATION_RULE_KINDS` AND this allowlist
+ * AND `evaluateRule` in the same commit. Defaulting to `{}` for kinds we
+ * don't recognise keeps the behaviour fail-closed.
+ */
+function publicParamsForKind(
+  kind: string,
+  rawParams: VerificationRule['params'],
+): Record<string, unknown> {
+  const params = (rawParams ?? {}) as Record<string, unknown>;
+  switch (kind) {
+    case 'min_output_summary_chars': {
+      const min = params.min;
+      return typeof min === 'number' && Number.isFinite(min) ? { min } : {};
+    }
+    case 'require_files_changed':
+    case 'require_commits_on_branch':
+    case 'require_pr_merged':
+    case 'require_deliverable_evidence_for_each_ref':
+      return {};
+    default:
+      return {};
+  }
+}
+
+/**
  * Public projection of a VerificationRule shown to non-owner project
  * members AND to owners who are calling through an exec-scoped API key.
- * See file header (#1411 + #1452) — owner-writable JSONB `params` and
- * `createdBy` are deliberately omitted from this surface.
+ * See file header (#1411 + #1452 + #2830) — `createdBy` is omitted, and
+ * `params` is run through `publicParamsForKind` so only the evaluator-
+ * relevant keys (e.g. `min`) leak out, never the raw owner-writable JSONB.
  */
 function publicRuleProjection(rule: VerificationRule) {
   return {
@@ -65,6 +105,7 @@ function publicRuleProjection(rule: VerificationRule) {
     scope: rule.scope,
     scopeValue: rule.scopeValue,
     enabled: rule.enabled,
+    params: publicParamsForKind(rule.kind, rule.params),
     createdAt: rule.createdAt,
     updatedAt: rule.updatedAt,
   };
