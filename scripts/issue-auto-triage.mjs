@@ -76,7 +76,7 @@ const APPLY = mode === '--apply';
 
 const REPO = process.env.GH_REPO || '';
 const TOKEN = process.env.GITHUB_TOKEN || '';
-// Parse a positive-integer rate-limit knob from the env, with a hard
+// Parse a non-negative-integer rate-limit knob from the env, with a hard
 // guard against garbage input.
 //
 // Why this isn't just `Number.parseInt(raw || default, 10)`:
@@ -88,9 +88,7 @@ const TOKEN = process.env.GITHUB_TOKEN || '';
 //   `max_dispatch` / `max_close` inputs) is the realistic source of
 //   bad input: a typo like `max_dispatch=abx` would otherwise
 //   dispatch every open `severity:must` issue in one run and burn
-//   the Cursor API quota. Negative numbers are rejected for the
-//   same reason (`-1 >= 0` is false → loop never breaks on the
-//   first iteration where count is 0).
+//   the Cursor API quota.
 //
 // Why we don't just trust `Number.parseInt` for the non-empty branch:
 //   parseInt is lexically permissive — `parseInt('5abc', 10)` returns
@@ -102,12 +100,36 @@ const TOKEN = process.env.GITHUB_TOKEN || '';
 //   pre-validate with a strict `/^\d+$/` after trim before handing
 //   off to parseInt — only fully-numeric, non-negative strings get
 //   through; everything else routes to the default + warning path.
+//
+// Why a negative integer clamps to 0 instead of falling back to the
+// default (issue #1400 / review-finding #2751):
+//   A manual operator who types `max_dispatch=-1` is unambiguously
+//   asking for *fewer* actions — they want the cron paused for this
+//   run. The previous policy ("negative → default") substituted a
+//   *higher* limit (3 dispatches, 25 closes) and pushed the run in
+//   the opposite direction of operator intent, burning Cursor API
+//   quota and closing issues they wanted left alone. The current
+//   policy clamps to 0 so `count >= LIMIT` is true on the first
+//   iteration (count starts at 0) and the loop short-circuits before
+//   any action runs. The clamp is warning-loud so the CI log still
+//   surfaces the misconfigured input. NaN / non-numeric still falls
+//   back to the default because there is no quantitative "do less"
+//   intent to honor — silently no-op'ing the scheduled cron on a
+//   typo would be worse.
 function parseLimitEnv(name, raw, defaultValue) {
   if (raw === undefined || raw === null || raw === '') {
     return defaultValue;
   }
   const trimmed = typeof raw === 'string' ? raw.trim() : String(raw);
   if (trimmed === '') return defaultValue; // whitespace-only treated the same as unset
+  if (/^-\d+$/.test(trimmed)) {
+    console.warn(
+      `[triage] ${name}=${JSON.stringify(raw)} is negative; ` +
+        `clamping to 0 (zero quota) — refusing to substitute the default ` +
+        `because that would expand quota in the opposite direction of the operator's input.`,
+    );
+    return 0;
+  }
   const parsed = /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : NaN;
   if (!Number.isFinite(parsed) || parsed < 0 || parsed > Number.MAX_SAFE_INTEGER) {
     console.warn(
