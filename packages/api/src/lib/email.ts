@@ -294,5 +294,8 @@ export function _sendMailQueueLengthForTests(): number {
  * is independently complete.)
  */
 export function getPendingMailTotal(): number {
-  return queue.length + inFlight.size + (processing ? 1 : 0);
+  // processQueue peeks at queue[0] without shifting, so the in-delivery
+  // item is already counted by queue.length. Adding inFlight.size or
+  // (processing ? 1 : 0) would double-count it.
+  return queue.length;
 }
