@@ -80,6 +80,19 @@ export async function PATCH(req: NextRequest, ctx: Params) {
       data.params = body.params as Prisma.InputJsonValue;
     }
 
+    // Validate the resulting scope+scopeValue combination. A PATCH that only
+    // updates scope (without providing scopeValue) can leave a task/task_type
+    // rule with scopeValue=null, which the evaluator silently skips (#890).
+    const effectiveScope = (data.scope as string | undefined) ?? existing.scope;
+    const effectiveScopeValue =
+      'scopeValue' in data ? (data.scopeValue as string | null) : existing.scopeValue;
+    if (['task', 'task_type'].includes(effectiveScope) && !effectiveScopeValue) {
+      throw new AppError(
+        ErrorCode.VALIDATION_ERROR,
+        `scope '${effectiveScope}' requires a non-empty scopeValue`,
+      );
+    }
+
     const updated = await prisma.verificationRule.update({
       where: { id: params.ruleId },
       data,

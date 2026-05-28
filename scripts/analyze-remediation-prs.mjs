@@ -42,7 +42,8 @@ const evidence = new Map();
 function ev(rid){ if(!evidence.has(rid)) evidence.set(rid,{strong:new Set(),weak:new Set()}); return evidence.get(rid); }
 const R_RE = /\bR-\d+[a-z]?(?:\.[a-z0-9]+)?\b/g;
 const STRONG_RE = /(?:close[sd]?|fix(?:e[sd])?|implement[sd]?|resolve[sd]?|address(?:e[sd])?|finish(?:e[sd])?|complete[sd]?)\b[^\n.]{0,200}?(R-\d+[a-z]?(?:\.[a-z0-9]+)?)/gi;
-const REVERSE_STRONG_RE = /(R-\d+[a-z]?(?:\.[a-z0-9]+)?)\b[^\n.]{0,80}?(?:done|implemented|fixed|closed|resolved|completed?)/gi;
+// REVERSE_STRONG_RE removed (#639): too broad — matches checklist/status lines
+// in PR bodies ("R-XXX … done") as false implementation evidence.
 // Conventional commit with R-ID as scope — this repo's actual convention for
 // implementation PRs (e.g. `feat(R-170): add exec-mode protocol FSM`).
 const CONVENTIONAL_COMMIT_RE = /^(?:feat|fix|chore|refactor|perf|test|docs|ci|build|style)\((R-\d+[a-z]?(?:\.[a-z0-9]+)?)\)\s*[:!]/i;
@@ -56,7 +57,6 @@ for (const pr of prs) {
   if (!mentions.size) continue;
   const strong = new Set();
   for (const m of blob.matchAll(STRONG_RE)) strong.add(m[1]);
-  for (const m of blob.matchAll(REVERSE_STRONG_RE)) strong.add(m[1]);
   const branch = (pr.headRefName || "").toLowerCase();
   for (const rid of mentions) {
     const n = rid.toLowerCase().replace("r-", "");
