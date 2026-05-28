@@ -152,21 +152,19 @@ export class Store<S extends BaseState> {
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       if (seq !== this.latestActionSeq) {
-        // R5b / closes #996: pre-fix the stale-failure branch
-        // returned without ANY cleanup, so a stale action's
-        // optimistic mutation lingered in state until the newer
-        // action happened to overwrite it. If the newer action was
-        // a different operation (e.g. a refresh), the phantom row
-        // could survive forever.
+        // R5b / closes #996: a stale action's optimistic mutation would
+        // linger until the newer action overwrote it. The prior fix called
+        // opts.onFailure here, but that introduced #1045: snapshot-based
+        // handlers (e.g. `onFailure: () => before` in TaskStore.delete)
+        // restore the entire pre-action snapshot, erasing changes that a
+        // concurrently succeeding newer action already committed.
         //
-        // Fix: still call the caller-supplied onFailure so the
-        // optimistic delta is rolled back via the same code path
-        // that handles non-stale failures. We do NOT touch status —
-        // the newer in-flight action owns that, and we'd otherwise
-        // race with its eventual onSuccess/onFailure write.
-        if (opts.onFailure) {
-          this.setState((state) => opts.onFailure!(state, error));
-        }
+        // The correct behaviour for a stale failure is to leave state
+        // untouched: the newer in-flight action owns the optimistic state
+        // and its own onSuccess/onFailure will clean up when it settles.
+        // A phantom optimistic row may briefly linger if the newer action
+        // does not touch the same slice, but that is less harmful than
+        // silently erasing the newer action's committed results.
         throw error;
       }
       // Roll back optimistic changes, then apply caller-supplied failure
