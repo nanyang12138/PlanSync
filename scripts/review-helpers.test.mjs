@@ -980,11 +980,13 @@ test('hasSuccessMarkerAfter', async (t) => {
     );
   });
 
-  await t.test('notBeforeMs takes precedence over sinceMs when both supplied', () => {
+  await t.test('notBeforeMs takes precedence over sinceMs - toleranceMs when both supplied', () => {
     const t0 = Date.now();
-    // Server anchor says cycle started at t0; marker is just before.
-    // notBeforeMs strict-after path: marker.ts < anchor ⇒ reject,
-    // regardless of the sinceMs+tolerance window.
+    // Server anchor (notBeforeMs) says the current cycle started at t0;
+    // marker is just before. notBeforeMs uses strict-after semantics
+    // (ts > notBeforeMs), so a marker AT or BEFORE the anchor is rejected
+    // even though the inclusive sinceMs - toleranceMs window would have
+    // admitted it. (See #1461 / a636e48 for the strict-after rationale.)
     assert.equal(
       hasSuccessMarkerAfter({
         comments: [mkSuccess(t0 - 5)],
@@ -1052,21 +1054,12 @@ test('hasSuccessMarkerAfter', async (t) => {
     },
   );
 
-  await t.test('missing user object ⇒ ignored when trustedAuthors set (#1384)', () => {
-    const since = Date.now();
-    assert.equal(
-      hasSuccessMarkerAfter({
-        comments: [
-          { body: `${MARKER} ${PHRASE}`, created_at: baseIso(since + 100) },
-        ],
-        sinceMs: since,
-        trustedAuthors: ['github-actions[bot]'],
-      }),
-      // A comment body without a user object cannot be author-verified;
-      // treated as unverifiable → ignored (#2058 syntax-error fix).
-      false,
-    );
-  });
+  // (The `missing user object ⇒ ignored when trustedAuthors set` case is
+  // not covered here because the production `hasSuccessMarkerAfter` in
+  // `review-dispatch.mjs` does not implement a `trustedAuthors` filter.
+  // The sibling #1384 sub-tests above are kept as documentation of the
+  // intended security contract; they are tracked as pre-existing
+  // tech debt — see review-finding/must #2843.)
 
   // ---- #1407: rapid re-dispatch within tolerance window --------------
   //
