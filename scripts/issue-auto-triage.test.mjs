@@ -266,16 +266,19 @@ test('static guard: issue-auto-triage.mjs still validates env-var caps for NaN',
     /const MAX_CLOSE\s*=\s*parseLimitEnv\(\s*'TRIAGE_MAX_CLOSE'/,
     'MAX_CLOSE must be parsed through parseLimitEnv so non-numeric env vars cannot disable the cap',
   );
-  // The helper must reject NaN. Number.isInteger() returns false for
+  // The helper must reject NaN. Number.isFinite() returns false for
   // NaN, which is the chokepoint — guarding the method name keeps
   // the test specific to the actual fix instead of any later rewrite
-  // that happens to use a different sentinel.
+  // that happens to use a different sentinel. (#2832: the previous
+  // guard asserted Number.isInteger() but the production helper uses
+  // Number.isFinite(), so the guard always failed — keep this regex
+  // aligned with the actual call in scripts/issue-auto-triage.mjs.)
   const helperBody = src.match(/function parseLimitEnv\s*\([\s\S]*?\n\}/);
   assert.ok(helperBody, 'parseLimitEnv body must be present');
   assert.match(
     helperBody[0],
-    /Number\.isInteger\s*\(/,
-    'parseLimitEnv must use Number.isInteger() (or equivalent) to reject NaN',
+    /Number\.isFinite\s*\(/,
+    'parseLimitEnv must use Number.isFinite() (or equivalent) to reject NaN',
   );
 });
 
