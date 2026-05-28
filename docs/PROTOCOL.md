@@ -61,13 +61,29 @@ hint so the agent self-corrects without re-reading `CLAUDE.md`.
        │                                                         │    task_rebind / comment_create /
        │                                                         │    plan_suggest keep state here
        └─────────────┬─────────────────────────────┬─────────────┘
-                     │ plansync_execution_complete │ plansync_execution_abort
+                     │ plansync_execution_complete │ server-side abort
+                     │                             │ (drift v2 / RUN_ABORTED;
+                     │                             │  no client tool exists)
                      ▼                             ▼
               ┌──────────────┐              ┌──────────────┐
               │  COMPLETED   │              │   ABORTED    │
-              └──────────────┘              └──────────────┘
-                  (terminal)                    (terminal)
+              └──────┬───────┘              └──────┬───────┘
+                     │     plansync_exec_context   │
+                     │     (recycle the session    │
+                     │      for the next /exec)    │
+                     └──────────────┬──────────────┘
+                                    ▼
+                          back to CONTEXT_LOADED ↑
 ```
+
+> `COMPLETED` and `ABORTED` are **per-run terminal** — the FSM rejects every
+> further state-mutating call for the current `runId`. The session itself is
+> recyclable: calling `plansync_exec_context` issues a fresh `runId` and drops
+> the agent back to `CONTEXT_LOADED` so it can pick up the next task. There
+> is no `plansync_execution_abort` client tool (P0-14 removed it; see
+> `exec-state.test.ts`) — voluntary early exit goes through
+> `plansync_run({action: "complete", status: "cancelled" | "failed", ...})`,
+> and involuntary aborts are forced by the API (drift v2 / `RUN_ABORTED`).
 
 Mermaid form (for the docs site once it ships):
 
@@ -80,22 +96,21 @@ stateDiagram-v2
   RUN_STARTED --> RUN_STARTED: heartbeat / drift_resolve / task_rebind / comment / plan_suggest
   PACK_FETCHED --> PACK_FETCHED: drift_resolve / task_rebind / comment / plan_suggest
   RUN_STARTED --> COMPLETED: plansync_execution_complete
-  RUN_STARTED --> ABORTED: plansync_execution_abort
-  COMPLETED --> [*]
-  ABORTED --> [*]
+  RUN_STARTED --> ABORTED: server-side abort (drift v2 / RUN_ABORTED)
+  COMPLETED --> CONTEXT_LOADED: plansync_exec_context (next /exec task)
+  ABORTED --> CONTEXT_LOADED: plansync_exec_context (next /exec task)
 ```
 
 ## State reference
 
-| State            | Allowed gated tools                                                                                                                                                                             | requiredNextOneOf                                             |
-| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| `UNINITIALIZED`  | `plansync_exec_context`                                                                                                                                                                         | `plansync_exec_context`                                       |
-| `CONTEXT_LOADED` | `plansync_task_pack`, `plansync_execution_complete`, `plansync_exec_context`                                                                                                                    | `plansync_task_pack`, `plansync_execution_complete`           |
+| State            | Allowed gated tools                                                                                                                                                                                                                       | requiredNextOneOf                                             |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `UNINITIALIZED`  | `plansync_exec_context`                                                                                                                                                                                                                   | `plansync_exec_context`                                       |
+| `CONTEXT_LOADED` | `plansync_task_pack`, `plansync_execution_complete`, `plansync_exec_context`                                                                                                                                                              | `plansync_task_pack`, `plansync_execution_complete`           |
 | `PACK_FETCHED`   | `plansync_task_pack`, `plansync_execution_start`, `plansync_execution_complete`, `plansync_drift_resolve`, `plansync_task_rebind`, `plansync_comment_create`, `plansync_comment_edit`, `plansync_comment_delete`, `plansync_plan_suggest` | `plansync_execution_start`, `plansync_execution_complete`     |
-| `RUN_STARTED`    | `plansync_execution_heartbeat`, `plansync_execution_complete`, `plansync_drift_resolve`, `plansync_task_rebind`, `plansync_comment_create`, `plansync_comment_edit`, `plansync_comment_delete`, `plansync_plan_suggest` | `plansync_execution_heartbeat`, `plansync_execution_complete` |
-| `COMPLETED`      | `plansync_exec_context`                                                                                                                                                                         | `plansync_exec_context`                                       |
-| `ABORTED`        | `plansync_exec_context`                                                                                                                                                                         | `plansync_exec_context`                                       |
-
+| `RUN_STARTED`    | `plansync_execution_heartbeat`, `plansync_execution_complete`, `plansync_drift_resolve`, `plansync_task_rebind`, `plansync_comment_create`, `plansync_comment_edit`, `plansync_comment_delete`, `plansync_plan_suggest`                   | `plansync_execution_heartbeat`, `plansync_execution_complete` |
+| `COMPLETED`      | `plansync_exec_context`                                                                                                                                                                                                                   | `plansync_exec_context`                                       |
+| `ABORTED`        | `plansync_exec_context`                                                                                                                                                                                                                   | `plansync_exec_context`                                       |
 Read-only tools (`plansync_status`, `plansync_who`, `plansync_*_list`,
 `plansync_*_show`, `plansync_plan_active`, `plansync_plan_diff`,
 `plansync_my_work`, `plansync_check_task_conflicts`, …) are accepted from

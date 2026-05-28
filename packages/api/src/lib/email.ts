@@ -96,7 +96,11 @@ function deliverOnce(message: string): Promise<{ ok: boolean; err?: string }> {
   return new Promise((resolve) => {
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(SENDMAIL, ['-t'], { stdio: ['pipe', 'pipe', 'pipe'] });
+      // stdout is 'ignore' (not 'pipe') because sendmail writes nothing
+      // useful to stdout. Using 'pipe' without consuming the stream risks
+      // deadlock if the pipe buffer fills — 'ignore' routes to /dev/null
+      // and eliminates the backpressure entirely (#1044).
+      child = spawn(SENDMAIL, ['-t'], { stdio: ['pipe', 'ignore', 'pipe'] });
     } catch (err) {
       resolve({ ok: false, err: err instanceof Error ? err.message : String(err) });
       return;
