@@ -30,7 +30,8 @@ import {
 } from './exec.js';
 import { startSession, appendToSession, loadInputHistory } from './session.js';
 import { InkSession, SlashCmd } from './prompt.js';
-import { CliSseListener, describeEvent, URGENT_EVENTS } from './sse-listener.js';
+import { CliSseListener, describeEvent } from './sse-listener.js';
+import { URGENT_EVENTS } from './urgent-events.js';
 import { apiEvents, type AuthFailurePayload } from './api-errors.js';
 
 // ─── Genie settings writer ────────────────────────────────────────────────────
