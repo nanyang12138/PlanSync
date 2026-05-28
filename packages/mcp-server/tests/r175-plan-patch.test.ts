@@ -41,15 +41,19 @@ const mocks = vi.hoisted(() => {
   return { rootPost, delegatedPost, withUser, getDelegationAgent };
 });
 
-vi.mock('../src/api-client', () => ({
-  ApiClient: vi.fn().mockImplementation(() => ({
-    get: vi.fn(),
-    post: mocks.rootPost,
-    patch: vi.fn(),
-    delete: vi.fn(),
-    withUser: mocks.withUser,
-  })),
-}));
+vi.mock('../src/api-client', async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import('../src/api-client');
+  return {
+    ...actual,
+    ApiClient: vi.fn().mockImplementation(() => ({
+      get: vi.fn(),
+      post: mocks.rootPost,
+      patch: vi.fn(),
+      delete: vi.fn(),
+      withUser: mocks.withUser,
+    })),
+  };
+});
 
 vi.mock('../src/tools/status', () => ({
   getDelegationAgent: mocks.getDelegationAgent,
@@ -58,8 +62,9 @@ vi.mock('../src/tools/status', () => ({
 
 const { rootPost, delegatedPost, withUser, getDelegationAgent: getDelegationAgentMock } = mocks;
 
-import { ApiClient } from '../src/api-client';
+import { ApiClient, ApiError } from '../src/api-client';
 import { registerPlanTools } from '../src/tools/plan';
+import { buildErrorEnvelope } from '../src/tool-wrapper';
 
 const config = { apiBaseUrl: 'http://localhost:3001', apiToken: 'test', userName: 'owner' };
 
@@ -309,6 +314,146 @@ describe('R-175: plansync_plan_patch', () => {
         patches: [{ op: 'append', field: 'deliverables', items: ['x'] }],
       });
       expect(wrong.success).toBe(false);
+    });
+  });
+
+  // Finding f558b13d (issue #2806) — applyPatches used to throw a plain Error
+  // when a patch failed mid-batch, attaching `failedIndex` / `succeededCount`
+  // / `partialResults` as ad-hoc properties. The central buildErrorEnvelope
+  // (R-037) only special-cases ApiError, so those properties were silently
+  // dropped and a wrapped ApiError got downgraded to INTERNAL — defeating the
+  // whole point of the enrichment. Fix: re-throw as ApiError, preserve the
+  // original code/status, and pack the batch info into `details.batch`.
+  describe('batch failure carries machine-readable batch context (issue #2806)', () => {
+    it('preserves original ApiError code/status and surfaces batch info via details', async () => {
+      rootPost
+        .mockResolvedValueOnce({ data: { added: 1 } })
+        .mockResolvedValueOnce({ data: { added: 1 } })
+        .mockRejectedValueOnce(
+          new ApiError('Item too long', 'VALIDATION_ERROR', 400, { field: 'items[0]' }),
+        );
+
+      let caught: unknown;
+      try {
+        await callTool(server, 'plansync_plan_patch', {
+          projectId: 'p1',
+          planId: 'pl1',
+          patches: [
+            { op: 'append', field: 'deliverables', items: ['d1'] },
+            { op: 'append', field: 'constraints', items: ['c1'] },
+            { op: 'append', field: 'standards', items: ['s1'] },
+          ],
+        });
+      } catch (e) {
+        caught = e;
+      }
+
+      expect(caught).toBeInstanceOf(ApiError);
+      const apiErr = caught as ApiError;
+      expect(apiErr.code).toBe('VALIDATION_ERROR');
+      expect(apiErr.status).toBe(400);
+      expect(apiErr.message).toMatch(/Item too long/);
+      expect(apiErr.message).toMatch(/batch failed at patch 2 of 3/);
+
+      const details = apiErr.details as {
+        field?: string;
+        batch?: {
+          failedIndex: number;
+          failedField: string;
+          totalPatches: number;
+          succeededCount: number;
+          partialResults: unknown[];
+        };
+      };
+      expect(details.field).toBe('items[0]');
+      expect(details.batch).toBeDefined();
+      expect(details.batch!.failedIndex).toBe(2);
+      expect(details.batch!.failedField).toBe('standards');
+      expect(details.batch!.totalPatches).toBe(3);
+      expect(details.batch!.succeededCount).toBe(2);
+      expect(details.batch!.partialResults).toEqual([
+        { data: { added: 1 } },
+        { data: { added: 1 } },
+      ]);
+    });
+
+    it('wraps non-ApiError mid-batch failures as BATCH_FAILED with the same details payload', async () => {
+      rootPost
+        .mockResolvedValueOnce({ data: { added: 1 } })
+        .mockRejectedValueOnce(new Error('network down'));
+
+      let caught: unknown;
+      try {
+        await callTool(server, 'plansync_plan_patch', {
+          projectId: 'p1',
+          planId: 'pl1',
+          patches: [
+            { op: 'append', field: 'deliverables', items: ['d1'] },
+            { op: 'append', field: 'constraints', items: ['c1'] },
+          ],
+        });
+      } catch (e) {
+        caught = e;
+      }
+
+      expect(caught).toBeInstanceOf(ApiError);
+      const apiErr = caught as ApiError;
+      expect(apiErr.code).toBe('BATCH_FAILED');
+      expect(apiErr.status).toBe(500);
+      expect(apiErr.message).toMatch(/network down/);
+      const details = apiErr.details as {
+        batch?: { failedIndex: number; succeededCount: number; partialResults: unknown[] };
+      };
+      expect(details.batch?.failedIndex).toBe(1);
+      expect(details.batch?.succeededCount).toBe(1);
+      expect(details.batch?.partialResults).toEqual([{ data: { added: 1 } }]);
+    });
+
+    it('end-to-end: buildErrorEnvelope surfaces batch context (not downgraded to INTERNAL)', async () => {
+      rootPost
+        .mockResolvedValueOnce({ data: { added: 1 } })
+        .mockRejectedValueOnce(new ApiError('Bad shape', 'VALIDATION_ERROR', 400));
+
+      let caught: unknown;
+      try {
+        await callTool(server, 'plansync_plan_patch', {
+          projectId: 'p1',
+          planId: 'pl1',
+          patches: [
+            { op: 'append', field: 'deliverables', items: ['d1'] },
+            { op: 'append', field: 'constraints', items: ['c1'] },
+          ],
+        });
+      } catch (e) {
+        caught = e;
+      }
+
+      // Pre-fix this would have been INTERNAL with no batch info; post-fix
+      // the agent gets the full structured envelope it can switch on.
+      const env = buildErrorEnvelope(caught, 'plansync_plan_patch');
+      const payload = JSON.parse(env.content[0].text);
+      expect(payload.error.code).toBe('VALIDATION_ERROR');
+      expect(payload.error.status).toBe(400);
+      expect(payload.error.details.batch.failedIndex).toBe(1);
+      expect(payload.error.details.batch.succeededCount).toBe(1);
+      expect(payload.error.details.batch.failedField).toBe('constraints');
+    });
+
+    it('does not catch when all patches succeed (no spurious wrapping)', async () => {
+      rootPost
+        .mockResolvedValueOnce({ data: { added: 1 } })
+        .mockResolvedValueOnce({ data: { added: 1 } });
+
+      const result = await callTool(server, 'plansync_plan_patch', {
+        projectId: 'p1',
+        planId: 'pl1',
+        patches: [
+          { op: 'append', field: 'deliverables', items: ['d1'] },
+          { op: 'append', field: 'constraints', items: ['c1'] },
+        ],
+      });
+      const payload = JSON.parse(result.content[0].text);
+      expect(payload.applied).toBe(2);
     });
   });
 
