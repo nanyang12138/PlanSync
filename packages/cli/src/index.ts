@@ -207,6 +207,13 @@ async function main() {
   const sseListener = new CliSseListener((eventType, data) => {
     const msg = describeEvent(eventType, data);
     if (msg) notify(msg, URGENT_EVENTS.has(eventType));
+    // If the server closed the connection because we were too slow to consume
+    // events, reconnect immediately (delay=0) rather than waiting for the
+    // normal exponential backoff. The server will also publish bus_resync_required
+    // (#748) so we get a fresh-state signal on reconnect.
+    if (eventType === 'backpressure_disconnect') {
+      sseListener.scheduleRestart();
+    }
     // If this user was just added to or removed from a project, reconnect SSE
     // so the new subscription set takes effect.
     if (

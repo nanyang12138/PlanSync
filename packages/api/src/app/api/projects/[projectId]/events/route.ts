@@ -111,6 +111,12 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ projectId: 
           } catch {
             // The controller may already be torn down — ignore.
           }
+          // Signal other active subscribers (and this client after reconnect)
+          // that events were dropped so they know to resync their state (#748).
+          eventBus.publish(params.projectId, 'bus_resync_required', {
+            projectId: params.projectId,
+            reason: 'slow_client_disconnect',
+          });
         }
         try {
           controller.close();
