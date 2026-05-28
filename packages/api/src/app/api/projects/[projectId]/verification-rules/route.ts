@@ -93,9 +93,10 @@ function publicParamsForKind(
 /**
  * Public projection of a VerificationRule shown to non-owner project
  * members AND to owners who are calling through an exec-scoped API key.
- * See file header (#1411 + #1452 + #2830) — `createdBy` is omitted, and
- * `params` is run through `publicParamsForKind` so only the evaluator-
- * relevant keys (e.g. `min`) leak out, never the raw owner-writable JSONB.
+ * See file header (#1411 + #1452 + #1504 + #2830) — `createdBy` is omitted;
+ * `params` is included (#1504) so agents can see rule config, but run through
+ * `publicParamsForKind` (#2830) so only evaluator-relevant keys (e.g. `min`)
+ * are exposed, never the raw owner-writable JSONB.
  */
 function publicRuleProjection(rule: VerificationRule) {
   return {
