@@ -59,7 +59,7 @@ const REQUIRED_FIELDS = [
   'verification',
 ];
 const DEDUP_FIELDS = ['superseded_by', 'interim_for', 'supersedes'];
-const ID_RE = /^R-\d{3}$/;
+const ID_RE = /^R-\d{3}[a-z]?$/;
 const SEVERITY_WEIGHT = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 };
 
 /**
@@ -81,7 +81,7 @@ export function parseEntries(text) {
   let current = null;
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
-    const header = line.match(/^#### (R-\d+) \[([A-Z]+)\] (.*)$/);
+    const header = line.match(/^#### (R-\d+[a-z]?) \[([A-Z]+)\] (.*)$/);
     if (header) {
       if (current) entries.push(current);
       current = {
