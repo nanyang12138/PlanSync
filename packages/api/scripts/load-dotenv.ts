@@ -89,7 +89,11 @@ export function loadDotenvFrom(envPath: string): void {
   const lookup = (name: string): string | undefined => {
     if (process.env[name] !== undefined) return process.env[name];
     const f = fileVars[name];
-    return f ? f.value : undefined;
+    if (!f) return undefined;
+    // Recursively expand so chained references (A=${USER}; B=...${A}...)
+    // resolve correctly — returning the raw value would leave ${USER}
+    // as a literal string in the expanded result (#1059).
+    return f.quoted === 'single' ? f.value : expandRefs(f.value, lookup);
   };
 
   for (const [key, fv] of Object.entries(fileVars)) {
