@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { prisma } from '@/lib/prisma';
+import { enterRequestContextFromHeaders } from '@/lib/request-context';
 
 async function hashPassword(password: string): Promise<string> {
   const salt = crypto.randomBytes(16);
@@ -28,6 +29,7 @@ async function verifyPassword(password: string, stored: string): Promise<boolean
 // Credential check + account creation for new users.
 // Does NOT create or delete web-session API keys — safe for CLI use without invalidating browser sessions.
 export async function POST(req: NextRequest) {
+  enterRequestContextFromHeaders(req.headers);
   try {
     const body = await req.json();
     const { userName, password } = body as { userName?: string; password?: string };

@@ -414,12 +414,15 @@ export class EventBusPG implements EventBusInterface {
   }
 
   private async unlistenChannel(channel: string): Promise<void> {
-    // Wait for any in-flight LISTEN to settle before UNLISTENing so we never
-    // send UNLISTEN before the matching LISTEN has been sent to Postgres.
-    const pending = this.pendingListens.get(channel);
-    if (pending) await pending;
+    // Remove from subscribedChannels synchronously first so callers that
+    // inspect subscribedChannels immediately after the fire-and-forget
+    // void this.unlistenChannel() call see a consistent state.
     if (!this.subscribedChannels.has(channel)) return;
     this.subscribedChannels.delete(channel);
+    // Then wait for any in-flight LISTEN to settle before sending UNLISTEN so
+    // we never send UNLISTEN before the matching LISTEN has been sent to Postgres.
+    const pending = this.pendingListens.get(channel);
+    if (pending) await pending;
     if (!this.listenClient) return;
     try {
       await this.listenClient.query(`UNLISTEN ${quoteIdent(channel)}`);
