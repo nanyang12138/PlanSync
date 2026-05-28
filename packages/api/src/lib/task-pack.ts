@@ -64,10 +64,22 @@ export async function buildTaskPack(taskId: string, projectId: string) {
       // post-rename read would still display the stale slug while drift
       // would correctly use the renamed one (a confusing split).
       //
+      // When link rows exist, also include any legacy refs from the column
+      // that did NOT resolve to a link row (unresolved/pre-migration refs).
+      // syncTaskDeliverableLinks keeps these in the column on purpose so the
+      // owner can see and correct them (#1019 — previously these were silently
+      // hidden whenever any link row existed).
+      //
       // When there are no link rows at all we fall back to the legacy
       // array so tasks that pre-date this migration (e.g. plan versions
       // without `plan_deliverables` rows) keep their slugs visible.
-      planDeliverableRefs: linkedDeliverables.length > 0 ? linkedSlugs : task.planDeliverableRefs,
+      planDeliverableRefs:
+        linkedDeliverables.length > 0
+          ? [
+              ...linkedSlugs,
+              ...(task.planDeliverableRefs ?? []).filter((s) => !linkedSlugs.includes(s)),
+            ]
+          : task.planDeliverableRefs,
       // Surface the structured link list so MCP / Web / CLI surfaces can
       // render per-deliverable status without a second round-trip.
       linkedDeliverables,
