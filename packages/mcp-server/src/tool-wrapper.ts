@@ -22,6 +22,7 @@ import { ApiError } from './api-client';
 import { isRunAborted, RunAbortReason } from './abort-signal';
 import { logger } from './logger';
 import { normalizeRunToolNameForFsm } from './tools/run';
+import { normalizeTaskToolNameForFsm } from './tools/task-action';
 
 export interface ToolErrorEnvelope {
   isError: true;
@@ -256,10 +257,16 @@ export function wrapToolHandler<TArgs, TResult>(
     // then left the agent stuck in a "completed" state that no longer
     // permitted the recovery tool calls.
     const preFsmState = options.execStateManager?.getState();
-    // R-204 — translate `plansync_run(action, ...)` into the legacy
-    // `plansync_execution_*` name the FSM table still keys on. No-op
-    // for any other tool.
-    const fsmToolName = normalizeRunToolNameForFsm(toolName, args);
+    // R-204 / R-205 — translate the new unified `plansync_run(action, ...)`
+    // and `plansync_task(action, ...)` tool calls into the legacy
+    // `plansync_execution_*` / `plansync_task_*` names the FSM table still
+    // keys on. No-op for any other tool. The two normalizers are
+    // composed (each is a no-op on input it doesn't recognise) so a
+    // single `fsmToolName` covers both deprecation cycles.
+    const fsmToolName = normalizeTaskToolNameForFsm(
+      normalizeRunToolNameForFsm(toolName, args),
+      args,
+    );
     const preflight = evaluatePreflight(toolName, options, fsmToolName);
     if (preflight.kind === 'short-circuit') {
       return preflight.response;
