@@ -232,10 +232,18 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
 
         const hasCompletedRun =
           latestRun?.status === 'completed' && !liftedFromAwaitingEvidenceAfterLatestRun;
+        // #1339: also block isHumanSelfComplete when there is an active (running)
+        // execution run. If the human assignee called POST /runs to lift from
+        // awaiting_evidence, the new running run has endedAt=null, which skips the
+        // liftedFromAwaitingEvidenceAfterLatestRun detection (the condition gates on
+        // latestRun?.endedAt being truthy). With a running run present the correct
+        // completion path is execution_complete — which re-fires the R-192 gate —
+        // not a direct human self-complete PATCH.
         const isHumanSelfComplete =
           task.assigneeType === 'human' &&
           task.assignee === auth.userName &&
-          !liftedFromAwaitingEvidenceAfterLatestRun;
+          !liftedFromAwaitingEvidenceAfterLatestRun &&
+          latestRun?.status !== 'running';
 
         // R-192 / closes #1362 — chained-PATCH bypass of the
         // awaiting_evidence-source guard.
