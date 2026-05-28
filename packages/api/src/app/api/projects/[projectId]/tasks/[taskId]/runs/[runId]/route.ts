@@ -36,8 +36,12 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
     });
     if (!run) throw new AppError(ErrorCode.NOT_FOUND, 'ExecutionRun not found');
     if (run.taskId !== params.taskId || run.task.projectId !== params.projectId) {
+      // Use run.taskId (the actual task the run belongs to) so the audit
+      // query finds the task in its real project and correctly fires
+      // suspectCrossProject when a caller probes a runId from another project.
+      // params.taskId is attacker-controlled and may not correspond to the run.
       await auditCrossProjectTaskIfNeeded(
-        params.taskId,
+        run.taskId,
         params.projectId,
         'POST /tasks/:taskId/runs/:runId',
       );
