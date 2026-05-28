@@ -210,9 +210,13 @@ B5 / B12 / B10 是体量最大的三个 cluster（合计 ~35 issue），需要 m
 
 ### Step 1：维护者执行已注册的 batch-close
 
+> **⚠️ 注意 (#1066)**：脚本会处理 `CLUSTERS=()` 数组里的**所有**条目，包括
+> 状态含 `open|...` 的 cluster。请先运行 `--dry-run` 认真核对输出，确认只关闭
+> 确实随已合并 PR 解决的 issue，再运行实际关闭命令。
+
 ```bash
-bash scripts/close-resolved-issues.sh --dry-run   # 先看一遍
-bash scripts/close-resolved-issues.sh             # 真关
+bash scripts/close-resolved-issues.sh --dry-run   # 先看一遍，逐行确认
+bash scripts/close-resolved-issues.sh             # 确认无误后再真关
 ```
 
 预期效果：当前 303 条 → 约 250 条（关掉章节 3A + 3D 共 ~50 条）。
