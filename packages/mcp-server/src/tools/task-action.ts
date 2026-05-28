@@ -161,20 +161,38 @@ export function registerTaskActionTool(server: McpServer, api: ApiClient): void 
       // schemas for full per-field semantics. We keep them loose here so a
       // single tool registration can advertise the union; the safeParse
       // below enforces per-action requirements.
+      //
+      // The outer shape must be a real *superset* of both `createTaskShape`
+      // and `updateTaskShape` from @plansync/shared — otherwise the SDK
+      // boundary strips legitimate fields before they reach the inner
+      // discriminated-union safeParse, silently corrupting the request:
+      //   - `planDeliverableRefs` / `planConstraintRefs` / `planStandardRefs`
+      //     gate deliverable verification + drift-blast-radius scoping; if
+      //     they're absent the API falls back to "depends on all" and a
+      //     completion can't be marked done from a deliverable signal.
+      //   - `agentConstraints` is an array on the shared schema, not a
+      //     scalar string; the API will coerce-fail on a string.
+      //   - update-only nullable string/date fields must accept `null` so
+      //     agents can clear `branchName` / `prUrl` / `description` / dates
+      //     etc. through the unified surface (matches the legacy
+      //     `plansync_task_update` behaviour).
       title: z.string().optional(),
-      description: z.string().optional(),
+      description: z.string().nullable().optional(),
       type: z.string().optional(),
       assignee: z.string().nullable().optional(),
-      assigneeType: z.enum(['human', 'agent']).optional(),
+      assigneeType: z.enum(['human', 'agent', 'unassigned']).optional(),
       priority: z.string().optional(),
       status: z.string().optional(),
-      branchName: z.string().optional(),
-      prUrl: z.string().optional(),
-      agentContext: z.string().optional(),
-      expectedOutput: z.string().optional(),
-      agentConstraints: z.string().optional(),
-      startDate: z.string().optional(),
-      dueDate: z.string().optional(),
+      branchName: z.string().nullable().optional(),
+      prUrl: z.string().nullable().optional(),
+      agentContext: z.string().nullable().optional(),
+      expectedOutput: z.string().nullable().optional(),
+      agentConstraints: z.array(z.string()).optional(),
+      planDeliverableRefs: z.array(z.string()).optional(),
+      planConstraintRefs: z.array(z.string()).optional(),
+      planStandardRefs: z.array(z.string()).optional(),
+      startDate: z.string().nullable().optional(),
+      dueDate: z.string().nullable().optional(),
       // Claim-only:
       startImmediately: z
         .boolean()
