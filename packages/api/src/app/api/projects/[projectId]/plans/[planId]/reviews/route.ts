@@ -49,12 +49,17 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
     });
     if (existing) throw new AppError(ErrorCode.CONFLICT, `${reviewer} is already a reviewer`);
 
+    // CAS guard on plan.update: require status is still 'proposed' inside the
+    // transaction so a concurrent activate that commits between the outer status
+    // check (L43) and this update does not silently add a reviewer to an already-
+    // active plan (#2262). If the update matches 0 rows (status flipped to active),
+    // Prisma throws a "Record not found" error and rolls back PlanReview.create too.
     const [review] = await prisma.$transaction([
       prisma.planReview.create({
         data: { planId: params.planId, reviewerName: reviewer, status: 'pending' },
       }),
       prisma.plan.update({
-        where: { id: params.planId },
+        where: { id: params.planId, status: 'proposed' },
         data: { requiredReviewers: { push: reviewer } },
       }),
     ]);
