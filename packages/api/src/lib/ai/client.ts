@@ -372,7 +372,9 @@ class AiClient {
     // R-124: PLANSYNC_AI_MOCK=1 forces a deterministic mock provider so CI
     // can exercise AI code paths without real API keys. Mock takes precedence
     // over any real key so tests stay hermetic even when keys are present.
-    const mockEnabled = process.env.PLANSYNC_AI_MOCK === '1';
+    // Guard against accidental activation in production (#368).
+    const mockEnabled =
+      process.env.PLANSYNC_AI_MOCK === '1' && process.env.NODE_ENV !== 'production';
     const amdKey = process.env.LLM_API_KEY?.trim() || '';
     const anthropicKey = process.env.ANTHROPIC_API_KEY?.trim() || '';
 
