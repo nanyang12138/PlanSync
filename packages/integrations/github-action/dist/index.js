@@ -21456,15 +21456,21 @@ function renderPlansyncStatusBlock(input) {
   } else {
     lines.push("- **PR scope**: project-wide");
   }
-  const highCount = input.drifts.filter((d) => d.severity === "high").length;
-  const medCount = input.drifts.filter((d) => d.severity === "medium").length;
-  const lowCount = input.drifts.length - highCount - medCount;
-  if (input.drifts.length === 0) {
-    lines.push("- **Drift**: no open alerts in scope");
+  if (input.driftScanStatus === "not_run") {
+    lines.push("- **Drift**: _not checked \u2014 gate aborted before drift query; see action log_");
+  } else if (input.driftScanStatus === "failed") {
+    lines.push("- **Drift**: _check failed \u2014 see action log_");
   } else {
-    lines.push(
-      `- **Drift**: ${input.drifts.length} open alert(s) \u2014 ${highCount} high \xB7 ${medCount} medium \xB7 ${lowCount} other`
-    );
+    const highCount = input.drifts.filter((d) => d.severity === "high").length;
+    const medCount = input.drifts.filter((d) => d.severity === "medium").length;
+    const lowCount = input.drifts.length - highCount - medCount;
+    if (input.drifts.length === 0) {
+      lines.push("- **Drift**: no open alerts in scope");
+    } else {
+      lines.push(
+        `- **Drift**: ${input.drifts.length} open alert(s) \u2014 ${highCount} high \xB7 ${medCount} medium \xB7 ${lowCount} other`
+      );
+    }
   }
   if (input.deliverableGlobs.length > 0) {
     const previewGlobs = input.deliverableGlobs.slice(0, 6).map((g) => `\`${g}\``).join(", ");
@@ -21699,7 +21705,11 @@ async function run() {
     unmatchedFiles: [],
     scopedTaskIds: null,
     truncatedTaskScan: false,
-    truncatedDriftScan: false
+    truncatedDriftScan: false,
+    // R-193 (#2768): default to 'not_run'. Only the success path below
+    // (after `fetchOpenDrifts` returns an authoritative page set) flips
+    // this to 'completed'; truncation / error paths flip it to 'failed'.
+    driftScanStatus: "not_run"
   };
   core.setOutput("pr-body-updated", "false");
   try {
@@ -21812,6 +21822,7 @@ async function run() {
       const result = await fetchOpenDrifts(apiUrl, projectId, headers);
       if (result.truncated) {
         status.truncatedDriftScan = true;
+        status.driftScanStatus = "failed";
         core.setFailed(
           "PlanSync drift-check: open drift list exceeds pagination cap; refusing to gate on a partial view (HIGH drifts could be on later pages). Triage backlog or raise the cap."
         );
@@ -21819,6 +21830,7 @@ async function run() {
       }
       allDrifts = result.rows;
     } catch (err) {
+      status.driftScanStatus = "failed";
       core.setFailed(err instanceof Error ? err.message : String(err));
       return;
     }
@@ -21829,6 +21841,7 @@ async function run() {
       taskId: d.taskId,
       reason: d.reason
     }));
+    status.driftScanStatus = "completed";
     if (scopedTaskIds !== null) {
       const filteredOut = allDrifts.length - drifts.length;
       if (filteredOut > 0) {
