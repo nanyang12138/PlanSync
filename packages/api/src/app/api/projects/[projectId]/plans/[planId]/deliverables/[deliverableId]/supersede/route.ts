@@ -9,6 +9,7 @@ import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
 import { createActivity } from '@/lib/activity';
 import { requirePlanInProject } from '@/lib/plan-scope';
+import { syncDeliverableArrayMirror } from '@/lib/plan-items';
 
 // R-155 supersede route. Manual counterpart to the activate-time
 // `supersedeDeliverables` helper (R-152): lets an owner explicitly mark a
@@ -84,23 +85,32 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
     // matches no row, the deliverable was either deleted or superseded
     // by a concurrent writer — surface a 409 STATE_CONFLICT either way,
     // preserving the "history is append-only" invariant.
-    const cas = await prisma.planDeliverable.updateMany({
-      where: {
-        id: params.deliverableId,
-        planId: params.planId,
-        supersededById: null,
-        status: { not: 'deprecated' },
-      },
-      data: {
-        status: 'deprecated',
-        supersededById: body.supersededById ?? null,
-      },
-    });
-    if (cas.count === 0) {
-      throw new AppError(ErrorCode.STATE_CONFLICT, 'Deliverable is already superseded');
-    }
-    const updated = await prisma.planDeliverable.findUniqueOrThrow({
-      where: { id: params.deliverableId },
+    //
+    // syncDeliverableArrayMirror is called inside the same transaction so
+    // the legacy plan.deliverables String[] is rebuilt atomically after the
+    // row is marked deprecated (#2499 — without this, legacy readers such as
+    // plansync_plan_show and drift-engine still see the removed deliverable).
+    const { updated } = await prisma.$transaction(async (tx) => {
+      const cas = await tx.planDeliverable.updateMany({
+        where: {
+          id: params.deliverableId,
+          planId: params.planId,
+          supersededById: null,
+          status: { not: 'deprecated' },
+        },
+        data: {
+          status: 'deprecated',
+          supersededById: body.supersededById ?? null,
+        },
+      });
+      if (cas.count === 0) {
+        throw new AppError(ErrorCode.STATE_CONFLICT, 'Deliverable is already superseded');
+      }
+      const updated = await tx.planDeliverable.findUniqueOrThrow({
+        where: { id: params.deliverableId },
+      });
+      await syncDeliverableArrayMirror(params.planId, tx);
+      return { cas, updated };
     });
 
     await createActivity({
