@@ -21,6 +21,7 @@ import { registerStatusTools, getDelegationAgent } from './tools/status';
 import { onRunAborted } from './abort-signal';
 import { patchServerToolRegistration } from './tool-wrapper';
 import { ExecStateManager, readEnforceMode } from './exec-state-manager';
+import { EXEC_ALLOWED, DELEGATION_ALLOWED } from './exec-allowlist';
 
 function pushNotification(
   server: McpServer,
@@ -63,113 +64,9 @@ async function main() {
   //
   const execMode = Boolean(process.env.PLANSYNC_EXEC_TASK_ID);
 
-  // Execution mode whitelist — tools allowed during task execution
-  const EXEC_ALLOWED = new Set([
-    // Read-only queries
-    'plansync_task_list',
-    'plansync_task_show',
-    'plansync_task_pack',
-    'plansync_plan_list',
-    'plansync_plan_show',
-    'plansync_plan_active',
-    'plansync_plan_diff',
-    'plansync_status',
-    'plansync_who',
-    'plansync_activity_list',
-    'plansync_my_work',
-    'plansync_drift_list',
-    'plansync_member_list',
-    'plansync_project_list',
-    'plansync_project_show',
-    'plansync_suggestion_list',
-    'plansync_comment_list',
-    'plansync_exec_context',
-    'plansync_check_task_conflicts',
-    // R-155: deliverable read-only views — exec-mode agents need to inspect
-    // the structured deliverable rows when reasoning about which file
-    // changes belong to their bound task. Writes stay owner-only via
-    // `requireNotExecScoped` on the API side.
-    'plansync_deliverable_list',
-    'plansync_deliverable_show',
-    // Execution lifecycle
-    // R-204: `plansync_run(action, ...)` is the new unified surface; the
-    // three `plansync_execution_*` names stay registered as deprecated
-    // aliases for one release.
-    'plansync_run',
-    'plansync_execution_start',
-    'plansync_execution_heartbeat',
-    'plansync_execution_complete',
-    // Collaboration (safe writes)
-    'plansync_comment_create',
-    'plansync_comment_edit',
-    'plansync_comment_delete',
-    'plansync_plan_suggest',
-    'plansync_drift_resolve',
-    // R-205: `plansync_task(action, ...)` is the new unified surface; the
-    // five `plansync_task_*` names stay registered as deprecated aliases
-    // for one release. In exec mode only `action="rebind"` is reachable
-    // (create/update/claim/decline are owner / delegation-only), but we
-    // whitelist the umbrella tool so the new surface is callable.
-    'plansync_task',
-    'plansync_task_rebind',
-  ]);
-
-  // Delegation mode whitelist — tools allowed when "working as <agent>"
-  const DELEGATION_ALLOWED = new Set([
-    // All read-only (same as exec)
-    'plansync_task_list',
-    'plansync_task_show',
-    'plansync_task_pack',
-    'plansync_plan_list',
-    'plansync_plan_show',
-    'plansync_plan_active',
-    'plansync_plan_diff',
-    'plansync_status',
-    'plansync_who',
-    'plansync_activity_list',
-    'plansync_my_work',
-    'plansync_drift_list',
-    'plansync_member_list',
-    'plansync_project_list',
-    'plansync_project_show',
-    'plansync_suggestion_list',
-    'plansync_comment_list',
-    'plansync_exec_context',
-    'plansync_check_task_conflicts',
-    // R-155: deliverable reads available in delegation mode too. Writes
-    // are owner-only and would fail at the API layer regardless, but
-    // reads are useful when an agent reviews a plan and wants to see
-    // structured deliverables instead of the legacy String[] mirror.
-    'plansync_deliverable_list',
-    'plansync_deliverable_show',
-    // Execution lifecycle
-    // R-204: unified `plansync_run` surface + deprecated aliases.
-    'plansync_run',
-    'plansync_execution_start',
-    'plansync_execution_heartbeat',
-    'plansync_execution_complete',
-    // Collaboration
-    'plansync_comment_create',
-    'plansync_comment_edit',
-    'plansync_comment_delete',
-    'plansync_plan_suggest',
-    'plansync_drift_resolve',
-    // R-205: unified `plansync_task` surface + deprecated aliases.
-    // In delegation mode, claim / decline / update / rebind are all
-    // reachable as agent actions; create stays owner-only and is rejected
-    // at the API layer regardless of which surface the caller used.
-    'plansync_task',
-    'plansync_task_rebind',
-    // Agent task operations (claim, decline, update own task)
-    'plansync_task_claim',
-    'plansync_task_decline',
-    'plansync_task_update',
-    // Plan review (agent's core delegation action)
-    'plansync_review_approve',
-    'plansync_review_reject',
-    // Exit delegation
-    'plansync_delegation_clear',
-  ]);
+  // The two allowlists are defined in `./exec-allowlist.ts` so the
+  // security boundary they describe can be pinned by a unit test
+  // (see `tests/r2756-exec-task-write-pin.test.ts`).
 
   // R-037: centralised wrapper around `server.tool` registrations. Each tool
   // call now goes through:
