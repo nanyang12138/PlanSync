@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { ApiClient } from '../api-client';
+import { ApiClient, ApiError } from '../api-client';
 import { McpConfig } from '../config';
 import { getDelegationAgent } from './status';
 
@@ -411,10 +411,24 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
    * server already accepts `{field, items}`), so this is purely an MCP-side
    * fan-out — no API changes.
    *
-   * If any individual patch fails the API call is allowed to throw; the
-   * wrapper layer turns it into a uniform error envelope (R-037), and prior
-   * patches in the batch that already succeeded stay committed. The agent
-   * gets enough information from the error to retry just the failed op.
+   * If any individual patch fails the API call is wrapped and re-thrown as an
+   * `ApiError` so the central `buildErrorEnvelope` (R-037) preserves the
+   * structured code/status/details — including a machine-readable `batch`
+   * object that tells the agent which patch failed and how many already
+   * committed, so it can retry just the failed op without re-applying the
+   * successful ones.
+   *
+   *   - On an underlying `ApiError`: the original `code`/`status` are kept and
+   *     `details` is augmented with `{ batch: {...} }` (any pre-existing
+   *     `details` object is shallow-merged; non-object details are preserved
+   *     under `details.originalDetails`). Without this, `buildErrorEnvelope`
+   *     would downgrade the rethrown plain `Error` to `INTERNAL` and the
+   *     enclosed `failedIndex` / `succeededCount` / `partialResults` would
+   *     vanish.
+   *   - On any other thrown value (e.g. a network failure that surfaced as a
+   *     plain `Error`): we synthesise an `ApiError('BATCH_FAILED', 500)` so
+   *     the same `batch` payload still rides through `details` instead of
+   *     being silently dropped.
    */
   async function applyPatches(
     projectId: string,
@@ -424,12 +438,39 @@ export function registerPlanTools(server: McpServer, api: ApiClient, config: Mcp
   ): Promise<Array<unknown>> {
     const effectiveApi = asAgent ? api.withUser(asAgent) : api;
     const results: Array<unknown> = [];
-    for (const patch of patches) {
-      const result = await effectiveApi.post(`/api/projects/${projectId}/plans/${planId}/append`, {
-        field: patch.field,
-        items: patch.items,
-      });
-      results.push(result);
+    for (let i = 0; i < patches.length; i++) {
+      const patch = patches[i];
+      try {
+        const result = await effectiveApi.post(
+          `/api/projects/${projectId}/plans/${planId}/append`,
+          { field: patch.field, items: patch.items },
+        );
+        results.push(result);
+      } catch (err) {
+        const batch = {
+          failedIndex: i,
+          failedField: patch.field,
+          totalPatches: patches.length,
+          succeededCount: i,
+          partialResults: results,
+        };
+        const msgSuffix =
+          ` (batch failed at patch ${i} of ${patches.length}, field=${patch.field}; ` +
+          `${i} patch(es) committed before failure — retry from index ${i})`;
+
+        if (err instanceof ApiError) {
+          const mergedDetails =
+            err.details && typeof err.details === 'object' && !Array.isArray(err.details)
+              ? { ...(err.details as Record<string, unknown>), batch }
+              : err.details === undefined
+                ? { batch }
+                : { originalDetails: err.details, batch };
+          throw new ApiError(err.message + msgSuffix, err.code, err.status, mergedDetails);
+        }
+
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new ApiError(`applyPatches: ${msg}${msgSuffix}`, 'BATCH_FAILED', 500, { batch });
+      }
     }
     return results;
   }
