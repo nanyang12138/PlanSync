@@ -93,6 +93,7 @@ stateDiagram-v2
   UNINITIALIZED --> CONTEXT_LOADED: plansync_exec_context
   CONTEXT_LOADED --> PACK_FETCHED: plansync_task_pack
   PACK_FETCHED --> RUN_STARTED: plansync_execution_start
+  PACK_FETCHED --> COMPLETED: plansync_execution_complete
   RUN_STARTED --> RUN_STARTED: heartbeat / drift_resolve / task_rebind / comment / plan_suggest
   PACK_FETCHED --> PACK_FETCHED: drift_resolve / task_rebind / comment / plan_suggest
   RUN_STARTED --> COMPLETED: plansync_execution_complete
