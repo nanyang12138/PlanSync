@@ -51,6 +51,9 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
         data: {
           boundPlanVersion: activePlan.version,
           ...(isTerminal ? {} : { status: 'todo' }),
+          // R-140: clear executionGate so a subsequent execution_start is not
+          // permanently blocked after rebind (mirrors drift_resolve action=rebind).
+          executionGate: null,
         },
       });
       await tx.executionRun.updateMany({
