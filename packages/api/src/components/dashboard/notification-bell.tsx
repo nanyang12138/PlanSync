@@ -97,6 +97,12 @@ export function NotificationBell() {
     const bump = () => {
       setFeed((prev) => (prev ? { ...prev, unreadCount: prev.unreadCount + 1 } : prev));
     };
+    // bus_resync_required is a synthetic infrastructure event — not a real
+    // user activity. Calling bump() would incorrectly increment the badge
+    // count. Instead, silently refresh the authoritative count from the server.
+    const resyncFetch = () => {
+      void fetchFeed();
+    };
     const types = [
       'plan_created',
       'plan_proposed',
@@ -128,12 +134,12 @@ export function NotificationBell() {
       // drifts out of sync after every Postgres reconnect.
       'bus_resync_required',
     ];
-    for (const t of types) es.addEventListener(t, bump);
+    for (const t of types) es.addEventListener(t, t === 'bus_resync_required' ? resyncFetch : bump);
     es.onerror = () => {
       // EventSource auto-reconnects
     };
     return () => es.close();
-  }, []);
+  }, [fetchFeed]);
 
   // close on outside click
   useEffect(() => {
