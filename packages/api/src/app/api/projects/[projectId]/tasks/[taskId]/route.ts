@@ -396,13 +396,13 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
     // BOTH writes or NEITHER. The window between the two writes that
     // the previous two-statement sequence exposed no longer exists.
     //
-    // `syncTaskDeliverableLinks` and the reassignment activity are
-    // intentionally kept outside this transaction: neither is read by
-    // the R-192 gate, and pulling them in would unnecessarily widen
-    // the critical section (the deliverable-link sync runs additional
-    // plan / link queries; the reassign activity is independent of
-    // status). External side effects (eventBus, webhooks, sendMail)
-    // also stay outside — never bind external I/O to a DB transaction.
+    // `syncTaskDeliverableLinks` is included in the same transaction as the
+    // task update so that link rows and the task row are always atomically
+    // consistent (#1020 — previously the link sync ran after the transaction
+    // committed, leaving a visible inconsistency window and permanent stale
+    // links if the sync failed). The function already accepts a tx parameter.
+    // The reassignment activity and external side effects (eventBus, webhooks,
+    // sendMail) stay outside — never bind external I/O to a DB transaction.
     const updated = await prisma.$transaction(async (tx) => {
       const u = await tx.task.update({
         where: { id: params.taskId },
@@ -428,21 +428,19 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
           tx,
         );
       }
+      // R-153: sync link table atomically with the task row so readers
+      // never observe an updated planDeliverableRefs without the matching
+      // link rows, and a failed sync rolls back the task update cleanly.
+      if (body.planDeliverableRefs !== undefined) {
+        await syncTaskDeliverableLinks(tx, {
+          taskId: u.id,
+          projectId: u.projectId,
+          boundPlanVersion: u.boundPlanVersion,
+          slugs: body.planDeliverableRefs,
+        });
+      }
       return u;
     });
-
-    // R-153: when the legacy slug array is rewritten by the owner, keep the
-    // `task_deliverable_links` middle table in sync. The link rows are the
-    // source of truth that survives slug renames; the slug array is the
-    // human-friendly mirror that drives this resolve step.
-    if (body.planDeliverableRefs !== undefined) {
-      await syncTaskDeliverableLinks(undefined, {
-        taskId: updated.id,
-        projectId: updated.projectId,
-        boundPlanVersion: updated.boundPlanVersion,
-        slugs: body.planDeliverableRefs,
-      });
-    }
 
     if (body.assignee !== undefined && body.assignee !== task.assignee) {
       await createActivity({
