@@ -6,8 +6,12 @@
 
 import { lint, getFieldValue, parseIdList } from "./lint-remediation.mjs";
 import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 
-const text = fs.readFileSync("/workspace/docs/REMEDIATION_PLAN.md", "utf8");
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PLAN_PATH = path.resolve(__dirname, "..", "docs", "REMEDIATION_PLAN.md");
+const text = fs.readFileSync(PLAN_PATH, "utf8");
 const { entries } = lint(text);
 const idMap = new Map(entries.map((e) => [e.id, e]));
 const statusOf = (e) => (getFieldValue(e, "status") || "").split(/\s+/)[0];
