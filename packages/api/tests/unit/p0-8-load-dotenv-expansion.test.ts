@@ -142,4 +142,77 @@ describe('P0-8 / R1b loadDotenvFrom expands ${VAR} refs and respects quoting', (
     loadDotenvFrom(file);
     expect(process.env.P0_8_TEST_DOUBLE_QUOTED).toBe('user-p0-8-tester-end');
   });
+
+  // #2826 — recursive same-file expansion must detect cycles so a
+  // hostile or accidental .env (`A=${A}` / mutual / 3-step) cannot
+  // crash the loader with a stack overflow, which would kill every
+  // worker that imports this module at startup.
+  describe('#2826 cycle detection in same-file expansion', () => {
+    const CYCLE_KEYS = [
+      'P0_8_TEST_CYC_A',
+      'P0_8_TEST_CYC_B',
+      'P0_8_TEST_CYC_C',
+      'P0_8_TEST_CYC_OK',
+    ];
+
+    beforeEach(() => {
+      for (const k of CYCLE_KEYS) delete process.env[k];
+    });
+
+    afterEach(() => {
+      for (const k of CYCLE_KEYS) delete process.env[k];
+    });
+
+    it('self-reference A=${A} leaves the literal in place (no stack overflow)', async () => {
+      const file = writeFixtureEnv('P0_8_TEST_CYC_A=${P0_8_TEST_CYC_A}\n');
+      const { loadDotenvFrom } = await import('../../scripts/load-dotenv');
+      expect(() => loadDotenvFrom(file)).not.toThrow();
+      expect(process.env.P0_8_TEST_CYC_A).toBe('${P0_8_TEST_CYC_A}');
+    });
+
+    it('mutual reference A=${B} / B=${A} leaves both as literals (no stack overflow)', async () => {
+      const file = writeFixtureEnv(
+        'P0_8_TEST_CYC_A=${P0_8_TEST_CYC_B}\nP0_8_TEST_CYC_B=${P0_8_TEST_CYC_A}\n',
+      );
+      const { loadDotenvFrom } = await import('../../scripts/load-dotenv');
+      expect(() => loadDotenvFrom(file)).not.toThrow();
+      // Whichever key the loop hits first, the cycle is broken at the
+      // second hop — the unresolved hop stays a literal ${…}.
+      expect(process.env.P0_8_TEST_CYC_A).toMatch(/^\$\{P0_8_TEST_CYC_[AB]\}$/);
+      expect(process.env.P0_8_TEST_CYC_B).toMatch(/^\$\{P0_8_TEST_CYC_[AB]\}$/);
+    });
+
+    it('three-step cycle A->B->C->A is broken without recursing forever', async () => {
+      const file = writeFixtureEnv(
+        [
+          'P0_8_TEST_CYC_A=a-${P0_8_TEST_CYC_B}',
+          'P0_8_TEST_CYC_B=b-${P0_8_TEST_CYC_C}',
+          'P0_8_TEST_CYC_C=c-${P0_8_TEST_CYC_A}',
+        ].join('\n') + '\n',
+      );
+      const { loadDotenvFrom } = await import('../../scripts/load-dotenv');
+      expect(() => loadDotenvFrom(file)).not.toThrow();
+      // The first key the loop processes seeds `visiting` with itself,
+      // so the cycle terminates with a literal ${first-key} at the
+      // wrap-around hop. We only assert the loader did not throw and
+      // every value is fully resolved up to that literal.
+      expect(process.env.P0_8_TEST_CYC_A).toContain('a-b-c-');
+      expect(process.env.P0_8_TEST_CYC_B).toContain('b-c-');
+      expect(process.env.P0_8_TEST_CYC_C).toContain('c-');
+    });
+
+    it('cycles do NOT break expansion of unrelated, healthy entries', async () => {
+      process.env.USER = 'p0-8-tester';
+      const file = writeFixtureEnv(
+        [
+          'P0_8_TEST_CYC_A=${P0_8_TEST_CYC_B}',
+          'P0_8_TEST_CYC_B=${P0_8_TEST_CYC_A}',
+          'P0_8_TEST_CYC_OK=hello-${USER}',
+        ].join('\n') + '\n',
+      );
+      const { loadDotenvFrom } = await import('../../scripts/load-dotenv');
+      expect(() => loadDotenvFrom(file)).not.toThrow();
+      expect(process.env.P0_8_TEST_CYC_OK).toBe('hello-p0-8-tester');
+    });
+  });
 });
