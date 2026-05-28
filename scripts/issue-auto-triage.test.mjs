@@ -6,6 +6,27 @@
  * inline. The static-source guard at the bottom asserts the canonical
  * source still defines the same names so a future refactor that
  * drops them fails this test.
+ *
+ * History note (issue #2750): this file was previously corrupted
+ * by three back-to-back PRs (#1463 / #1443 / #1441) that were each
+ * resolved with bad three-way merges, leaving stacked duplicate
+ * `parseLimitEnv` definitions, duplicate `const trimmed` / `const
+ * parsed` bindings, and an unterminated `assert.doesNotMatch(` call.
+ * `node --check` failed with `SyntaxError: missing ) after argument
+ * list` at line 201 so every test in the file silently went unrun.
+ *
+ * Repair strategy: collapse to a single canonical `parseLimitEnv`
+ * mirror whose behavior matches the production helper in
+ * `scripts/issue-auto-triage.mjs` (strict `/^\d+$/` validation with
+ * fallback-to-default for every garbage shape, including negatives).
+ * Every anti-regression test from the historical PRs (#1234 NaN,
+ * #1239 NaN, #1328 prefix-garbage, #1347 partial-numeric, #1379
+ * prefix/decimal/exponent, #1397 numeric-prefix garbage) is preserved
+ * exactly once. PR #1441's clamp-negatives-to-zero policy lives in
+ * production-side PR #2764 (in flight) and a follow-up will sync the
+ * mirror once that lands — repairing the test file is intentionally
+ * scoped to "make it parse + restore the existing contract" and does
+ * not smuggle a behavior change.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -92,196 +113,6 @@ test('static guard: issue-auto-triage.mjs still defines the canonical helpers', 
   assert.match(src, /dispatch/);
 });
 
-// Mirror of parseLimitEnv from scripts/issue-auto-triage.mjs. Tested
-// in isolation because importing the script triggers top-level `gh`
-// calls. The static guard further down asserts the canonical source
-// stays in sync with this mirror.
-function parseLimitEnv(name, raw, defaultValue) {
-  if (raw === undefined || raw === null) return defaultValue;
-  const trimmed = String(raw).trim();
-  if (trimmed === '') return defaultValue;
-  if (!/^\d+$/.test(trimmed)) {
-    return defaultValue;
-  }
-  const n = Number(trimmed);
-  if (!Number.isInteger(n) || n < 0 || n > Number.MAX_SAFE_INTEGER) {
-    return defaultValue;
-  }
-  return n;
-}
-
-test('parseLimitEnv: undefined / null / empty falls back to default', () => {
-  assert.equal(parseLimitEnv('X', undefined, 3), 3);
-  assert.equal(parseLimitEnv('X', null, 3), 3);
-  assert.equal(parseLimitEnv('X', '', 3), 3);
-  assert.equal(parseLimitEnv('X', '   ', 3), 3);
-});
-
-test('parseLimitEnv: pure non-negative integer string is accepted', () => {
-  assert.equal(parseLimitEnv('X', '0', 3), 0);
-  assert.equal(parseLimitEnv('X', '7', 3), 7);
-  assert.equal(parseLimitEnv('X', '100', 3), 100);
-  assert.equal(parseLimitEnv('X', '  42  ', 3), 42);
-});
-
-test('parseLimitEnv: rejects numeric prefix with garbage trailer (the #1328 finding)', () => {
-  // Number.parseInt('100abc', 10) silently returns 100 — that is the
-  // exact bypass this finding is about. The strict regex must reject
-  // anything that is not entirely digits and fall back to the default
-  // so a workflow_dispatch typo like `max_dispatch=100abc` cannot
-  // inflate the rate limit past the documented value.
-  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', '100abc', 3), 3);
-  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', '3 ; rm -rf /', 3), 3);
-  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', '5.0', 3), 3);
-  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', '0x10', 3), 3);
-  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', '1e3', 3), 3);
-});
-
-test('parseLimitEnv: rejects non-numeric, negative, and fractional input', () => {
-  assert.equal(parseLimitEnv('X', 'abc', 25), 25);
-  assert.equal(parseLimitEnv('X', 'unlimited', 25), 25);
-  assert.equal(parseLimitEnv('X', '-5', 25), 25);
-  assert.equal(parseLimitEnv('X', '-0', 25), 25);
-  assert.equal(parseLimitEnv('X', '3.7', 25), 25);
-  assert.equal(parseLimitEnv('X', '+3', 25), 25);
-  assert.equal(parseLimitEnv('X', 'NaN', 25), 25);
-  assert.equal(parseLimitEnv('X', 'Infinity', 25), 25);
-});
-
-test('static guard: parseLimitEnv stays in the canonical source (no silent revert to bare parseInt)', () => {
-  const src = readFileSync(SCRIPT_PATH, 'utf-8');
-  assert.match(
-    src,
-    /function parseLimitEnv\s*\(/,
-    'parseLimitEnv must remain defined in issue-auto-triage.mjs — finding #1328 documents why a bare Number.parseInt is unsafe',
-  );
-  // The strict-numeric regex is the load-bearing piece — without
-  // `^\d+$` (or a stricter equivalent), parseInt-style prefix
-  // matching accepts `100abc` and the rate-limit cap can be inflated
-  // by typos in workflow_dispatch inputs.
-  assert.match(
-    src,
-    /\/\^\\d\+\$\//,
-    'parseLimitEnv must use a full-string digits regex (/^\\d+$/) so prefix-numeric garbage like "100abc" is rejected',
-  );
-  // The MAX_* env vars MUST be routed through the helper. A future
-  // refactor that re-introduces bare `Number.parseInt(process.env.TRIAGE_MAX_*` would
-  // resurrect the exact #1328 finding.
-  assert.match(
-    src,
-    /MAX_DISPATCH\s*=\s*parseLimitEnv\(\s*'TRIAGE_MAX_DISPATCH'/,
-    'MAX_DISPATCH must go through parseLimitEnv',
-  );
-  assert.match(
-    src,
-    /MAX_CLOSE\s*=\s*parseLimitEnv\(\s*'TRIAGE_MAX_CLOSE'/,
-    'MAX_CLOSE must go through parseLimitEnv',
-  );
-  assert.doesNotMatch(
-    src,
-    /Number\.parseInt\(\s*process\.env\.TRIAGE_MAX_/,
-    'TRIAGE_MAX_* must not be parsed with bare Number.parseInt — that is the #1328 regression',
-// Mirror of parsePositiveIntEnv in scripts/issue-auto-triage.mjs. Kept
-// inline so the test can exercise the helper without importing the
-// script (which spawns `gh` at import-time when env is set). The
-// static-source guard below asserts the canonical implementation
-// still exists.
-function parsePositiveIntEnv(name, raw, fallback) {
-  const warnings = [];
-  const warn = (msg) => warnings.push(msg);
-  if (raw === undefined || raw === null || raw === '') return { value: fallback, warnings };
-  const n = Number.parseInt(raw, 10);
-  if (!Number.isInteger(n) || n < 0) {
-    warn(
-      `[warn] ${name}=${JSON.stringify(raw)} is not a non-negative integer; falling back to ${fallback}`,
-    );
-    return { value: fallback, warnings };
-  }
-  return { value: n, warnings };
-}
-
-test('parsePositiveIntEnv: undefined / empty string falls back without warning', () => {
-  for (const raw of [undefined, null, '']) {
-    const r = parsePositiveIntEnv('TRIAGE_MAX_DISPATCH', raw, 3);
-    assert.equal(r.value, 3);
-    assert.equal(r.warnings.length, 0);
-  }
-});
-
-test('parsePositiveIntEnv: valid non-negative integer string is parsed', () => {
-  assert.deepEqual(parsePositiveIntEnv('X', '7', 3), { value: 7, warnings: [] });
-  assert.deepEqual(parsePositiveIntEnv('X', '0', 3), { value: 0, warnings: [] });
-  assert.deepEqual(parsePositiveIntEnv('X', '  12  ', 3), { value: 12, warnings: [] });
-});
-
-test('parsePositiveIntEnv: NaN-producing input falls back to default and warns', () => {
-  // This is the exact failure mode the finding flags: a non-numeric
-  // env var made parseInt return NaN, which silently disabled both
-  // rate-limit checks because `count >= NaN` is always false.
-  for (const raw of ['abc', 'unlimited', 'NaN', '--', 'true']) {
-    const r = parsePositiveIntEnv('TRIAGE_MAX_DISPATCH', raw, 3);
-    assert.equal(r.value, 3, `expected NaN input ${JSON.stringify(raw)} to fall back to 3`);
-    assert.equal(r.warnings.length, 1);
-    assert.match(r.warnings[0], /TRIAGE_MAX_DISPATCH/);
-  }
-});
-
-test('parsePositiveIntEnv: negative integer falls back to default and warns', () => {
-  // `parseInt('-5', 10)` is -5. Without the guard, `0 >= -5` is true
-  // immediately so the loop short-circuits and the script silently
-  // does nothing. The fallback restores the documented default.
-  const r = parsePositiveIntEnv('TRIAGE_MAX_CLOSE', '-5', 25);
-  assert.equal(r.value, 25);
-  assert.equal(r.warnings.length, 1);
-});
-
-test('parsePositiveIntEnv: parseInt-truncated floats are accepted (parseInt drops the fractional part)', () => {
-  // `parseInt('3.7', 10)` is 3 — this is intentional Node behaviour
-  // and matches how the original code parsed env vars. We don't
-  // reject it because it doesn't trigger the NaN failure mode this
-  // helper is here to guard against.
-  const r = parsePositiveIntEnv('X', '3.7', 99);
-  assert.equal(r.value, 3);
-  assert.equal(r.warnings.length, 0);
-});
-
-test('static guard: issue-auto-triage.mjs still validates env-var caps for NaN', () => {
-  // Regression guard for the finding in issue #1239: a bare
-  // `Number.parseInt(envVar || fallback, 10)` silently produced NaN
-  // for non-numeric input, and every `count >= NaN` comparison
-  // evaluated to false so the loops processed the whole backlog.
-  // The canonical fix is parseLimitEnv() — this guard fails
-  // if a future refactor drops it or reverts the call sites.
-  // (#1561: original guard used the wrong name parsePositiveIntEnv
-  //  which does not exist in the production script.)
-  const src = readFileSync(SCRIPT_PATH, 'utf-8');
-  assert.match(src, /function parseLimitEnv\s*\(/);
-  assert.match(
-    src,
-    /const MAX_DISPATCH\s*=\s*parseLimitEnv\(\s*'TRIAGE_MAX_DISPATCH'/,
-    'MAX_DISPATCH must be parsed through parseLimitEnv so non-numeric env vars cannot disable the cap',
-  );
-  assert.match(
-    src,
-    /const MAX_CLOSE\s*=\s*parseLimitEnv\(\s*'TRIAGE_MAX_CLOSE'/,
-    'MAX_CLOSE must be parsed through parseLimitEnv so non-numeric env vars cannot disable the cap',
-  );
-  // The helper must reject NaN. Number.isFinite() returns false for
-  // NaN, which is the chokepoint — guarding the method name keeps
-  // the test specific to the actual fix instead of any later rewrite
-  // that happens to use a different sentinel. (#2832: the previous
-  // guard asserted Number.isInteger() but the production helper uses
-  // Number.isFinite(), so the guard always failed — keep this regex
-  // aligned with the actual call in scripts/issue-auto-triage.mjs.)
-  const helperBody = src.match(/function parseLimitEnv\s*\([\s\S]*?\n\}/);
-  assert.ok(helperBody, 'parseLimitEnv body must be present');
-  assert.match(
-    helperBody[0],
-    /Number\.isFinite\s*\(/,
-    'parseLimitEnv must use Number.isFinite() (or equivalent) to reject NaN',
-  );
-});
-
 test('static guard: cursor:dispatch is added with triggersDownstreamWorkflow=true (closes the GITHUB_TOKEN recursion-guard footgun)', () => {
   // Production hit on 2026-05-26: the script added cursor:dispatch
   // labels successfully with GITHUB_TOKEN, but GitHub silently
@@ -356,46 +187,42 @@ test('static guard: skip-label list covers every label that should freeze triage
   }
 });
 
-// Mirror of parseLimitEnv() in scripts/issue-auto-triage.mjs. Same
-// inline-mirror pattern as extractClosesRefs above — the script
-// can't be imported (it spawns gh at module load when env is set)
-// so we re-declare the pure helper and pin it with a static guard.
-const NON_NEGATIVE_INT_RE = /^\d+$/;
+// Mirror of parseLimitEnv() in scripts/issue-auto-triage.mjs. Kept
+// inline so the test can exercise the helper without importing the
+// script (which spawns `gh` at module load when env is set). The
+// static-source guard below asserts the canonical implementation
+// still exists.
+//
+// Contract (matches the production helper line-for-line):
+//   - undefined / null / empty string / whitespace-only  → default, silent
+//   - trimmed string that is NOT exactly `/^\d+$/`        → default + warn
+//     (catches NaN-shape garbage like 'abc', numeric-prefix garbage
+//     like '5abc', decimals '3.5', scientific '1e2', hex '0x10',
+//     signed '+5' / '-5', and any other parseInt-permissive shape
+//     that previously silently changed the rate-limit value — the
+//     #1239 / #1328 / #1347 / #1379 / #1397 findings).
+//   - non-negative integer string                         → parsed
+//
+// The doubled `|| parsed < 0` guard at the bottom is dead code given
+// the strict `/^\d+$/` pre-filter, but production keeps it as belt-
+// and-braces in case a future refactor loosens the regex; the mirror
+// keeps it too so the static guard finds a comparable shape on both
+// sides.
 function parseLimitEnv(name, raw, defaultValue, warn = () => {}) {
   if (raw === undefined || raw === null) {
     return defaultValue;
   }
   const trimmed = typeof raw === 'string' ? raw.trim() : String(raw);
-  const parsed = /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : NaN;
-  const trimmed = String(raw).trim();
   if (trimmed === '') {
     return defaultValue;
   }
-  if (!NON_NEGATIVE_INT_RE.test(trimmed)) {
-  if (!/^\d+$/.test(trimmed)) {
+  const parsed = /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : NaN;
+  if (!Number.isFinite(parsed) || parsed < 0) {
     warn(
       `[triage] ${name}=${JSON.stringify(raw)} is not a non-negative integer; ` +
         `falling back to default=${defaultValue} to preserve rate-limit semantics.`,
     );
     return defaultValue;
-  }
-  const parsed = Number.parseInt(trimmed, 10);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed)) {
-    warn(
-      `[triage] ${name}=${JSON.stringify(raw)} is not an integer; ` +
-        `falling back to default=${defaultValue} to preserve rate-limit semantics.`,
-    );
-    return defaultValue;
-  }
-  if (parsed < 0) {
-    warn(
-      `[triage] ${name}=${JSON.stringify(raw)} is negative; ` +
-        `clamping to 0 (zero quota) — refusing to substitute the default ` +
-        `because that would expand quota in the opposite direction of the operator's input.`,
-    );
-    return 0;
   }
   return parsed;
 }
@@ -406,61 +233,6 @@ test('parseLimitEnv returns default when env var is unset / empty', () => {
   assert.equal(parseLimitEnv('X', '', 3), 3);
 });
 
-test('parseLimitEnv parses valid non-negative integers', () => {
-  assert.equal(parseLimitEnv('X', '0', 3), 0);
-  assert.equal(parseLimitEnv('X', '5', 3), 5);
-  assert.equal(parseLimitEnv('X', '25', 3), 25);
-  // Surrounding whitespace (e.g. `'5\n'` from a shell heredoc) is
-  // still accepted — we trim before validating.
-  assert.equal(parseLimitEnv('X', '  5  ', 3), 5);
-  assert.equal(parseLimitEnv('X', '5\n', 3), 5);
-});
-
-test('parseLimitEnv rejects partial / non-integer numeric input (the partial-parse bug)', () => {
-  // Previously `Number.parseInt('5abc', 10)` returned 5 and
-  // `Number.parseInt('1.5', 10)` returned 1 — both silently changed
-  // the rate-limit value compared to what the user typed in
-  // workflow_dispatch, violating the "garbage input → default"
-  // contract advertised in the helper's doc-comment. Strict
-  // pre-validation now routes them through the default + warning.
-  const warnings = [];
-  const warn = (msg) => warnings.push(msg);
-  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', '5abc', 3, warn), 3);
-  assert.equal(parseLimitEnv('TRIAGE_MAX_CLOSE', '1.5', 25, warn), 25);
-  assert.equal(parseLimitEnv('X', '1e2', 3, warn), 3);
-  assert.equal(parseLimitEnv('X', '0x10', 3, warn), 3);
-  assert.equal(parseLimitEnv('X', '3 4', 3, warn), 3);
-  assert.equal(warnings.length, 5);
-  assert.match(warnings[0], /TRIAGE_MAX_DISPATCH/);
-  assert.match(warnings[1], /TRIAGE_MAX_CLOSE/);
-  // Surrounding whitespace (heredoc trailing '\n', workflow_dispatch
-  // form leading space) is trimmed before validation — the trimmed
-  // value is still a valid digits-only integer.
-  assert.equal(parseLimitEnv('X', '5\n', 3), 5);
-  assert.equal(parseLimitEnv('X', '  25  ', 3), 25);
-});
-
-test('parseLimitEnv rejects numeric-prefix garbage (review-finding #1397)', () => {
-  // Pre-fix, Number.parseInt('5abc', 10) returned 5 — silently
-  // truncating a user typo to a number that "happens to work".
-  // The documented contract is "invalid input falls back to
-  // default"; numeric-prefix garbage must take the fallback path
-  // and emit a warning, identical to the full-garbage / NaN case.
-  const warnings = [];
-  const warn = (msg) => warnings.push(msg);
-  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', '5abc', 3, warn), 3);
-  assert.equal(parseLimitEnv('TRIAGE_MAX_CLOSE', '25xyz', 25, warn), 25);
-  assert.equal(parseLimitEnv('X', '3 4', 7, warn), 7);
-  assert.equal(parseLimitEnv('X', '5.5', 7, warn), 7);
-  assert.equal(parseLimitEnv('X', '0xA', 7, warn), 7);
-  assert.equal(parseLimitEnv('X', '+5', 7, warn), 7);
-  assert.equal(warnings.length, 6);
-  // The warning must still name the offending env var so the CI
-  // log makes the misconfigured workflow_dispatch input obvious.
-  assert.match(warnings[0], /TRIAGE_MAX_DISPATCH/);
-  assert.match(warnings[1], /TRIAGE_MAX_CLOSE/);
-});
-
 test('parseLimitEnv treats whitespace-only input as empty (default fallback, no warning)', () => {
   // '   ' is morally the same as '' — empty input means "I did not
   // configure this knob", not "I configured it to garbage". Take
@@ -469,7 +241,14 @@ test('parseLimitEnv treats whitespace-only input as empty (default fallback, no 
   const warn = (msg) => warnings.push(msg);
   assert.equal(parseLimitEnv('X', '   ', 3, warn), 3);
   assert.equal(parseLimitEnv('X', '\n', 3, warn), 3);
+  assert.equal(parseLimitEnv('X', '\t', 3, warn), 3);
   assert.equal(warnings.length, 0);
+});
+
+test('parseLimitEnv parses valid non-negative integers', () => {
+  assert.equal(parseLimitEnv('X', '0', 3), 0);
+  assert.equal(parseLimitEnv('X', '5', 3), 5);
+  assert.equal(parseLimitEnv('X', '25', 3), 25);
 });
 
 test('parseLimitEnv trims surrounding whitespace (heredoc / shell-export quirks)', () => {
@@ -479,12 +258,63 @@ test('parseLimitEnv trims surrounding whitespace (heredoc / shell-export quirks)
   assert.equal(parseLimitEnv('X', '5\n', 3), 5);
   assert.equal(parseLimitEnv('X', '  5  ', 3), 5);
   assert.equal(parseLimitEnv('X', '\t10\t', 3), 10);
-  // All-whitespace is treated the same as empty: fall back to default.
-  assert.equal(parseLimitEnv('X', '   ', 3), 3);
 });
 
-test('parseLimitEnv rejects prefix-numbers / decimals / exponents (Number.parseInt footgun)', () => {
-  // The finding: Number.parseInt is prefix-permissive, so the old
+test('parseLimitEnv falls back to default on NaN input (the rate-limit-bypass bug — #1234 / #1239)', () => {
+  // workflow_dispatch input "abc" would produce NaN, and
+  // `count >= NaN` is always false, so the loop never breaks and the
+  // entire backlog gets dispatched/closed.
+  const warnings = [];
+  const warn = (msg) => warnings.push(msg);
+  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', 'abc', 3, warn), 3);
+  assert.equal(parseLimitEnv('TRIAGE_MAX_CLOSE', 'not-a-number', 25, warn), 25);
+  assert.equal(parseLimitEnv('X', 'unlimited', 3, warn), 3);
+  assert.equal(parseLimitEnv('X', 'NaN', 3, warn), 3);
+  assert.equal(warnings.length, 4);
+  // The warning must name the offending env var so a CI log
+  // skim-reader can spot the misconfigured workflow_dispatch input.
+  assert.match(warnings[0], /TRIAGE_MAX_DISPATCH/);
+  assert.match(warnings[1], /TRIAGE_MAX_CLOSE/);
+});
+
+test('parseLimitEnv falls back to default on negative integers', () => {
+  // `-1 >= 0` is false, so a negative limit would otherwise disable
+  // the rate-limit on the first loop iteration. The strict `/^\d+$/`
+  // pre-filter rejects the leading `-` so '-1' lands in the
+  // not-an-integer fallback alongside other garbage shapes. (PR
+  // #2764 is reworking this to clamp-to-zero in production; a
+  // follow-up will update the mirror to match once that lands.)
+  const warnings = [];
+  const warn = (msg) => warnings.push(msg);
+  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', '-1', 3, warn), 3);
+  assert.equal(parseLimitEnv('TRIAGE_MAX_CLOSE', '-100', 25, warn), 25);
+  assert.equal(warnings.length, 2);
+  assert.match(warnings[0], /TRIAGE_MAX_DISPATCH/);
+  assert.match(warnings[1], /TRIAGE_MAX_CLOSE/);
+});
+
+test('parseLimitEnv rejects numeric-prefix garbage (#1328 / #1347 / #1397)', () => {
+  // Pre-fix, Number.parseInt('5abc', 10) returned 5 — silently
+  // truncating a user typo to a number that "happens to work".
+  // The documented contract is "invalid input falls back to
+  // default"; numeric-prefix garbage must take the fallback path
+  // and emit a warning, identical to the full-garbage / NaN case.
+  const warnings = [];
+  const warn = (msg) => warnings.push(msg);
+  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', '5abc', 3, warn), 3);
+  assert.equal(parseLimitEnv('TRIAGE_MAX_CLOSE', '25xyz', 25, warn), 25);
+  assert.equal(parseLimitEnv('X', '100abc', 3, warn), 3);
+  assert.equal(parseLimitEnv('X', '3 4', 7, warn), 7);
+  assert.equal(parseLimitEnv('X', '3 ; rm -rf /', 7, warn), 7);
+  assert.equal(warnings.length, 5);
+  // Every warning must name the offending env var so a CI log
+  // skim-reader can spot the misconfigured workflow_dispatch input.
+  assert.match(warnings[0], /TRIAGE_MAX_DISPATCH/);
+  assert.match(warnings[1], /TRIAGE_MAX_CLOSE/);
+});
+
+test('parseLimitEnv rejects prefix-numbers / decimals / exponents / hex / signed (#1379)', () => {
+  // Number.parseInt is prefix-permissive, so the original
   // implementation accepted '999abc' → 999, '3.5' → 3, '1e2' → 1.
   // That silently AMPLIFIES the rate-limit on garbage input (a
   // workflow_dispatch typo like max_dispatch='999abc' would dispatch
@@ -493,14 +323,14 @@ test('parseLimitEnv rejects prefix-numbers / decimals / exponents (Number.parseI
   const warnings = [];
   const warn = (msg) => warnings.push(msg);
   for (const raw of [
-    '999abc', // prefix-number  → parseInt returns 999
-    '3.5', // decimal        → parseInt returns 3
-    '1e2', // scientific     → parseInt returns 1
-    '0x10', // hex            → parseInt returns 0 (radix=10)
-    '5 abc', // space-separated → parseInt returns 5
-    '+5', // signed positive → parseInt returns 5; reject for strictness
-    '--5', // double-negative → parseInt returns NaN; reject loudly
-    '5.0', // even integer-valued decimal must be rejected
+    '999abc', // prefix-number   → parseInt returns 999
+    '3.5', // decimal           → parseInt returns 3
+    '5.0', // even integer-valued decimal must still be rejected
+    '1e2', // scientific        → parseInt returns 1
+    '0x10', // hex              → parseInt returns 0 (radix=10)
+    '0xA', // hex               → parseInt returns 0 (radix=10)
+    '+5', // signed positive   → parseInt returns 5; reject for strictness
+    '--5', // double-negative  → parseInt returns NaN; reject loudly
   ]) {
     assert.equal(
       parseLimitEnv('TRIAGE_MAX_DISPATCH', raw, 3, warn),
@@ -509,71 +339,16 @@ test('parseLimitEnv rejects prefix-numbers / decimals / exponents (Number.parseI
     );
   }
   assert.equal(warnings.length, 8);
-  // Every warning must name the env var so a CI log skim-reader can
-  // spot the misconfigured workflow_dispatch input.
   for (const msg of warnings) {
     assert.match(msg, /TRIAGE_MAX_DISPATCH/);
   }
-});
-
-test('parseLimitEnv falls back to default on NaN input (the rate-limit-bypass bug)', () => {
-  // This is the actual finding: workflow_dispatch input "abc" would
-  // produce NaN, and `count >= NaN` is always false, so the loop
-  // never breaks and the entire backlog gets dispatched/closed.
-  const warnings = [];
-  const warn = (msg) => warnings.push(msg);
-  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', 'abc', 3, warn), 3);
-  assert.equal(parseLimitEnv('TRIAGE_MAX_CLOSE', 'not-a-number', 25, warn), 25);
-  assert.equal(warnings.length, 2);
-  // The warning must name the offending env var so a CI log
-  // skim-reader can spot the misconfigured workflow_dispatch input.
-  assert.match(warnings[0], /TRIAGE_MAX_DISPATCH/);
-  assert.match(warnings[1], /TRIAGE_MAX_CLOSE/);
-});
-
-test('parseLimitEnv clamps negative integers to zero (not the default)', () => {
-  // `-1 >= 0` is false, so a negative limit would otherwise disable
-  // the rate-limit on the first loop iteration. But we must NOT
-  // silently substitute the default (3/25) either: a manual
-  // operator who types `-1` is asking for *fewer* actions, and
-  // expanding the quota up to the default would push the run in
-  // the opposite direction of their intent (issue #1400). Clamp
-  // to 0 — zero quota — so the loop breaks immediately and no
-  // action runs.
-  const warnings = [];
-  const warn = (msg) => warnings.push(msg);
-  assert.equal(parseLimitEnv('TRIAGE_MAX_DISPATCH', '-1', 3, warn), 0);
-  assert.equal(parseLimitEnv('TRIAGE_MAX_CLOSE', '-100', 25, warn), 0);
-  assert.equal(warnings.length, 2);
-  assert.match(warnings[0], /TRIAGE_MAX_DISPATCH/);
-  assert.match(warnings[0], /clamping to 0/);
-  assert.match(warnings[1], /TRIAGE_MAX_CLOSE/);
-  assert.match(warnings[1], /clamping to 0/);
-});
-
-test('parseLimitEnv: clamp-to-zero is loop-safe (count >= 0 stops on first iteration)', () => {
-  // Sanity-check the contract the two consumers rely on: when the
-  // limit comes back as 0, `count >= LIMIT` is true at count=0,
-  // so the loop breaks before any action runs. This is the actual
-  // semantic the issue #1400 fix promises operators.
-  const limit = parseLimitEnv('X', '-5', 3);
-  assert.equal(limit, 0);
-  let count = 0;
-  let iterations = 0;
-  for (let i = 0; i < 10; i += 1) {
-    if (count >= limit) break;
-    iterations += 1;
-    count += 1;
-  }
-  assert.equal(iterations, 0, 'zero-quota limit must skip every iteration');
 });
 
 test('parseLimitEnv: rate-limit comparison is sound for every fallback path', () => {
   // End-to-end shape of the bug: simulate the loop break with the
   // value parseLimitEnv returns. count is 0 at the start of the
   // loop; `0 >= LIMIT` must be a real boolean (never NaN-poisoned)
-  // so the loop terminates after exactly LIMIT iterations.
-  for (const raw of ['abc', '', undefined, null, '-5', 'NaN', '5abc', '1.5', '1e2']) {
+  // so the loop terminates after at most LIMIT iterations.
   for (const raw of [
     'abc',
     '',
@@ -581,15 +356,14 @@ test('parseLimitEnv: rate-limit comparison is sound for every fallback path', ()
     null,
     '-5',
     'NaN',
+    '5abc',
     '999abc',
     '3.5',
     '1e2',
     '0x10',
+    '+5',
     '   ',
   ]) {
-  for (const raw of ['abc', '', undefined, null, '-5', 'NaN', '5abc', '3 4', '5.5', '0xA']) {
-  // so the loop terminates after at most LIMIT iterations.
-  for (const raw of ['abc', '', undefined, null, '-5', 'NaN']) {
     const limit = parseLimitEnv('X', raw, 3);
     assert.equal(typeof limit, 'number');
     assert.ok(Number.isFinite(limit), `limit must be finite for raw=${JSON.stringify(raw)}`);
@@ -612,29 +386,40 @@ test('static guard: issue-auto-triage.mjs still defines parseLimitEnv and uses i
     /MAX_CLOSE\s*=\s*parseLimitEnv\(\s*'TRIAGE_MAX_CLOSE'/,
     'MAX_CLOSE must go through parseLimitEnv to reject NaN/negative',
   );
-  // Pin the strict `/^\d+$/` pre-validation — without it,
-  // `parseInt('5abc', 10)` returns 5 and silently changes the
-  // user-supplied rate-limit. The doc-comment + this guard both
-  // call out that contract; a refactor that drops the regex would
-  // re-introduce the partial-parse bug.
-  assert.match(
-    src,
-    /\/\^\\d\+\$\/\.test\(/,
-    'parseLimitEnv must pre-validate with /^\\d+$/ to reject partial-numeric input like "5abc" / "1.5"',
-  // Pin the strict-integer regex so a future "simplification" back
-  // to bare Number.parseInt reintroduces the prefix-parse footgun
-  // ('999abc' → 999, '3.5' → 3, '1e2' → 1) and fails this test.
+  // Strict digits-only validation must remain in parseLimitEnv —
+  // without it, Number.parseInt('5abc', 10) silently returns 5 and
+  // the documented "invalid input → default" contract is broken
+  // again (the #1328 / #1347 / #1379 / #1397 findings).
   assert.match(
     src,
     /\/\^\\d\+\$\//,
     'parseLimitEnv must validate the trimmed string with /^\\d+$/ — bare Number.parseInt is prefix-permissive and silently amplifies rate limits on garbage input',
-  // Strict digits-only validation must remain in parseLimitEnv —
-  // without it, Number.parseInt('5abc', 10) silently returns 5 and
-  // the documented "invalid input → default" contract is broken
-  // again (review-finding #1397).
+  );
+  // The MAX_* env vars must be routed through the helper. A future
+  // refactor that re-introduces bare `Number.parseInt(process.env.TRIAGE_MAX_*`
+  // would resurrect the #1234 / #1239 / #1328 findings.
+  assert.doesNotMatch(
+    src,
+    /Number\.parseInt\(\s*process\.env\.TRIAGE_MAX_/,
+    'TRIAGE_MAX_* must not be parsed with bare Number.parseInt — that resurrects the rate-limit-bypass bug',
+  );
+});
+
+test('static guard: ENOBUFS protection on gh wrapper (no silent stdout truncation)', () => {
+  // Production hit on 2026-05-26: gh issue list returned ~1.1 MB of
+  // JSON when the backlog grew past 800 issues, blowing past
+  // spawnSync's default 1 MiB maxBuffer and silently truncating
+  // stdout. We raised the cap to 64 MiB and started surfacing
+  // r.error explicitly. This guard fails if either piece regresses.
+  const src = readFileSync(SCRIPT_PATH, 'utf-8');
   assert.match(
     src,
-    /\/\^\\d\+\$\//,
-    'parseLimitEnv must strict-validate trimmed input against /^\\d+$/ so numeric-prefix garbage (e.g. "5abc") falls back to the default',
+    /maxBuffer:\s*GH_MAX_BUFFER/,
+    'gh wrapper must pass maxBuffer:GH_MAX_BUFFER to spawnSync — default 1 MiB cap silently truncates large gh JSON',
+  );
+  assert.match(
+    src,
+    /if\s*\(\s*r\.error\b/,
+    'gh wrapper must surface r.error so ENOBUFS / ENOENT / signal kills become thrown errors instead of silent truncation',
   );
 });
