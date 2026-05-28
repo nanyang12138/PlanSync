@@ -552,7 +552,7 @@ async function dispatchIssue(issue) {
   const dispatchFailed = failed.find((f) => f.label === 'cursor:dispatch');
   if (dispatchFailed) {
     console.warn(`[warn] failed to dispatch #${issue.number}: ${dispatchFailed.stderr}`);
-    return;
+    return false; // #1248: signal failure so caller does not count this against quota
   }
   if (failed.length > 0) {
     console.warn(
@@ -631,8 +631,14 @@ async function main() {
       `list cap was exceeded. Closing manually now to keep the backlog\n` +
       `accurate.\n\n` +
       `_(automated by \`scripts/issue-auto-triage.mjs\`)_`;
-    await commentAndClose(item.issue, body, 'completed');
-    closed += 1;
+    // #1240: wrap per-issue writes in try/catch so a single failure does
+    // not interrupt the whole triage run via main().catch().
+    try {
+      await commentAndClose(item.issue, body, 'completed');
+      closed += 1;
+    } catch (err) {
+      console.warn(`[warn] #${item.issue.number} close failed: ${err.message}`);
+    }
   }
   for (const item of buckets['resolved-in-tree']) {
     if (closed >= MAX_CLOSE) break;
@@ -643,8 +649,12 @@ async function main() {
       `**Evidence**:\n\n\`\`\`\n${item.evidence}\n\`\`\`\n\n` +
       `${item.reason}\n\n` +
       `_(automated by \`scripts/issue-auto-triage.mjs\`)_`;
-    await commentAndClose(item.issue, body, 'completed');
-    closed += 1;
+    try {
+      await commentAndClose(item.issue, body, 'completed');
+      closed += 1;
+    } catch (err) {
+      console.warn(`[warn] #${item.issue.number} close failed: ${err.message}`);
+    }
   }
   for (const item of buckets.phantom) {
     if (closed >= MAX_CLOSE) break;
@@ -657,8 +667,12 @@ async function main() {
       `If a future PR introduces this feature, the same finding will be\n` +
       `re-emitted by the review-triage pipeline against the new code.\n\n` +
       `_(automated by \`scripts/issue-auto-triage.mjs\`)_`;
-    await commentAndClose(item.issue, body, 'wontfix');
-    closed += 1;
+    try {
+      await commentAndClose(item.issue, body, 'wontfix');
+      closed += 1;
+    } catch (err) {
+      console.warn(`[warn] #${item.issue.number} close failed: ${err.message}`);
+    }
   }
 
   let dispatched = 0;
@@ -669,8 +683,14 @@ async function main() {
       );
       continue;
     }
-    await dispatchIssue(item.issue);
-    dispatched += 1;
+    // #1248: only increment the quota when dispatch actually succeeded.
+    // dispatchIssue() returns true on success, false/undefined on failure.
+    try {
+      const ok = await dispatchIssue(item.issue);
+      if (ok !== false) dispatched += 1;
+    } catch (err) {
+      console.warn(`[warn] #${item.issue.number} dispatch threw: ${err.message}`);
+    }
   }
 
   console.log();
