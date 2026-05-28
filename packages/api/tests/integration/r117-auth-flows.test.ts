@@ -21,6 +21,7 @@ import { POST as loginPost } from '@/app/api/auth/login/route';
 import { POST as verifyPost } from '@/app/api/auth/verify/route';
 import { PUT as passwordPut } from '@/app/api/auth/password/route';
 import { POST as logoutPost } from '@/app/api/auth/logout/route';
+import { NextRequest } from 'next/server';
 import { invalidatePasswordCache } from '@/lib/auth';
 import { makeReq, testPrisma } from '../helpers/request';
 
@@ -387,7 +388,7 @@ describe('R-117: auth login/password/verify/logout — real pipeline (AUTH_DISAB
 
   describe('POST /api/auth/logout', () => {
     it('returns 200 and emits clearing cookies for both apikey and user', async () => {
-      const res = await logoutPost();
+      const res = await logoutPost(new NextRequest('http://localhost/api/auth/logout'));
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
