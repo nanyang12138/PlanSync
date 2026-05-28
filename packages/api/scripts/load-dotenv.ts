@@ -42,13 +42,15 @@ import fs from 'node:fs';
 
 const VAR_REF_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g;
 
-function expandRefs(value: string, lookup: (name: string) => string | undefined): string {
+type LookupFn = (name: string, visiting: Set<string>) => string | undefined;
+
+function expandRefs(value: string, lookup: LookupFn, visiting: Set<string> = new Set()): string {
   return value.replace(
     VAR_REF_RE,
     (match, braced: string | undefined, bare: string | undefined) => {
       const name = braced ?? bare;
       if (!name) return match;
-      const resolved = lookup(name);
+      const resolved = lookup(name, visiting);
       return resolved ?? match;
     },
   );
@@ -86,19 +88,39 @@ export function loadDotenvFrom(envPath: string): void {
     fileVars[m[1]] = { value, quoted };
   }
 
-  const lookup = (name: string): string | undefined => {
+  const lookup: LookupFn = (name, visiting) => {
     if (process.env[name] !== undefined) return process.env[name];
     const f = fileVars[name];
     if (!f) return undefined;
+    if (f.quoted === 'single') return f.value;
+    // Cycle guard (#2826): if we're already in the middle of expanding
+    // `name`, returning undefined leaves the original `${name}` literal
+    // in place — same fallback as an unresolved reference. Without this
+    // guard, `A=${A}` or `A=${B} / B=${A}` would recurse forever and
+    // blow the stack, killing the worker/API on startup.
+    if (visiting.has(name)) return undefined;
     // Recursively expand so chained references (A=${USER}; B=...${A}...)
     // resolve correctly — returning the raw value would leave ${USER}
     // as a literal string in the expanded result (#1059).
-    return f.quoted === 'single' ? f.value : expandRefs(f.value, lookup);
+    visiting.add(name);
+    try {
+      return expandRefs(f.value, lookup, visiting);
+    } finally {
+      visiting.delete(name);
+    }
   };
 
   for (const [key, fv] of Object.entries(fileVars)) {
     if (process.env[key] !== undefined) continue;
-    process.env[key] = fv.quoted === 'single' ? fv.value : expandRefs(fv.value, lookup);
+    if (fv.quoted === 'single') {
+      process.env[key] = fv.value;
+      continue;
+    }
+    // Seed `visiting` with the current key so a value that directly
+    // self-references (e.g. `A=${A}`) is treated as a cycle on the
+    // very first hop and leaves `${A}` literal rather than recursing
+    // (#2826).
+    process.env[key] = expandRefs(fv.value, lookup, new Set([key]));
   }
 }
 
