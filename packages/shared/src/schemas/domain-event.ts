@@ -64,6 +64,7 @@ export const domainEventTypeSchema = z.enum([
   'task_deleted',
   // Execution lifecycle
   'execution_started',
+  'execution_completed',
   'execution_stale',
   'execution_failed',
   'execution_superseded',
@@ -134,6 +135,7 @@ export const domainEventPayloadSchema = z.discriminatedUnion('type', [
   eventVariant('task_rebound'),
   eventVariant('task_deleted'),
   eventVariant('execution_started'),
+  eventVariant('execution_completed'),
   eventVariant('execution_stale'),
   eventVariant('execution_failed'),
   eventVariant('execution_superseded'),
