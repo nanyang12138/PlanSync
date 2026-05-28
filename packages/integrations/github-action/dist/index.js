@@ -21874,6 +21874,13 @@ async function run() {
     const message = error2 instanceof Error ? error2.message : String(error2);
     core.setFailed(message);
   } finally {
+    if (githubToken && status.planVersion === null) {
+      try {
+        const planForStatus = await fetchActivePlanFileGlobs(apiUrl, projectId, headers);
+        if (planForStatus) status.planVersion = planForStatus.planVersion;
+      } catch {
+      }
+    }
     if (!githubToken || !repoInput || !prNumberInput) {
       if (githubToken || repoInput || prNumberInput) {
         core.info(
