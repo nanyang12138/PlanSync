@@ -232,10 +232,18 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
 
         const hasCompletedRun =
           latestRun?.status === 'completed' && !liftedFromAwaitingEvidenceAfterLatestRun;
+        // #1339: also block isHumanSelfComplete when there is an active (running)
+        // execution run. If the human assignee called POST /runs to lift from
+        // awaiting_evidence, the new running run has endedAt=null, which skips the
+        // liftedFromAwaitingEvidenceAfterLatestRun detection (the condition gates on
+        // latestRun?.endedAt being truthy). With a running run present the correct
+        // completion path is execution_complete — which re-fires the R-192 gate —
+        // not a direct human self-complete PATCH.
         const isHumanSelfComplete =
           task.assigneeType === 'human' &&
           task.assignee === auth.userName &&
-          !liftedFromAwaitingEvidenceAfterLatestRun;
+          !liftedFromAwaitingEvidenceAfterLatestRun &&
+          latestRun?.status !== 'running';
 
         // R-192 / closes #1362 — chained-PATCH bypass of the
         // awaiting_evidence-source guard.
@@ -370,6 +378,25 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
           `Assignee "${body.assignee}" is not a member of this project`,
         );
       }
+      // #1437: prevent non-owner, non-assignee members from reassigning an
+      // awaiting_evidence task to themselves to bypass the identity-based
+      // status guards. Without this check a member could:
+      //   1. PATCH assignee: self   (making isAssignee=true for future checks)
+      //   2. PATCH status: in_progress  (guard sees isAssignee=true, passes)
+      //   3. PATCH status: cancelled
+      // This bypasses the "owner or original assignee" requirement on the
+      // awaiting_evidence exit transitions. Restrict reassignment of parked
+      // tasks to the owner or the CURRENT assignee (not the new one).
+      if (task.status === 'awaiting_evidence') {
+        const isOwner = authed.projectRole === 'owner';
+        const isCurrentAssignee = task.assignee === auth.userName;
+        if (!isOwner && !isCurrentAssignee) {
+          throw new AppError(
+            ErrorCode.FORBIDDEN,
+            'Only the project owner or current assignee can reassign an awaiting_evidence task.',
+          );
+        }
+      }
     }
 
     // R-192 / closes #1462 — the `done`-gate above derives part of its
@@ -396,13 +423,13 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
     // BOTH writes or NEITHER. The window between the two writes that
     // the previous two-statement sequence exposed no longer exists.
     //
-    // `syncTaskDeliverableLinks` and the reassignment activity are
-    // intentionally kept outside this transaction: neither is read by
-    // the R-192 gate, and pulling them in would unnecessarily widen
-    // the critical section (the deliverable-link sync runs additional
-    // plan / link queries; the reassign activity is independent of
-    // status). External side effects (eventBus, webhooks, sendMail)
-    // also stay outside — never bind external I/O to a DB transaction.
+    // `syncTaskDeliverableLinks` is included in the same transaction as the
+    // task update so that link rows and the task row are always atomically
+    // consistent (#1020 — previously the link sync ran after the transaction
+    // committed, leaving a visible inconsistency window and permanent stale
+    // links if the sync failed). The function already accepts a tx parameter.
+    // The reassignment activity and external side effects (eventBus, webhooks,
+    // sendMail) stay outside — never bind external I/O to a DB transaction.
     const updated = await prisma.$transaction(async (tx) => {
       const u = await tx.task.update({
         where: { id: params.taskId },
@@ -428,21 +455,19 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
           tx,
         );
       }
+      // R-153: sync link table atomically with the task row so readers
+      // never observe an updated planDeliverableRefs without the matching
+      // link rows, and a failed sync rolls back the task update cleanly.
+      if (body.planDeliverableRefs !== undefined) {
+        await syncTaskDeliverableLinks(tx, {
+          taskId: u.id,
+          projectId: u.projectId,
+          boundPlanVersion: u.boundPlanVersion,
+          slugs: body.planDeliverableRefs,
+        });
+      }
       return u;
     });
-
-    // R-153: when the legacy slug array is rewritten by the owner, keep the
-    // `task_deliverable_links` middle table in sync. The link rows are the
-    // source of truth that survives slug renames; the slug array is the
-    // human-friendly mirror that drives this resolve step.
-    if (body.planDeliverableRefs !== undefined) {
-      await syncTaskDeliverableLinks(undefined, {
-        taskId: updated.id,
-        projectId: updated.projectId,
-        boundPlanVersion: updated.boundPlanVersion,
-        slugs: body.planDeliverableRefs,
-      });
-    }
 
     if (body.assignee !== undefined && body.assignee !== task.assignee) {
       await createActivity({
