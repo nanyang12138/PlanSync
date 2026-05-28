@@ -22,7 +22,7 @@
 // All tests drive the route handlers directly (no live server) to mirror the
 // existing R-118 / R-044 conventions.
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { POST as chatPost } from '@/app/api/projects/[projectId]/chat/route';
 import { POST as notifyPost } from '@/app/api/projects/[projectId]/notify/route';
 import { POST as aiDraftPost } from '@/app/api/projects/[projectId]/plans/ai-draft/route';
@@ -325,11 +325,9 @@ describe('R-116 — chat / notify / ai-draft / ai-field route integration', () =
       expect(body.error.code).toBe('VALIDATION_ERROR');
     });
 
-    it('returns 502 when the AI response is not valid JSON', async () => {
-      // The mock provider's chat fallback (matching system prompts that
-      // start with "You are PlanSync AI") returns a plain-text sentence.
-      // ai-draft requires a JSON object — it must surface that mismatch
-      // as a 502 instead of crashing or silently returning the raw text.
+    it('returns 200 with a valid plan draft via the deterministic mock', async () => {
+      // The planAiDraft mock (added in #2788 fix) now correctly handles
+      // the ai-draft system prompt and returns all 6 required fields.
       expect(aiClient.providerName).toBe('mock');
 
       const res = await aiDraftPost(
@@ -340,10 +338,38 @@ describe('R-116 — chat / notify / ai-draft / ai-field route integration', () =
         }),
         { params: Promise.resolve({ projectId }) },
       );
-      expect(res.status).toBe(502);
+      expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.error).toMatch(/AI response was not valid JSON/);
-      expect(typeof body.raw).toBe('string');
+      expect(body.draft).toMatchObject({
+        goal: expect.any(String),
+        scope: expect.any(String),
+        constraints: expect.any(Array),
+        standards: expect.any(Array),
+        deliverables: expect.any(Array),
+        openQuestions: expect.any(Array),
+      });
+    });
+
+    it('returns 502 when the AI response is not valid JSON', async () => {
+      // Inject a non-JSON response to verify the route correctly surfaces
+      // JSON-parse failures as 502 with the raw response body included.
+      const spy = vi.spyOn(aiClient, 'complete').mockResolvedValueOnce('not-json-at-all');
+      try {
+        const res = await aiDraftPost(
+          makeReq(`/api/projects/${projectId}/plans/ai-draft`, {
+            method: 'POST',
+            userName: owner,
+            body: { title: 'New plan', description: 'context' },
+          }),
+          { params: Promise.resolve({ projectId }) },
+        );
+        expect(res.status).toBe(502);
+        const body = await res.json();
+        expect(body.error).toMatch(/AI response was not valid JSON/);
+        expect(typeof body.raw).toBe('string');
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 
