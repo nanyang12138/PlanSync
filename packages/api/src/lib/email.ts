@@ -158,17 +158,23 @@ async function processQueue(): Promise<void> {
   processing = true;
   try {
     while (queue.length > 0) {
-      const item = queue.shift()!;
+      // Peek without removing so the item stays counted in queue.length
+      // during the retry backoff sleep — preventing sendMail() from
+      // treating the cap as temporarily lifted (#593 race).
+      const item = queue[0];
       const result = await deliverOnce(item.message);
-      if (result.ok) continue;
+      if (result.ok) {
+        queue.shift();
+        continue;
+      }
 
       item.attempts += 1;
       if (item.attempts < MAX_ATTEMPTS) {
         const delay = RETRY_BASE_DELAY_MS * Math.pow(2, item.attempts - 1);
         await sleep(delay);
-        queue.unshift(item);
         continue;
       }
+      queue.shift();
 
       // #316 / #350: structured logger.error so downstream observability
       // (correlated logs, monitoring sinks subscribed to error-level
