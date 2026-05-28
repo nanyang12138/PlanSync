@@ -3532,13 +3532,15 @@ else
   # POSIX awk: extract R-ID + severity from headers. The previous draft of
   # this loop used gawk's `match(...,m)` 3-arg form, which is not portable
   # (#357). Use sub() instead.
+  # Pipe through `sort -t- -k2,2n` for explicit R-ID ascending order so the
+  # tie-break is deterministic regardless of entry order in the file (#328).
   CANDIDATES=$(awk '
     /^#### R-[0-9]+ \[[A-Z]+\] / {
       sev = $0
       sub(/^.*\[/, "", sev); sub(/\].*$/, "", sev)
       print $2 " " sev
     }
-  ' docs/REMEDIATION_PLAN.md)
+  ' docs/REMEDIATION_PLAN.md | sort -t- -k2,2n)
 
   PICK=""
   PICK_WEIGHT=-1
