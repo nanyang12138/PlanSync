@@ -107,8 +107,9 @@ function parseLimitEnv(name, raw, defaultValue) {
     return defaultValue;
   }
   const trimmed = typeof raw === 'string' ? raw.trim() : String(raw);
+  if (trimmed === '') return defaultValue; // whitespace-only treated the same as unset
   const parsed = /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : NaN;
-  if (!Number.isFinite(parsed) || parsed < 0) {
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > Number.MAX_SAFE_INTEGER) {
     console.warn(
       `[triage] ${name}=${JSON.stringify(raw)} is not a non-negative integer; ` +
         `falling back to default=${defaultValue} to preserve rate-limit semantics.`,

@@ -143,13 +143,20 @@ parsing prose:
   "isError": true,
   "error": {
     "code": "OUT_OF_SEQUENCE",
-    "message": "Tool 'plansync_execution_complete' is not allowed from state 'PACK_FETCHED'. …",
-    "currentState": "PACK_FETCHED",
-    "allowedTools": ["plansync_task_pack", "plansync_execution_start", "…"],
-    "requiredNextOneOf": ["plansync_execution_start"]
+    "message": "Tool 'plansync_execution_complete' is not allowed from state 'UNINITIALIZED'. …",
+    "currentState": "UNINITIALIZED",
+    "allowedTools": ["plansync_exec_context"],
+    "requiredNextOneOf": ["plansync_exec_context"]
   }
 }
 ```
+
+(Calling `plansync_execution_complete` straight from `UNINITIALIZED` is the
+canonical "agent skipped everything" failure — a fresh session must run
+`plansync_exec_context` first. Note that calling `plansync_execution_complete`
+from `PACK_FETCHED` is **not** out-of-sequence: it's the legitimate /exec
+sub-session collapse path documented in the state table above, where the
+parent CLI has pre-registered the run via `plansync_exec_context`.)
 
 The `requiredNextOneOf` array is intentionally **ordered** — the first entry
 is the primary expected next step; subsequent entries are acceptable
