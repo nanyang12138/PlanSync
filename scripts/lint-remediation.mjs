@@ -81,7 +81,7 @@ export function parseEntries(text) {
   let current = null;
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
-    const header = line.match(/^#### (R-\d+) \[([A-Z]+)\] (.*)$/);
+    const header = line.match(/^#### (R-\d+[a-z]?) \[([A-Z]+)\] (.*)$/);
     if (header) {
       if (current) entries.push(current);
       current = {

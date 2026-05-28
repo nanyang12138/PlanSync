@@ -3023,7 +3023,7 @@
 
 #### R-205 [HIGH] MCP task\_\* tools → task(action, args) (R-175 step 3)
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B15
 - **depends_on**: R-204
 - **effort**: medium
