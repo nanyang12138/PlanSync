@@ -87,7 +87,7 @@ const PROMPT_SIGNATURES = {
   conflict: 'You are an expert at predicting conflicts',
   completionVerify: 'You are a task completion verifier',
   planAiDraft: 'Generate a structured software project plan draft',
-  chat: 'You are PlanSync AI',
+  chat: 'an intelligent assistant embedded in the PlanSync platform',
 } as const;
 
 export function getMockAiResponse(system: string): string {
