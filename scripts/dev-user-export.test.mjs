@@ -72,7 +72,12 @@ test('#366/#540/#567: dev.sh exports USER so next.config.js sees the resolved va
   assert.equal(shellUser, nodeUser, 'shell USER and node process.env.USER must match');
   // It must NOT be the next.config.js fallback literal 'dev' — pre-fix
   // would have shown 'dev' because USER was unset in node's env.
-  assert.notEqual(nodeUser, 'dev', 'node USER fell back to literal "dev" — export not propagating');
+  // Guard: when the host user's real name is 'dev', nodeUser === 'dev'
+  // is correct (the export propagated fine); the fallback test is not
+  // meaningful and would produce a false-positive failure (#620).
+  if (shellUser !== 'dev') {
+    assert.notEqual(nodeUser, 'dev', 'node USER fell back to literal "dev" — export not propagating');
+  }
 });
 
 test('static guard: dev.sh exports both PLANSYNC_BUILD_USER and USER (F1 refactor-resistance)', () => {
