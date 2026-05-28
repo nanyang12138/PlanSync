@@ -303,6 +303,53 @@ describe('RunStore', () => {
     expect(claimed).toBe(true);
   });
 
+  // Closes #995 — a task-scoped load() must not evict runs belonging to
+  // other tasks within the same project; the previous full-replace
+  // implementation cleared them as soon as a task_started event
+  // triggered a refetch.
+  it('load(projectId, taskId) merges into byId for same-project task-scoped loads (#995)', async () => {
+    const api = new MockApiClient();
+    const store = new RunStore(api);
+    const runA = makeRun({ id: 'run-A', status: 'running' });
+    const runB = makeRun({ id: 'run-B', status: 'running' });
+    api.queue.runsList = [runA, runB];
+    await store.load('proj_1');
+    expect(Object.keys(store.getState().byId).sort()).toEqual(['run-A', 'run-B']);
+
+    const runBUpdated = makeRun({ id: 'run-B', status: 'completed', endedAt: new Date() });
+    api.queue.runsList = [runBUpdated];
+    await store.load('proj_1', 'task-B');
+
+    const state = store.getState();
+    expect(Object.keys(state.byId).sort()).toEqual(['run-A', 'run-B']);
+    expect(state.byId['run-A'].status).toBe('running');
+    expect(state.byId['run-B'].status).toBe('completed');
+  });
+
+  // Closes #2823 — task-scoped load() previously merged the existing
+  // `state.byId` unconditionally, so switching to a different project
+  // (still task-scoped) would leak the prior project's runs into the
+  // new project's state while `loadedProjectId` was flipped to the
+  // new id. The guard must drop the old byId on project change.
+  it('load() does not leak runs from a previously loaded project (#2823)', async () => {
+    const api = new MockApiClient();
+    const store = new RunStore(api);
+    const runFromA = makeRun({ id: 'run-A', status: 'running' });
+    api.queue.runsList = [runFromA];
+    await store.load('proj_A');
+    expect(store.getState().byId['run-A']).toBeDefined();
+    expect(store.getState().loadedProjectId).toBe('proj_A');
+
+    const runFromB = makeRun({ id: 'run-B', status: 'running' });
+    api.queue.runsList = [runFromB];
+    await store.load('proj_B', 'task-B');
+
+    const state = store.getState();
+    expect(state.loadedProjectId).toBe('proj_B');
+    expect(state.byId['run-A']).toBeUndefined();
+    expect(state.byId['run-B']).toBeDefined();
+  });
+
   it("handleEvent merges full ExecutionRun when it's present in the payload (#784)", () => {
     const api = new MockApiClient();
     const store = new RunStore(api);
