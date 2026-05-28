@@ -1106,16 +1106,17 @@ test('latestLockLabeledAtMs', async (t) => {
   const baseIso = (ts) => new Date(ts).toISOString();
 
   await t.test('no events ⇒ null', () => {
-    assert.equal(latestLockLabeledAtMs({ events: [], lockLabel: LOCK }), null);
-    assert.equal(latestLockLabeledAtMs({ events: null, lockLabel: LOCK }), null);
+    // #1604: use positional args (events, lockLabel) to match the production signature
+    assert.equal(latestLockLabeledAtMs([], LOCK), null);
+    assert.equal(latestLockLabeledAtMs(null, LOCK), null);
     assert.equal(latestLockLabeledAtMs(), null);
   });
 
   await t.test('missing lockLabel ⇒ null', () => {
     assert.equal(
-      latestLockLabeledAtMs({
-        events: [{ event: 'labeled', label: { name: LOCK }, created_at: baseIso(Date.now()) }],
-      }),
+      latestLockLabeledAtMs(
+        [{ event: 'labeled', label: { name: LOCK }, created_at: baseIso(Date.now()) }],
+      ),
       null,
     );
   });
@@ -1124,14 +1125,14 @@ test('latestLockLabeledAtMs', async (t) => {
     const t1 = Date.now() - 60_000;
     const t2 = Date.now() - 10_000;
     assert.equal(
-      latestLockLabeledAtMs({
-        events: [
+      latestLockLabeledAtMs(
+        [
           { event: 'labeled', label: { name: LOCK }, created_at: baseIso(t1) },
           { event: 'unlabeled', label: { name: LOCK }, created_at: baseIso(t1 + 5_000) },
           { event: 'labeled', label: { name: LOCK }, created_at: baseIso(t2) },
         ],
-        lockLabel: LOCK,
-      }),
+        LOCK,
+      ),
       t2,
     );
   });
@@ -1139,14 +1140,14 @@ test('latestLockLabeledAtMs', async (t) => {
   await t.test('ignores events for other labels and non-labeled events', () => {
     const t1 = Date.now() - 5_000;
     assert.equal(
-      latestLockLabeledAtMs({
-        events: [
+      latestLockLabeledAtMs(
+        [
           { event: 'labeled', label: { name: 'cursor:dispatch' }, created_at: baseIso(Date.now()) },
           { event: 'commented', created_at: baseIso(Date.now()) },
           { event: 'labeled', label: { name: LOCK }, created_at: baseIso(t1) },
         ],
-        lockLabel: LOCK,
-      }),
+        LOCK,
+      ),
       t1,
     );
   });
@@ -1154,16 +1155,16 @@ test('latestLockLabeledAtMs', async (t) => {
   await t.test('malformed entries are skipped', () => {
     const ts = Date.now() - 2_000;
     assert.equal(
-      latestLockLabeledAtMs({
-        events: [
+      latestLockLabeledAtMs(
+        [
           null,
           { event: 'labeled' },
           { event: 'labeled', label: null, created_at: baseIso(Date.now()) },
           { event: 'labeled', label: { name: LOCK }, created_at: 'not-a-date' },
           { event: 'labeled', label: { name: LOCK }, created_at: baseIso(ts) },
         ],
-        lockLabel: LOCK,
-      }),
+        LOCK,
+      ),
       ts,
     );
   });
