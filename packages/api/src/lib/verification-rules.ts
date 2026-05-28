@@ -107,14 +107,17 @@ export function evaluateRule(rule: VerificationRule, ctx: VerificationContext): 
 
   switch (rule.kind as VerificationRuleKind) {
     case 'require_files_changed': {
-      const ok = (ctx.body.filesChanged?.length ?? 0) > 0;
+      // Require at least one non-empty, non-whitespace string so that
+      // [""] or [" "] cannot satisfy the gate (#993).
+      const ok =
+        ctx.body.filesChanged?.some((f) => typeof f === 'string' && f.trim().length > 0) ?? false;
       return {
         ruleId: rule.id,
         kind: rule.kind,
         ok,
         message: ok
           ? 'filesChanged provided'
-          : 'require_files_changed: at least one entry in filesChanged is required',
+          : 'require_files_changed: at least one non-empty entry in filesChanged is required',
       };
     }
 
