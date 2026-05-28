@@ -54,8 +54,9 @@ export async function register() {
       // logs / `kubectl logs api`. Skip in test (vitest sets NODE_ENV=test)
       // and in build phases so we don't pollute every test / build run.
       const isProductionLike =
-        process.env.NODE_ENV === 'production' ||
-        process.env.NEXT_PHASE === 'phase-production-runtime';
+        (process.env.NODE_ENV === 'production' ||
+          process.env.NEXT_PHASE === 'phase-production-runtime') &&
+        process.env.NEXT_PHASE !== 'phase-production-build';
       if (isProductionLike) {
         const { logger } = await import('./lib/logger');
         logger.warn(
