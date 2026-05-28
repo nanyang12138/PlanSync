@@ -2,6 +2,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { ApiClient } from '../api-client';
 import { McpConfig } from '../config';
+import { logger } from '../logger';
+import { handleTaskRebind } from './task-handlers';
 
 let activeDelegationAgent: string | undefined;
 
@@ -78,13 +80,21 @@ export function registerStatusTools(server: McpServer, api: ApiClient, config: M
     },
   );
 
+  // R-205 — legacy alias. Stays registered for one release so any agent
+  // prompt that hasn't migrated to `plansync_task({action:"rebind", ...})`
+  // keeps working. Delegates to the shared `handleTaskRebind` helper so
+  // wire behaviour is bit-identical across the two surfaces.
   server.tool(
     'plansync_task_rebind',
-    'Rebind a task to the current active plan version',
+    '[DEPRECATED — use plansync_task({action:"rebind", ...})] Rebind a task to the current ' +
+      'active plan version. Will be removed in the next release.',
     { projectId: z.string(), taskId: z.string() },
     async (args) => {
-      const result = await api.post(`/api/projects/${args.projectId}/tasks/${args.taskId}/rebind`);
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      logger.warn(
+        { tool: 'plansync_task_rebind' },
+        'R-205 deprecated alias called — migrate to plansync_task({action:"rebind", ...})',
+      );
+      return handleTaskRebind(args, { api });
     },
   );
 
