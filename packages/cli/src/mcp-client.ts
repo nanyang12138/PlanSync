@@ -471,7 +471,13 @@ export class McpClient {
     // transport error, restart and retry exactly once. Real protocol errors
     // (validation, missing tool, server-side rejection) are NOT retried.
     if (!this.isRunning() && this.serverPath) {
-      await this.ensureRunning(this.serverPath);
+      const started = await this.ensureRunning(this.serverPath);
+      if (!started) {
+        // ensureRunning exhausted all restart attempts. Throw immediately so
+        // the caller gets a fast, recognisable MCP_CRASHED error instead of
+        // waiting 30 s for the silent send() no-op to time out (#701).
+        throw new Error('MCP_CRASHED: subprocess failed to (re)start');
+      }
     }
     try {
       return await this.callToolOnce(name, args);
