@@ -849,19 +849,19 @@ test('hasSuccessMarkerAfter', async (t) => {
   });
 
   // -------------------------------------------------------------------
-  // cutoffServerMs path — added by #1330
+  // notBeforeMs path — added by #1330, parameter renamed in #1451
   // -------------------------------------------------------------------
   //
   // When the issue events fetch in main() succeeded we anchor the
   // cutoff to the GitHub server timestamp of the most recent
-  // `labeled` LOCK_LABEL event (see latestLockLabeledServerTs). Both
+  // `labeled` LOCK_LABEL event (see latestLockLabeledAtMs). Both
   // the anchor and each marker's `created_at` are server-stamped, so
   // the cutoff comparison has no clock-skew gap and we don't need
   // the tolerance fudge factor that otherwise leaks stale markers
   // from a prior cycle.
 
   await t.test(
-    'cutoffServerMs anchor is used directly without tolerance fudge (#1330)',
+    'notBeforeMs anchor is used directly without tolerance fudge (#1330)',
     () => {
       // Prior cycle's marker is 1.4s before our LOCK_LABEL labeled
       // event. Under the local-clock fallback's old 1500ms tolerance
@@ -872,7 +872,7 @@ test('hasSuccessMarkerAfter', async (t) => {
       assert.equal(
         hasSuccessMarkerAfter({
           comments: [mkSuccess(cutoff - 1400)],
-          cutoffServerMs: cutoff,
+          notBeforeMs: cutoff,
           // Also pass sinceMs to confirm server anchor takes precedence
           // (under the previous local-clock policy with default 1500ms
           // tolerance, this same marker would have matched).
@@ -885,7 +885,7 @@ test('hasSuccessMarkerAfter', async (t) => {
   );
 
   await t.test(
-    'cutoffServerMs: peer marker strictly after anchor ⇒ match; at anchor ⇒ no match (#1383)',
+    'notBeforeMs: peer marker strictly after anchor ⇒ match; at anchor ⇒ no match (#1383)',
     () => {
       // Strict-after semantic — see hasSuccessMarkerAfter jsdoc cutoff
       // path #1. GitHub timestamps are second-precision so a marker
@@ -898,21 +898,21 @@ test('hasSuccessMarkerAfter', async (t) => {
       assert.equal(
         hasSuccessMarkerAfter({
           comments: [mkSuccess(cutoff)],
-          cutoffServerMs: cutoff,
+          notBeforeMs: cutoff,
         }),
         false,
       );
       assert.equal(
         hasSuccessMarkerAfter({
           comments: [mkSuccess(cutoff + 1)],
-          cutoffServerMs: cutoff,
+          notBeforeMs: cutoff,
         }),
         true,
       );
       assert.equal(
         hasSuccessMarkerAfter({
           comments: [mkSuccess(cutoff + 5)],
-          cutoffServerMs: cutoff,
+          notBeforeMs: cutoff,
         }),
         true,
       );
@@ -920,7 +920,7 @@ test('hasSuccessMarkerAfter', async (t) => {
   );
 
   await t.test(
-    'cutoffServerMs: same-second OLD marker (server-bucketed equality) ⇒ rejected (#1383)',
+    'notBeforeMs: same-second OLD marker (server-bucketed equality) ⇒ rejected (#1383)',
     () => {
       // Realistic regression guard for #1383. GitHub stamps both the
       // `labeled` event's `created_at` and each comment's `created_at`
@@ -928,12 +928,12 @@ test('hasSuccessMarkerAfter', async (t) => {
       // re-dispatch lands the new cycle's `labeled` event in the SAME
       // wall-clock second as a still-on-the-issue OLD success marker
       // from a prior cycle, both parse to identical ms after
-      // `new Date(...).getTime()`. The previous `ts >= cutoffServerMs`
+      // `new Date(...).getTime()`. The previous `ts >= notBeforeMs`
       // comparison classified that as a current peer's success — pre-
       // call site silently skipped Cursor, catch-block site refused to
       // release the lock. Strict-after semantic catches it.
       const isoSecond = '2026-05-26T14:35:50Z'; // both stamped to the same second
-      const cutoffServerMs = new Date(isoSecond).getTime();
+      const notBeforeMs = new Date(isoSecond).getTime();
       const oldMarker = {
         body: `${MARKER}\n🚀 **${PHRASE}** (finding)\n- run: r-old`,
         created_at: isoSecond,
@@ -941,7 +941,7 @@ test('hasSuccessMarkerAfter', async (t) => {
       assert.equal(
         hasSuccessMarkerAfter({
           comments: [oldMarker],
-          cutoffServerMs,
+          notBeforeMs,
         }),
         false,
       );
@@ -953,41 +953,48 @@ test('hasSuccessMarkerAfter', async (t) => {
       assert.equal(
         hasSuccessMarkerAfter({
           comments: [peerMarker],
-          cutoffServerMs,
+          notBeforeMs,
         }),
         true,
       );
     },
   );
-  await t.test('cutoffServerMs: peer marker at or after anchor ⇒ match', () => {
+  await t.test('notBeforeMs: peer marker strictly after anchor ⇒ match; at anchor ⇒ no match (#2730)', () => {
+    // Strict-after: equal timestamp must be rejected, not accepted.
+    // Fixes the prior test which incorrectly used cutoffServerMs (an
+    // unrecognised parameter) and asserted that equal-anchor matched.
     const cutoff = Date.now();
     assert.equal(
       hasSuccessMarkerAfter({
         comments: [mkSuccess(cutoff)],
-        cutoffServerMs: cutoff,
+        notBeforeMs: cutoff,
       }),
-      true,
+      false,
     );
     assert.equal(
       hasSuccessMarkerAfter({
         comments: [mkSuccess(cutoff + 5)],
-        cutoffServerMs: cutoff,
+        notBeforeMs: cutoff,
       }),
       true,
     );
   });
 
-  await t.test('cutoffServerMs takes precedence over sinceMs when both supplied', () => {
+  await t.test('notBeforeMs takes precedence over sinceMs when both supplied', () => {
     const t0 = Date.now();
     // Server anchor says cycle started at t0; marker is just before.
-    // Server cutoff path: marker.ts < anchor ⇒ reject.
-    // Local fallback (sinceMs only) with default 250ms tolerance:
-    // marker.ts = anchor - 5 is >= sinceMs - 250 ⇒ would have matched.
+    // notBeforeMs strict-after path: marker.ts < anchor ⇒ reject,
+    // regardless of the sinceMs+tolerance window.
     assert.equal(
       hasSuccessMarkerAfter({
         comments: [mkSuccess(t0 - 5)],
-        cutoffServerMs: t0,
+        notBeforeMs: t0,
         sinceMs: t0,
+      }),
+      false,
+    );
+  });
+
   // ------------------------------------------------------------------
   // Trusted-author filtering — #1384
   // ------------------------------------------------------------------
@@ -1054,6 +1061,13 @@ test('hasSuccessMarkerAfter', async (t) => {
         ],
         sinceMs: since,
         trustedAuthors: ['github-actions[bot]'],
+      }),
+      // A comment body without a user object cannot be author-verified;
+      // treated as unverifiable → ignored (#2058 syntax-error fix).
+      false,
+    );
+  });
+
   // ---- #1407: rapid re-dispatch within tolerance window --------------
   //
   // The `sinceMs - toleranceMs` clock-skew cutoff isn't enough on its
@@ -1081,118 +1095,8 @@ test('hasSuccessMarkerAfter', async (t) => {
   });
 });
 
-// ---------------------------------------------------------------------
-// latestLockLabeledServerTs — server-side cutoff source for #1330
-// ---------------------------------------------------------------------
-test('latestLockLabeledServerTs', async (t) => {
-  const { latestLockLabeledServerTs } = await import('./review-dispatch.mjs');
-  const LOCK = 'dispatched';
-  const baseIso = (ts) => new Date(ts).toISOString();
-
-  await t.test('picks the MOST RECENT labeled event for the lock', () => {
-    const t0 = Date.now();
-    const ts = latestLockLabeledServerTs({
-      events: [
-        { event: 'labeled', label: { name: LOCK }, created_at: baseIso(t0 - 3_600_000) },
-        { event: 'unlabeled', label: { name: LOCK }, created_at: baseIso(t0 - 1_800_000) },
-        { event: 'labeled', label: { name: LOCK }, created_at: baseIso(t0 - 100) },
-      ],
-      lockLabel: LOCK,
-    });
-    assert.equal(ts, t0 - 100);
-  });
-
-  await t.test('ignores labeled events for other labels', () => {
-    const t0 = Date.now();
-    assert.equal(
-      latestLockLabeledServerTs({
-        events: [
-          { event: 'labeled', label: { name: 'review-finding' }, created_at: baseIso(t0) },
-          { event: 'labeled', label: { name: 'auto-triaged' }, created_at: baseIso(t0 + 10) },
-        ],
-        lockLabel: LOCK,
-      }),
-      null,
-    );
-  });
-
-  await t.test('returns null on empty / missing events', () => {
-    assert.equal(latestLockLabeledServerTs({ events: [], lockLabel: LOCK }), null);
-    assert.equal(latestLockLabeledServerTs({ lockLabel: LOCK }), null);
-    assert.equal(latestLockLabeledServerTs(), null);
-  });
-
-  await t.test('returns null when lockLabel is not provided', () => {
-    const t0 = Date.now();
-    assert.equal(
-      latestLockLabeledServerTs({
-        events: [{ event: 'labeled', label: { name: LOCK }, created_at: baseIso(t0) }],
-      }),
-      null,
-    );
-  });
-
-  await t.test('skips malformed entries without crashing', () => {
-    const t0 = Date.now();
-    assert.equal(
-      latestLockLabeledServerTs({
-        events: [
-          null,
-          { event: 'labeled' },
-          { event: 'labeled', label: null, created_at: baseIso(t0) },
-          { event: 'labeled', label: { name: LOCK }, created_at: 'not-a-date' },
-          { event: 'labeled', label: { name: LOCK }, created_at: baseIso(t0 + 50) },
-        ],
-        lockLabel: LOCK,
-      }),
-      t0 + 50,
-
-  await t.test('notBeforeMs still admits a peer marker from the current cycle', () => {
-    const lockReacquired = Date.now() - 100;
-    const peerSuccess = lockReacquired + 80; // peer posted after the current cycle's lock event
-    const since = lockReacquired + 10;
-    assert.equal(
-      hasSuccessMarkerAfter({
-        comments: [mkSuccess(peerSuccess)],
-        sinceMs: since,
-        notBeforeMs: lockReacquired,
-      }),
-      true,
-    );
-  });
-
-  await t.test('notBeforeMs without sinceMs acts as the sole cutoff', () => {
-    const cycleStart = Date.now();
-    assert.equal(
-      hasSuccessMarkerAfter({
-        comments: [mkSuccess(cycleStart - 1000)],
-        notBeforeMs: cycleStart,
-      }),
-      false,
-    );
-    assert.equal(
-      hasSuccessMarkerAfter({
-        comments: [mkSuccess(cycleStart + 1000)],
-        notBeforeMs: cycleStart,
-      }),
-      true,
-    );
-  });
-
-  await t.test('notBeforeMs LOWER than sinceMs - tolerance is a no-op (tolerance wins)', () => {
-    // notBeforeMs only tightens the window; it never widens it.
-    const since = Date.now();
-    const peerWithinSkew = since - 500;
-    assert.equal(
-      hasSuccessMarkerAfter({
-        comments: [mkSuccess(peerWithinSkew)],
-        sinceMs: since,
-        notBeforeMs: since - 60_000, // way back
-      }),
-      true,
-    );
-  });
-});
+// latestLockLabeledServerTs was renamed to latestLockLabeledAtMs in #1451.
+// Tests for it now live in the 'latestLockLabeledAtMs' suite below.
 
 // ---------------------------------------------------------------------
 // review-dispatch.mjs latestLockLabeledAtMs — #1407
@@ -1667,7 +1571,6 @@ test('review-dispatch.mjs dispatchSucceededAlready call sites share a single sco
       `dispatchSucceededAlready call site must pass a single identifier (the shared peerSuccessCutoff variable) — required by #1278/#1396/#1461; offending call: ${m[0]}`,
     );
     argIdentifiers.add(argMatch[1]);
-    sinceMsValues.add(sinceMatch[1]);
     // #1407: also forward `events` so the helper can anchor a GitHub-
     // clock `notBeforeMs` lower bound and reject stale prior-cycle
     // markers that would otherwise fall inside the tolerance window
@@ -1721,45 +1624,47 @@ test('review-dispatch.mjs dispatchSucceededAlready call sites share a single sco
 // check (it can be `null` when the events fetch failed; the helper
 // then degrades to the local-clock path).
 test(
-  'review-dispatch.mjs dispatchSucceededAlready call sites scope by preAddLabelsAtMs (#1278) and pass server-side anchor (#1330)',
+  'review-dispatch.mjs dispatchSucceededAlready call sites scope by preAddLabelsAtMs (#1278) and pass server-side anchor (#1330, #1451)',
   async () => {
     const { readFileSync } = await import('node:fs');
     const { resolve } = await import('node:path');
     const src = readFileSync(resolve(import.meta.dirname, 'review-dispatch.mjs'), 'utf-8');
 
-    // Match only invocation sites (preceded by `await`); the function's
-    // own declaration is excluded by this anchor. Use a balanced
-    // matcher tolerant of newlines / multi-line option objects, since
-    // the call sites are now multi-line.
+    // Since #1451 the call sites pass peerSuccessCutoff (a pre-built
+    // variable) instead of inline options. Check the construction of
+    // that variable instead of the call-site args directly.
+    //
+    // Contract #1278: a sinceMs fallback with preAddLabelsAtMs must be
+    // reachable from the cutoff object (covers the case where the events
+    // fetch fails and notBeforeMs is unavailable).
+    assert.match(
+      src,
+      /sinceMs\s*:\s*preAddLabelsAtMs/,
+      'peerSuccessCutoff must include { sinceMs: preAddLabelsAtMs } for the local-clock fallback — required by #1278.',
+    );
+
+    // Contract #1461 / #1451: the preferred cutoff path must use
+    // notBeforeMs (strict-after) anchored to the server-stamped
+    // labeled event. Verified by the assertion in the
+    // 'dispatchSucceededAlready call sites share a single scoped cutoff'
+    // test above (checks serverLockedAtMs !== null ? { notBeforeMs: ...).
+
+    // main() must derive the anchor from the already-fetched events
+    // list via latestLockLabeledAtMs (#1451 renamed latestLockLabeledServerTs).
+    // Lock the wiring so future refactors don't accidentally drop the
+    // events-driven path back to the local-clock fallback.
+    assert.match(
+      src,
+      /latestLockLabeledAtMs\s*\(/,
+      'main() must invoke latestLockLabeledAtMs() to derive the server-side notBeforeMs anchor — required by #1330/#1451.',
+    );
+
+    // Both call sites must pass peerSuccessCutoff (or equivalent).
     const calls = [...src.matchAll(/await\s+dispatchSucceededAlready\s*\(([^)]*)\)/g)];
-    // Expected: exactly two call sites in main() — pre-Cursor-call and
-    // the catch block.
     assert.equal(
       calls.length,
       2,
       `expected exactly 2 invocations of dispatchSucceededAlready() in main(), got ${calls.length}`,
-    );
-    for (const m of calls) {
-      assert.match(
-        m[1],
-        /sinceMs\s*:\s*preAddLabelsAtMs/,
-        `dispatchSucceededAlready call site must pass { sinceMs: preAddLabelsAtMs } — required by #1278; offending call: ${m[0]}`,
-      );
-      assert.match(
-        m[1],
-        /cutoffServerMs/,
-        `dispatchSucceededAlready call site must also pass { cutoffServerMs } (the server-side cutoff anchor) — required by #1330; offending call: ${m[0]}`,
-      );
-    }
-
-    // main() must derive the anchor from the already-fetched events
-    // list via latestLockLabeledServerTs. Lock the wiring so future
-    // refactors don't accidentally drop the events-driven path back
-    // to the local-clock fallback.
-    assert.match(
-      src,
-      /latestLockLabeledServerTs\s*\(\s*\{[\s\S]*?lockLabel:\s*LOCK_LABEL/m,
-      'main() must invoke latestLockLabeledServerTs({ events, lockLabel: LOCK_LABEL }) to derive cutoffServerMs — required by #1330.',
     );
   },
 );
