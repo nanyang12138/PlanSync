@@ -454,21 +454,21 @@ describe('R-181: verification rules gate', () => {
     expect(agentJson.data).toHaveLength(1);
   });
 
-  // #1411 (PR #1447): GET widened to any project member must NOT leak
-  // owner-writable JSONB `params` (or `createdBy`) to non-owner members
-  // / exec agents. Owners on a non-exec session still receive the full
-  // row for the rule-edit UI/CLI.
-  // #1411: GET widened to any project member must NOT leak owner-writable
-  // JSONB `params` (or `createdBy`) to non-owner members / exec agents.
-  // Owners still receive the full row for the rule-edit UI/CLI.
-  it('#1411: non-owner GET response strips params and createdBy; owner sees full row', async () => {
+  // #1411 (PR #1447) + #2830: GET widened to any project member must NOT
+  // leak the raw owner-writable JSONB `params` (or `createdBy`) to non-owner
+  // members / exec agents. #2830 narrowed the projection to a per-kind
+  // allowlist so agents can still see evaluator-relevant config (e.g. `min`
+  // for `min_output_summary_chars` — needed for `/explain rule <id>` R-184)
+  // while arbitrary owner-written keys are stripped. Owners on a non-exec
+  // session still receive the raw row for the rule-edit UI/CLI.
+  it('#1411 + #2830: non-owner GET sanitises params via per-kind allowlist; owner sees raw row', async () => {
     await testPrisma.verificationRule.create({
       data: {
         projectId,
         kind: 'min_output_summary_chars',
         scope: 'project',
         // Deliberately put a recognisable, "sensitive-looking" key in
-        // params so a regression that returns the JSONB to non-owners
+        // params so a regression that returns the raw JSONB to non-owners
         // would obviously fail this assertion.
         params: { min: 100, internalSecret: 's3cret-do-not-leak' },
         enabled: true,
@@ -476,7 +476,7 @@ describe('R-181: verification rules gate', () => {
       },
     });
 
-    // Owner: full row, including params + createdBy.
+    // Owner (non-exec): raw row, including the full params JSONB + createdBy.
     const ownerRes = await listRulesGet(
       makeReq(`/api/projects/${projectId}/verification-rules`, {
         method: 'GET',
@@ -493,7 +493,8 @@ describe('R-181: verification rules gate', () => {
     });
     expect(ownerJson.data[0].createdBy).toBe(owner);
 
-    // Developer (non-owner human member): params + createdBy must be absent.
+    // Developer (non-owner human member): params is the allowlisted shape,
+    // createdBy is stripped entirely.
     const devRes = await listRulesGet(
       makeReq(`/api/projects/${projectId}/verification-rules`, {
         method: 'GET',
@@ -505,17 +506,18 @@ describe('R-181: verification rules gate', () => {
     const devJson = await devRes.json();
     expect(devJson.data).toHaveLength(1);
     const devRule = devJson.data[0];
-    expect(devRule.params).toBeUndefined();
+    // The allowlisted field (the threshold R-184 explain needs) is present;
+    // the owner-written extra key is NOT.
+    expect(devRule.params).toEqual({ min: 100 });
+    expect(devRule.params.internalSecret).toBeUndefined();
     expect(devRule.createdBy).toBeUndefined();
     // Fields R-184 `/explain rule <id>` actually needs are still present.
-    // The non-sensitive fields R-184 `/explain rule <id>` actually needs
-    // are still present so the self-serve path keeps working.
     expect(devRule.id).toEqual(expect.any(String));
     expect(devRule.kind).toBe('min_output_summary_chars');
     expect(devRule.scope).toBe('project');
     expect(devRule.enabled).toBe(true);
 
-    // Agent (exec-time caller): same redaction applies.
+    // Agent (exec-time caller): same sanitisation applies.
     const agentRes = await listRulesGet(
       makeReq(`/api/projects/${projectId}/verification-rules`, {
         method: 'GET',
@@ -525,17 +527,53 @@ describe('R-181: verification rules gate', () => {
     );
     expect(agentRes.status).toBe(200);
     const agentJson = await agentRes.json();
-    expect(agentJson.data[0].params).toBeUndefined();
+    expect(agentJson.data[0].params).toEqual({ min: 100 });
+    expect(agentJson.data[0].params.internalSecret).toBeUndefined();
     expect(agentJson.data[0].createdBy).toBeUndefined();
   });
 
-  // #1452: closes the hole left open in PR #1447 — projectRole === 'owner'
-  // alone is not enough trust for the full row. An owner-issued exec-scoped
-  // token (the kind /exec / /worker hand to a Genie sub-agent) must be
-  // treated like any other exec caller and receive only the public
-  // projection. Otherwise a compromised exec session keeps reading
-  // owner-only `params` JSONB.
-  it('#1452: owner-issued exec-scoped token still gets the redacted projection (no params/createdBy)', async () => {
+  // #2830: for rule kinds whose evaluator reads no params at all (e.g.
+  // `require_files_changed`), the public projection must return `{}` for
+  // `params` no matter what arbitrary keys an owner has written into the
+  // JSONB column. This is what prevents a `kind: 'require_files_changed'`
+  // rule from being abused as a generic owner-writable-string broadcast
+  // channel to non-owner members and exec sessions.
+  it('#2830: non-owner GET returns empty params for kinds whose evaluator reads no params', async () => {
+    await testPrisma.verificationRule.create({
+      data: {
+        projectId,
+        kind: 'require_files_changed',
+        scope: 'project',
+        // The evaluator ignores params for this kind, but the column is
+        // still owner-writable JSONB. A non-owner / exec caller must not
+        // see any of these keys.
+        params: { internalSecret: 's3cret-do-not-leak', filePath: '/etc/passwd' },
+        enabled: true,
+        createdBy: owner,
+      },
+    });
+
+    const devRes = await listRulesGet(
+      makeReq(`/api/projects/${projectId}/verification-rules`, {
+        method: 'GET',
+        userName: developer,
+      }),
+      { params: Promise.resolve({ projectId }) },
+    );
+    expect(devRes.status).toBe(200);
+    const devJson = await devRes.json();
+    expect(devJson.data).toHaveLength(1);
+    expect(devJson.data[0].params).toEqual({});
+    expect(devJson.data[0].createdBy).toBeUndefined();
+  });
+
+  // #1452 + #2830: closes the hole left open in PR #1447 — projectRole ===
+  // 'owner' alone is not enough trust for the raw row. An owner-issued
+  // exec-scoped token (the kind /exec / /worker hand to a Genie sub-agent)
+  // must be treated like any other exec caller and receive only the public
+  // projection (allowlisted params, no createdBy). Otherwise a compromised
+  // exec session keeps reading owner-only JSONB.
+  it('#1452 + #2830: owner-issued exec-scoped token gets allowlisted params, no createdBy', async () => {
     await testPrisma.verificationRule.create({
       data: {
         projectId,
@@ -587,9 +625,11 @@ describe('R-181: verification rules gate', () => {
     const ownerExecJson = await ownerExecRes.json();
     expect(ownerExecJson.data).toHaveLength(1);
     // Even though the underlying user is the project owner, the exec
-    // session must see the same redacted projection a non-owner agent
-    // would get — owner-only params/createdBy stay server-side.
-    expect(ownerExecJson.data[0].params).toBeUndefined();
+    // session must see the same sanitised projection a non-owner agent
+    // would get — only the allowlisted `min` leaks through, and the
+    // owner-written `internalSecret` JSONB key stays server-side.
+    expect(ownerExecJson.data[0].params).toEqual({ min: 100 });
+    expect(ownerExecJson.data[0].params.internalSecret).toBeUndefined();
     expect(ownerExecJson.data[0].createdBy).toBeUndefined();
     expect(ownerExecJson.data[0].kind).toBe('min_output_summary_chars');
   });
