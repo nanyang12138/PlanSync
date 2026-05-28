@@ -50,5 +50,8 @@ export const cfg = {
   // surfaces a one-line notice to the user. Defaults to 80k tokens, well
   // under the 200k context window of current Claude models while leaving
   // headroom for system prompt + tool schema + new turn output.
-  maxHistoryTokens: Number(process.env.PLANSYNC_MAX_HISTORY_TOKENS) || 80000,
+  maxHistoryTokens: (() => {
+    const raw = Number(process.env.PLANSYNC_MAX_HISTORY_TOKENS);
+    return Number.isFinite(raw) && raw > 0 ? raw : 80000;
+  })(),
 };
