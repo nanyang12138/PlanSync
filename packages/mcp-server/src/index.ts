@@ -13,6 +13,7 @@ import { registerDeliverableTools } from './tools/deliverable';
 import { registerSuggestionTools } from './tools/suggestion';
 import { registerCommentTools } from './tools/comment';
 import { registerTaskTools } from './tools/task';
+import { registerTaskActionTool } from './tools/task-action';
 import { registerExecutionTools, heartbeatManager } from './tools/execution';
 import { registerRunTool } from './tools/run';
 import { registerDriftTools } from './tools/drift';
@@ -104,6 +105,12 @@ async function main() {
     'plansync_comment_delete',
     'plansync_plan_suggest',
     'plansync_drift_resolve',
+    // R-205: `plansync_task(action, ...)` is the new unified surface; the
+    // five `plansync_task_*` names stay registered as deprecated aliases
+    // for one release. In exec mode only `action="rebind"` is reachable
+    // (create/update/claim/decline are owner / delegation-only), but we
+    // whitelist the umbrella tool so the new surface is callable.
+    'plansync_task',
     'plansync_task_rebind',
   ]);
 
@@ -147,6 +154,11 @@ async function main() {
     'plansync_comment_delete',
     'plansync_plan_suggest',
     'plansync_drift_resolve',
+    // R-205: unified `plansync_task` surface + deprecated aliases.
+    // In delegation mode, claim / decline / update / rebind are all
+    // reachable as agent actions; create stays owner-only and is rejected
+    // at the API layer regardless of which surface the caller used.
+    'plansync_task',
     'plansync_task_rebind',
     // Agent task operations (claim, decline, update own task)
     'plansync_task_claim',
@@ -235,6 +247,13 @@ async function main() {
   registerDeliverableTools(server, api);
   registerSuggestionTools(server, api);
   registerCommentTools(server, api);
+  // R-205: register `plansync_task` first so the new unified surface
+  // shows up before its deprecated aliases in `tools/list`. Both write
+  // into the same `server` object; ordering is purely cosmetic /
+  // hint-friendly. The legacy `plansync_task_{create,update,claim,
+  // decline,pack,list,show}` registrations stay in `registerTaskTools`,
+  // and `plansync_task_rebind` stays in `registerStatusTools`.
+  registerTaskActionTool(server, api);
   registerTaskTools(server, api);
   // R-204: register `plansync_run` first so the new surface shows up
   // before its deprecated aliases in `tools/list`. Both write into the
