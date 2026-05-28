@@ -41,13 +41,25 @@ export class RunStore extends Store<RunState> {
     this.transition('loading');
     try {
       const runs = await this.api.runs.list(projectId, taskId);
-      const byId = Object.fromEntries(runs.map((r) => [r.id, r]));
-      this.transition('ready', (state) => ({
-        ...state,
-        loadedProjectId: projectId,
-        byId,
-        activeIds: recomputeActive(byId),
-      }));
+      const freshById = Object.fromEntries(runs.map((r) => [r.id, r]));
+      this.transition('ready', (state) => {
+        // Task-scoped loads return only the requested task's runs, so a
+        // blind replace would evict every other task's runs already in
+        // the store (#995). Merge in that case — but ONLY when we're
+        // still on the same project. If `projectId` changed, the
+        // previous `state.byId` belongs to a different project and
+        // must be discarded; otherwise project A's runs would leak
+        // into project B's state (#2823). Project-scoped loads
+        // (`taskId` omitted) are authoritative and always replace.
+        const sameProject = state.loadedProjectId === projectId;
+        const byId = taskId && sameProject ? { ...state.byId, ...freshById } : freshById;
+        return {
+          ...state,
+          loadedProjectId: projectId,
+          byId,
+          activeIds: recomputeActive(byId),
+        };
+      });
       return runs;
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
