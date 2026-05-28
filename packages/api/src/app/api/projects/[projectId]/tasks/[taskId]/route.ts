@@ -176,8 +176,13 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
         // recent run already `completed` → a member closes the loop)
         // is unchanged because in that scenario the latest run *is*
         // the completed one.
+        // #1399: scope the lookup to the task's current boundPlanVersion so a
+        // completed run from a superseded plan version (e.g. after a drift
+        // rebind) cannot satisfy hasCompletedRun. A run on an old version means
+        // the agent executed against a stale plan; the task must be re-run
+        // against the new version before it can be marked done.
         const latestRun = await prisma.executionRun.findFirst({
-          where: { taskId: params.taskId },
+          where: { taskId: params.taskId, boundPlanVersion: task.boundPlanVersion },
           orderBy: { startedAt: 'desc' },
           select: { status: true, endedAt: true },
         });
