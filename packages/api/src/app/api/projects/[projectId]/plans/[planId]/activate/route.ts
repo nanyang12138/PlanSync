@@ -13,6 +13,7 @@ import {
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
 import { logger } from '@/lib/logger';
+import { runWithRequestContext, getRequestContext } from '@/lib/request-context';
 import { requirePlanInProject } from '@/lib/plan-scope';
 import { supersedeDeliverables } from '@/lib/plan-items';
 
@@ -280,10 +281,19 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
     // Side-effects are intentionally fired *after* the transaction has
     // committed (R-007). If the transaction had thrown, the lines below would
     // never execute and no notifications would be sent.
+    //
+    // Snapshot the ALS context now so fire-and-forget background tasks always
+    // log with this request's reqId, regardless of any concurrent enterWith
+    // calls on the same async resource from subsequent requests.
+    const reqCtx = getRequestContext();
+    const inBg = <T>(fn: () => T): T => (reqCtx ? runWithRequestContext(reqCtx, fn) : fn());
+
     if (driftAlerts.length > 0) {
       await dispatchDriftNotifications(params.projectId, scannedAlerts);
-      enrichDriftAlertsWithAi(params.projectId, activated.id, driftAlerts).catch((err) =>
-        logger.error({ err }, 'Background AI drift enrichment failed'),
+      inBg(() =>
+        enrichDriftAlertsWithAi(params.projectId, activated.id, driftAlerts).catch((err) =>
+          logger.error({ err }, 'Background AI drift enrichment failed'),
+        ),
       );
     }
 
@@ -318,12 +328,14 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
       title: activated.title,
       activatedBy: auth.userName,
     });
-    dispatchWebhooks(params.projectId, 'plan_activated', {
-      planId: activated.id,
-      version: activated.version,
-      title: activated.title,
-      activatedBy: auth.userName,
-    });
+    inBg(() =>
+      dispatchWebhooks(params.projectId, 'plan_activated', {
+        planId: activated.id,
+        version: activated.version,
+        title: activated.title,
+        activatedBy: auth.userName,
+      }),
+    );
 
     if (driftAlerts.length > 0) {
       eventBus.publish(params.projectId, 'drift_detected', {
@@ -333,13 +345,15 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
           severity: a.severity,
         })),
       });
-      dispatchWebhooks(params.projectId, 'drift_detected', {
-        alerts: driftAlerts.map((a) => ({
-          alertId: a.id,
-          taskId: a.taskId,
-          severity: a.severity,
-        })),
-      });
+      inBg(() =>
+        dispatchWebhooks(params.projectId, 'drift_detected', {
+          alerts: driftAlerts.map((a) => ({
+            alertId: a.id,
+            taskId: a.taskId,
+            severity: a.severity,
+          })),
+        }),
+      );
     }
 
     return NextResponse.json({ data: { ...activated, driftAlerts } });
