@@ -378,6 +378,25 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
           `Assignee "${body.assignee}" is not a member of this project`,
         );
       }
+      // #1437: prevent non-owner, non-assignee members from reassigning an
+      // awaiting_evidence task to themselves to bypass the identity-based
+      // status guards. Without this check a member could:
+      //   1. PATCH assignee: self   (making isAssignee=true for future checks)
+      //   2. PATCH status: in_progress  (guard sees isAssignee=true, passes)
+      //   3. PATCH status: cancelled
+      // This bypasses the "owner or original assignee" requirement on the
+      // awaiting_evidence exit transitions. Restrict reassignment of parked
+      // tasks to the owner or the CURRENT assignee (not the new one).
+      if (task.status === 'awaiting_evidence') {
+        const isOwner = authed.projectRole === 'owner';
+        const isCurrentAssignee = task.assignee === auth.userName;
+        if (!isOwner && !isCurrentAssignee) {
+          throw new AppError(
+            ErrorCode.FORBIDDEN,
+            'Only the project owner or current assignee can reassign an awaiting_evidence task.',
+          );
+        }
+      }
     }
 
     // R-192 / closes #1462 — the `done`-gate above derives part of its
