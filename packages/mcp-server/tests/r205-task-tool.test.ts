@@ -75,12 +75,22 @@ function makeServer() {
   return new McpServer({ name: 'test', version: '0.0.1' });
 }
 
+interface InputSchema {
+  safeParse: (input: unknown) => {
+    success: boolean;
+    data?: Record<string, unknown>;
+    error?: { issues: Array<{ path: (string | number)[]; message: string }> };
+  };
+  shape?: Record<string, unknown>;
+}
+
 function getTool(
   server: McpServer,
   name: string,
 ):
   | {
       description?: string;
+      inputSchema?: InputSchema;
       callback?: (args: Record<string, unknown>) => Promise<unknown>;
       handler?: (args: Record<string, unknown>) => Promise<unknown>;
     }
@@ -360,6 +370,124 @@ describe('R-205: plansync_task(action, ...) — unified task tool', () => {
           projectId: 'p1',
         }),
       ).rejects.toThrow(/invalid arguments/);
+    });
+
+    // Issue #2769 — the outer SDK-facing inputSchema MUST be a real superset
+    // of `createTaskShape` / `updateTaskShape`. The MCP SDK strips fields
+    // that aren't in the outer shape BEFORE the inner discriminated-union
+    // `safeParse` runs, so any field declared on the shared shape but
+    // missing here is silently dropped — breaking deliverable binding,
+    // drift-blast-radius scoping, and completion verification.
+    it('R205-S4 (#2769): outer schema declares planDeliverableRefs / planConstraintRefs / planStandardRefs', () => {
+      const t = getTool(server, 'plansync_task');
+      const shape = t?.inputSchema?.shape;
+      expect(shape).toBeDefined();
+      expect(shape).toHaveProperty('planDeliverableRefs');
+      expect(shape).toHaveProperty('planConstraintRefs');
+      expect(shape).toHaveProperty('planStandardRefs');
+    });
+
+    it('R205-S5 (#2769): outer schema accepts plan*Refs as string arrays on create', () => {
+      const t = getTool(server, 'plansync_task');
+      const schema = t?.inputSchema;
+      expect(schema).toBeDefined();
+      const parsed = schema!.safeParse({
+        action: 'create',
+        projectId: 'p1',
+        title: 'X',
+        type: 'code',
+        planDeliverableRefs: ['deliv-1', 'deliv-2'],
+        planConstraintRefs: ['c1'],
+        planStandardRefs: ['s1'],
+      });
+      expect(parsed.success).toBe(true);
+      expect(parsed.data?.planDeliverableRefs).toEqual(['deliv-1', 'deliv-2']);
+      expect(parsed.data?.planConstraintRefs).toEqual(['c1']);
+      expect(parsed.data?.planStandardRefs).toEqual(['s1']);
+    });
+
+    it('R205-S6 (#2769): outer schema accepts agentConstraints as an array of strings (not a scalar string)', () => {
+      const t = getTool(server, 'plansync_task');
+      const schema = t?.inputSchema;
+      expect(schema).toBeDefined();
+
+      // Array form must succeed (matches the shared schema and the REST API).
+      const okParsed = schema!.safeParse({
+        action: 'create',
+        projectId: 'p1',
+        title: 'X',
+        type: 'code',
+        agentConstraints: ['must use TypeScript', 'no npm install'],
+      });
+      expect(okParsed.success).toBe(true);
+      expect(okParsed.data?.agentConstraints).toEqual(['must use TypeScript', 'no npm install']);
+
+      // The legacy scalar-string form must NOT silently coerce — that was
+      // the original bug: it advertised `string` so callers thinking they
+      // were passing an array got a confusing rejection (or worse, the
+      // SDK strip-then-validate dropped the field entirely).
+      const badParsed = schema!.safeParse({
+        action: 'create',
+        projectId: 'p1',
+        title: 'X',
+        type: 'code',
+        agentConstraints: 'must use TypeScript',
+      });
+      expect(badParsed.success).toBe(false);
+    });
+
+    it('R205-S7 (#2769): outer schema accepts null on update-clearable fields', () => {
+      // updateTaskShape declares these as `.nullable().optional()` so an
+      // agent can clear them via the unified surface (same as the legacy
+      // plansync_task_update behaviour). Outer schema must not strip
+      // `null` to undefined or reject the payload outright.
+      const t = getTool(server, 'plansync_task');
+      const schema = t?.inputSchema;
+      expect(schema).toBeDefined();
+      const parsed = schema!.safeParse({
+        action: 'update',
+        projectId: 'p1',
+        taskId: 't1',
+        description: null,
+        branchName: null,
+        prUrl: null,
+        agentContext: null,
+        expectedOutput: null,
+        startDate: null,
+        dueDate: null,
+        assignee: null,
+      });
+      expect(parsed.success).toBe(true);
+      expect(parsed.data?.description).toBeNull();
+      expect(parsed.data?.branchName).toBeNull();
+      expect(parsed.data?.prUrl).toBeNull();
+      expect(parsed.data?.agentContext).toBeNull();
+      expect(parsed.data?.expectedOutput).toBeNull();
+      expect(parsed.data?.startDate).toBeNull();
+      expect(parsed.data?.dueDate).toBeNull();
+      expect(parsed.data?.assignee).toBeNull();
+    });
+
+    it('R205-S8 (#2769): outer shape is a true superset of createTaskShape and updateTaskShape', async () => {
+      // Hard guard against future regressions: every field in the shared
+      // shapes MUST appear on the outer plansync_task input schema. The
+      // outer shape may legitimately add routing-only fields (action,
+      // projectId, taskId, startImmediately for the claim path) — those
+      // are listed in `allowedExtras` below.
+      const { createTaskShape, updateTaskShape } = await import('@plansync/shared');
+      const sharedKeys = new Set<string>([
+        ...Object.keys(createTaskShape),
+        ...Object.keys(updateTaskShape),
+      ]);
+      const t = getTool(server, 'plansync_task');
+      const shape = t?.inputSchema?.shape;
+      expect(shape).toBeDefined();
+      const outerKeys = new Set(Object.keys(shape!));
+      const missing = [...sharedKeys].filter((k) => !outerKeys.has(k));
+      expect(
+        missing,
+        `outer plansync_task schema missing fields from shared shapes: ${missing.join(', ')}`,
+      ).toEqual([]);
     });
   });
 
