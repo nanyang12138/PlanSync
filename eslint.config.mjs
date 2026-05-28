@@ -35,7 +35,7 @@ export default [
       // mcp-server boundary types to `unknown` + narrowing. The repo lint
       // script enforces `--max-warnings 0`, so new `any` usage will fail CI.
       '@typescript-eslint/no-explicit-any': 'warn',
-      '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
+      '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }],
       'no-unused-vars': 'off',
       'no-undef': 'off',
     },
