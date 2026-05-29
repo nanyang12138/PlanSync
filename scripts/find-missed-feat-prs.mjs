@@ -20,7 +20,7 @@ const idMap = new Map(entries.map((e) => [e.id, e]));
 const statusOf = (e) => (getFieldValue(e, "status") || "").split(/\s+/)[0];
 
 const prs = JSON.parse(fs.readFileSync(PRS_PATH, "utf8"));
-const CC_RE = /^(?:feat|fix|chore|refactor|perf|test|docs)\((R-\d+[a-z]?(?:\.[a-z0-9]+)?)\)\s*[:!]/i;
+const CC_RE = /^(?:feat|fix|chore|refactor|perf|test|docs|ci|build|style)\((R-\d+[a-z]?(?:\.[a-z0-9]+)?)\)\s*[:!]/i;
 const META_DOC_PR_RE = /^(?:docs\(remediation\)|chore\(R-\d+\): mark as |chore\(triage\)|chore\(remediation\))/i;
 
 const found = new Map(); // rid -> [{num, title}]
