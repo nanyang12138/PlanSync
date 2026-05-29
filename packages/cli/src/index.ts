@@ -335,6 +335,19 @@ async function main() {
     // AI conversation — auto-reconnect MCP if needed
     if (!mcp.isRunning()) {
       process.stdout.write(`${c.dim}Reconnecting MCP...${c.reset}\r`);
+      // Re-check the build in case dist was deleted mid-session or dependencies
+      // were updated while the CLI was running (#308 — ensureMcpBuild was only
+      // called at startup, so a deleted dist would silently fail to reconnect).
+      const rebuildResult = ensureMcpBuild({
+        serverPath: cfg.mcpServer,
+        projectRoot: path.resolve(selfDir, '../../../'),
+        nodeBin: cfg.nodeBin,
+      });
+      if (!rebuildResult.ok) {
+        process.stdout.write(' '.repeat(40) + '\r');
+        console.log(`\n${c.yellow}⚠ MCP rebuild failed: ${rebuildResult.error}${c.reset}\n`);
+        return;
+      }
       const ok = await mcp.ensureRunning(cfg.mcpServer);
       process.stdout.write(' '.repeat(40) + '\r');
       if (!ok) {
