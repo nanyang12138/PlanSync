@@ -2986,9 +2986,9 @@
 
 #### R-175 [HIGH] MCP tool surface 收敛到 ≤ 12 个
 
-- **status**: in_progress
-- **closed_in**: PR#664 (step 1 only)
-- **note**: Sliced into 3 PRs by fix*step number. **Step 1 only** (`plan*_*append`→`plan_patch`) shipped in PR#664. Steps 2 (`execution*_`→`run`) and 3 (`task\_\*`→`task`) are still pending and tracked as follow-up entries R-175a / R-175b. Setting `status: done`prematurely (PR#839 backfill) caused issue #840 — downstream entries with`depends_on: R-175`(e.g. R-176) became schedulable before the surface was actually collapsed. Revert to`in_progress` until R-175a + R-175b both close.
+- **status**: done
+- **closed_in**: PR#664 (step 1), PR#1271 (R-204/step 2), PR#2755 (R-205/step 3)
+- **note**: Sliced into 3 PRs. Step 1 (`plan_*_append`→`plan_patch`) shipped in PR#664. Step 2 (`execution_*`→`run`) shipped as R-204 in PR#1271. Step 3 (`task_*`→`task`) shipped as R-205 in PR#2755. All three steps landed; marking done per R-205 fix_step 4.
 - **batch**: B15
 - **depends_on**: R-027, R-030
 - **effort**: large
@@ -3023,7 +3023,8 @@
 
 #### R-205 [HIGH] MCP task\_\* tools → task(action, args) (R-175 step 3)
 
-- **status**: in_progress
+- **status**: done
+- **closed_in**: PR#2755
 - **batch**: B15
 - **depends_on**: R-204
 - **effort**: medium
