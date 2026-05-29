@@ -94,6 +94,25 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
           { code: 'RUN_PAUSED', runStatus: 'paused' },
         );
       }
+      // R-206: catch the (rare) race where the task got gated AFTER the run
+      // was created but the run was not in the drift-scan snapshot, so
+      // auto-pause didn't fire. The version gate below cannot catch this
+      // because activate doesn't change task.boundPlanVersion (only
+      // drift_resolve action=rebind does), so versions stay aligned while
+      // the task is gated. Reuse the RUN_PAUSED code so MCP's
+      // detectAbortFromHeartbeat (execution.ts:18-58) already handles it
+      // without needing a new error-code branch.
+      if (run.task.executionGate) {
+        throw new AppError(
+          ErrorCode.STATE_CONFLICT,
+          `Run blocked: task is gated (${run.task.executionGate}). Resolve drift and start a fresh run.`,
+          {
+            code: 'RUN_PAUSED',
+            runStatus: 'paused',
+            executionGate: run.task.executionGate,
+          },
+        );
+      }
       if (run.status !== 'running') {
         throw new AppError(
           ErrorCode.STATE_CONFLICT,
@@ -131,8 +150,15 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
       }
       const [updated, driftAlerts] = await Promise.all([
         prisma.executionRun.findUnique({ where: { id: params.runId } }),
+        // R-206: filter `severity != 'low'` to mirror the complete path
+        // (line 175 below) and the SSE event-listener filter
+        // (event-listener.ts:126-136). LOW-severity drift is intentionally
+        // non-gating (drift-engine.ts:347-348) so it should never drive
+        // any agent-side reaction; leaving it in the heartbeat response
+        // caused log spam AND made the new R-206 MCP-side abort logic
+        // (execution.ts heartbeat block) need an extra severity filter.
         prisma.driftAlert.findMany({
-          where: { taskId: params.taskId, status: 'open' },
+          where: { taskId: params.taskId, status: 'open', severity: { not: 'low' } },
           select: { id: true, severity: true, reason: true },
         }),
       ]);
@@ -145,6 +171,22 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
           ErrorCode.STATE_CONFLICT,
           'Cannot complete a paused run. Abort and start a fresh execution after drift is resolved.',
           { code: 'RUN_PAUSED', runStatus: 'paused' },
+        );
+      }
+      // R-206: same gate check as the heartbeat branch above. The
+      // openDrifts query at line ~174 is the existing redundancy, but
+      // catching the gate explicitly here keeps the error shape uniform
+      // with heartbeat (RUN_PAUSED) and handles a gated-but-no-open-drift
+      // edge case cleanly.
+      if (run.task.executionGate) {
+        throw new AppError(
+          ErrorCode.STATE_CONFLICT,
+          `Cannot complete: task is gated (${run.task.executionGate}). Resolve drift and start a fresh run.`,
+          {
+            code: 'RUN_PAUSED',
+            runStatus: 'paused',
+            executionGate: run.task.executionGate,
+          },
         );
       }
       if (run.status !== 'running') {

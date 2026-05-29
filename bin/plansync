@@ -18,6 +18,35 @@ require_arg() {
   [[ -n "${2:-}" && "${2:-}" != --* ]] || die "Option $1 requires a value. See --help."
 }
 
+# ─── Fast-path subcommands (R-206 L2) ─────────────────────────────────────────
+# These do NOT need Postgres / MCP build / dependency install. Dispatched
+# before the main argument parser so they exit in tens of milliseconds —
+# `abort-check` is invoked from a Claude Code PreToolUse hook on every
+# tool call, so latency budget is < 50 ms end-to-end.
+case "${1:-}" in
+  abort-check|install-hook)
+    SUBCOMMAND="$1"
+    shift
+    if [ -x "$PROJECT_DIR/.local-runtime/node/bin/node" ]; then
+      NODE_BIN="$PROJECT_DIR/.local-runtime/node/bin/node"
+    elif command -v node >/dev/null 2>&1; then
+      NODE_BIN="$(command -v node)"
+    else
+      echo "❌ $SUBCOMMAND: node binary not found (no local runtime, no system node)" >&2
+      exit 1
+    fi
+    # abort-check needs PLANSYNC_API_KEY; auto-source the standard
+    # per-user credentials file when present and the key is unset so the
+    # hook works even when Claude Code didn't propagate the env var.
+    if [ "$SUBCOMMAND" = "abort-check" ] && [ -z "${PLANSYNC_API_KEY:-}" ] \
+        && [ -f "$HOME/.config/plansync/env" ]; then
+      # shellcheck disable=SC1091
+      set -a; . "$HOME/.config/plansync/env"; set +a
+    fi
+    exec "$NODE_BIN" "$PROJECT_DIR/packages/cli/src/${SUBCOMMAND}.mjs" "$@"
+    ;;
+esac
+
 # ─── Parse arguments ───
 HOST="terminal"
 PLANSYNC_PROJ=""

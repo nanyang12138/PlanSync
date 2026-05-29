@@ -64,6 +64,46 @@ PG_PORT=$(expr 15000 + $(id -u) % 1000)
 
 ---
 
+## Optional: Hard mid-execution interrupt (Claude Code only)
+
+PlanSync's MCP layer (L1, always-on) refuses every PlanSync write on a
+drifted task — agents can never accidentally `complete` work bound to a
+stale plan. But MCP is request/response: there is no server-push interrupt,
+so a Claude Code session that's mid-`Edit`/`Bash` cannot be force-stopped
+from the API side; the agent only sees the abort when it next calls a
+PlanSync tool.
+
+For **true mid-execution interrupt**, install a Claude Code `PreToolUse`
+hook that pings `plansync abort-check` before every tool call:
+
+```bash
+plansync install-hook                  # writes <project>/.claude/settings.json — COMMIT it
+git add .claude/settings.json && git commit -m "chore: enable plansync abort-check hook"
+plansync install-hook --user           # writes ~/.claude/settings.json instead (personal, not team-shared)
+plansync install-hook --uninstall      # remove
+```
+
+After install + restart, every tool call (including non-PlanSync tools
+like `Edit` / `Bash`) first runs the hook. If the API reports the run as
+paused or the task as gated, the hook exits non-zero and Claude Code
+interrupts the ai-loop before the tool is dispatched. `abort-check`
+fails closed on persistent API errors (3 × 100 ms retry budget) so a
+broken backend can't silently bypass the gate.
+
+**This mechanism is Claude Code only.** Cursor / Codex / Continue / Cline
+do not yet expose a comparable pre-tool hook; `plansync install-hook --ide=cursor`
+(and the others) refuses with a clear message rather than write a placebo
+adapter. Sessions on those IDEs still get L1 protection — they just don't
+get the mid-execution interrupt.
+
+This repo's own `.claude/settings.json` ships the hook pre-configured
+(against `bin/plansync abort-check`, the relative form that works inside
+the PlanSync repo). It's both dogfood and a reference example — if you
+develop PlanSync with a non–Claude Code IDE, the file is harmless to you
+because the hook simply never fires.
+
+---
+
 ## Architecture
 
 **Monorepo with four packages** — all share Zod schemas from `@plansync/shared`:
@@ -364,8 +404,16 @@ of stuck plans.
    - Otherwise the API falls back to `plan.requiredReviewers` if non-empty.
    - Otherwise the **owner is auto-added as the sole reviewer** (owner-self-review).
    - For multi-reviewer plans, list every reviewer in the propose call.
-     **Reviewers cannot be added after the plan is `proposed`** — withdraw to
-     draft (`plansync_plan_withdraw`) and re-propose if the set must change.
+     **Reviewers can be added after the plan is `proposed`** (via PATCH
+     `/plans/{planId}` with `requiredReviewers`, or POST
+     `/plans/{planId}/reviews`). When this happens, `plansync_plan_activate`
+     re-validates the review set inside its transaction (FOR UPDATE on the
+     plan row, then re-counts pending reviews) and rejects activate with
+     `STATE_CONFLICT` until every reviewer — including newly-added ones —
+     has approved. If you want to fully reset the review record (e.g.
+     remove a reviewer who already approved), use
+     `plansync_plan_withdraw` and re-propose; in-place reviewer **removal**
+     on a `proposed` plan is not exposed.
 2. A `proposed` plan has exactly three exits — pick one, do not invent more:
    - All reviewers approve → `plansync_plan_activate`.
    - Owner emergency override → `plansync_plan_activate` with `force: true`

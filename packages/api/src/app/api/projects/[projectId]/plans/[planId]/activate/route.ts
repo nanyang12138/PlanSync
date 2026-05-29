@@ -16,26 +16,9 @@ import { logger } from '@/lib/logger';
 import { runWithRequestContext, getRequestContext } from '@/lib/request-context';
 import { requirePlanInProject } from '@/lib/plan-scope';
 import { supersedeDeliverables } from '@/lib/plan-items';
+import { acquireProjectAdvisoryLock } from '@/lib/advisory-lock';
 
 type Params = { params: Promise<{ projectId: string; planId: string }> };
-
-/**
- * Hash a projectId string into a signed 64-bit int suitable for
- * `pg_advisory_xact_lock(bigint)`. The hash is stable and deterministic so two
- * concurrent requests for the same project always derive the same lock key.
- */
-function hashProjectIdToInt64(projectId: string): bigint {
-  // FNV-1a 64-bit
-  let hash = 0xcbf29ce484222325n;
-  const prime = 0x100000001b3n;
-  const mask64 = (1n << 64n) - 1n;
-  for (let i = 0; i < projectId.length; i++) {
-    hash = (hash ^ BigInt(projectId.charCodeAt(i))) & mask64;
-    hash = (hash * prime) & mask64;
-  }
-  // Convert unsigned 64-bit to signed for PostgreSQL bigint.
-  return hash >= 1n << 63n ? hash - (1n << 64n) : hash;
-}
 
 export async function POST(req: NextRequest, __nextCtx: Params) {
   const params = await __nextCtx.params;
@@ -103,8 +86,14 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
         // pg_advisory_xact_lock keyed by projectId ensures the
         // updateMany→update sequence runs sequentially per project, which
         // matches the intended semantics of "activate a single plan".
-        const lockKey = hashProjectIdToInt64(params.projectId);
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockKey})`;
+        //
+        // R-206: the same advisory lock is also acquired by
+        // `execution_start` (POST /tasks/:id/runs) so that route serializes
+        // against in-flight activates and observes the committed
+        // `task.executionGate` rather than racing past it. Both routes MUST
+        // use the same key derivation (see `acquireProjectAdvisoryLock`)
+        // for the exclusion to actually take effect.
+        await acquireProjectAdvisoryLock(tx, params.projectId);
 
         await tx.plan.updateMany({
           where: { projectId: params.projectId, status: 'active' },
