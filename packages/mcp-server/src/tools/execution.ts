@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { ApiClient, ApiError } from '../api-client';
 import { logger } from '../logger';
 import { signalRunAborted } from '../abort-signal';
+import type { ExecStateManager } from '../exec-state-manager';
 
 type DriftAlert = { id: string; severity: string; reason: string };
 
@@ -336,6 +337,7 @@ export interface ExecutionHandlerContext {
   onDrift?: (drifts: DriftAlert[]) => void;
   /** Tool name used in error envelopes — `plansync_run` or the legacy alias. */
   toolName: string;
+  execStateManager?: ExecStateManager;
 }
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
@@ -353,6 +355,7 @@ export async function handleExecutionStart(
     });
     const runId = (result as { data?: { id?: string } })?.data?.id;
     if (runId) {
+      ctx.execStateManager?.bindRun({ runId, projectId, taskId });
       heartbeatManager.start(runId, projectId, taskId, ctx.api, ctx.onDrift);
     }
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
@@ -408,7 +411,11 @@ export async function handleExecutionComplete(
   }
 }
 
-export function registerExecutionTools(server: McpServer, api: ApiClient) {
+export function registerExecutionTools(
+  server: McpServer,
+  api: ApiClient,
+  execStateManager?: ExecStateManager,
+) {
   server.tool(
     'plansync_exec_context',
     'Call this at session start to check if this session was launched for task execution. Returns task context and runId if so — skip normal session start and present your implementation approach immediately.',
@@ -436,6 +443,7 @@ export function registerExecutionTools(server: McpServer, api: ApiClient) {
             ?.driftAlerts ?? [];
 
         if (drifts.length === 0) {
+          execStateManager?.bindRun({ runId, projectId, taskId });
           heartbeatManager.start(runId, projectId, taskId, api, makeDriftCallback(server));
           return {
             content: [
@@ -534,6 +542,7 @@ export function registerExecutionTools(server: McpServer, api: ApiClient) {
         api,
         onDrift: makeDriftCallback(server),
         toolName: 'plansync_execution_start',
+        execStateManager,
       });
     },
   );

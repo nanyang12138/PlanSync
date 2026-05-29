@@ -201,11 +201,11 @@ export function didWeAcquireDispatchLock({
     if (name !== lockLabel) continue;
     const ts = new Date(e.created_at).getTime();
     if (!Number.isFinite(ts)) continue;
-    if (ts > mostRecentLockEventTs) {
+    if (ts >= mostRecentLockEventTs) {
       mostRecentLockEventTs = ts;
       mostRecentLockEventType = e.event;
     }
-    if (e.event === 'labeled' && (mostRecentLabeledTs === null || ts > mostRecentLabeledTs)) {
+    if (e.event === 'labeled' && (mostRecentLabeledTs === null || ts >= mostRecentLabeledTs)) {
       mostRecentLabeledTs = ts;
     }
   }
