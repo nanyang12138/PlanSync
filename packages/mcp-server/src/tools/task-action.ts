@@ -63,41 +63,51 @@ export function normalizeTaskToolNameForFsm(toolName: string, args: unknown): st
 // Per-action zod schemas. The outer SDK shape advertised on `plansync_task`
 // is a superset; this discriminated union enforces "no executor* on
 // rebind", "no startImmediately on update", etc., at safeParse time.
-const createArgsSchema = z.object({
-  action: z.literal('create'),
-  projectId: z.string(),
-  ...createTaskShape,
-});
+const createArgsSchema = z
+  .object({
+    action: z.literal('create'),
+    projectId: z.string(),
+    ...createTaskShape,
+  })
+  .strict();
 
-const updateArgsSchema = z.object({
-  action: z.literal('update'),
-  projectId: z.string(),
-  taskId: z.string(),
-  ...updateTaskShape,
-});
+const updateArgsSchema = z
+  .object({
+    action: z.literal('update'),
+    projectId: z.string(),
+    taskId: z.string(),
+    ...updateTaskShape,
+  })
+  .strict();
 
-const claimArgsSchema = z.object({
-  action: z.literal('claim'),
-  projectId: z.string(),
-  taskId: z.string(),
-  assigneeType: z.enum(['human', 'agent']).optional(),
-  startImmediately: z
-    .boolean()
-    .optional()
-    .describe('If false, accept assignment but keep status as todo. Default: true'),
-});
+const claimArgsSchema = z
+  .object({
+    action: z.literal('claim'),
+    projectId: z.string(),
+    taskId: z.string(),
+    assigneeType: z.enum(['human', 'agent']).optional(),
+    startImmediately: z
+      .boolean()
+      .optional()
+      .describe('If false, accept assignment but keep status as todo. Default: true'),
+  })
+  .strict();
 
-const declineArgsSchema = z.object({
-  action: z.literal('decline'),
-  projectId: z.string(),
-  taskId: z.string(),
-});
+const declineArgsSchema = z
+  .object({
+    action: z.literal('decline'),
+    projectId: z.string(),
+    taskId: z.string(),
+  })
+  .strict();
 
-const rebindArgsSchema = z.object({
-  action: z.literal('rebind'),
-  projectId: z.string(),
-  taskId: z.string(),
-});
+const rebindArgsSchema = z
+  .object({
+    action: z.literal('rebind'),
+    projectId: z.string(),
+    taskId: z.string(),
+  })
+  .strict();
 
 const taskArgsSchema = z.discriminatedUnion('action', [
   createArgsSchema,
