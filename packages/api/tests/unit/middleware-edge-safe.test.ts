@@ -42,6 +42,8 @@ function readImports(filePath: string): string[] {
 const EDGE_FORBIDDEN = new Set([
   'node:async_hooks',
   'async_hooks',
+  'node:crypto',
+  'crypto',
   'node:fs',
   'node:fs/promises',
   'fs',
