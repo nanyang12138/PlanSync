@@ -425,6 +425,12 @@ async function main() {
       const pruneResult = pruneHistory(history, cfg.maxHistoryTokens);
       if (pruneResult.dropped > 0) {
         console.log(`\n${c.yellow}${formatPruneNotice(pruneResult)}${c.reset}`);
+      } else if (pruneResult.tokensAfter > pruneResult.budget) {
+        // Over budget but couldn't drop anything (e.g. a single message larger
+        // than the budget). Notify so the user knows context is at risk (#733).
+        console.log(
+          `\n${c.yellow}Context at ${pruneResult.tokensAfter.toLocaleString()} tokens (budget: ${pruneResult.budget.toLocaleString()}) — cannot trim further.${c.reset}`,
+        );
       }
       currentStatus = await fetchStatus();
       currentSystem = buildSystemPrompt(currentStatus);
