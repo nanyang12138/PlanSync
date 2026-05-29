@@ -296,22 +296,14 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
         //     wait for a fresh completed run, which is the correct
         //     behaviour (the reopen explicitly says "go do more
         //     work").
-        let evidenceGatePoisoned = false;
-        if (!isOwner && latestRun?.status === 'completed' && latestRun.endedAt) {
-          const parkingExit = await prisma.activity.findFirst({
-            where: {
-              projectId: params.projectId,
-              type: 'task_status_changed',
-              createdAt: { gt: latestRun.endedAt },
-              AND: [
-                { metadata: { path: ['taskId'], equals: params.taskId } },
-                { metadata: { path: ['fromStatus'], equals: 'awaiting_evidence' } },
-              ],
-            },
-            select: { id: true },
-          });
-          evidenceGatePoisoned = parkingExit !== null;
-        }
+        // `evidenceGatePoisoned` reuses the result of the identical query already
+        // run above for `liftedFromAwaitingEvidenceAfterLatestRun` — both look for a
+        // task_status_changed row where fromStatus='awaiting_evidence' after the
+        // latest run's endedAt (#1833 redundant-query cluster).
+        const evidenceGatePoisoned =
+          !isOwner && latestRun?.status === 'completed' && !!latestRun.endedAt
+            ? liftedFromAwaitingEvidenceAfterLatestRun
+            : false;
 
         if (!isOwner && (evidenceGatePoisoned || (!hasCompletedRun && !isHumanSelfComplete))) {
           if (task.assigneeType === 'agent') {
