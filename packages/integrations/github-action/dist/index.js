@@ -21891,13 +21891,6 @@ async function run() {
           `PlanSync PR-body sync skipped: \`repo\` input "${repoInput}" must be in "owner/name" form.`
         );
       } else {
-        if (status.planVersion === null) {
-          try {
-            const planForStatus = await fetchActivePlanFileGlobs(apiUrl, projectId, headers);
-            if (planForStatus) status.planVersion = planForStatus.planVersion;
-          } catch {
-          }
-        }
         try {
           const result = await syncPrBody(status, {
             repo: repoInput,

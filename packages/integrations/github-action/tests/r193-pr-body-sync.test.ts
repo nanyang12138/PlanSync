@@ -356,8 +356,6 @@ describe('R-193 run() integration with GitHub API', () => {
         ],
       }),
     );
-    // #2754: plan-version fetch (best-effort, before PR-body sync).
-    fetchSpy.mockResolvedValueOnce(new Response(null, { status: 404 }));
     // GitHub GET
     fetchSpy.mockResolvedValueOnce(jsonResponse(200, { body: '## Description\n\nFixes #99.' }));
     // GitHub PATCH
@@ -406,8 +404,6 @@ describe('R-193 run() integration with GitHub API', () => {
         ],
       }),
     );
-    // #2754: plan-version fetch (best-effort, before PR-body sync).
-    fetchSpy.mockResolvedValueOnce(new Response(null, { status: 404 }));
     // GitHub GET returns the body we wrote on the first run.
     fetchSpy.mockResolvedValueOnce(jsonResponse(200, { body: updatedBodyAfterFirst }));
     // The block is unchanged → no PATCH should be issued. If a PATCH did
@@ -451,8 +447,6 @@ describe('R-193 run() integration with GitHub API', () => {
         ],
       }),
     );
-    // #2754: plan-version fetch (best-effort, before PR-body sync).
-    fetchSpy.mockResolvedValueOnce(new Response(null, { status: 404 }));
     fetchSpy.mockResolvedValueOnce(jsonResponse(200, { body: null }));
     let patchBody: string | undefined;
     fetchSpy.mockImplementationOnce(async (_url: string | URL, init?: RequestInit) => {
@@ -523,8 +517,6 @@ describe('R-193 run() integration with GitHub API', () => {
     });
     // No drifts → green gate.
     fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] }));
-    // #2754: plan-version fetch (best-effort, before PR-body sync).
-    fetchSpy.mockResolvedValueOnce(new Response(null, { status: 404 }));
     // GitHub GET fails with 502.
     fetchSpy.mockResolvedValueOnce(new Response('bad gateway', { status: 502 }));
 
@@ -568,8 +560,6 @@ describe('R-193 run() integration with GitHub API', () => {
     for (let i = 0; i < 50; i += 1) {
       fetchSpy.mockResolvedValueOnce(jsonResponse(200, fullPage));
     }
-    // #2754: plan-version fetch (best-effort, before PR-body sync).
-    fetchSpy.mockResolvedValueOnce(new Response(null, { status: 404 }));
     // GitHub GET — body is empty so the block will be appended.
     fetchSpy.mockResolvedValueOnce(jsonResponse(200, { body: '' }));
     // GitHub PATCH — capture the body so we can assert on the rendered block.
@@ -653,8 +643,6 @@ describe('R-193 run() integration with GitHub API', () => {
       'pr-number': '5',
     });
     fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] }));
-    // #2754: plan-version fetch (best-effort, before PR-body sync).
-    fetchSpy.mockResolvedValueOnce(new Response(null, { status: 404 }));
     fetchSpy.mockResolvedValueOnce(jsonResponse(200, { body: '' }));
     fetchSpy.mockResolvedValueOnce(jsonResponse(200, {}));
 

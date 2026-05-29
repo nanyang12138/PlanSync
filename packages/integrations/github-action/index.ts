@@ -791,17 +791,6 @@ export async function run() {
           `PlanSync PR-body sync skipped: \`repo\` input "${repoInput}" must be in "owner/name" form.`,
         );
       } else {
-        // #2754: in legacy-mode or no-prFiles paths the gate never fetched the
-        // active plan, so status.planVersion may still be null. Fetch it now
-        // (best-effort) so the rendered block shows the real version.
-        if (status.planVersion === null) {
-          try {
-            const planForStatus = await fetchActivePlanFileGlobs(apiUrl, projectId, headers);
-            if (planForStatus) status.planVersion = planForStatus.planVersion;
-          } catch {
-            // best-effort — gate verdict is unaffected
-          }
-        }
         try {
           const result = await syncPrBody(status, {
             repo: repoInput,
