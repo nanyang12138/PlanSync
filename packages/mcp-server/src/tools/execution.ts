@@ -75,8 +75,27 @@ class HeartbeatManager {
           {},
         );
         const driftAlerts = response?.data?.driftAlerts;
-        if (driftAlerts && driftAlerts.length > 0 && onDrift) {
-          onDrift(driftAlerts);
+        if (driftAlerts && driftAlerts.length > 0) {
+          // R-206: a 200 heartbeat with non-empty `driftAlerts` means the
+          // task was gated AFTER this run was created and the drift-scan
+          // snapshot missed it — so auto-pause did not fire and the API
+          // still considers the run "running". The job of the heartbeat
+          // is to convert that soft signal into a hard stop so the next
+          // tool call short-circuits via `tool-wrapper.ts isRunAborted()`
+          // instead of running through a stale ai-loop.
+          //
+          // API-side LOW filter (runs/[runId]/route.ts:135) guarantees
+          // anything that reaches this branch is HIGH or MEDIUM and
+          // therefore actionable; we do not need to filter here.
+          signalRunAborted({
+            code: 'RUN_PAUSED',
+            message: `Drift detected on task (${driftAlerts.length} alert(s)); stopping execution.`,
+            runId,
+            taskId,
+          });
+          this.stop(runId);
+          if (onDrift) onDrift(driftAlerts);
+          return;
         }
         logger.debug({ runId }, 'Heartbeat sent');
       } catch (err) {

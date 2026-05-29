@@ -86,10 +86,14 @@ describe('#1467 — POST /runs status decisions inside tx + count-checked guards
   it('awaiting_evidence lift updateMany checks count and throws STATE_CONFLICT on 0', () => {
     const body = txCallbackBody(fs.readFileSync(ROUTE_FILE, 'utf-8'));
 
-    // Locate the awaiting_evidence updateMany call.
-    const liftIdx = body.indexOf("status: 'awaiting_evidence' }");
+    // Locate the awaiting_evidence updateMany call. R-206 added an
+    // additional `executionGate: null` field to the WHERE clause, so
+    // match the `status: 'awaiting_evidence'` substring rather than the
+    // exact pre-R-206 closing-brace form. The intent is unchanged:
+    // find the lift call and assert count-check + STATE_CONFLICT follow.
+    const liftIdx = body.indexOf("status: 'awaiting_evidence'");
     expect(liftIdx).toBeGreaterThan(-1);
-    // Within ~600 chars after the lift, we must see a count check that
+    // Within ~800 chars after the lift, we must see a count check that
     // throws STATE_CONFLICT — guards against a regression that drops the
     // count inspection again.
     const after = body.slice(liftIdx, liftIdx + 800);

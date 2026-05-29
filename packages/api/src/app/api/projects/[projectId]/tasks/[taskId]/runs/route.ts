@@ -9,6 +9,7 @@ import { createActivity } from '@/lib/activity';
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
 import { auditCrossProjectTaskIfNeeded } from '@/lib/task-scope';
+import { acquireProjectAdvisoryLock } from '@/lib/advisory-lock';
 
 type Params = { params: Promise<{ projectId: string; taskId: string }> };
 
@@ -209,19 +210,47 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
     let run;
     try {
       run = await prisma.$transaction(async (tx) => {
+        // R-206: serialize against in-flight `plan_activate` for this same
+        // project. Without this, the outer `task.findFirst` above (line 58)
+        // runs at READ COMMITTED and cannot see the `executionGate` that
+        // activate sets inside its own transaction. With the lock, this
+        // tx blocks until activate commits, and the `liveTask` re-read
+        // below observes the gate; the existing R-140 guards and the
+        // `executionGate: null` WHERE clauses in the updateMany calls
+        // further down then reject cleanly with STATE_CONFLICT.
+        await acquireProjectAdvisoryLock(tx, params.projectId);
         const liveTask = await tx.task.findUnique({
           where: { id: params.taskId },
-          select: { status: true, boundPlanVersion: true },
+          select: { status: true, boundPlanVersion: true, executionGate: true },
         });
         if (!liveTask) {
           throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
         }
 
+        // R-206: re-check the gate in-tx now that any in-flight activate
+        // has committed (advisory lock above guarantees ordering). The
+        // outer R-140 check at line 71 ran on a pre-lock snapshot and may
+        // have missed a concurrent activate. Mirror the outer message so
+        // the operator sees the same recovery hint either way.
+        if (liveTask.executionGate) {
+          const gateMsg =
+            liveTask.executionGate === 'drift_high' || liveTask.executionGate === 'drift_medium'
+              ? `Cannot start execution: task is gated by drift (${liveTask.executionGate}). Resolve open drift alerts (drift_resolve action=rebind|no_impact|cancel) before retrying.`
+              : `Cannot start execution: task is gated (${liveTask.executionGate}). Clear the gate before retrying.`;
+          throw new AppError(ErrorCode.STATE_CONFLICT, gateMsg, {
+            executionGate: liveTask.executionGate,
+          });
+        }
+
         if (liveTask.status === 'todo') {
           // Atomic claim: transition from 'todo' → 'in_progress' in a single DB operation.
           // If two operators race on the same todo task, only one wins — the other gets count=0.
+          // R-206: `executionGate: null` belt-and-suspenders — the in-tx check
+          // above already throws on a set gate, but pinning it here means a
+          // future non-activate gate-setter (e.g. manual_block API) still
+          // cannot slip a claim past us.
           const claimed = await tx.task.updateMany({
-            where: { id: params.taskId, status: 'todo' },
+            where: { id: params.taskId, status: 'todo', executionGate: null },
             data: {
               status: 'in_progress',
               assignee: body.executorName,
@@ -259,7 +288,10 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
             // `blocked` would otherwise let us fall through to a running-run
             // INSERT on a terminal task.
             const lifted = await tx.task.updateMany({
-              where: { id: params.taskId, status: 'awaiting_evidence' },
+              // R-206: `executionGate: null` defense in depth (see #1467
+              // comment block; same rationale as the todo→in_progress
+              // claim above).
+              where: { id: params.taskId, status: 'awaiting_evidence', executionGate: null },
               data: { status: 'in_progress' },
             });
             if (lifted.count === 0) {
@@ -276,7 +308,9 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
             // on the task for the rest of the tx and (b) lets us detect a
             // racing PATCH via count=0. Fixes #1467.
             const verified = await tx.task.updateMany({
-              where: { id: params.taskId, status: 'in_progress' },
+              // R-206: `executionGate: null` defense in depth — same
+              // rationale as the other two updateMany guards in this tx.
+              where: { id: params.taskId, status: 'in_progress', executionGate: null },
               data: { status: 'in_progress' },
             });
             if (verified.count === 0) {

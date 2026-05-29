@@ -9,6 +9,14 @@
       "args": []
     }
   },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [{ "type": "command", "command": "bin/plansync abort-check" }]
+      }
+    ]
+  },
   "enabledPlugins": {
     "andrej-karpathy-skills@karpathy-skills": true
   }

@@ -31,6 +31,27 @@ async function clearAiCalls() {
   await prisma.aiCall.deleteMany({});
 }
 
+/**
+ * Poll `prisma.aiCall.count({ where })` until it reaches `expected` or
+ * the budget runs out. Needed because #2889 made `aiClient.recordSafe`
+ * fire-and-forget: `await aiClient.complete(...)` returns BEFORE the
+ * insert lands, so an immediate `findMany`/`count` races the write.
+ * Tests that call `recordAiCall` directly (awaited) do not need this.
+ */
+async function waitForAiCallCount(
+  where: { purpose: string },
+  expected: number,
+  { timeoutMs = 2000, intervalMs = 25 }: { timeoutMs?: number; intervalMs?: number } = {},
+): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  let last = await prisma.aiCall.count({ where });
+  while (last < expected && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    last = await prisma.aiCall.count({ where });
+  }
+  return last;
+}
+
 afterAll(async () => {
   await prisma.$disconnect();
 });
@@ -56,7 +77,8 @@ describe('R-182: ai_calls observability persists provider + purpose', () => {
     const out = await aiClient.complete(PLAN_DIFF_SYSTEM, 'user msg', {
       purpose,
     });
-    const after = await prisma.aiCall.count({ where: { purpose } });
+    // #2889 made recordSafe fire-and-forget; poll for the row to land.
+    const after = await waitForAiCallCount({ purpose }, before + 1);
 
     expect(out).not.toBeNull();
     expect(after).toBe(before + 1);
@@ -88,6 +110,10 @@ describe('R-182: ai_calls observability persists provider + purpose', () => {
     await aiClient.complete(PLAN_DIFF_SYSTEM, 'same-user', { purpose });
     await aiClient.complete(PLAN_DIFF_SYSTEM, 'same-user', { purpose });
 
+    // #2889 made recordSafe fire-and-forget; wait for both inserts to land
+    // before reading. Without this poll, CI consistently observes 1 row
+    // (the second insert hasn't finished by the time findMany runs).
+    await waitForAiCallCount({ purpose }, 2);
     const rows = await prisma.aiCall.findMany({
       where: { purpose },
       orderBy: { createdAt: 'asc' },
@@ -109,6 +135,9 @@ describe('R-182: ai_calls observability persists provider + purpose', () => {
     await aiClient.complete(PLAN_DIFF_SYSTEM, 'same-user', { purpose: planPurpose });
     await aiClient.complete(IMPACT_ANALYSIS_SYSTEM, 'same-user', { purpose: impactPurpose });
 
+    // #2889 made recordSafe fire-and-forget; wait for both inserts to land.
+    await waitForAiCallCount({ purpose: planPurpose }, 1);
+    await waitForAiCallCount({ purpose: impactPurpose }, 1);
     const rows = await prisma.aiCall.findMany({
       where: { purpose: { in: [planPurpose, impactPurpose] } },
       orderBy: { createdAt: 'asc' },
