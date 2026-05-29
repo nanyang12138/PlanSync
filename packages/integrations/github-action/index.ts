@@ -774,17 +774,6 @@ export async function run() {
     //
     // Skip silently when any of the three inputs is missing so existing
     // workflows that haven't opted in continue to behave exactly as before.
-    // #2754: in legacy-mode or no-prFiles paths the gate never fetched the
-    // active plan, so status.planVersion is still null. Fetch it now (best-
-    // effort) so the PR-body block shows the real version instead of "none".
-    if (githubToken && status.planVersion === null) {
-      try {
-        const planForStatus = await fetchActivePlanFileGlobs(apiUrl, projectId, headers);
-        if (planForStatus) status.planVersion = planForStatus.planVersion;
-      } catch {
-        // best-effort — a failure here does not affect gate correctness
-      }
-    }
     if (!githubToken || !repoInput || !prNumberInput) {
       if (githubToken || repoInput || prNumberInput) {
         core.info(
