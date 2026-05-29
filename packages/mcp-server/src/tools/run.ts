@@ -141,12 +141,12 @@ export function registerRunTool(
   server.tool(
     'plansync_run',
     'Manage an execution run via a single tool. `action` discriminator: ' +
-      '`start` registers a run (binds your work to the current plan version, auto-heartbeat every 30s); ' +
-      '`heartbeat` manually pings a running run (auto-heartbeat already does this every 30s); ' +
-      '`complete` finishes or fails the run (status=completed REQUIRES deliverablesMet — list each plan ' +
-      'deliverable and confirm it was met; agent executors get AI verification with a score breakdown ' +
-      'on failure). Replaces plansync_execution_start / heartbeat / complete (deprecated aliases ' +
-      'remain registered for one release).',
+      '`start` — requires projectId, taskId, executorType, executorName. Registers a run and starts auto-heartbeat every 30s. ' +
+      '`heartbeat` — requires projectId, taskId, runId. Manually pings a running run (auto-heartbeat already does this). ' +
+      "`complete` — requires projectId, taskId, runId, status ('completed'|'failed'). " +
+      'When status=completed, deliverablesMet is also required — list each plan deliverable and confirm it was met; ' +
+      'agent executors get AI verification with a score breakdown on failure. ' +
+      'Replaces plansync_execution_start / heartbeat / complete (deprecated aliases remain registered for one release).',
     {
       action: z
         .enum(['start', 'heartbeat', 'complete'])
