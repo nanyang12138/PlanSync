@@ -166,7 +166,7 @@ if (dbUrlError) {
 /* eslint-disable @typescript-eslint/no-require-imports */
 const heartbeatModule =
   require('../src/lib/heartbeat-scanner') as typeof import('../src/lib/heartbeat-scanner');
-const { startHeartbeatScanner, stopHeartbeatScanner } = heartbeatModule;
+const { startHeartbeatScanner, stopHeartbeatScanner, flushHeartbeatScanner } = heartbeatModule;
 // R-139: the same dedicated worker process owns the persistent webhook
 // retry queue. The worker is a no-op until `PLANSYNC_WEBHOOK_QUEUE=true`
 // (it logs why on startup), so wiring it in unconditionally here is
@@ -182,10 +182,14 @@ function shutdown(signal: NodeJS.Signals): void {
   logger.info({ signal }, 'PlanSync worker: shutting down');
   stopHeartbeatScanner();
   stopWebhookWorker();
-  // Give in-flight scan a beat to settle; the scanner itself does not hold
-  // long-lived connections (each scan is a single short transaction), so
-  // 200ms is more than enough for a clean exit on any healthy system.
-  setTimeout(() => process.exit(0), 200);
+  // Wait for any in-progress scan cycle to finish before exiting so the
+  // transaction (up to 60s timeout) can commit cleanly. A 70s cap ensures
+  // the process does not block beyond the longest possible transaction
+  // (#233/#267/#275 — the previous 200ms hard exit could interrupt scans).
+  void Promise.race([
+    flushHeartbeatScanner(),
+    new Promise<void>((resolve) => setTimeout(resolve, 70_000)),
+  ]).then(() => process.exit(0));
 }
 
 process.on('SIGTERM', shutdown);
