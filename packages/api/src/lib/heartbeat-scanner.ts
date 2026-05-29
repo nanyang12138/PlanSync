@@ -46,6 +46,7 @@ function pauseAckTimeoutMs(): number {
 }
 
 let timer: ReturnType<typeof setInterval> | null = null;
+let currentScan: Promise<void> | null = null;
 
 export async function scanStaleExecutions(): Promise<void> {
   const now = new Date();
@@ -375,9 +376,13 @@ async function maybeGcMasterDelegations(now: number): Promise<void> {
 
 export function startHeartbeatScanner(): void {
   if (timer) return;
-  timer = setInterval(async () => {
-    await scanStaleExecutions();
-    await maybeGcMasterDelegations(Date.now());
+  timer = setInterval(() => {
+    currentScan = (async () => {
+      await scanStaleExecutions();
+      await maybeGcMasterDelegations(Date.now());
+    })().finally(() => {
+      currentScan = null;
+    });
   }, SCAN_INTERVAL_MS);
   logger.info('Heartbeat scanner started (interval: 60s, master GC: 10min)');
 }
@@ -388,4 +393,13 @@ export function stopHeartbeatScanner(): void {
     timer = null;
     logger.info('Heartbeat scanner stopped');
   }
+}
+
+/**
+ * Resolves when any in-progress scan cycle completes. Call after
+ * `stopHeartbeatScanner()` so the SIGTERM drain can wait for the
+ * active transaction to commit before process.exit fires (#233/#267/#275).
+ */
+export async function flushHeartbeatScanner(): Promise<void> {
+  if (currentScan) await currentScan;
 }
