@@ -201,11 +201,11 @@ export function didWeAcquireDispatchLock({
     if (name !== lockLabel) continue;
     const ts = new Date(e.created_at).getTime();
     if (!Number.isFinite(ts)) continue;
-    if (ts > mostRecentLockEventTs) {
+    if (ts >= mostRecentLockEventTs) {
       mostRecentLockEventTs = ts;
       mostRecentLockEventType = e.event;
     }
-    if (e.event === 'labeled' && (mostRecentLabeledTs === null || ts > mostRecentLabeledTs)) {
+    if (e.event === 'labeled' && (mostRecentLabeledTs === null || ts >= mostRecentLabeledTs)) {
       mostRecentLabeledTs = ts;
     }
   }
@@ -320,15 +320,29 @@ export function hasSuccessMarkerAfter({
   sinceMs,
   toleranceMs = 1500,
   notBeforeMs,
+  trustedAuthors,
 } = {}) {
   if (!Array.isArray(comments) || comments.length === 0) return false;
   const inclusiveCutoffMs = Number.isFinite(sinceMs) ? sinceMs - toleranceMs : null;
   const hasStrictCutoff = Number.isFinite(notBeforeMs);
   const hasAnyCutoff = inclusiveCutoffMs !== null || hasStrictCutoff;
+  // #1384: when a trusted-author list is provided, only accept comments
+  // whose `user.login` is in the list AND whose `user.type === 'Bot'`.
+  // Without this filter, anyone with comment access on the issue can post
+  // a comment carrying the marker + success phrase and:
+  //   (a) skip the Cursor call at the pre-call site, or
+  //   (b) block lock release in the catch block.
+  // An empty list is treated as "filter disabled" for back-compat.
+  const hasTrustedFilter = Array.isArray(trustedAuthors) && trustedAuthors.length > 0;
   return comments.some((c) => {
     if (!c || typeof c.body !== 'string') return false;
     if (!c.body.includes(marker)) return false;
     if (!c.body.includes(successPhrase)) return false;
+    if (hasTrustedFilter) {
+      const login = c.user?.login;
+      const type = c.user?.type;
+      if (!login || type !== 'Bot' || !trustedAuthors.includes(login)) return false;
+    }
     if (!hasAnyCutoff) return true;
     const ts = new Date(c.created_at).getTime();
     if (!Number.isFinite(ts)) return false;
@@ -337,6 +351,11 @@ export function hasSuccessMarkerAfter({
     return true;
   });
 }
+
+// The workflow's own bot identity — the GITHUB_TOKEN is issued to this actor
+// by GitHub Actions. We only trust SUCCESS marker comments from this identity
+// to prevent forged markers from bypassing dispatch (#1384).
+const TRUSTED_MARKER_AUTHORS = ['github-actions[bot]'];
 
 async function dispatchSucceededAlready({ sinceMs, toleranceMs, notBeforeMs } = {}) {
   // Look for a SUCCESS marker comment from a peer run that won the same
@@ -353,7 +372,13 @@ async function dispatchSucceededAlready({ sinceMs, toleranceMs, notBeforeMs } = 
   // events fetch failed.
   try {
     const cs = await listIssueComments();
-    return hasSuccessMarkerAfter({ comments: cs, sinceMs, toleranceMs, notBeforeMs });
+    return hasSuccessMarkerAfter({
+      comments: cs,
+      sinceMs,
+      toleranceMs,
+      notBeforeMs,
+      trustedAuthors: TRUSTED_MARKER_AUTHORS,
+    });
   } catch (err) {
     console.warn(`dispatchSucceededAlready check failed (assuming no): ${err.message}`);
     return false;

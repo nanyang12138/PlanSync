@@ -542,6 +542,11 @@ export class McpClient {
       }
       this.pending.clear();
     }
+    // Clear the stdout parse buffer so a subsequent start() call does not
+    // inherit residual bytes from the old process. handleExit() skips the
+    // clear when this.proc has already been nulled here (its early-return
+    // guard fires), so stop() is the only reliable place to reset (#703).
+    this.readBuffer = '';
     this.proc = null;
   }
 
