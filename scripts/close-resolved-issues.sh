@@ -185,7 +185,8 @@ close_one() {
   fi
 
   echo "==> closing #$issue (PR #$pr — $reason)"
-  gh issue close "$issue" --reason completed --comment "$comment"
+  gh issue close "$issue" --reason completed --comment "$comment" \
+    || echo "  SKIP: #$issue — already closed or API error (continuing)"
 }
 
 for cluster in "${CLUSTERS[@]}"; do
