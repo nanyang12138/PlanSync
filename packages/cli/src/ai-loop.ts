@@ -31,10 +31,9 @@ export function buildSystemPrompt(status: ProjectStatus): string {
     '- Always confirm actions with a brief summary after each tool call',
     '',
     'Large plan edits: when adding more than ~20 items to deliverables / constraints / ' +
-      'standards / openQuestions, call the matching incremental tool ' +
-      '(plansync_plan_deliverables_append, plansync_plan_constraints_append, ' +
-      'plansync_plan_standards_append, plansync_plan_open_questions_append) in batches of ' +
-      '20–30 items per call instead of passing the entire array to plansync_plan_update. ' +
+      "standards / openQuestions, use plansync_plan_patch with op='append' in batches of " +
+      "20–30 items per call ({op:'append', field, items}) instead of passing the entire " +
+      'array to plansync_plan_update. ' +
       'This avoids hitting the per-response token limit on a single huge tool call.',
     '',
     `Current project: ${status.projectName} (id: ${status.projectId || 'not set'})`,
