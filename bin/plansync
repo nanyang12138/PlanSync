@@ -398,7 +398,8 @@ case "$HOST" in
     CLI_DIST="$PROJECT_DIR/packages/cli/dist/index.js"
     if [ ! -f "$CLI_DIST" ]; then
       echo "❌ PlanSync Terminal not built. Run:" >&2
-      echo "   cd $PROJECT_DIR/packages/cli && node ../../node_modules/.bin/esbuild src/index.ts --bundle --platform=node --target=node18 --outfile=dist/index.js --format=esm" >&2
+      echo "   cd $PROJECT_DIR && bash scripts/build.sh" >&2
+      echo "   (or manually: cd $PROJECT_DIR/packages/cli && node ../../node_modules/.bin/esbuild src/index.ts --bundle --platform=node --target=node18 --outfile=dist/index.js --format=esm --jsx=automatic --alias:react-devtools-core=./src/stubs/react-devtools-core.js \"--banner:js=import { createRequire } from 'module'; const require = createRequire(import.meta.url);\")" >&2
       exit 1
     fi
 
