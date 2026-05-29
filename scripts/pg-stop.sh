@@ -1,7 +1,13 @@
 #!/bin/bash
-PG_BIN="${PG_BIN:-$([ -x /tool/pandora64/bin/pg_ctl ] && echo /tool/pandora64/bin || echo /usr/lib/postgresql/16/bin)}"
-PG_DATA="/tmp/plansync-pgdata-$(whoami)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/pg-env.sh"
+PG_BIN="$(detect_pg_bin || true)"
+if [ -z "$PG_BIN" ]; then
+  echo "Could not locate pg_ctl — set PG_BIN to your PostgreSQL bin directory." >&2
+  exit 1
+fi
 export PATH="$PG_BIN:$PATH"
+PG_DATA="/tmp/plansync-pgdata-$(whoami)"
 if [ -d "$PG_DATA" ]; then
   pg_ctl -D "$PG_DATA" stop 2>/dev/null && echo "✓ PostgreSQL stopped" || echo "PostgreSQL is not running"
 else
