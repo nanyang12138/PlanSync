@@ -813,9 +813,13 @@ function preserveAndRemoveWorktree(
       const branchName = `plansync/exec-${taskId.slice(0, 8)}-${runId.slice(-6)}`;
       if (status) {
         execSync(`git -C "${worktreeDir}" add -A`, { stdio: 'pipe' });
-        execSync(`git -C "${worktreeDir}" commit -m "chore: PlanSync task execution (${taskId})"`, {
-          stdio: 'pipe',
-        });
+        // --no-verify: worktrees lack node_modules/.local-runtime so the
+        // pre-commit hook (npx lint-staged) always fails, silently rolling
+        // back the commit and leaving .git intact but stranded.
+        execSync(
+          `git -C "${worktreeDir}" commit --no-verify -m "chore: PlanSync task execution (${taskId})"`,
+          { stdio: 'pipe' },
+        );
       }
       execSync(`git -C "${worktreeDir}" branch "${branchName}"`, { stdio: 'pipe' });
       createdBranch = branchName;
@@ -946,7 +950,15 @@ function preserveAndRemoveWorktree(
   try {
     execSync(`git worktree remove --force "${worktreeDir}"`, { cwd: projectRoot, stdio: 'pipe' });
   } catch {
-    /* ignore */
+    // git worktree remove --force removes .git but refuses to delete the
+    // directory when staged files are present (single --force is not enough
+    // for that case). Fall back to a direct recursive delete so no orphaned
+    // directory is left behind without its .git pointer.
+    try {
+      fs.rmSync(worktreeDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
   }
   return createdBranch;
 }
@@ -1462,7 +1474,7 @@ export function cleanupInterruptedExec(run: InterruptedExec): void {
       if (wtStatus) {
         execSync(`git -C "${run.worktreeDir}" add -A`, { stdio: 'pipe' });
         execSync(
-          `git -C "${run.worktreeDir}" commit -m "chore: PlanSync task execution (${run.taskId})"`,
+          `git -C "${run.worktreeDir}" commit --no-verify -m "chore: PlanSync task execution (${run.taskId})"`,
           { stdio: 'pipe' },
         );
       }
