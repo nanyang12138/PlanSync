@@ -23,6 +23,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { ApiClient } from '../api-client';
+import type { ExecStateManager } from '../exec-state-manager';
 import {
   handleExecutionStart,
   handleExecutionHeartbeat,
@@ -123,7 +124,11 @@ export type RunToolArgs = z.infer<typeof runArgsSchema>;
  * enforced inside `safeParse` and bubble up through the wrapper's error
  * translation layer (R-037) on invalid input.
  */
-export function registerRunTool(server: McpServer, api: ApiClient): void {
+export function registerRunTool(
+  server: McpServer,
+  api: ApiClient,
+  execStateManager?: ExecStateManager,
+): void {
   // The McpServer SDK accepts a `ZodRawShape` (record of field → schema)
   // rather than a single schema object, so we expose the discriminated
   // union via the shared `action` discriminator and let the runtime
@@ -184,6 +189,7 @@ export function registerRunTool(server: McpServer, api: ApiClient): void {
         api,
         onDrift: makeDriftCallback(server),
         toolName: 'plansync_run',
+        execStateManager,
       };
       switch (parsed.data.action) {
         case 'start': {
