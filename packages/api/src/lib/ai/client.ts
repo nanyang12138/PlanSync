@@ -477,7 +477,7 @@ class AiClient {
 
     if (this.providers.length === 0) {
       logger.debug('No AI provider configured, skipping AI call');
-      await this.recordSafe({
+      this.recordSafe({
         purpose,
         provider: 'none',
         model: 'none',
@@ -499,7 +499,7 @@ class AiClient {
     // ORIGINAL provider/model so per-purpose attribution is preserved.
     const cached = this.cache.get(cacheKey);
     if (cached) {
-      await this.recordSafe({
+      this.recordSafe({
         purpose,
         provider: cached.provider,
         model: cached.model,
@@ -522,7 +522,7 @@ class AiClient {
     const primary = this.providers[0];
     if (!this.rateLimiter.tryConsume(purpose)) {
       logger.warn({ purpose, provider: primary.config.name }, 'AI call rate-limited');
-      await this.recordSafe({
+      this.recordSafe({
         purpose,
         provider: primary.config.name,
         model: primary.model,
@@ -555,6 +555,7 @@ class AiClient {
         const raw = getMockAiResponse(system);
         const extracted = raw ? extractJson(raw) : null;
         const outputHash = extracted ? sha256(extracted) : null;
+        // await so tests can read the row synchronously after complete() returns
         await this.recordSafe({
           purpose,
           provider: 'mock',
@@ -585,7 +586,7 @@ class AiClient {
 
       let result = await this.callProvider(config, model, system, user, attemptsPerProvider, tool);
 
-      await this.recordSafe({
+      this.recordSafe({
         purpose,
         provider: config.name,
         model,
@@ -633,7 +634,7 @@ class AiClient {
         // Record the text retry as its own ai_calls row with a tagged
         // errorCode so dashboards can spot how often the fallback
         // fires (and which providers force it).
-        await this.recordSafe({
+        this.recordSafe({
           purpose,
           provider: config.name,
           model,
@@ -823,12 +824,15 @@ class AiClient {
   // R-182: ai_calls insert must never bubble back to callers. A logging
   // failure (DB down, transient connection error) is strictly less
   // important than serving the AI response, so we swallow + warn.
-  private async recordSafe(record: AiCallRecord): Promise<void> {
-    try {
-      await recordAiCall(record);
-    } catch (err) {
+  private recordSafe(record: AiCallRecord): Promise<void> {
+    // Fire-and-forget in production (#401): callers use `this.recordSafe()` without
+    // await so the DB write does not block the AI response. The returned Promise is
+    // intentionally discarded in those paths.
+    // In test/mock paths callers can `await this.recordSafe()` to ensure the row is
+    // committed before assertions run.
+    return recordAiCall(record).catch((err) => {
       logger.warn({ err, purpose: record.purpose }, 'Failed to record ai_calls row');
-    }
+    });
   }
 }
 
