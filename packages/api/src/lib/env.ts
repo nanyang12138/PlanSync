@@ -43,6 +43,12 @@ const baseEnvSchema = z.object({
   // production unless you need to point a webhook at an internal host.
   PLANSYNC_WEBHOOK_ALLOWLIST: z.string().optional(),
 
+  // R-139: opt-in durable webhook queue (DB-backed retry via webhook_jobs).
+  // Must be exactly 'true' — anything else is treated as false. Validated here
+  // so typos ('True', '1', 'treu') surface at boot instead of silently falling
+  // back to the in-memory retry path (#799).
+  PLANSYNC_WEBHOOK_QUEUE: z.enum(['true', 'false']).optional(),
+
   // R-088: Event-bus backend selection.
   //   memory   — in-process fan-out only (single API instance).
   //   postgres — Postgres LISTEN/NOTIFY (required for multi-instance prod).
