@@ -203,11 +203,23 @@ export function _authCacheSizeForTests(): number {
   return _authCache.size;
 }
 
+// Throttle window for lastUsedAt writes per key. A hot cache key (e.g.
+// heartbeat every 30 s) would otherwise queue a DB write on every cache
+// hit, flooding the connection pool under high traffic (#742). Writing once
+// every 5 minutes is sufficient precision for usage-tracking purposes.
+const LAST_USED_AT_THROTTLE_MS = 5 * 60 * 1_000;
+const lastUsedAtWrittenAt = new Map<string, number>();
+
 // R-141: kicks off a background `lastUsedAt` write without making the
 // request wait on it. We swallow errors because failure here just means
 // we miss one freshness tick on the apiKey row — the caller should never
-// be punished for it.
+// be punished for it. Writes are throttled to at most once per 5 min per
+// key (#742) to avoid flooding the connection pool on hot cache paths.
 function bumpLastUsedAtAsync(apiKeyId: string): void {
+  const now = Date.now();
+  const last = lastUsedAtWrittenAt.get(apiKeyId) ?? 0;
+  if (now - last < LAST_USED_AT_THROTTLE_MS) return;
+  lastUsedAtWrittenAt.set(apiKeyId, now);
   void prisma.apiKey
     .update({ where: { id: apiKeyId }, data: { lastUsedAt: new Date() } })
     .catch(() => {
