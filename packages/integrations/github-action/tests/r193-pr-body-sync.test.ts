@@ -320,12 +320,14 @@ describe('R-193 run() integration with GitHub API', () => {
       // `repo` and `pr-number` intentionally omitted.
     });
     fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] }));
+    // #2754: plan-version fetch runs in the no-prFiles path (best-effort).
+    fetchSpy.mockResolvedValueOnce(new Response(null, { status: 404 }));
 
     const { run } = await import('../index');
     await run();
 
-    // Still only the drift fetch happened.
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    // HTTP calls: drift fetch + plan-version fetch (#2754).
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
     const infos = coreMock.info.mock.calls.map((c) => String(c[0]));
     expect(infos.some((m) => m.includes('PlanSync PR-body sync skipped'))).toBe(true);
   });

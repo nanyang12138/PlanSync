@@ -570,10 +570,25 @@ export async function run() {
     let semanticGate: 'skipped' | 'passed' | 'failed' = 'skipped';
     if (legacyMode) {
       core.info('PlanSync semantic gate disabled (legacy-mode=true). Running drift-only check.');
+      // #2754: fetch active plan version even in legacy/skip paths so the
+      // PR-body status block shows the real plan version rather than "none".
+      try {
+        const planForStatus = await fetchActivePlanFileGlobs(apiUrl, projectId, headers);
+        if (planForStatus) status.planVersion = planForStatus.planVersion;
+      } catch {
+        // best-effort — a failure here does not affect gate correctness
+      }
     } else if (prFiles.length === 0) {
       core.info(
         'PlanSync semantic gate skipped: no `pr-files` input provided. Pass the list of PR-changed files to enable the R-157 deliverable check.',
       );
+      // #2754: same — fetch active plan version for accurate status block
+      try {
+        const planForStatus = await fetchActivePlanFileGlobs(apiUrl, projectId, headers);
+        if (planForStatus) status.planVersion = planForStatus.planVersion;
+      } catch {
+        // best-effort
+      }
     } else {
       let activePlan: Awaited<ReturnType<typeof fetchActivePlanFileGlobs>>;
       try {
