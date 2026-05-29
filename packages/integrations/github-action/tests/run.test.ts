@@ -575,14 +575,16 @@ describe('github-action run()', () => {
       'pr-files': 'completely/unrelated.txt',
       'legacy-mode': 'true',
     });
-    // Only the drift check should fire — no /plans/active call.
-    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] }));
+    // #2754: fetch /plans/active for the status block (plan version), then drift check.
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: { id: 'plan-1', version: 3 } }));
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] })); // deliverables
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] })); // drift check
 
     const { run } = await import('../index');
     await run();
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect(String(fetchSpy.mock.calls[0][0])).toContain('/drifts?status=open');
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/plans/active');
+    expect(String(fetchSpy.mock.calls[2][0])).toContain('/drifts?status=open');
     expect(coreMock.setOutput).toHaveBeenCalledWith('semantic-gate', 'skipped');
     expect(coreMock.setFailed).not.toHaveBeenCalled();
   });
@@ -746,14 +748,17 @@ describe('github-action run()', () => {
       project: 'proj-123',
       // pr-files intentionally omitted
     });
-    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] }));
+    // #2754: fetch /plans/active for the status block (plan version), then drift check.
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: { id: 'plan-1', version: 2 } }));
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] })); // deliverables
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] })); // drift check
 
     const { run } = await import('../index');
     await run();
 
-    // No /plans/active call → semantic gate skipped, drift check ran.
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect(String(fetchSpy.mock.calls[0][0])).toContain('/drifts?status=open');
+    // /plans/active is now called to populate the status block plan version.
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/plans/active');
+    expect(String(fetchSpy.mock.calls[2][0])).toContain('/drifts?status=open');
     expect(coreMock.setOutput).toHaveBeenCalledWith('semantic-gate', 'skipped');
   });
 
