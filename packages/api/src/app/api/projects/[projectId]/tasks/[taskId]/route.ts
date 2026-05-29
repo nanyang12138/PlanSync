@@ -296,22 +296,14 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
         //     wait for a fresh completed run, which is the correct
         //     behaviour (the reopen explicitly says "go do more
         //     work").
-        let evidenceGatePoisoned = false;
-        if (!isOwner && latestRun?.status === 'completed' && latestRun.endedAt) {
-          const parkingExit = await prisma.activity.findFirst({
-            where: {
-              projectId: params.projectId,
-              type: 'task_status_changed',
-              createdAt: { gt: latestRun.endedAt },
-              AND: [
-                { metadata: { path: ['taskId'], equals: params.taskId } },
-                { metadata: { path: ['fromStatus'], equals: 'awaiting_evidence' } },
-              ],
-            },
-            select: { id: true },
-          });
-          evidenceGatePoisoned = parkingExit !== null;
-        }
+        // `evidenceGatePoisoned` reuses the result of the identical query already
+        // run above for `liftedFromAwaitingEvidenceAfterLatestRun` — both look for a
+        // task_status_changed row where fromStatus='awaiting_evidence' after the
+        // latest run's endedAt (#1833 redundant-query cluster).
+        const evidenceGatePoisoned =
+          !isOwner && latestRun?.status === 'completed' && !!latestRun.endedAt
+            ? liftedFromAwaitingEvidenceAfterLatestRun
+            : false;
 
         if (!isOwner && (evidenceGatePoisoned || (!hasCompletedRun && !isHumanSelfComplete))) {
           if (task.assigneeType === 'agent') {
@@ -436,11 +428,16 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
     // The reassignment activity and external side effects (eventBus, webhooks,
     // sendMail) stay outside — never bind external I/O to a DB transaction.
     const updated = await prisma.$transaction(async (tx) => {
+      // Re-read the task inside the transaction so concurrent updates between
+      // the pre-transaction snapshot (`task`) and now are reflected in the
+      // `fromStatus` audit field (#755 race). This is the only reliable source
+      // of the actual pre-update state within this serializable unit.
+      const current = await tx.task.findUniqueOrThrow({ where: { id: params.taskId } });
       const u = await tx.task.update({
         where: { id: params.taskId },
         data: body,
       });
-      if (body.status && body.status !== task.status) {
+      if (body.status && body.status !== current.status) {
         // R-105: audit-log task PATCH status flips. Co-committed with
         // the status update above so the activity row's visibility
         // tracks the status field's visibility exactly (closes #1462).
@@ -450,10 +447,10 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
             type: 'task_status_changed',
             actorName: auth.userName,
             actorType: 'human',
-            summary: `Task "${u.title}" status ${task.status} → ${body.status}`,
+            summary: `Task "${u.title}" status ${current.status} → ${body.status}`,
             metadata: {
               taskId: params.taskId,
-              fromStatus: task.status,
+              fromStatus: current.status,
               toStatus: body.status,
             },
           },

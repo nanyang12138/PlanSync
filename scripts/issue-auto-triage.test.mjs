@@ -390,10 +390,12 @@ test('static guard: issue-auto-triage.mjs still defines parseLimitEnv and uses i
   // without it, Number.parseInt('5abc', 10) silently returns 5 and
   // the documented "invalid input → default" contract is broken
   // again (the #1328 / #1347 / #1379 / #1397 findings).
+  // Guard against comment-only matches: require the regex to appear in
+  // an actual .test() call, not just in an explanatory comment (#2628/#2676).
   assert.match(
     src,
-    /\/\^\\d\+\$\//,
-    'parseLimitEnv must validate the trimmed string with /^\\d+$/ — bare Number.parseInt is prefix-permissive and silently amplifies rate limits on garbage input',
+    /\/\^\\\d\+\$\/\.test\s*\(/,
+    'parseLimitEnv must call /^\\d+$/.test(...) in the implementation — bare Number.parseInt is prefix-permissive and silently amplifies rate limits on garbage input',
   );
   // The MAX_* env vars must be routed through the helper. A future
   // refactor that re-introduces bare `Number.parseInt(process.env.TRIAGE_MAX_*`
