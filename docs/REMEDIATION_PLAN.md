@@ -3270,16 +3270,18 @@
 
 #### R-203 [MEDIUM] 部署拓扑文档化 + docker-compose / k8s helm chart
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B18
-- **depends_on**: R-202
+- **depends_on**: —
+- **note**: 原 `depends_on: R-202` 是过度耦合：当前 2-process 拓扑 (api+web 合一进程 + worker) 完全可以先有 docker-compose 与部署文档；R-202 落地后扩成 3-service 是延伸，不是前置。本条已分两阶段落地：(a) 当前 2-service docker-compose + `deploy/README.md` 文档；(b) helm chart + 应用 Dockerfile 延后等 R-202 拆分 web 后再做。
 - **effort**: medium
-- **files**: 新增 `deploy/docker-compose.yml`, `deploy/helm/`
+- **files**: 新增 `deploy/docker-compose.yml`, `deploy/README.md`, （后续）`deploy/helm/`
 - **fix_steps**:
-  1. 三服务：plansync-api, plansync-web, plansync-worker
-  2. 一份 Postgres、可选 Redis
-  3. README 增加部署矩阵
-- **verification**: `docker-compose up` 三服务全部 healthy；`helm template deploy/helm` 输出通过 `kubectl --dry-run=client apply -f -` 校验
+  1. 当前 2 服务：plansync-api (含 web)、plansync-worker ✅
+  2. 一份 Postgres ✅；可选 Redis 待 R-088 后续切换时再加
+  3. `deploy/README.md` 部署矩阵 ✅
+  4. R-202 落地后：web 拆出第三个 service、加应用 Dockerfile、加 helm chart
+- **verification**: `docker compose -f deploy/docker-compose.yml up --build` 三个 container 起来后 `pg_isready` healthy、API `/api/health` 返回 200；helm 部分 R-202 后再补
 
 ---
 
