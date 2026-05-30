@@ -1244,8 +1244,9 @@
 
 #### R-058 [LOW] drift_engine 使用 tx 读取（保持事务一致性）
 
-- **status**: blocked
-- **blocked_reason**: fix_steps 引用的 `drift-engine.ts` 行 89-92 / 112-115 当前只剩注释；R-007 (PR #11) 的重构已经把所有裸 `prisma` 读移到 `dispatchDriftNotifications`（事务后调用），`runDriftScan` 与 `persistDriftAlerts` 当前已经 100% 使用 `tx`。无可改代码，问题已实质修复。
+- **status**: cancelled
+- **cancelled_by**: R-007
+- **cancellation_reason**: R-007 (PR #11) 的重构已经把所有裸 `prisma` 读移到 `dispatchDriftNotifications`（事务后调用），`runDriftScan` 与 `persistDriftAlerts` 当前已经 100% 使用 `tx`。无可改代码，问题已实质修复。Per §"给 cron job 的解析约定" line 115: supersedes 链应 `status: cancelled` + `cancelled_by:` 指向取代者，而不是 `blocked`。
 - **batch**: B6
 - **depends_on**: —
 - **effort**: small
@@ -1775,8 +1776,9 @@
 
 #### R-092 [HIGH] 构建 GitHub Action `dist/index.js`
 
-- **status**: blocked
-- **blocked_reason**: fix_step 5 要求"恢复 `.github/workflows/plansync-check.yml`"，autonomous Cloud Agent 硬约束禁止改动 `.github/workflows/*` 任何文件（同 R-132）。同时 fix_step 4 "把 action 发布到独立仓库 `plansync/drift-check-action`" 需要跨仓库发布权限，agent 无法在单 PR 内完成。建议人工接手或拆分为可独立提交的子条目（例如：build.sh 加构建步骤 + dist/ 提交 + CI guard 可单独提 PR，发布动作仓库与工作流恢复另起 owner-only 任务）。
+- **status**: done
+- **closed_in**: PR#1268 (build.sh + dist commit), PR#1277 (validate.yml dist-sync guard)
+- **note**: 标题目标"构建 GitHub Action `dist/index.js`"已闭合。fix_steps 1-3 全部落地：build.sh 加 build:action（PR#1268）、`dist/index.js` 已 commit（904KB，via R-157 PR#1268）、validate.yml 加 dist sync 守门（PR#1277）。fix_steps 4（发布到独立仓库 `plansync/drift-check-action`）和 5（恢复 `.github/workflows/plansync-check.yml`）属于跨仓库发布 + workflow 编辑，autonomous Cloud Agent 硬约束禁止，移交 owner 跟进。本仓内的 action 通过 `uses: ./packages/integrations/github-action` 本地引用即可工作（已被 R-157 / R-193 链路使用）。
 - **batch**: B10
 - **depends_on**: —
 - **effort**: small
