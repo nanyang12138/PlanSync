@@ -174,6 +174,13 @@ const { startHeartbeatScanner, stopHeartbeatScanner, flushHeartbeatScanner } = h
 const webhookWorkerModule =
   require('../src/lib/webhook-worker') as typeof import('../src/lib/webhook-worker');
 const { startWebhookWorker, stopWebhookWorker } = webhookWorkerModule;
+// R-162: same opt-in pattern as the webhook queue. The consumer is a
+// no-op until `PLANSYNC_OUTBOX_CONSUMER=true`, so wiring it in
+// unconditionally is safe — legacy event-bus / sendMail / webhook
+// paths stay authoritative for any sink R-163-166 has not migrated.
+const outboxConsumerModule =
+  require('../src/lib/outbox-consumer') as typeof import('../src/lib/outbox-consumer');
+const { startOutboxConsumer, stopOutboxConsumer } = outboxConsumerModule;
 const loggerModule = require('../src/lib/logger') as typeof import('../src/lib/logger');
 const { logger } = loggerModule;
 /* eslint-enable @typescript-eslint/no-require-imports */
@@ -182,6 +189,7 @@ function shutdown(signal: NodeJS.Signals): void {
   logger.info({ signal }, 'PlanSync worker: shutting down');
   stopHeartbeatScanner();
   stopWebhookWorker();
+  stopOutboxConsumer();
   // Wait for any in-progress scan cycle to finish before exiting so the
   // transaction (up to 60s timeout) can commit cleanly. A 70s cap ensures
   // the process does not block beyond the longest possible transaction
@@ -199,3 +207,5 @@ logger.info('PlanSync worker: starting heartbeat scanner');
 startHeartbeatScanner();
 logger.info('PlanSync worker: starting webhook queue worker (R-139)');
 startWebhookWorker();
+logger.info('PlanSync worker: starting outbox consumer (R-162)');
+startOutboxConsumer();
