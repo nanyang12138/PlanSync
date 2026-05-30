@@ -1694,9 +1694,10 @@
 
 #### R-087 [LOW] DriftAlert.severity 加 default + NOT NULL
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B8
-- **depends_on**: R-079
+- **depends_on**: —
+- **note**: 原 `depends_on: R-079` 是过度保守的耦合。R-079（全仓 enum 迁移）是 12 个子条目级别的重构，本条只是给 `drift_alerts.severity` 加 DEFAULT，schema/migration 改动独立于 enum 化路径，且在 enum 落地后 DEFAULT 子句直接 carry over（PG 的 SET DEFAULT 对 enum 列同样合法）。
 - **effort**: small
 
 ---
