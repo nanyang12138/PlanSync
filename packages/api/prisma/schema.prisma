@@ -528,7 +528,11 @@ model DriftAlert {
   projectId          String    @map("project_id")
   taskId             String    @map("task_id")
   type               String    @default("version_mismatch") // version_mismatch
-  severity           String // high | medium | low
+  // R-087: explicit default keeps the column NOT NULL even if a future
+  // code path forgets to set severity. "medium" matches the conservative
+  // bucket used by severityToDb when neither structural nor execution
+  // signals push it to "high".
+  severity           String    @default("medium") // high | medium | low
   reason             String
   status             String    @default("open") // open | resolved
   // R-051: enforced by partial unique index `drift_alerts_one_open_per_task`
