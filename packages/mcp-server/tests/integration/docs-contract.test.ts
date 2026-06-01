@@ -11,13 +11,23 @@
  *   - registered set: every `server.tool('plansync_X', ...)` /
  *     `server.registerTool('plansync_X', ...)` call across
  *     `packages/mcp-server/src/tools/*.ts`.
- *   - doc-referenced set: every backtick-wrapped `plansync_X` in
- *     `CLAUDE.md` and `AGENTS.md` at the repo root.
+ *   - doc-referenced set: every `plansync_X` that opens an inline code
+ *     span in `CLAUDE.md` and `AGENTS.md` at the repo root. The mention
+ *     may be followed by call syntax inside the same code span — e.g.
+ *     `` `plansync_run({action:"start", ...})` ``,
+ *     `` `plansync_task_pack <taskId>` ``,
+ *     `` `plansync_project_update { ... }` `` — and the regex still
+ *     extracts the bare tool name. The regex also expands the
+ *     slash-suffix shorthand the docs use to compress related tools,
+ *     e.g. `` `plansync_task_list/show/pack` `` → three names
+ *     (`plansync_task_list`, `plansync_task_show`, `plansync_task_pack`).
  *
- * Backticks are required for a doc mention to count. That filters out
- * substrings that just happen to start with `plansync_` (e.g. the
- * Postgres DB name `plansync_dev` referenced from a shell snippet in
- * AGENTS.md), which would otherwise produce false positives.
+ * The opening backtick must sit immediately before `plansync_` for a
+ * mention to count. That filters out substrings that just happen to
+ * contain `plansync_` mid-string — e.g. the Postgres DB name in
+ * `` `postgresql://$USER@localhost:15432/plansync_dev` ``, or any
+ * `plansync_dev` reference inside a fenced shell snippet — which would
+ * otherwise produce false positives.
  *
  * The assertion is one-way: doc ⊆ registered. The reverse direction
  * (an undocumented tool) is a separate concern — some tools are
@@ -35,12 +45,30 @@ const TOOLS_DIR = path.join(REPO_ROOT, 'packages', 'mcp-server', 'src', 'tools')
 const DOC_FILES = ['CLAUDE.md', 'AGENTS.md'].map((f) => path.join(REPO_ROOT, f));
 
 const TOOL_REGISTRATION_RE = /server\.(?:tool|registerTool)\(\s*'(plansync_[a-z_]+)'/g;
-const DOC_MENTION_RE = /`(plansync_[a-z_]+)`/g;
+// Matches an inline code span that opens with a `plansync_X` tool name.
+//   group 1: bare tool name (e.g. `plansync_task_list`)
+//   group 2: optional slash-suffix shorthand (e.g. `/show/pack`)
+// The opening backtick MUST sit immediately before `plansync_` so we
+// don't pick up incidental occurrences inside URLs / shell snippets.
+// After the tool name (and any slash-suffix), arbitrary non-backtick
+// content is allowed before the closing backtick — this is how we
+// catch call-syntax mentions like `plansync_run({action:"start"})`,
+// `plansync_task_pack <taskId>`, `plansync_drift_resolve action=rebind`.
+const DOC_MENTION_RE = /`(plansync_[a-z_]+)((?:\/[a-z_]+)+)?[^`]*`/g;
 
-function collectMatches(content: string, re: RegExp): Set<string> {
-  const out = new Set<string>();
-  for (const m of content.matchAll(re)) {
-    out.add(m[1]);
+function expandToolMention(base: string, slashSuffixes: string | undefined): string[] {
+  const out = [base];
+  if (!slashSuffixes) return out;
+  // The shorthand replaces the LAST `_segment` of the base with each
+  // slash-separated suffix. So `plansync_task_list/show/pack` =>
+  //   prefix = "plansync_task_"
+  //   suffixes = ["show", "pack"]   (the leading "list" is the base)
+  //   => plansync_task_list, plansync_task_show, plansync_task_pack
+  const lastUnderscore = base.lastIndexOf('_');
+  if (lastUnderscore < 0) return out;
+  const prefix = base.slice(0, lastUnderscore + 1);
+  for (const suffix of slashSuffixes.split('/').filter(Boolean)) {
+    out.push(prefix + suffix);
   }
   return out;
 }
@@ -50,18 +78,28 @@ function collectRegisteredTools(): Set<string> {
   for (const entry of fs.readdirSync(TOOLS_DIR)) {
     if (!entry.endsWith('.ts')) continue;
     const src = fs.readFileSync(path.join(TOOLS_DIR, entry), 'utf8');
-    for (const name of collectMatches(src, TOOL_REGISTRATION_RE)) {
-      all.add(name);
+    for (const m of src.matchAll(TOOL_REGISTRATION_RE)) {
+      all.add(m[1]);
     }
   }
   return all;
+}
+
+function collectDocMentionsFromText(content: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of content.matchAll(DOC_MENTION_RE)) {
+    for (const name of expandToolMention(m[1], m[2])) {
+      out.add(name);
+    }
+  }
+  return out;
 }
 
 function collectDocMentions(): Map<string, Set<string>> {
   const perFile = new Map<string, Set<string>>();
   for (const filePath of DOC_FILES) {
     const content = fs.readFileSync(filePath, 'utf8');
-    perFile.set(path.basename(filePath), collectMatches(content, DOC_MENTION_RE));
+    perFile.set(path.basename(filePath), collectDocMentionsFromText(content));
   }
   return perFile;
 }
@@ -93,6 +131,79 @@ describe('R-176: docs ↔ MCP tools contract', () => {
     // stops mentioning any tool, the first assertion above would pass
     // vacuously.
     const claudeMd = fs.readFileSync(path.join(REPO_ROOT, 'CLAUDE.md'), 'utf8');
-    expect(collectMatches(claudeMd, DOC_MENTION_RE).size).toBeGreaterThan(10);
+    expect(collectDocMentionsFromText(claudeMd).size).toBeGreaterThan(10);
+  });
+
+  describe('DOC_MENTION_RE — call-syntax forms (regression test for #2911)', () => {
+    it('extracts tool name from `plansync_run({action:"start", ...})`', () => {
+      const found = collectDocMentionsFromText('Call `plansync_run({action:"start", ...})` next.');
+      expect(found.has('plansync_run')).toBe(true);
+    });
+
+    it('extracts tool name from `plansync_task_pack <taskId>`', () => {
+      const found = collectDocMentionsFromText('Run `plansync_task_pack <taskId>` first.');
+      expect(found.has('plansync_task_pack')).toBe(true);
+    });
+
+    it('extracts tool name from `plansync_project_update { ... }`', () => {
+      const found = collectDocMentionsFromText(
+        'Use `plansync_project_update { phase: "active" }`.',
+      );
+      expect(found.has('plansync_project_update')).toBe(true);
+    });
+
+    it('extracts tool name from `plansync_drift_resolve action=rebind`', () => {
+      const found = collectDocMentionsFromText('`plansync_drift_resolve action=rebind`');
+      expect(found.has('plansync_drift_resolve')).toBe(true);
+    });
+
+    it('expands slash-suffix shorthand `plansync_task_list/show/pack`', () => {
+      const found = collectDocMentionsFromText('Read-only: `plansync_task_list/show/pack`');
+      expect(found.has('plansync_task_list')).toBe(true);
+      expect(found.has('plansync_task_show')).toBe(true);
+      expect(found.has('plansync_task_pack')).toBe(true);
+    });
+
+    it('expands four-segment slash-suffix `plansync_plan_list/show/active/diff`', () => {
+      const found = collectDocMentionsFromText('`plansync_plan_list/show/active/diff`');
+      expect(found.has('plansync_plan_list')).toBe(true);
+      expect(found.has('plansync_plan_show')).toBe(true);
+      expect(found.has('plansync_plan_active')).toBe(true);
+      expect(found.has('plansync_plan_diff')).toBe(true);
+    });
+
+    it('expands `plansync_execution_start/heartbeat/complete`', () => {
+      const found = collectDocMentionsFromText(
+        '`plansync_execution_start/heartbeat/complete` are deprecated aliases.',
+      );
+      expect(found.has('plansync_execution_start')).toBe(true);
+      expect(found.has('plansync_execution_heartbeat')).toBe(true);
+      expect(found.has('plansync_execution_complete')).toBe(true);
+    });
+
+    it('handles multiple mentions on a single line', () => {
+      const found = collectDocMentionsFromText(
+        'Either `plansync_status` or `plansync_project_list` works.',
+      );
+      expect(found.has('plansync_status')).toBe(true);
+      expect(found.has('plansync_project_list')).toBe(true);
+    });
+
+    it('does NOT pick up plansync_X embedded mid-URL inside a code span', () => {
+      // A backtick must sit immediately before `plansync_` — this guards
+      // against false positives like the Postgres DB name appearing in
+      // a connection-string code span.
+      const found = collectDocMentionsFromText(
+        'See `postgresql://$USER@localhost:15432/plansync_dev`.',
+      );
+      expect(found.has('plansync_dev')).toBe(false);
+      expect(found.size).toBe(0);
+    });
+
+    it('does NOT pick up plansync_X inside a fenced shell snippet', () => {
+      const fenced = '```bash\ncreatedb -p 15432 plansync_dev\n```\n';
+      const found = collectDocMentionsFromText(fenced);
+      expect(found.has('plansync_dev')).toBe(false);
+    });
   });
 });
