@@ -3047,9 +3047,10 @@
 
 #### R-176 [MEDIUM] 文档↔工具一致性 contract test
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B15
-- **depends_on**: R-172, R-175
+- **depends_on**: R-175
+- **note**: 原 `depends_on: R-172` 是过度保守的耦合。R-172 (CLAUDE.md → thin pointer) 是文档形态重构，本条只是静态扫 backtick 包裹的 `plansync_*` 与 `server.tool('plansync_*'`) 注册名比对，对 CLAUDE.md/AGENTS.md 当前篇幅没有依赖（thin pointer 化后规则同样适用）。先解掉这条让 docs-drift 立即有 CI 守门。
 - **effort**: small
 - **files**: 新增 `packages/mcp-server/tests/integration/docs-contract.test.ts`
 - **fix_steps**: 扫 protocol.md / CLAUDE.md / AGENTS.md 抽 `plansync_*` 与 tools/list 比对
