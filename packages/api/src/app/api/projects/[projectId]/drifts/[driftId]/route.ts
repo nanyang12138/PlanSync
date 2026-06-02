@@ -7,6 +7,7 @@ import { resolveDriftSchema, AppError, ErrorCode } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
+import { acquireProjectAdvisoryLock } from '@/lib/advisory-lock';
 
 type Params = { params: Promise<{ projectId: string; driftId: string }> };
 
@@ -39,11 +40,44 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
       throw new AppError(ErrorCode.STATE_CONFLICT, 'Drift alert already resolved');
     }
 
-    const activePlan = await prisma.plan.findFirst({
-      where: { projectId: params.projectId, status: 'active' },
-    });
-
     await prisma.$transaction(async (tx) => {
+      // Serialize per-project against a concurrent `plan_activate` (which sets
+      // executionGate / supersedes open alerts inside its own transaction)
+      // and against the `/rebind` route. Without this, the active-plan read
+      // and the gate-clear below run at READ COMMITTED and can rebind a task
+      // to a version that a just-committed activate already superseded, or
+      // clear a gate that activate set for a brand-new alert. Acquired first
+      // so the lock-ordering matches every other route that takes it.
+      await acquireProjectAdvisoryLock(tx, params.projectId);
+
+      // R-051: the open-status gate above was evaluated on a pre-lock snapshot.
+      // A concurrent activate may have superseded this alert (open → superseded)
+      // and opened a fresh one for the same task while we waited on the lock.
+      // Re-read inside the tx; if it is no longer open, this resolution is
+      // stale — the owner should re-read drifts and act on the current alert.
+      const liveDrift = await tx.driftAlert.findUnique({
+        where: { id: params.driftId },
+        select: { status: true },
+      });
+      if (liveDrift?.status !== 'open') {
+        throw new AppError(
+          ErrorCode.STATE_CONFLICT,
+          'Drift alert was superseded or resolved concurrently (likely a newer plan ' +
+            'activation). Re-read the task drifts and resolve the current alert.',
+        );
+      }
+
+      // Re-read the active plan INSIDE the transaction (after the lock) so a
+      // `rebind` binds to the version that is current once any in-flight
+      // activate has committed — never a superseded snapshot read before the
+      // lock was held. Only the rebind branch needs it.
+      const activePlan =
+        body.action === 'rebind'
+          ? await tx.plan.findFirst({
+              where: { projectId: params.projectId, status: 'active' },
+            })
+          : null;
+
       await tx.driftAlert.update({
         where: { id: params.driftId },
         data: {
