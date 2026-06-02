@@ -6,6 +6,7 @@ import { AppError, ErrorCode } from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
 import { eventBus } from '@/lib/event-bus';
 import { auditCrossProjectTaskIfNeeded } from '@/lib/task-scope';
+import { acquireProjectAdvisoryLock } from '@/lib/advisory-lock';
 
 type Params = { params: Promise<{ projectId: string; taskId: string }> };
 
@@ -28,24 +29,41 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
       throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
     }
 
-    const activePlan = await prisma.plan.findFirst({
-      where: { projectId: params.projectId, status: 'active' },
-    });
-    if (!activePlan) {
-      throw new AppError(ErrorCode.STATE_CONFLICT, 'No active plan to rebind to');
-    }
-
-    if (task.boundPlanVersion === activePlan.version) {
-      throw new AppError(ErrorCode.STATE_CONFLICT, 'Task already bound to current active plan');
-    }
-
-    const oldVersion = task.boundPlanVersion;
     // R-004: rebind is "explicit restart" — reset non-terminal tasks to
     // `todo` and mark stale runs as `superseded`. Terminal states (`done`,
     // `cancelled`) preserve their status; only the version reference moves.
     const TERMINAL_TASK_STATES = ['done', 'cancelled'] as const;
-    const isTerminal = (TERMINAL_TASK_STATES as readonly string[]).includes(task.status);
-    const updated = await prisma.$transaction(async (tx) => {
+    const { updated, oldVersion, newVersion } = await prisma.$transaction(async (tx) => {
+      // Serialize per-project against a concurrent `plan_activate` and the
+      // drift_resolve route. Without the lock, the active-plan read and the
+      // bind below run at READ COMMITTED, so an activate that commits a newer
+      // version between the read and the write would leave the task bound to a
+      // now-superseded version. Acquired first so the lock-ordering matches
+      // every other route that takes it.
+      await acquireProjectAdvisoryLock(tx, params.projectId);
+
+      // Read the active plan + task INSIDE the tx (after the lock) so the
+      // version we bind to is authoritative once any in-flight activate has
+      // committed.
+      const activePlan = await tx.plan.findFirst({
+        where: { projectId: params.projectId, status: 'active' },
+      });
+      if (!activePlan) {
+        throw new AppError(ErrorCode.STATE_CONFLICT, 'No active plan to rebind to');
+      }
+
+      const liveTask = await tx.task.findUnique({
+        where: { id: params.taskId },
+        select: { status: true, boundPlanVersion: true },
+      });
+      if (!liveTask) {
+        throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+      }
+      if (liveTask.boundPlanVersion === activePlan.version) {
+        throw new AppError(ErrorCode.STATE_CONFLICT, 'Task already bound to current active plan');
+      }
+
+      const isTerminal = (TERMINAL_TASK_STATES as readonly string[]).includes(liveTask.status);
       const t = await tx.task.update({
         where: { id: params.taskId },
         data: {
@@ -69,7 +87,7 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
           resolvedBy: auth.userName,
         },
       });
-      return t;
+      return { updated: t, oldVersion: liveTask.boundPlanVersion, newVersion: activePlan.version };
     });
 
     await createActivity({
@@ -77,8 +95,8 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
       type: 'task_rebound',
       actorName: auth.userName,
       actorType: 'human',
-      summary: `Task "${task.title}" rebound from plan v${oldVersion} to v${activePlan.version}`,
-      metadata: { taskId: task.id, oldVersion, newVersion: activePlan.version },
+      summary: `Task "${task.title}" rebound from plan v${oldVersion} to v${newVersion}`,
+      metadata: { taskId: task.id, oldVersion, newVersion },
     });
 
     eventBus.publish(params.projectId, 'drift_resolved', {
@@ -86,7 +104,7 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
       title: task.title,
       resolvedBy: auth.userName,
       oldVersion,
-      newVersion: activePlan.version,
+      newVersion,
     });
 
     return NextResponse.json({ data: updated });
