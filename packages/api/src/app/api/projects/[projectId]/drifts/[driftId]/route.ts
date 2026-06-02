@@ -78,6 +78,22 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
             })
           : null;
 
+      // Re-read the task status INSIDE the transaction (after the lock) too.
+      // `drift.task.status` above was loaded on the pre-lock snapshot; a
+      // concurrent update (e.g. a run completing to `done`, or another
+      // resolution flipping to `cancelled`) may have committed while we waited
+      // on the lock. Using the stale status to decide terminal-vs-reset would
+      // let `rebind` clobber a just-committed terminal state back to `todo`
+      // (and `no_impact` mis-detect the legacy `blocked` row). Mirror the
+      // `/rebind` route, which reads `liveTask.status` in-tx for the same race.
+      const liveTask = await tx.task.findUnique({
+        where: { id: drift.taskId },
+        select: { status: true },
+      });
+      if (!liveTask) {
+        throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+      }
+
       await tx.driftAlert.update({
         where: { id: params.driftId },
         data: {
@@ -100,7 +116,7 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
           where: { id: drift.taskId },
           data: {
             executionGate: null,
-            ...(drift.task.status === 'blocked' ? { status: 'in_progress' } : {}),
+            ...(liveTask.status === 'blocked' ? { status: 'in_progress' } : {}),
           },
         });
         // Intentionally do NOT auto-revive paused runs on no_impact: the agent's
@@ -125,7 +141,7 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
         // system gate. The owner explicitly accepted the new plan; the
         // gate has served its purpose.
         const TERMINAL_TASK_STATES = ['done', 'cancelled'] as const;
-        const isTerminal = (TERMINAL_TASK_STATES as readonly string[]).includes(drift.task.status);
+        const isTerminal = (TERMINAL_TASK_STATES as readonly string[]).includes(liveTask.status);
         await tx.task.update({
           where: { id: drift.taskId },
           data: {

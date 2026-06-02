@@ -69,14 +69,14 @@ describe('reactivate / rebind serialization + in-tx re-read', () => {
     });
   }
 
-  async function createTaskBoundTo(version: number) {
+  async function createTaskBoundTo(version: number, status = 'in_progress') {
     const t = await testPrisma.task.create({
       data: {
         projectId,
         title: 'srz task',
         type: 'code',
         priority: 'p1',
-        status: 'in_progress',
+        status,
         assignee: owner,
         assigneeType: 'human',
         boundPlanVersion: version,
@@ -210,5 +210,63 @@ describe('reactivate / rebind serialization + in-tx re-read', () => {
     expect(res.status).toBe(200);
     const task = await testPrisma.task.findUnique({ where: { id: taskId } });
     expect(task?.boundPlanVersion).toBe(3);
+  });
+
+  it('drift_resolve action=rebind: uses the in-tx task status, not the stale outer snapshot, when deciding terminal vs reset', async () => {
+    await createPlan(1, 'superseded');
+    await createPlan(2, 'active');
+    // The real DB row is already terminal (`done`): a concurrent run completion
+    // committed while this resolution waited on the project lock.
+    const taskId = await createTaskBoundTo(1, 'done');
+    const drift = await testPrisma.driftAlert.create({
+      data: {
+        projectId,
+        taskId,
+        type: 'version_mismatch',
+        severity: 'high',
+        reason: 'terminal-status race test',
+        status: 'open',
+        currentPlanVersion: 2,
+        taskBoundVersion: 1,
+      },
+    });
+
+    // Stub the OUTER drift read so the route's pre-lock snapshot still sees the
+    // task as non-terminal (`in_progress`). Pre-fix, the route trusts this
+    // stale status, treats the task as non-terminal, and resets it to `todo` —
+    // clobbering the concurrently-committed `done`. Post-fix, the in-tx re-read
+    // (tx.task.findUnique, not intercepted here) observes `done` and preserves it.
+    let used = false;
+    const restore = await spyOnProductionPrisma(
+      'driftAlert',
+      'findUnique',
+      (orig) =>
+        (async (args: { where?: { id?: string } }) => {
+          const real = await (orig as (a: unknown) => Promise<unknown>)(args);
+          if (!used && args?.where?.id === drift.id && real) {
+            used = true;
+            const r = real as { task?: { status?: string } };
+            if (r.task) r.task.status = 'in_progress';
+            return r as never;
+          }
+          return real as never;
+        }) as never,
+    );
+    restorers.push(restore);
+
+    const res = await driftPost(
+      makeReq(`/api/projects/${projectId}/drifts/${drift.id}`, {
+        method: 'POST',
+        userName: owner,
+        body: { action: 'rebind' },
+      }),
+      { params: Promise.resolve({ projectId, driftId: drift.id }) },
+    );
+
+    expect(res.status).toBe(200);
+    const task = await testPrisma.task.findUnique({ where: { id: taskId } });
+    // Version reference still advances, but the terminal status is preserved.
+    expect(task?.boundPlanVersion).toBe(2);
+    expect(task?.status).toBe('done');
   });
 });
