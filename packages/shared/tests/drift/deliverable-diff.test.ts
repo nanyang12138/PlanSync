@@ -10,6 +10,7 @@ import { describe, it, expect } from 'vitest';
 import {
   describeLinkedDeliverableChanges,
   diffDeliverables,
+  diffHasBreakingChange,
   severityForTaskByDeliverables,
   type DeliverableLite,
 } from '../../src/drift/deliverable-diff';
@@ -116,13 +117,73 @@ describe('diffDeliverables — diff is keyed by slug, identity preserved by row 
   });
 });
 
+describe('diffHasBreakingChange — R-207 plan-level breaking detector', () => {
+  it('removed deliverable → true', () => {
+    const diff = diffDeliverables([d('o-1', 'auth/login', 'spec')], []);
+    expect(diffHasBreakingChange(diff)).toBe(true);
+  });
+
+  it('body rewritten → true', () => {
+    const diff = diffDeliverables([d('o-1', 'auth/login', 'v1')], [d('n-1', 'auth/login', 'v2')]);
+    expect(diffHasBreakingChange(diff)).toBe(true);
+  });
+
+  it('refUri-only change → false (re-orient, not breaking)', () => {
+    const diff = diffDeliverables(
+      [d('o-1', 'auth/login', 'spec', 'https://figma.com/A')],
+      [d('n-1', 'auth/login', 'spec', 'https://figma.com/B')],
+    );
+    expect(diffHasBreakingChange(diff)).toBe(false);
+  });
+
+  it('title-only rename → false', () => {
+    const diff = diffDeliverables(
+      [d('o-1', 'auth/login', 'spec', null, 'Old')],
+      [d('n-1', 'auth/login', 'spec', null, 'New')],
+    );
+    expect(diffHasBreakingChange(diff)).toBe(false);
+  });
+
+  it('added-only / unchanged → false', () => {
+    const diff = diffDeliverables(
+      [d('o-1', 'auth/login', 'spec')],
+      [d('o-1', 'auth/login', 'spec'), d('n-2', 'auth/logout', 'spec2')],
+    );
+    expect(diffHasBreakingChange(diff)).toBe(false);
+  });
+});
+
 describe('severityForTaskByDeliverables — R-154 severity matrix', () => {
-  it('empty link list → severity="low" regardless of diff (R-154 step 3)', () => {
+  it('empty link list + breaking diff (deliverable removed) → severity="medium" (R-207: no longer silently low)', () => {
     const diff = diffDeliverables(
       [d('o-1', 'auth/login', 'spec')],
       [
         /* removed */
       ],
+    );
+    expect(severityForTaskByDeliverables([], diff)).toBe('medium');
+  });
+
+  it('empty link list + breaking diff (body rewritten) → severity="medium" (R-207)', () => {
+    const diff = diffDeliverables(
+      [d('o-1', 'auth/login', 'v1 spec')],
+      [d('n-1', 'auth/login', 'v2 spec')],
+    );
+    expect(severityForTaskByDeliverables([], diff)).toBe('medium');
+  });
+
+  it('empty link list + cosmetic diff (title-only rename) → severity="low" (R-207 keeps R-154 anti-fatigue)', () => {
+    const diff = diffDeliverables(
+      [d('o-1', 'auth/login', 'spec', null, 'Old Title')],
+      [d('n-1', 'auth/login', 'spec', null, 'New Title')],
+    );
+    expect(severityForTaskByDeliverables([], diff)).toBe('low');
+  });
+
+  it('empty link list + no change at all → severity="low" (R-207)', () => {
+    const diff = diffDeliverables(
+      [d('o-1', 'auth/login', 'spec')],
+      [d('n-1', 'auth/login', 'spec')],
     );
     expect(severityForTaskByDeliverables([], diff)).toBe('low');
   });

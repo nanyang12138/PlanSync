@@ -23,15 +23,19 @@
  *                   running.
  *
  *   - task-legacy:  NO TaskDeliverableLink rows (mirrors a task whose
- *                   owner has not declared what it depends on). R-154
- *                   step 3 routes this to severity='low' — the run is NOT
- *                   paused, no executionGate set. Compared to the old
- *                   text-hash classifier this is the alert-fatigue fix in
- *                   action.
+ *                   owner has not declared what it depends on). Under R-154
+ *                   step 3 this was an unconditional severity='low'. R-207
+ *                   tightens it: because v2 rewrote the `docs` deliverable
+ *                   body (a breaking change) and the legacy task never
+ *                   declared independence from it, the task is gated at
+ *                   'medium' and its run is paused — verify-before-complete
+ *                   instead of silent pass-through. (A cosmetic-only diff
+ *                   would still leave it 'low'; see the unit/shared tests.)
  *
- * The same v1→v2 plan diff produces the same severity but for different
- * reasons; the relevant invariant is that an unrelated `docs` change does
- * NOT pause the rest-api task's run.
+ * So the linked task (narrow) and the unlinked task (legacy) now diverge on
+ * the SAME v1→v2 diff: narrow stays 'low' because its one linked deliverable
+ * is unchanged, while legacy is escalated to 'medium' precisely because it
+ * has no link rows to prove the breaking `docs` change is irrelevant to it.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { POST as runsPost } from '@/app/api/projects/[projectId]/tasks/[taskId]/runs/route';
@@ -211,23 +215,29 @@ describe('Scenario: TaskDeliverableLink narrows drift severity per task (R-154)'
     expect(task?.executionGate).toBeNull();
   });
 
-  it('task-legacy (no link rows) → severity="low" and run keeps running (R-154 alert-fatigue fix)', async () => {
+  it('task-legacy (no link rows) + breaking diff → severity="medium", run paused, task gated (R-207)', async () => {
     const alerts = await testPrisma.driftAlert.findMany({
       where: { projectId, taskId: legacyTaskId, status: 'open' },
     });
     expect(alerts).toHaveLength(1);
-    // Before R-154 this task would have inherited the conservative
-    // "depends on all" default and been gated 'high'. R-154 step 3
-    // routes empty-link-table tasks to 'low' to drop alert fatigue —
-    // the owner has not declared what this task depends on, so we
-    // refuse to interrupt it on plan changes.
-    expect(alerts[0].severity).toBe('low');
+    // R-154 step 3 routed every empty-link task to 'low', which left a
+    // running no-link task free to complete() against a stale plan — the
+    // headline gate was off by default. R-207 threads the needle: this
+    // version rewrote the `docs` deliverable body (a breaking change), and
+    // the legacy task never declared independence from it, so we can no
+    // longer prove it is unaffected → gate at 'medium' (verify before
+    // completing). A cosmetic-only diff would still stay 'low' (see the
+    // unit + shared tests), so R-154's anti-fatigue guarantee is intact.
+    expect(alerts[0].severity).toBe('medium');
 
+    // medium + a running run ⇒ the run is paused so the agent can't
+    // heartbeat/complete against the superseded plan.
     const run = await testPrisma.executionRun.findUnique({ where: { id: legacyRunId } });
-    expect(run?.status).toBe('running');
+    expect(run?.status).toBe('paused');
 
     const task = await testPrisma.task.findUnique({ where: { id: legacyTaskId } });
-    expect(task?.executionGate).toBeNull();
+    expect(task?.executionGate).toBe('drift_medium');
+    // The gate is a separate column; the task lifecycle status is untouched.
     expect(task?.status).toBe('in_progress');
   });
 });

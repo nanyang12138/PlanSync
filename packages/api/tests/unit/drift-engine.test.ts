@@ -252,8 +252,11 @@ describe('runDriftScan — R-154 deliverable-id-based severity', () => {
     expect(alerts[0].structuralSeverity).toBe('low');
   });
 
-  // R-154 step 3: empty link table ⇒ severity=low.
-  it('task with no deliverableLinks → severity="low" even on big plan changes (alert fatigue fix)', async () => {
+  // R-207: empty link table is no longer an unconditional 'low'. A breaking
+  // diff (deliverable removed or body rewritten) gates an unlinked task at
+  // 'medium' so it cannot silently complete against a stale plan; a cosmetic
+  // diff still stays 'low' (R-154 anti-fatigue preserved).
+  it('task with no deliverableLinks + breaking diff (removed deliverable) → severity="medium" (R-207)', async () => {
     tx.task.findMany.mockResolvedValueOnce([
       taskRow('t-orphan', { boundPlanVersion: 1, linkedDeliverableIds: [] }),
     ]);
@@ -261,8 +264,8 @@ describe('runDriftScan — R-154 deliverable-id-based severity', () => {
       planRow(2, { goal: 'TOTALLY DIFFERENT GOAL', scope: 'mobile only' }),
     );
     tx.plan.findMany.mockResolvedValueOnce([planRow(1)]);
-    // Even if v2 added and removed deliverables, an unlinked task gets
-    // severity='low' — R-154 step 3 explicit opt-out.
+    // v2 removed 'old-thing' and added 'new-thing' → a breaking change at the
+    // plan level. The unlinked task can't prove it's unaffected → gate medium.
     mocks.planDeliverableFindMany.mockResolvedValueOnce([
       deliv({ id: 'd-old', planId: 'plan-1', slug: 'old-thing', body: 'gone' }),
       deliv({ id: 'd-new', planId: 'plan-2', slug: 'new-thing', body: 'arrived' }),
@@ -270,9 +273,37 @@ describe('runDriftScan — R-154 deliverable-id-based severity', () => {
 
     const { alerts } = await runDriftScan(tx as unknown as never, 'p1', 2);
     expect(alerts).toHaveLength(1);
+    expect(alerts[0].severity).toBe('medium');
+    expect(alerts[0].structuralSeverity).toBe('medium');
+    expect(alerts[0].reason).toMatch(/no deliverable links/i);
+    expect(alerts[0].reason).toMatch(/breaking deliverable change/i);
+  });
+
+  it('task with no deliverableLinks + cosmetic diff (title-only rename) → severity="low" (R-207 keeps R-154 anti-fatigue)', async () => {
+    tx.task.findMany.mockResolvedValueOnce([
+      taskRow('t-orphan', { boundPlanVersion: 1, linkedDeliverableIds: [] }),
+    ]);
+    tx.plan.findFirst.mockResolvedValueOnce(planRow(2));
+    tx.plan.findMany.mockResolvedValueOnce([planRow(1)]);
+    // Same slug + same body across versions; only the title polished. No
+    // breaking change → unlinked task stays low, no gate, no fatigue.
+    mocks.planDeliverableFindMany.mockResolvedValueOnce([
+      deliv({ id: 'd-old', planId: 'plan-1', slug: 'rest-api', title: 'REST API', body: 'spec' }),
+      deliv({
+        id: 'd-new',
+        planId: 'plan-2',
+        slug: 'rest-api',
+        title: 'REST API (v1)',
+        body: 'spec',
+      }),
+    ]);
+
+    const { alerts } = await runDriftScan(tx as unknown as never, 'p1', 2);
+    expect(alerts).toHaveLength(1);
     expect(alerts[0].severity).toBe('low');
     expect(alerts[0].structuralSeverity).toBe('low');
     expect(alerts[0].reason).toMatch(/no deliverable links/i);
+    expect(alerts[0].reason).toMatch(/nothing breaking/i);
   });
 
   it('hasRunningExecution is carried on the alert independent of severity', async () => {
