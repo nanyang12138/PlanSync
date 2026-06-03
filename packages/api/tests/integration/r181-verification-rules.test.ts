@@ -216,6 +216,189 @@ describe('R-181: verification rules gate', () => {
     expect(longEnough.ok).toBe(true);
   });
 
+  // ---------------------------------------------------------------
+  // R-208: require_pr_merged / require_commits_on_branch are no longer
+  // string-presence theater — they consume webhook-verified signals.
+  // ---------------------------------------------------------------
+
+  function ruleRow(kind: string): VerificationRule {
+    return {
+      id: `rule-${kind}`,
+      projectId,
+      scope: 'project',
+      scopeValue: null,
+      kind,
+      params: {},
+      enabled: true,
+      createdBy: owner,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as VerificationRule;
+  }
+
+  it('evaluateRule(require_pr_merged) needs verified.prMerged, not just a prUrl (R-208)', () => {
+    const rule = ruleRow('require_pr_merged');
+    const taskCtx = {
+      id: taskId,
+      type: 'code',
+      prUrl: 'https://github.com/o/r/pull/1',
+      planDeliverableRefs: [],
+    };
+    // prUrl set but the PR is NOT verified-merged → fail closed (the old
+    // code passed here purely because prUrl was non-empty).
+    const notMerged = evaluateRule(rule, {
+      task: taskCtx,
+      body: {},
+      verified: { prMerged: false },
+    });
+    expect(notMerged.ok).toBe(false);
+    expect(notMerged.message).toMatch(/not merged/i);
+    // verified merged → pass
+    const merged = evaluateRule(rule, { task: taskCtx, body: {}, verified: { prMerged: true } });
+    expect(merged.ok).toBe(true);
+    // no verified signal at all (e.g. no prUrl) → fail closed
+    const none = evaluateRule(rule, {
+      task: { ...taskCtx, prUrl: null },
+      body: {},
+    });
+    expect(none.ok).toBe(false);
+  });
+
+  it('evaluateRule(require_commits_on_branch) needs verified.branchHasCommits, not just a name (R-208)', () => {
+    const rule = ruleRow('require_commits_on_branch');
+    const taskCtx = { id: taskId, type: 'code', prUrl: null, planDeliverableRefs: [] };
+    // branchName provided but no verified push → fail closed (the old code
+    // passed on the mere presence of the string).
+    const noPush = evaluateRule(rule, {
+      task: taskCtx,
+      body: { branchName: 'feature-x' },
+      verified: { branchHasCommits: false },
+    });
+    expect(noPush.ok).toBe(false);
+    expect(noPush.message).toMatch(/no pushed commits/i);
+    // verified push → pass
+    const pushed = evaluateRule(rule, {
+      task: taskCtx,
+      body: { branchName: 'feature-x' },
+      verified: { branchHasCommits: true },
+    });
+    expect(pushed.ok).toBe(true);
+  });
+
+  it('evaluateProjectVerificationRules(require_pr_merged) reads the merged-PR webhook event (R-208)', async () => {
+    await testPrisma.domainEvent.deleteMany({ where: { projectId } });
+    await testPrisma.verificationRule.create({
+      data: {
+        projectId,
+        kind: 'require_pr_merged',
+        scope: 'project',
+        enabled: true,
+        createdBy: owner,
+      },
+    });
+    const prUrl = 'https://github.com/o/r/pull/42';
+    const taskCtx = { id: taskId, type: 'code', prUrl, planDeliverableRefs: [] };
+
+    // No webhook event yet → the PR cannot be proven merged → fail.
+    const before = await evaluateProjectVerificationRules(projectId, { task: taskCtx, body: {} });
+    expect(before.failed.map((f) => f.kind)).toContain('require_pr_merged');
+
+    // A merged pull_request event lands in the outbox → now it passes.
+    await testPrisma.domainEvent.create({
+      data: {
+        eventType: 'github_pull_request',
+        projectId,
+        payload: {
+          type: 'github_pull_request',
+          projectId,
+          userName: null,
+          data: {
+            deliveryId: 'r208-pr-1',
+            repository: 'o/r',
+            payload: {
+              action: 'closed',
+              pull_request: {
+                merged: true,
+                html_url: prUrl,
+                merge_commit_sha: 'sha-merge-1',
+                head: { sha: 'sha-head-1' },
+                base: { ref: 'master' },
+              },
+            },
+          },
+        },
+      },
+    });
+    const after = await evaluateProjectVerificationRules(projectId, { task: taskCtx, body: {} });
+    expect(after.failed).toHaveLength(0);
+    await testPrisma.domainEvent.deleteMany({ where: { projectId } });
+  });
+
+  it('evaluateProjectVerificationRules(require_commits_on_branch) reads the push webhook event (R-208)', async () => {
+    await testPrisma.domainEvent.deleteMany({ where: { projectId } });
+    await testPrisma.verificationRule.create({
+      data: {
+        projectId,
+        kind: 'require_commits_on_branch',
+        scope: 'project',
+        enabled: true,
+        createdBy: owner,
+      },
+    });
+    const taskCtx = { id: taskId, type: 'code', prUrl: null, planDeliverableRefs: [] };
+    const body = { branchName: 'cursor/fix-rf-1-abcd' };
+
+    // No push event yet → fail.
+    const before = await evaluateProjectVerificationRules(projectId, { task: taskCtx, body });
+    expect(before.failed.map((f) => f.kind)).toContain('require_commits_on_branch');
+
+    // A github_push with a commit to that branch lands → now it passes.
+    await testPrisma.domainEvent.create({
+      data: {
+        eventType: 'github_push',
+        projectId,
+        payload: {
+          type: 'github_push',
+          projectId,
+          userName: null,
+          data: {
+            deliveryId: 'r208-push-1',
+            repository: 'o/r',
+            payload: {
+              ref: 'refs/heads/cursor/fix-rf-1-abcd',
+              commits: [{ id: 'c1' }],
+              head_commit: { id: 'c1' },
+            },
+          },
+        },
+      },
+    });
+    const after = await evaluateProjectVerificationRules(projectId, { task: taskCtx, body });
+    expect(after.failed).toHaveLength(0);
+
+    // An empty-commits push to the same branch must NOT satisfy the rule.
+    await testPrisma.domainEvent.deleteMany({ where: { projectId } });
+    await testPrisma.domainEvent.create({
+      data: {
+        eventType: 'github_push',
+        projectId,
+        payload: {
+          type: 'github_push',
+          projectId,
+          userName: null,
+          data: {
+            deliveryId: 'r208-push-2',
+            repository: 'o/r',
+            payload: { ref: 'refs/heads/cursor/fix-rf-1-abcd', commits: [], head_commit: null },
+          },
+        },
+      },
+    });
+    const empty = await evaluateProjectVerificationRules(projectId, { task: taskCtx, body });
+    expect(empty.failed.map((f) => f.kind)).toContain('require_commits_on_branch');
+    await testPrisma.domainEvent.deleteMany({ where: { projectId } });
+  });
+
   it('evaluateProjectVerificationRules() only returns enabled rules', async () => {
     await testPrisma.verificationRule.create({
       data: {
