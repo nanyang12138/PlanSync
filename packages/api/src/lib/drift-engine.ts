@@ -195,11 +195,17 @@ export async function runDriftScan(
       if (changedSummary) {
         reason = `${baseLine} Linked deliverable changes: ${changedSummary} — ${structuralSeverity} for this task${runSuffix}.`;
       } else if (linkedIds.length === 0) {
-        // R-154 step 3 — no link rows ⇒ no basis to alert. We still emit
-        // the row at severity='low' so the activity log shows the version
-        // bump happened, but the gate/pause rules in `persistDriftAlerts`
-        // skip low-severity entries.
-        reason = `${baseLine} Task has no deliverable links; treating as ${structuralSeverity} (no alert-worthy impact).`;
+        // R-207 — no link rows. If the diff is cosmetic (no deliverable
+        // removed or body-rewritten) we stay at 'low' and the row only
+        // records the version bump for the activity log. If the diff carries
+        // a breaking change we gate at 'medium': the task never declared what
+        // it depends on, so we cannot prove it is unaffected — verify before
+        // completing rather than let it slip through (the old R-154 step-3
+        // unconditional 'low' is what left the headline gate off by default).
+        reason =
+          structuralSeverity === 'low'
+            ? `${baseLine} Task has no deliverable links and this version changed nothing breaking; treating as low (no alert-worthy impact).`
+            : `${baseLine} Task has no deliverable links, but this version made a breaking deliverable change (removed/body-rewritten). Gating at ${structuralSeverity} — verify the task is unaffected before completing, or declare its deliverable links to silence this.`;
       } else {
         reason = `${baseLine} Linked deliverables unchanged by this version — ${structuralSeverity} for this task${runSuffix}.`;
       }
