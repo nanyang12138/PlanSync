@@ -594,6 +594,122 @@ describe('R-181: verification rules gate', () => {
     await testPrisma.domainEvent.deleteMany({ where: { projectId } });
   });
 
+  it("require_pr_merged binds PR ownership to the run-recorded branch — a parallel run's PR merged in the window does NOT pass when the run anchored a different branch (#2941)", async () => {
+    await testPrisma.domainEvent.deleteMany({ where: { projectId } });
+    await testPrisma.verificationRule.create({
+      data: {
+        projectId,
+        kind: 'require_pr_merged',
+        scope: 'project',
+        enabled: true,
+        createdBy: owner,
+      },
+    });
+    // The residual race the #2939 head-branch-push-in-window binding did NOT
+    // stop: two runs execute concurrently with overlapping windows. A parallel
+    // run pushes to AND merges its own PR (head branch = `parallelHeadRef`)
+    // inside this run's window. The lazy agent for THIS run does no work, then
+    // repoints the mutable `task.prUrl` at the parallel run's PR right before
+    // complete. Both the merge timestamp and the head-branch push fall inside
+    // the window, so #2939 alone would wrongly pass. #2941 binds ownership to
+    // the branch THIS run recorded at start, which differs from the parallel
+    // PR's head branch ⇒ reject.
+    const parallelPr = 'https://github.com/o/r/pull/77';
+    const parallelHeadRef = 'cursor/parallel-run-2941';
+    const myRecordedBranch = 'cursor/my-run-2941';
+    const taskCtx = { id: taskId, type: 'code', prUrl: parallelPr, planDeliverableRefs: [] };
+    const runStartedAt = new Date('2026-01-01T00:00:00Z');
+
+    await testPrisma.domainEvent.create({
+      data: {
+        eventType: 'github_pull_request',
+        projectId,
+        createdAt: new Date('2026-02-01T00:00:00Z'),
+        payload: {
+          type: 'github_pull_request',
+          projectId,
+          userName: null,
+          data: {
+            deliveryId: '2941-parallel-pr',
+            repository: 'o/r',
+            payload: {
+              action: 'closed',
+              pull_request: {
+                merged: true,
+                html_url: parallelPr,
+                merge_commit_sha: 'sha-parallel-merge',
+                head: { sha: 'sha-parallel-head', ref: parallelHeadRef },
+                base: { ref: 'master' },
+              },
+            },
+          },
+        },
+      },
+    });
+    // The parallel run's real head-branch push, inside this run's window. This
+    // is exactly what makes the #2939-only binding insufficient.
+    await testPrisma.domainEvent.create({
+      data: {
+        eventType: 'github_push',
+        projectId,
+        createdAt: new Date('2026-01-15T00:00:00Z'),
+        payload: {
+          type: 'github_push',
+          projectId,
+          userName: null,
+          data: {
+            deliveryId: '2941-parallel-head-push',
+            repository: 'o/r',
+            payload: {
+              ref: `refs/heads/${parallelHeadRef}`,
+              commits: [{ id: 'sha-parallel-head' }],
+              head_commit: { id: 'sha-parallel-head' },
+            },
+          },
+        },
+      },
+    });
+
+    // This run anchored its own branch at start, which is NOT the parallel
+    // PR's head branch → ownership unproven → fail, even though the #2939
+    // window+push checks both hold.
+    const stolen = await evaluateProjectVerificationRules(projectId, {
+      task: taskCtx,
+      body: {},
+      run: { startedAt: runStartedAt, branchName: myRecordedBranch },
+    });
+    expect(stolen.failed.map((f) => f.kind)).toContain('require_pr_merged');
+
+    // The legitimate case: the run's recorded branch IS the merged PR's head
+    // branch (it really did own this PR) → passes.
+    const legit = await evaluateProjectVerificationRules(projectId, {
+      task: taskCtx,
+      body: {},
+      run: { startedAt: runStartedAt, branchName: parallelHeadRef },
+    });
+    expect(legit.failed).toHaveLength(0);
+
+    // refs/heads/ prefix on the recorded branch must still match the short
+    // head ref GitHub reports.
+    const legitPrefixed = await evaluateProjectVerificationRules(projectId, {
+      task: taskCtx,
+      body: {},
+      run: { startedAt: runStartedAt, branchName: `refs/heads/${parallelHeadRef}` },
+    });
+    expect(legitPrefixed.failed).toHaveLength(0);
+
+    // Back-compat: a run that recorded NO branch falls back to the #2939
+    // window-only binding (the head-branch push in the window is enough).
+    const noAnchor = await evaluateProjectVerificationRules(projectId, {
+      task: taskCtx,
+      body: {},
+      run: { startedAt: runStartedAt },
+    });
+    expect(noAnchor.failed).toHaveLength(0);
+
+    await testPrisma.domainEvent.deleteMany({ where: { projectId } });
+  });
+
   it('evaluateProjectVerificationRules(require_commits_on_branch) reads the push webhook event (R-208)', async () => {
     await testPrisma.domainEvent.deleteMany({ where: { projectId } });
     await testPrisma.verificationRule.create({

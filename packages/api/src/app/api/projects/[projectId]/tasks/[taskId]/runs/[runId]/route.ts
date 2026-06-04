@@ -302,7 +302,10 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
             deliverablesMet: body.deliverablesMet,
           },
           // #2925: scope require_commits_on_branch evidence to this run.
-          run: { startedAt: run.startedAt },
+          // #2941: also pass the run's recorded working branch so
+          // require_pr_merged can bind PR ownership to it (defeats repointing
+          // task.prUrl at a parallel run's PR right before complete).
+          run: { startedAt: run.startedAt, branchName: run.branchName },
         });
         if (ruleResult.failed.length > 0) {
           return NextResponse.json(

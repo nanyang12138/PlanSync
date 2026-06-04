@@ -149,6 +149,12 @@ export const createExecutionRunSchema = z.object({
   taskId: z.string().optional(),
   executorType: z.enum(['human', 'agent']),
   executorName: z.string(),
+  // #2941: the git branch this run will work on, recorded at start time.
+  // Optional for backwards compatibility, but when supplied it becomes the
+  // run's immutable ownership anchor: the `require_pr_merged` gate binds the
+  // merged PR's head branch to this value so a mutable `task.prUrl` cannot be
+  // repointed at a parallel run's / teammate's PR at complete time.
+  branchName: z.string().optional(),
 });
 
 export const completeExecutionRunSchema = z.object({
