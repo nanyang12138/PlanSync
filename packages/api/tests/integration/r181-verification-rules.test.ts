@@ -698,7 +698,8 @@ describe('R-181: verification rules gate', () => {
     });
     expect(legitPrefixed.failed).toHaveLength(0);
 
-    // Back-compat: a run that recorded NO branch falls back to the #2939
+    // Back-compat: a run that recorded NO branch AND had exclusive occupancy
+    // of its window (no concurrent run in the project) falls back to the #2939
     // window-only binding (the head-branch push in the window is enough).
     const noAnchor = await evaluateProjectVerificationRules(projectId, {
       task: taskCtx,
@@ -708,6 +709,135 @@ describe('R-181: verification rules gate', () => {
     expect(noAnchor.failed).toHaveLength(0);
 
     await testPrisma.domainEvent.deleteMany({ where: { projectId } });
+  });
+
+  it("require_pr_merged fails closed for a branch-less run when another run overlapped its window — omitting branchName cannot borrow a concurrent run's merged PR (#2945)", async () => {
+    await testPrisma.domainEvent.deleteMany({ where: { projectId } });
+    await testPrisma.executionRun.deleteMany({ where: { taskId } });
+    await testPrisma.verificationRule.create({
+      data: {
+        projectId,
+        kind: 'require_pr_merged',
+        scope: 'project',
+        enabled: true,
+        createdBy: owner,
+      },
+    });
+
+    // The residual bypass #2943's start-time check did NOT close: an executor
+    // can OMIT the optional `branchName` at execution_start. Then (a) the
+    // #2943 branch-claim check is skipped (nothing to claim) and (b) the
+    // #2941 head-branch equality check can't run at complete (no anchor), so
+    // the gate falls back to the #2939 window-only binding. Under concurrency
+    // that lets the branch-less run repoint the mutable `task.prUrl` at a
+    // concurrent run's merged PR — its honest head-branch push lands inside
+    // the shared window — and clear the gate on borrowed work.
+    const borrowedPr = 'https://github.com/o/r/pull/2945';
+    const victimHeadRef = 'cursor/victim-run-2945';
+    const taskCtx = { id: taskId, type: 'code', prUrl: borrowedPr, planDeliverableRefs: [] };
+    const runStartedAt = new Date('2026-01-01T00:00:00Z');
+
+    // The victim/parallel run's merged PR, merged inside the attacker's window.
+    await testPrisma.domainEvent.create({
+      data: {
+        eventType: 'github_pull_request',
+        projectId,
+        createdAt: new Date('2026-02-01T00:00:00Z'),
+        payload: {
+          type: 'github_pull_request',
+          projectId,
+          userName: null,
+          data: {
+            deliveryId: '2945-victim-pr',
+            repository: 'o/r',
+            payload: {
+              action: 'closed',
+              pull_request: {
+                merged: true,
+                html_url: borrowedPr,
+                merge_commit_sha: 'sha-victim-merge',
+                head: { sha: 'sha-victim-head', ref: victimHeadRef },
+                base: { ref: 'master' },
+              },
+            },
+          },
+        },
+      },
+    });
+    // The victim's real head-branch push, inside the attacker's window — this
+    // is what satisfies the #2939 window-only binding and makes the borrow
+    // possible when the attacker records no branch anchor.
+    await testPrisma.domainEvent.create({
+      data: {
+        eventType: 'github_push',
+        projectId,
+        createdAt: new Date('2026-01-15T00:00:00Z'),
+        payload: {
+          type: 'github_push',
+          projectId,
+          userName: null,
+          data: {
+            deliveryId: '2945-victim-head-push',
+            repository: 'o/r',
+            payload: {
+              ref: `refs/heads/${victimHeadRef}`,
+              commits: [{ id: 'sha-victim-head' }],
+              head_commit: { id: 'sha-victim-head' },
+            },
+          },
+        },
+      },
+    });
+
+    // A concurrent run in the project whose lifetime overlaps the attacker's
+    // window — the honest run that actually produced the merged PR above.
+    const concurrentRun = await testPrisma.executionRun.create({
+      data: {
+        taskId,
+        status: 'completed',
+        executorType: 'agent',
+        executorName: agentName,
+        boundPlanVersion: planVersion,
+        taskPackSnapshot: {},
+        startedAt: new Date('2026-01-10T00:00:00Z'),
+        endedAt: new Date('2026-01-20T00:00:00Z'),
+        branchName: victimHeadRef,
+      },
+    });
+
+    // Attacker run: records NO branch anchor. With a concurrent run present we
+    // can no longer attribute the merged PR to this run → fail closed.
+    const branchLessUnderConcurrency = await evaluateProjectVerificationRules(projectId, {
+      task: taskCtx,
+      body: {},
+      run: { id: 'attacker-run-2945', startedAt: runStartedAt },
+    });
+    expect(branchLessUnderConcurrency.failed.map((f) => f.kind)).toContain('require_pr_merged');
+
+    // Remedy: an executor that records its OWN working branch at start gets a
+    // precise #2941 per-run binding. (Here the legit owner of the PR records
+    // its head branch and passes even though a concurrent run exists; #2943
+    // separately guarantees a *different* run can never have claimed this
+    // branch.)
+    const anchoredOwner = await evaluateProjectVerificationRules(projectId, {
+      task: taskCtx,
+      body: {},
+      run: { id: 'owner-run-2945', startedAt: runStartedAt, branchName: victimHeadRef },
+    });
+    expect(anchoredOwner.failed).toHaveLength(0);
+
+    // Once the concurrent run is gone (exclusive occupancy), the branch-less
+    // run falls back to the #2939 window-only binding (no regression).
+    await testPrisma.executionRun.delete({ where: { id: concurrentRun.id } });
+    const branchLessSolo = await evaluateProjectVerificationRules(projectId, {
+      task: taskCtx,
+      body: {},
+      run: { id: 'attacker-run-2945', startedAt: runStartedAt },
+    });
+    expect(branchLessSolo.failed).toHaveLength(0);
+
+    await testPrisma.domainEvent.deleteMany({ where: { projectId } });
+    await testPrisma.executionRun.deleteMany({ where: { taskId } });
   });
 
   it('evaluateProjectVerificationRules(require_commits_on_branch) reads the push webhook event (R-208)', async () => {

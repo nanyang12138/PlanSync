@@ -103,9 +103,14 @@ export interface VerificationContext {
    * equality below would then hold against borrowed work. See the start route
    * (`POST .../runs`) for the exclusivity guard.
    *
+   * #2945: `id` lets the no-anchor exclusivity check exclude THIS run when
+   * scanning the project for a concurrently-running run (see
+   * `evaluateProjectVerificationRules`). Optional so the pure-evaluator unit
+   * tests can still pass a synthetic `run` without a DB row.
+   *
    * Optional: when the whole `run` is absent the evidence is unscoped.
    */
-  run?: { startedAt: Date; branchName?: string | null };
+  run?: { id?: string; startedAt: Date; branchName?: string | null };
   /**
    * R-208: webhook-verified signals pre-computed by
    * `evaluateProjectVerificationRules` from the GitHub domain-event outbox.
@@ -303,6 +308,37 @@ export interface EvaluateAllResult {
 }
 
 /**
+ * #2945: did any execution run OTHER than `excludeRunId` in this project have a
+ * lifetime that overlaps the window `[runStartedAt, now]`?
+ *
+ * A run overlaps when it is still running (`endedAt` is null) or ended at/after
+ * `runStartedAt` — in either case it was alive at some point during the current
+ * run's window and could have pushed + merged a PR inside it. We match runs in
+ * ANY terminal state (running / completed / failed / stale): a finished
+ * concurrent run is exactly the one whose merged PR a branch-less run could
+ * borrow.
+ *
+ * Used by the `require_pr_merged` no-anchor path: the #2939 window-only binding
+ * is only sound when the current run had exclusive occupancy of its window;
+ * under concurrency a branch-less run cannot attribute a merged PR to itself.
+ */
+async function projectHadConcurrentRun(
+  projectId: string,
+  runStartedAt: Date,
+  excludeRunId?: string,
+): Promise<boolean> {
+  const overlapping = await prisma.executionRun.findFirst({
+    where: {
+      task: { projectId },
+      ...(excludeRunId ? { id: { not: excludeRunId } } : {}),
+      OR: [{ endedAt: null }, { endedAt: { gte: runStartedAt } }],
+    },
+    select: { id: true },
+  });
+  return overlapping !== null;
+}
+
+/**
  * Load every enabled rule for a project, filter by scope, and evaluate.
  * Returns both the per-rule trace (for logging / RunReview) and the
  * subset that failed (the 422 envelope payload).
@@ -375,10 +411,31 @@ export async function evaluateProjectVerificationRules(
           // run. Reject regardless of the in-window push so a repointed
           // `task.prUrl` cannot borrow a parallel run's merged PR.
           prMerged = false;
+        } else if (!runBranch && (await projectHadConcurrentRun(projectId, since, ctx.run?.id))) {
+          // #2945: the run recorded NO working branch at start, so the #2941
+          // head-branch equality check above could not run and we would
+          // otherwise fall through to the #2939 window-only binding. That
+          // fallback cannot tell concurrent runs' PRs apart — the exact gap
+          // #2941 closed for anchored runs. An executor can therefore omit the
+          // optional `branchName` at execution_start to bypass BOTH the #2943
+          // start-time branch-claim check AND the #2941 equality check, then
+          // repoint the mutable `task.prUrl` at a concurrent run's merged PR
+          // (whose honest head-branch push lands inside the shared window) and
+          // clear the gate on borrowed work.
+          //
+          // The window-only fallback is only sound when this run had EXCLUSIVE
+          // occupancy of its window. If any OTHER execution run in the project
+          // overlapped [run.startedAt, now], we cannot attribute the merged PR
+          // to this run, so fail closed. The operator must record `branchName`
+          // at start to get a precise per-run binding (which #2943 then keeps
+          // exclusive across concurrent runs).
+          prMerged = false;
         } else {
-          // Either the run anchored to this PR's head branch (#2941) or no
-          // branch was recorded (#2939 back-compat). In both cases require the
-          // GitHub-verified head-branch push during the run window.
+          // Either the run anchored to this PR's head branch (#2941), or no
+          // branch was recorded AND this run had exclusive occupancy of its
+          // window (#2939 back-compat, no concurrent run to borrow from). In
+          // both cases require the GitHub-verified head-branch push during the
+          // run window.
           prMerged = await branchHasPushedCommits(prisma, projectId, prInfo.headRef, since);
         }
       }
