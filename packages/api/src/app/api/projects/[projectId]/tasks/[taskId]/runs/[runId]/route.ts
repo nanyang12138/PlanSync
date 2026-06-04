@@ -301,6 +301,8 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
             branchName: body.branchName,
             deliverablesMet: body.deliverablesMet,
           },
+          // #2925: scope require_commits_on_branch evidence to this run.
+          run: { startedAt: run.startedAt },
         });
         if (ruleResult.failed.length > 0) {
           return NextResponse.json(

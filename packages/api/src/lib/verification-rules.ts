@@ -56,6 +56,13 @@ export interface VerificationContext {
     deliverablesMet?: string[];
   };
   /**
+   * #2925: the current execution run. `startedAt` scopes webhook evidence
+   * (currently `require_commits_on_branch`) to pushes recorded at or after
+   * the run began, so a stale branch name pushed before this run cannot
+   * satisfy the gate. Optional: when absent the evidence is unscoped.
+   */
+  run?: { startedAt: Date };
+  /**
    * R-208: webhook-verified signals pre-computed by
    * `evaluateProjectVerificationRules` from the GitHub domain-event outbox.
    * The `require_pr_merged` / `require_commits_on_branch` evaluators consume
@@ -257,8 +264,10 @@ export async function evaluateProjectVerificationRules(
   }
   if (applicable.some((r) => r.kind === 'require_commits_on_branch')) {
     const branch = ctx.body.branchName?.trim();
+    // #2925: scope to pushes recorded at/after the run started so a branch
+    // name reused from before this run cannot satisfy the gate.
     verified.branchHasCommits = branch
-      ? await branchHasPushedCommits(prisma, projectId, branch)
+      ? await branchHasPushedCommits(prisma, projectId, branch, ctx.run?.startedAt)
       : false;
   }
   const enrichedCtx: VerificationContext = { ...ctx, verified };
