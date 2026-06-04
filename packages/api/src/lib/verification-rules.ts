@@ -43,17 +43,25 @@ export type VerificationRuleKind = (typeof VERIFICATION_RULE_KINDS)[number];
 export type VerificationRuleScope = 'project' | 'task_type' | 'task';
 
 /**
- * #2941: compare two git branch identifiers for equality, tolerating the
- * `refs/heads/` prefix on either side. The `pull_request.head.ref` GitHub
- * reports is the short name (`cursor/fix-foo`), while a run's recorded
- * `branchName` may have been stored either way depending on the caller — so
- * we strip the prefix and trim before comparing. Comparison is exact beyond
- * that (branch names are case-sensitive on the git side).
+ * #2941: normalize a git branch identifier for comparison/storage by trimming
+ * whitespace and stripping the `refs/heads/` prefix. GitHub reports the short
+ * name (`cursor/fix-foo`) on `pull_request.head.ref`, while a caller-supplied
+ * `branchName` may arrive either way — so we canonicalize before comparing.
+ * Returns the empty string for a blank input.
  */
-function branchRefsEqual(a: string, b: string): boolean {
-  const strip = (s: string) => s.trim().replace(/^refs\/heads\//, '');
-  const na = strip(a);
-  const nb = strip(b);
+export function normalizeBranchRef(s: string): string {
+  return s.trim().replace(/^refs\/heads\//, '');
+}
+
+/**
+ * #2941: compare two git branch identifiers for equality, tolerating the
+ * `refs/heads/` prefix on either side. Comparison is exact beyond the
+ * normalization in `normalizeBranchRef` (branch names are case-sensitive on
+ * the git side).
+ */
+export function branchRefsEqual(a: string, b: string): boolean {
+  const na = normalizeBranchRef(a);
+  const nb = normalizeBranchRef(b);
   return na.length > 0 && na === nb;
 }
 
@@ -86,6 +94,14 @@ export interface VerificationContext {
    * window — the startedAt cutoff alone cannot tell their PRs apart, but each
    * run's recorded branch can. `null`/absent ⇒ no anchor recorded, fall back
    * to the #2939 head-branch-push-in-window binding.
+   *
+   * #2943: the anchor is caller-supplied, so it is only meaningful as an
+   * ownership signal because the run-start route enforces branch-claim
+   * exclusivity (no two concurrently-`running` runs in a project may hold an
+   * equal branch). Without that, an executor could simply record a parallel
+   * run's branch here and repoint `task.prUrl` at the parallel PR — the
+   * equality below would then hold against borrowed work. See the start route
+   * (`POST .../runs`) for the exclusivity guard.
    *
    * Optional: when the whole `run` is absent the evidence is unscoped.
    */
