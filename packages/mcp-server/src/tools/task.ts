@@ -38,12 +38,38 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
 
   server.tool(
     'plansync_task_show',
-    'Get task details including drift alert status and recent execution runs',
+    // R-209: this is the READ-ONLY inspection view. It is NOT the pre-work
+    // gate — before you START a task call plansync_task_pack, which returns
+    // the same open drift alerts you MUST resolve before execution_start.
+    // Choosing task_show as your pre-work check does not relieve you of that
+    // obligation. (Previously this description claimed "recent execution
+    // runs" but only hit /pack, which omits them — that lie is fixed below.)
+    'Read-only task view: full task details, plan context, OPEN drift alerts, and the ' +
+      '5 most recent execution runs. For inspection only — before STARTING work on a task ' +
+      'call plansync_task_pack instead: that is the required pre-work gate (it returns the ' +
+      'same drift alerts, which must be resolved before execution_start).',
     { projectId: z.string(), taskId: z.string() },
     async (args) => {
-      // Use pack endpoint to include drift alerts alongside task data
-      const result = await api.get(`/api/projects/${args.projectId}/tasks/${args.taskId}/pack`);
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      // R-209: return what the description promises. /pack carries task +
+      // plan + project + open drift alerts but NOT execution runs; the plain
+      // task GET carries the 5 most recent runs but NOT drift alerts. Fetch
+      // both and merge so this tool is a genuine rich read AND never silently
+      // drops the drift signal an agent might be relying on.
+      const [pack, detail] = await Promise.all([
+        api.get<{ data?: Record<string, unknown> }>(
+          `/api/projects/${args.projectId}/tasks/${args.taskId}/pack`,
+        ),
+        api.get<{ data?: { executionRuns?: unknown } }>(
+          `/api/projects/${args.projectId}/tasks/${args.taskId}`,
+        ),
+      ]);
+      const merged = {
+        data: {
+          ...(pack?.data ?? {}),
+          recentExecutionRuns: detail?.data?.executionRuns ?? [],
+        },
+      };
+      return { content: [{ type: 'text', text: JSON.stringify(merged, null, 2) }] };
     },
   );
 
@@ -149,7 +175,10 @@ export function registerTaskTools(server: McpServer, api: ApiClient) {
 
   server.tool(
     'plansync_task_pack',
-    'Must call before starting any task. Returns your task brief: goal, plan context (constraints, standards, deliverables), and any drift alerts that must be resolved first.',
+    'Must call before starting any task. Returns your task brief: goal, plan context ' +
+      '(constraints, standards, deliverables), and any drift alerts that must be resolved ' +
+      'first. This is the canonical pre-work GATE; plansync_task_show is only the read-only ' +
+      'inspection sibling and does not satisfy this obligation.',
     { projectId: z.string(), taskId: z.string() },
     async (args) => {
       const result = await api.get(`/api/projects/${args.projectId}/tasks/${args.taskId}/pack`);
