@@ -43,6 +43,78 @@ export type VerificationRuleKind = (typeof VERIFICATION_RULE_KINDS)[number];
 export type VerificationRuleScope = 'project' | 'task_type' | 'task';
 
 /**
+ * #2933: branch names that accumulate many tasks' commits and therefore can
+ * never prove that *this* task/run did real work. `require_commits_on_branch`
+ * rejects them outright.
+ *
+ * Why this is needed on top of #2925's temporal scope: the run-start cutoff
+ * only excludes pushes recorded BEFORE this run. A shared integration branch
+ * (`main`, `master`, ...) keeps receiving unrelated pushes from other
+ * tasks/people *during* the run window, so an agent could report
+ * `branchName: "main"` and slip past the temporal gate without ever pushing
+ * its own task branch. Since `branchName` is fully agent-controlled at
+ * complete time, the only sound defence is to refuse shared branches: a push
+ * there is not attributable to this task/run.
+ *
+ * Owners can override the list per rule via `params.sharedBranches`
+ * (a string array); passing `[]` disables the check entirely.
+ */
+export const DEFAULT_SHARED_BRANCHES: readonly string[] = [
+  'main',
+  'master',
+  'develop',
+  'development',
+  'trunk',
+  'staging',
+  'stage',
+  'production',
+  'prod',
+  'release',
+  'default',
+];
+
+/**
+ * Normalize a branch name taken from the complete body (or a push `ref`):
+ * strip a leading `refs/heads/`, trim, and lowercase so the shared-branch
+ * comparison is case- and ref-form-insensitive. Returns '' for empty input.
+ */
+function normalizeBranchName(raw: string | undefined): string {
+  const b = (raw ?? '').trim();
+  if (!b) return '';
+  const noRef = b.startsWith('refs/heads/') ? b.slice('refs/heads/'.length) : b;
+  return noRef.toLowerCase();
+}
+
+/**
+ * Is `branch` a shared/integration branch per `sharedBranches`? Matches the
+ * full normalized name OR its first path segment, so namespaced integration
+ * refs like `release/1.2` or `production/eu` are caught alongside bare
+ * `main` / `master`. An empty `sharedBranches` list disables the check.
+ */
+export function isSharedBranch(branch: string, sharedBranches: readonly string[]): boolean {
+  const norm = normalizeBranchName(branch);
+  if (!norm) return false;
+  const deny = sharedBranches.map((s) => s.trim().toLowerCase()).filter((s) => s.length > 0);
+  if (deny.length === 0) return false;
+  if (deny.includes(norm)) return true;
+  const firstSegment = norm.split('/')[0];
+  return deny.includes(firstSegment);
+}
+
+/**
+ * Resolve the effective shared-branch denylist for a rule: a string-array
+ * `params.sharedBranches` override when present (including `[]` to opt out),
+ * otherwise `DEFAULT_SHARED_BRANCHES`.
+ */
+function sharedBranchesForRule(params: Record<string, unknown>): readonly string[] {
+  const raw = params.sharedBranches;
+  if (Array.isArray(raw) && raw.every((s) => typeof s === 'string')) {
+    return raw as string[];
+  }
+  return DEFAULT_SHARED_BRANCHES;
+}
+
+/**
  * Input fed to the evaluator. Mirrors the subset of
  * `completeExecutionRunSchema` body fields plus the underlying task row,
  * so the evaluator does not need to re-query Prisma per rule.
@@ -152,6 +224,31 @@ export function evaluateRule(rule: VerificationRule, ctx: VerificationContext): 
       // `ctx.verified.branchHasCommits` by the async shell). No branch name,
       // or no matching push event ⇒ fail closed.
       const branch = ctx.body.branchName?.trim();
+      if (!branch) {
+        return {
+          ruleId: rule.id,
+          kind: rule.kind,
+          ok: false,
+          message: 'require_commits_on_branch: branchName must be provided on complete',
+        };
+      }
+      // #2933: refuse shared/integration branches BEFORE trusting the webhook
+      // signal. `branchName` is agent-controlled, so without this an agent
+      // could report `main` (or `master`, `release/*`, ...) — a branch that
+      // collects unrelated pushes during the run window — and clear the gate
+      // even though none of those commits belong to this task/run. #2925's
+      // run-start temporal scope does not catch this because the qualifying
+      // push happens *during* the run. A push to a shared branch can never
+      // attribute task-specific work, so it fails closed here.
+      const sharedBranches = sharedBranchesForRule(params);
+      if (isSharedBranch(branch, sharedBranches)) {
+        return {
+          ruleId: rule.id,
+          kind: rule.kind,
+          ok: false,
+          message: `require_commits_on_branch: "${branch}" is a shared/integration branch — pushes there cannot prove work specific to this task/run. Push your commits to a dedicated task branch and report that branch.`,
+        };
+      }
       const ok = ctx.verified?.branchHasCommits === true;
       return {
         ruleId: rule.id,
@@ -159,9 +256,7 @@ export function evaluateRule(rule: VerificationRule, ctx: VerificationContext): 
         ok,
         message: ok
           ? `verified pushed commits on branch ${branch}`
-          : branch
-            ? `require_commits_on_branch: no pushed commits found on branch "${branch}" — push your work (and ensure the GitHub webhook is configured) before completing`
-            : 'require_commits_on_branch: branchName must be provided on complete',
+          : `require_commits_on_branch: no pushed commits found on branch "${branch}" — push your work (and ensure the GitHub webhook is configured) before completing`,
       };
     }
 

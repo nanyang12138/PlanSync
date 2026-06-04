@@ -285,6 +285,55 @@ describe('R-181: verification rules gate', () => {
     expect(pushed.ok).toBe(true);
   });
 
+  // #2933: branchName is agent-controlled, so a shared/integration branch
+  // (main, master, release/*, ...) must be refused BEFORE the webhook
+  // signal is trusted — otherwise an agent reports `main` (which collects
+  // unrelated pushes during the run window, slipping past the #2925
+  // temporal scope) and clears the gate without pushing its own work.
+  it('evaluateRule(require_commits_on_branch) rejects shared branches even when verified (#2933)', () => {
+    const rule = ruleRow('require_commits_on_branch');
+    const taskCtx = { id: taskId, type: 'code', prUrl: null, planDeliverableRefs: [] };
+
+    for (const branch of [
+      'main',
+      'master',
+      'MAIN',
+      'refs/heads/main',
+      'develop',
+      'release/1.2',
+      'production/eu',
+    ]) {
+      // Even with a "verified" push to that branch, a shared branch can never
+      // attribute work to this task/run → fail closed.
+      const verified = evaluateRule(rule, {
+        task: taskCtx,
+        body: { branchName: branch },
+        verified: { branchHasCommits: true },
+      });
+      expect(verified.ok, `expected ${branch} to be rejected`).toBe(false);
+      expect(verified.message).toMatch(/shared\/integration branch/i);
+    }
+
+    // A dedicated task branch is still accepted when the push is verified.
+    const dedicated = evaluateRule(rule, {
+      task: taskCtx,
+      body: { branchName: 'cursor/fix-2933' },
+      verified: { branchHasCommits: true },
+    });
+    expect(dedicated.ok).toBe(true);
+
+    // Owner opt-out: params.sharedBranches=[] disables the shared-branch
+    // check so `main` is allowed again (still gated on the verified push).
+    const optOut = ruleRow('require_commits_on_branch');
+    optOut.params = { sharedBranches: [] };
+    const optOutPass = evaluateRule(optOut, {
+      task: taskCtx,
+      body: { branchName: 'main' },
+      verified: { branchHasCommits: true },
+    });
+    expect(optOutPass.ok).toBe(true);
+  });
+
   it('evaluateProjectVerificationRules(require_pr_merged) reads the merged-PR webhook event (R-208)', async () => {
     await testPrisma.domainEvent.deleteMany({ where: { projectId } });
     await testPrisma.verificationRule.create({
@@ -478,6 +527,58 @@ describe('R-181: verification rules gate', () => {
       run: { startedAt: runStartedAt },
     });
     expect(afterFresh.failed).toHaveLength(0);
+
+    await testPrisma.domainEvent.deleteMany({ where: { projectId } });
+  });
+
+  it('require_commits_on_branch rejects a push to main even within the run window (#2933)', async () => {
+    await testPrisma.domainEvent.deleteMany({ where: { projectId } });
+    await testPrisma.verificationRule.create({
+      data: {
+        projectId,
+        kind: 'require_commits_on_branch',
+        scope: 'project',
+        enabled: true,
+        createdBy: owner,
+      },
+    });
+    const taskCtx = { id: taskId, type: 'code', prUrl: null, planDeliverableRefs: [] };
+    const runStartedAt = new Date('2026-01-01T00:00:00Z');
+
+    // A real, in-window push WITH commits to `main` — exactly what a busy
+    // shared branch looks like while a run is in flight. Pre-#2933 this
+    // satisfied the gate (#2925's temporal scope cannot tell these commits
+    // from the agent's own work); now it must be refused because `main`
+    // accumulates unrelated work.
+    await testPrisma.domainEvent.create({
+      data: {
+        eventType: 'github_push',
+        projectId,
+        createdAt: new Date('2026-02-01T00:00:00Z'),
+        payload: {
+          type: 'github_push',
+          projectId,
+          userName: null,
+          data: {
+            deliveryId: '2933-main-push',
+            repository: 'o/r',
+            payload: {
+              ref: 'refs/heads/main',
+              commits: [{ id: 'unrelated1' }],
+              head_commit: { id: 'unrelated1' },
+            },
+          },
+        },
+      },
+    });
+
+    const reportMain = await evaluateProjectVerificationRules(projectId, {
+      task: taskCtx,
+      body: { branchName: 'main' },
+      run: { startedAt: runStartedAt },
+    });
+    expect(reportMain.failed.map((f) => f.kind)).toContain('require_commits_on_branch');
+    expect(reportMain.failed[0]?.message).toMatch(/shared\/integration branch/i);
 
     await testPrisma.domainEvent.deleteMany({ where: { projectId } });
   });

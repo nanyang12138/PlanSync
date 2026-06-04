@@ -80,8 +80,17 @@ function publicParamsForKind(
       const min = params.min;
       return typeof min === 'number' && Number.isFinite(min) ? { min } : {};
     }
+    case 'require_commits_on_branch': {
+      // #2933: surface the owner-configured shared-branch denylist so an
+      // agent hitting the gate can see (via /explain rule <id>) which
+      // branch names are refused. Only the allowlisted string-array key is
+      // reflected; any other owner-written JSONB stays server-side.
+      const sharedBranches = params.sharedBranches;
+      return Array.isArray(sharedBranches) && sharedBranches.every((s) => typeof s === 'string')
+        ? { sharedBranches }
+        : {};
+    }
     case 'require_files_changed':
-    case 'require_commits_on_branch':
     case 'require_pr_merged':
     case 'require_deliverable_evidence_for_each_ref':
       return {};
