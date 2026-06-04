@@ -348,7 +348,7 @@ interface PrMergeInfo {
   shas: string[];
 }
 
-async function findPrMergeInfo(
+export async function findPrMergeInfo(
   client: Prisma.TransactionClient | PrismaClient,
   projectId: string,
   prUrl: string,
@@ -432,6 +432,55 @@ async function findPrMergeInfo(
   }
 
   return { merged: true, shas: Array.from(shas) };
+}
+
+/**
+ * R-208: does the GitHub outbox show at least one push of real commits to
+ * `branchName`? Backs the `require_commits_on_branch` verification rule so
+ * it verifies actual pushed work instead of merely trusting a branch name
+ * the agent typed into the complete body.
+ *
+ * Matches a `github_push` domain event whose `ref` is `refs/heads/<branch>`
+ * (GitHub's canonical push ref) OR exactly `<branch>` (defensive, for a
+ * caller that stored the short name) and whose `commits[]` array is
+ * non-empty. Returns false when no such event exists — fail-closed, so
+ * enabling the rule without a configured webhook blocks completion rather
+ * than rubber-stamping it. Mirrors the JSON-walk style of `findPrMergeInfo`
+ * (`payload -> 'data' -> 'payload' -> ...` is the raw GitHub webhook body).
+ *
+ * #2925: pass `since` (the current run's `startedAt`) to scope the evidence
+ * to pushes recorded AT OR AFTER the run began. Without it the gate matches
+ * ANY historical push to a branch of that name — so an agent could reuse a
+ * long-dead branch name (or a previous run's push) to satisfy the rule
+ * without doing the work. When `since` is omitted the cutoff is open (any
+ * push counts), preserving the original behaviour for callers that don't
+ * have a run timestamp.
+ */
+export async function branchHasPushedCommits(
+  client: Prisma.TransactionClient | PrismaClient,
+  projectId: string,
+  branchName: string,
+  since?: Date,
+): Promise<boolean> {
+  const branch = branchName.trim();
+  if (!branch) return false;
+  const fullRef = branch.startsWith('refs/heads/') ? branch : `refs/heads/${branch}`;
+  const rows = await client.$queryRaw<{ found: number }[]>`
+    SELECT 1 AS found
+    FROM domain_events
+    WHERE event_type = 'github_push'
+      AND project_id = ${projectId}
+      AND (
+        payload -> 'data' -> 'payload' ->> 'ref' = ${fullRef}
+        OR payload -> 'data' -> 'payload' ->> 'ref' = ${branch}
+      )
+      AND jsonb_array_length(
+        COALESCE(payload -> 'data' -> 'payload' -> 'commits', '[]'::jsonb)
+      ) > 0
+      AND created_at >= COALESCE(${since ?? null}::timestamptz, '-infinity'::timestamptz)
+    LIMIT 1
+  `;
+  return rows.length > 0;
 }
 
 /**
