@@ -74,7 +74,13 @@ export interface VerificationContext {
    * way (not verified ⇒ fail closed).
    */
   verified?: {
-    /** A merged `pull_request` event matching `task.prUrl` was found. */
+    /**
+     * A merged `pull_request` event matching `task.prUrl` was found AND (when
+     * a run is in scope) that PR is bound to the current run — i.e. its head
+     * branch received pushed commits at/after `run.startedAt`. The ownership
+     * binding (#2939) prevents a mutable `task.prUrl` from being repointed at
+     * an unrelated PR merged after the run began.
+     */
     prMerged?: boolean;
     /** A `github_push` with ≥1 commit to `body.branchName` was found. */
     branchHasCommits?: boolean;
@@ -173,7 +179,11 @@ export function evaluateRule(rule: VerificationRule, ctx: VerificationContext): 
       // We now require webhook-verified evidence that the PR is actually
       // MERGED (a `pull_request` event with action=closed, merged=true,
       // matching the task's prUrl — pre-computed into
-      // `ctx.verified.prMerged`). No prUrl, or PR not merged ⇒ fail closed.
+      // `ctx.verified.prMerged`). #2939: when a run is in scope that signal
+      // also requires the PR to be bound to the current run (its head branch
+      // received pushed commits during the run), so a mutable `task.prUrl`
+      // repointed at an unrelated merged PR cannot clear the gate. No prUrl,
+      // PR not merged, or PR not bound to this run ⇒ fail closed.
       const prUrl = ctx.task.prUrl?.trim();
       const ok = ctx.verified?.prMerged === true;
       return {
@@ -183,7 +193,7 @@ export function evaluateRule(rule: VerificationRule, ctx: VerificationContext): 
         message: ok
           ? `verified merged PR: ${prUrl}`
           : prUrl
-            ? `require_pr_merged: PR ${prUrl} is not merged yet — merge it (and ensure the GitHub webhook is configured) before completing`
+            ? `require_pr_merged: PR ${prUrl} is not merged for this run yet — merge the PR for the branch you pushed in this run (and ensure the GitHub webhook is configured) before completing`
             : 'require_pr_merged: task.prUrl must be set and the PR merged before complete (open a PR, PATCH the task, then merge)',
       };
     }
@@ -262,15 +272,44 @@ export async function evaluateProjectVerificationRules(
   const verified: NonNullable<VerificationContext['verified']> = {};
   if (applicable.some((r) => r.kind === 'require_pr_merged')) {
     const prUrl = ctx.task.prUrl?.trim();
+    const since = ctx.run?.startedAt;
     // #2932: scope the merged-PR evidence to this run's startedAt so a mutable
     // `task.prUrl` repointed at any historically-merged PR cannot satisfy the
     // gate. `task.prUrl` can be PATCHed right before complete; without the run
     // cutoff an agent could clear `require_pr_merged` by replaying an unrelated
     // already-merged PR from project history (mirrors the #2925 fix for
     // `require_commits_on_branch`).
-    verified.prMerged = prUrl
-      ? (await findPrMergeInfo(prisma, projectId, prUrl, ctx.run?.startedAt)).merged
-      : false;
+    //
+    // #2939: the startedAt cutoff alone is NOT sufficient — it only proves the
+    // merge happened during the run window, not that the PR *belongs* to this
+    // run. Because `task.prUrl` is mutable, an agent that did no work could
+    // repoint it at ANY unrelated PR that merged after the run began (a
+    // parallel run's PR, a teammate's PR) and clear the gate. We therefore also
+    // bind PR ownership to the run: the merged PR's own head branch must have
+    // received pushed commits at/after the run started. That head-branch push
+    // (a GitHub-verified `github_push` to `refs/heads/<head.ref>`) is distinct
+    // from the base-branch merge push GitHub emits for every merge, so it only
+    // holds for a PR whose work was actually produced by the current run; an
+    // unrelated, already-built PR cannot satisfy it merely by being merged.
+    let prMerged = false;
+    if (prUrl) {
+      const prInfo = await findPrMergeInfo(prisma, projectId, prUrl, since);
+      if (prInfo.merged) {
+        if (!since) {
+          // Unscoped legacy path (no run window in scope) — preserve prior
+          // behaviour. The R-192 `deriveTaskCompletionState` caller binds
+          // attribution by commit SHA instead and does not pass a run.
+          prMerged = true;
+        } else if (prInfo.headRef) {
+          prMerged = await branchHasPushedCommits(prisma, projectId, prInfo.headRef, since);
+        } else {
+          // Merged PR webhook payload omitted head.ref — we can't bind the PR
+          // to this run, so fail closed rather than trusting the bare merge.
+          prMerged = false;
+        }
+      }
+    }
+    verified.prMerged = prMerged;
   }
   if (applicable.some((r) => r.kind === 'require_commits_on_branch')) {
     const branch = ctx.body.branchName?.trim();
