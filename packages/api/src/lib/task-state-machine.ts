@@ -352,6 +352,7 @@ export async function findPrMergeInfo(
   client: Prisma.TransactionClient | PrismaClient,
   projectId: string,
   prUrl: string,
+  since?: Date,
 ): Promise<PrMergeInfo> {
   // We compare against the raw GitHub payload at
   // `data.payload.pull_request.html_url`, which is the canonical URL
@@ -360,6 +361,17 @@ export async function findPrMergeInfo(
   // robust without doing a full URL canonicalisation pass.
   const normalized = normalizePrUrl(prUrl);
   type PrRow = { merge_sha: string | null; head_sha: string | null; base_ref: string | null };
+  // #2932: optional `since` cutoff scopes the merged-PR event to merges
+  // recorded AT OR AFTER the caller's reference time (the current run's
+  // `startedAt`). `task.prUrl` is mutable, so without this an agent could,
+  // right before completing, PATCH the task's prUrl to ANY PR that was ever
+  // merged in this project and clear the `require_pr_merged` gate by replaying
+  // unrelated history. Scoping to the run start binds the merge evidence to
+  // the current run (mirrors the #2925 `branchHasPushedCommits` fix for the
+  // sibling rule). When `since` is omitted the cutoff is open (any merged PR
+  // counts), preserving behaviour for the R-192 `deriveTaskCompletionState`
+  // caller which constrains attribution by commit SHA instead.
+  //
   // We can't use Prisma's typed query here because `payload` is a free
   // Json column; a raw query keeps the Postgres-side JSON walk while
   // staying parameterised against SQL injection.
@@ -374,6 +386,7 @@ export async function findPrMergeInfo(
       AND payload -> 'data' -> 'payload' ->> 'action' = 'closed'
       AND (payload -> 'data' -> 'payload' -> 'pull_request' ->> 'merged')::boolean = true
       AND payload -> 'data' -> 'payload' -> 'pull_request' ->> 'html_url' = ${normalized}
+      AND created_at >= COALESCE(${since ?? null}::timestamptz, '-infinity'::timestamptz)
     LIMIT 1
   `;
   if (prRows.length === 0) {

@@ -334,6 +334,103 @@ describe('R-181: verification rules gate', () => {
     await testPrisma.domainEvent.deleteMany({ where: { projectId } });
   });
 
+  it('require_pr_merged scopes merge evidence to run.startedAt — a PR merged before the run does NOT pass (#2932)', async () => {
+    await testPrisma.domainEvent.deleteMany({ where: { projectId } });
+    await testPrisma.verificationRule.create({
+      data: {
+        projectId,
+        kind: 'require_pr_merged',
+        scope: 'project',
+        enabled: true,
+        createdBy: owner,
+      },
+    });
+    // The mutable `task.prUrl` is repointed at a PR that was merged long ago
+    // (e.g. another task's PR, or any historical merge in this project). The
+    // attack: PATCH prUrl to this URL right before completing to clear the gate
+    // without doing the work for THIS run.
+    const staleMergedPr = 'https://github.com/o/r/pull/7';
+    const taskCtx = { id: taskId, type: 'code', prUrl: staleMergedPr, planDeliverableRefs: [] };
+
+    await testPrisma.domainEvent.create({
+      data: {
+        eventType: 'github_pull_request',
+        projectId,
+        createdAt: new Date('2020-01-01T00:00:00Z'),
+        payload: {
+          type: 'github_pull_request',
+          projectId,
+          userName: null,
+          data: {
+            deliveryId: '2932-stale-pr',
+            repository: 'o/r',
+            payload: {
+              action: 'closed',
+              pull_request: {
+                merged: true,
+                html_url: staleMergedPr,
+                merge_commit_sha: 'sha-stale-merge',
+                head: { sha: 'sha-stale-head' },
+                base: { ref: 'master' },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    // Unscoped (no run) → the historical merge still satisfies the rule
+    // (preserves the back-compat path the R-192 deriveTaskCompletionState
+    // caller relies on — it constrains attribution by SHA instead).
+    const unscoped = await evaluateProjectVerificationRules(projectId, { task: taskCtx, body: {} });
+    expect(unscoped.failed).toHaveLength(0);
+
+    // Scoped to a run that started in 2026 → the 2020 merge is excluded → fail.
+    const runStartedAt = new Date('2026-01-01T00:00:00Z');
+    const scoped = await evaluateProjectVerificationRules(projectId, {
+      task: taskCtx,
+      body: {},
+      run: { startedAt: runStartedAt },
+    });
+    expect(scoped.failed.map((f) => f.kind)).toContain('require_pr_merged');
+
+    // A fresh merge recorded after the run started → passes the scoped gate.
+    await testPrisma.domainEvent.create({
+      data: {
+        eventType: 'github_pull_request',
+        projectId,
+        createdAt: new Date('2026-02-01T00:00:00Z'),
+        payload: {
+          type: 'github_pull_request',
+          projectId,
+          userName: null,
+          data: {
+            deliveryId: '2932-fresh-pr',
+            repository: 'o/r',
+            payload: {
+              action: 'closed',
+              pull_request: {
+                merged: true,
+                html_url: staleMergedPr,
+                merge_commit_sha: 'sha-fresh-merge',
+                head: { sha: 'sha-fresh-head' },
+                base: { ref: 'master' },
+              },
+            },
+          },
+        },
+      },
+    });
+    const afterFresh = await evaluateProjectVerificationRules(projectId, {
+      task: taskCtx,
+      body: {},
+      run: { startedAt: runStartedAt },
+    });
+    expect(afterFresh.failed).toHaveLength(0);
+
+    await testPrisma.domainEvent.deleteMany({ where: { projectId } });
+  });
+
   it('evaluateProjectVerificationRules(require_commits_on_branch) reads the push webhook event (R-208)', async () => {
     await testPrisma.domainEvent.deleteMany({ where: { projectId } });
     await testPrisma.verificationRule.create({
