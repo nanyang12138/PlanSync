@@ -56,10 +56,12 @@ export interface VerificationContext {
     deliverablesMet?: string[];
   };
   /**
-   * #2925: the current execution run. `startedAt` scopes webhook evidence
-   * (currently `require_commits_on_branch`) to pushes recorded at or after
-   * the run began, so a stale branch name pushed before this run cannot
-   * satisfy the gate. Optional: when absent the evidence is unscoped.
+   * #2925 / #2932: the current execution run. `startedAt` scopes webhook
+   * evidence to events recorded at or after the run began, so neither a stale
+   * branch name pushed before this run (`require_commits_on_branch`) nor a
+   * historically-merged PR repointed via the mutable `task.prUrl`
+   * (`require_pr_merged`) can satisfy the gate. Optional: when absent the
+   * evidence is unscoped.
    */
   run?: { startedAt: Date };
   /**
@@ -260,7 +262,15 @@ export async function evaluateProjectVerificationRules(
   const verified: NonNullable<VerificationContext['verified']> = {};
   if (applicable.some((r) => r.kind === 'require_pr_merged')) {
     const prUrl = ctx.task.prUrl?.trim();
-    verified.prMerged = prUrl ? (await findPrMergeInfo(prisma, projectId, prUrl)).merged : false;
+    // #2932: scope the merged-PR evidence to this run's startedAt so a mutable
+    // `task.prUrl` repointed at any historically-merged PR cannot satisfy the
+    // gate. `task.prUrl` can be PATCHed right before complete; without the run
+    // cutoff an agent could clear `require_pr_merged` by replaying an unrelated
+    // already-merged PR from project history (mirrors the #2925 fix for
+    // `require_commits_on_branch`).
+    verified.prMerged = prUrl
+      ? (await findPrMergeInfo(prisma, projectId, prUrl, ctx.run?.startedAt)).merged
+      : false;
   }
   if (applicable.some((r) => r.kind === 'require_commits_on_branch')) {
     const branch = ctx.body.branchName?.trim();
