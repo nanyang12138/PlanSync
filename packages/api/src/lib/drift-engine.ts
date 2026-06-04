@@ -143,9 +143,29 @@ export async function runDriftScan(
             title: true,
             body: true,
             refUri: true,
+            // #2923: needed to drop soft-deleted rows from the *new* version's
+            // live set (see `deprecatedIds` below). Not carried into
+            // DeliverableLite — only used to filter.
+            status: true,
           },
         })
       : [];
+
+  // #2923: a deliverable "deleted" in the new plan version is modelled as a
+  // PlanDeliverable row with status='deprecated' (the slug/body survive for
+  // the R-152 supersede / R-153 link / R-191 commit audit chains, mirroring
+  // syncDeliverableArrayMirror #1640). The old version's rows must stay as-is:
+  // by the time this scan runs, `supersedeDeliverables` (called just before us
+  // in the activate transaction) has already flipped every old-version row
+  // that shares a slug with the new version to 'deprecated' as a forward-link
+  // artifact — filtering those out would make carried-forward deliverables
+  // look added/removed and break per-link severity. So we only suppress
+  // deprecated rows on the NEW version, turning a deprecate-on-new into a
+  // 'removed' in diffDeliverables; without this it reads as 'unchanged' and
+  // the deletion slips through at 'low' (including the R-207 no-link gate).
+  const deprecatedIds = new Set(
+    allDeliverables.filter((d) => d.status === 'deprecated').map((d) => d.id),
+  );
 
   const deliverablesByPlanId = new Map<string, DeliverableLite[]>();
   for (const d of allDeliverables) {
@@ -164,7 +184,11 @@ export async function runDriftScan(
   const slugById = new Map<string, string>();
   for (const d of allDeliverables) slugById.set(d.id, d.slug);
 
-  const newPlanDeliverables = newPlan ? (deliverablesByPlanId.get(newPlan.id) ?? []) : [];
+  // #2923: drop soft-deleted rows from the new version's live set so a
+  // deprecate-on-new is seen as a removal (the old version is left whole).
+  const newPlanDeliverables = newPlan
+    ? (deliverablesByPlanId.get(newPlan.id) ?? []).filter((d) => !deprecatedIds.has(d.id))
+    : [];
 
   const diffByOldVersion = new Map<number, DeliverableDiff | null>();
   if (newPlan) {
