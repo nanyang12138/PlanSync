@@ -305,7 +305,9 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
           // #2941: also pass the run's recorded working branch so
           // require_pr_merged can bind PR ownership to it (defeats repointing
           // task.prUrl at a parallel run's PR right before complete).
-          run: { startedAt: run.startedAt, branchName: run.branchName },
+          // #2945: pass `id` so the no-anchor fallback can exclude this run
+          // when checking the project for a concurrently-running run.
+          run: { id: run.id, startedAt: run.startedAt, branchName: run.branchName },
         });
         if (ruleResult.failed.length > 0) {
           return NextResponse.json(
