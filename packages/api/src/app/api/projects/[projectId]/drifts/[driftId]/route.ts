@@ -40,6 +40,21 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
       throw new AppError(ErrorCode.STATE_CONFLICT, 'Drift alert already resolved');
     }
 
+    // R-210: capture what `rebind` did to the task so we can emit a dedicated
+    // `task_rebound` activity AFTER the tx commits. Without this, the rebind
+    // branch's destructive side-effects (status reset to `todo`, in-flight
+    // runs superseded) were invisible in the activity feed — only a generic
+    // `drift_resolved` row was written, while the equivalent `/rebind` shortcut
+    // route emits a `task_rebound` row. Mirrors the `cancel`→`task_cancelled`
+    // precedent (R-107) in this same handler.
+    type RebindAudit = {
+      previousStatus: string;
+      oldVersion: number;
+      newVersion: number;
+      wasReset: boolean;
+    };
+    let rebindAudit: RebindAudit | null = null;
+
     await prisma.$transaction(async (tx) => {
       // Serialize per-project against a concurrent `plan_activate` (which sets
       // executionGate / supersedes open alerts inside its own transaction)
@@ -88,7 +103,7 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
       // `/rebind` route, which reads `liveTask.status` in-tx for the same race.
       const liveTask = await tx.task.findUnique({
         where: { id: drift.taskId },
-        select: { status: true },
+        select: { status: true, boundPlanVersion: true },
       });
       if (!liveTask) {
         throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
@@ -142,6 +157,12 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
         // gate has served its purpose.
         const TERMINAL_TASK_STATES = ['done', 'cancelled'] as const;
         const isTerminal = (TERMINAL_TASK_STATES as readonly string[]).includes(liveTask.status);
+        rebindAudit = {
+          previousStatus: liveTask.status,
+          oldVersion: liveTask.boundPlanVersion,
+          newVersion: activePlan.version,
+          wasReset: !isTerminal,
+        };
         await tx.task.update({
           where: { id: drift.taskId },
           data: {
@@ -211,6 +232,35 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
           previousStatus: drift.task.status,
           driftId: drift.id,
           reason: 'drift_cancel',
+        },
+      });
+    }
+
+    // R-210: pair the generic `drift_resolved` row above with a dedicated
+    // `task_rebound` row when rebind actually moved the task, so the feed
+    // surfaces the destructive reset (status → todo, runs superseded) instead
+    // of hiding it. Matches the `/rebind` shortcut route, which the docs call
+    // an equivalent of `drift_resolve action=rebind`.
+    if (body.action === 'rebind' && rebindAudit) {
+      const a: RebindAudit = rebindAudit;
+      const summary = a.wasReset
+        ? `Task "${drift.task.title}" rebound v${a.oldVersion} → v${a.newVersion}; status reset ${a.previousStatus} → todo and in-flight run(s) superseded`
+        : `Task "${drift.task.title}" rebound v${a.oldVersion} → v${a.newVersion} (terminal status ${a.previousStatus} preserved)`;
+      await createActivity({
+        projectId: params.projectId,
+        type: 'task_rebound',
+        actorName: auth.userName,
+        actorType: 'human',
+        summary,
+        metadata: {
+          taskId: drift.taskId,
+          title: drift.task.title,
+          oldVersion: a.oldVersion,
+          newVersion: a.newVersion,
+          previousStatus: a.previousStatus,
+          wasReset: a.wasReset,
+          driftId: drift.id,
+          reason: 'drift_rebind',
         },
       });
     }
