@@ -399,6 +399,89 @@ describe('R-181: verification rules gate', () => {
     await testPrisma.domainEvent.deleteMany({ where: { projectId } });
   });
 
+  it('require_commits_on_branch scopes push evidence to run.startedAt — a stale pre-run push does NOT pass (#2925)', async () => {
+    await testPrisma.domainEvent.deleteMany({ where: { projectId } });
+    await testPrisma.verificationRule.create({
+      data: {
+        projectId,
+        kind: 'require_commits_on_branch',
+        scope: 'project',
+        enabled: true,
+        createdBy: owner,
+      },
+    });
+    const taskCtx = { id: taskId, type: 'code', prUrl: null, planDeliverableRefs: [] };
+    const body = { branchName: 'cursor/recycled-branch' };
+
+    // A real push with commits to that branch — but recorded LONG before the
+    // current run started (e.g. a previous run reused the same branch name).
+    await testPrisma.domainEvent.create({
+      data: {
+        eventType: 'github_push',
+        projectId,
+        createdAt: new Date('2020-01-01T00:00:00Z'),
+        payload: {
+          type: 'github_push',
+          projectId,
+          userName: null,
+          data: {
+            deliveryId: '2925-stale-push',
+            repository: 'o/r',
+            payload: {
+              ref: 'refs/heads/cursor/recycled-branch',
+              commits: [{ id: 'old1' }],
+              head_commit: { id: 'old1' },
+            },
+          },
+        },
+      },
+    });
+
+    // Unscoped (no run) → the historical push still satisfies the rule.
+    const unscoped = await evaluateProjectVerificationRules(projectId, { task: taskCtx, body });
+    expect(unscoped.failed).toHaveLength(0);
+
+    // Scoped to a run that started in 2026 → the 2020 push is excluded → fail.
+    const runStartedAt = new Date('2026-01-01T00:00:00Z');
+    const scoped = await evaluateProjectVerificationRules(projectId, {
+      task: taskCtx,
+      body,
+      run: { startedAt: runStartedAt },
+    });
+    expect(scoped.failed.map((f) => f.kind)).toContain('require_commits_on_branch');
+
+    // A fresh push recorded after the run started → passes the scoped gate.
+    await testPrisma.domainEvent.create({
+      data: {
+        eventType: 'github_push',
+        projectId,
+        createdAt: new Date('2026-02-01T00:00:00Z'),
+        payload: {
+          type: 'github_push',
+          projectId,
+          userName: null,
+          data: {
+            deliveryId: '2925-fresh-push',
+            repository: 'o/r',
+            payload: {
+              ref: 'refs/heads/cursor/recycled-branch',
+              commits: [{ id: 'new1' }],
+              head_commit: { id: 'new1' },
+            },
+          },
+        },
+      },
+    });
+    const afterFresh = await evaluateProjectVerificationRules(projectId, {
+      task: taskCtx,
+      body,
+      run: { startedAt: runStartedAt },
+    });
+    expect(afterFresh.failed).toHaveLength(0);
+
+    await testPrisma.domainEvent.deleteMany({ where: { projectId } });
+  });
+
   it('evaluateProjectVerificationRules() only returns enabled rules', async () => {
     await testPrisma.verificationRule.create({
       data: {

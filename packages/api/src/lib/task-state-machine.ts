@@ -447,11 +447,20 @@ export async function findPrMergeInfo(
  * enabling the rule without a configured webhook blocks completion rather
  * than rubber-stamping it. Mirrors the JSON-walk style of `findPrMergeInfo`
  * (`payload -> 'data' -> 'payload' -> ...` is the raw GitHub webhook body).
+ *
+ * #2925: pass `since` (the current run's `startedAt`) to scope the evidence
+ * to pushes recorded AT OR AFTER the run began. Without it the gate matches
+ * ANY historical push to a branch of that name — so an agent could reuse a
+ * long-dead branch name (or a previous run's push) to satisfy the rule
+ * without doing the work. When `since` is omitted the cutoff is open (any
+ * push counts), preserving the original behaviour for callers that don't
+ * have a run timestamp.
  */
 export async function branchHasPushedCommits(
   client: Prisma.TransactionClient | PrismaClient,
   projectId: string,
   branchName: string,
+  since?: Date,
 ): Promise<boolean> {
   const branch = branchName.trim();
   if (!branch) return false;
@@ -468,6 +477,7 @@ export async function branchHasPushedCommits(
       AND jsonb_array_length(
         COALESCE(payload -> 'data' -> 'payload' -> 'commits', '[]'::jsonb)
       ) > 0
+      AND created_at >= COALESCE(${since ?? null}::timestamptz, '-infinity'::timestamptz)
     LIMIT 1
   `;
   return rows.length > 0;
