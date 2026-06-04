@@ -344,6 +344,12 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
             filesChanged: [],
             blockers: [],
             driftSignals: [],
+            // #2941: record the run's working branch up front (when the
+            // caller supplies it) so it can serve as an immutable ownership
+            // anchor for the `require_pr_merged` gate. Unlike `task.prUrl`,
+            // which is PATCH-able right before complete, this is fixed at
+            // start and cannot be repointed at a parallel run's PR later.
+            branchName: body.branchName ?? null,
           },
         });
       });
