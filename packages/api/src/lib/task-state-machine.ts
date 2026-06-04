@@ -346,6 +346,17 @@ export async function deriveTaskCompletionState(
 interface PrMergeInfo {
   merged: boolean;
   shas: string[];
+  /**
+   * #2939: the PR's source (head) branch ref as reported by the
+   * `pull_request` webhook (`pull_request.head.ref`, the short branch
+   * name e.g. `cursor/fix-foo`). `null` when the PR was not found, not
+   * merged, or the payload omitted it. The `require_pr_merged`
+   * verification rule uses this to bind PR ownership to the current run:
+   * it requires the head branch to have received pushed commits during
+   * the run, which a mutable `task.prUrl` repointed at an unrelated
+   * already-built PR cannot satisfy.
+   */
+  headRef: string | null;
 }
 
 export async function findPrMergeInfo(
@@ -360,7 +371,12 @@ export async function findPrMergeInfo(
   // variant into the task — strip trailing extras so the comparison is
   // robust without doing a full URL canonicalisation pass.
   const normalized = normalizePrUrl(prUrl);
-  type PrRow = { merge_sha: string | null; head_sha: string | null; base_ref: string | null };
+  type PrRow = {
+    merge_sha: string | null;
+    head_sha: string | null;
+    head_ref: string | null;
+    base_ref: string | null;
+  };
   // #2932: optional `since` cutoff scopes the merged-PR event to merges
   // recorded AT OR AFTER the caller's reference time (the current run's
   // `startedAt`). `task.prUrl` is mutable, so without this an agent could,
@@ -379,6 +395,7 @@ export async function findPrMergeInfo(
     SELECT
       payload -> 'data' -> 'payload' -> 'pull_request' ->> 'merge_commit_sha' AS merge_sha,
       payload -> 'data' -> 'payload' -> 'pull_request' -> 'head' ->> 'sha'    AS head_sha,
+      payload -> 'data' -> 'payload' -> 'pull_request' -> 'head' ->> 'ref'    AS head_ref,
       payload -> 'data' -> 'payload' -> 'pull_request' -> 'base' ->> 'ref'    AS base_ref
     FROM domain_events
     WHERE event_type = 'github_pull_request'
@@ -390,12 +407,13 @@ export async function findPrMergeInfo(
     LIMIT 1
   `;
   if (prRows.length === 0) {
-    return { merged: false, shas: [] };
+    return { merged: false, shas: [], headRef: null };
   }
 
   const shas = new Set<string>();
   const mergeSha = prRows[0].merge_sha?.trim() || null;
   const headSha = prRows[0].head_sha?.trim() || null;
+  const headRef = prRows[0].head_ref?.trim() || null;
   const baseRef = prRows[0].base_ref?.trim() || null;
   if (mergeSha) shas.add(mergeSha);
   if (headSha) shas.add(headSha);
@@ -444,7 +462,7 @@ export async function findPrMergeInfo(
     }
   }
 
-  return { merged: true, shas: Array.from(shas) };
+  return { merged: true, shas: Array.from(shas), headRef };
 }
 
 /**

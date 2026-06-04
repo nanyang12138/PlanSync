@@ -370,7 +370,7 @@ describe('R-181: verification rules gate', () => {
                 merged: true,
                 html_url: staleMergedPr,
                 merge_commit_sha: 'sha-stale-merge',
-                head: { sha: 'sha-stale-head' },
+                head: { sha: 'sha-stale-head', ref: 'feature/2932-stale' },
                 base: { ref: 'master' },
               },
             },
@@ -394,7 +394,12 @@ describe('R-181: verification rules gate', () => {
     });
     expect(scoped.failed.map((f) => f.kind)).toContain('require_pr_merged');
 
-    // A fresh merge recorded after the run started → passes the scoped gate.
+    // A fresh merge recorded after the run started, whose head branch also
+    // received pushed commits during the run (#2939 ownership binding) →
+    // passes the scoped gate. The head-branch push is what proves the PR
+    // belongs to *this* run rather than being an unrelated PR that merged
+    // inside the window.
+    const freshHeadRef = 'cursor/fix-2932-fresh';
     await testPrisma.domainEvent.create({
       data: {
         eventType: 'github_pull_request',
@@ -413,9 +418,30 @@ describe('R-181: verification rules gate', () => {
                 merged: true,
                 html_url: staleMergedPr,
                 merge_commit_sha: 'sha-fresh-merge',
-                head: { sha: 'sha-fresh-head' },
+                head: { sha: 'sha-fresh-head', ref: freshHeadRef },
                 base: { ref: 'master' },
               },
+            },
+          },
+        },
+      },
+    });
+    await testPrisma.domainEvent.create({
+      data: {
+        eventType: 'github_push',
+        projectId,
+        createdAt: new Date('2026-01-15T00:00:00Z'),
+        payload: {
+          type: 'github_push',
+          projectId,
+          userName: null,
+          data: {
+            deliveryId: '2932-fresh-push',
+            repository: 'o/r',
+            payload: {
+              ref: `refs/heads/${freshHeadRef}`,
+              commits: [{ id: 'sha-fresh-head' }],
+              head_commit: { id: 'sha-fresh-head' },
             },
           },
         },
@@ -427,6 +453,143 @@ describe('R-181: verification rules gate', () => {
       run: { startedAt: runStartedAt },
     });
     expect(afterFresh.failed).toHaveLength(0);
+
+    await testPrisma.domainEvent.deleteMany({ where: { projectId } });
+  });
+
+  it('require_pr_merged binds PR ownership to the run — an unrelated PR merged after the run started but with no head-branch push during the run does NOT pass (#2939)', async () => {
+    await testPrisma.domainEvent.deleteMany({ where: { projectId } });
+    await testPrisma.verificationRule.create({
+      data: {
+        projectId,
+        kind: 'require_pr_merged',
+        scope: 'project',
+        enabled: true,
+        createdBy: owner,
+      },
+    });
+    // The attack the #2932 startedAt cutoff alone did NOT stop: the agent does
+    // no work for THIS run, then repoints the mutable `task.prUrl` at an
+    // unrelated PR (a teammate's / a parallel run's) that merged *after* this
+    // run started. The merge timestamp clears the #2932 window, so without an
+    // ownership binding the gate would wrongly pass.
+    const unrelatedPr = 'https://github.com/o/r/pull/42';
+    const taskCtx = { id: taskId, type: 'code', prUrl: unrelatedPr, planDeliverableRefs: [] };
+    const runStartedAt = new Date('2026-01-01T00:00:00Z');
+    const unrelatedHeadRef = 'someone-elses/feature';
+
+    await testPrisma.domainEvent.create({
+      data: {
+        eventType: 'github_pull_request',
+        projectId,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        payload: {
+          type: 'github_pull_request',
+          projectId,
+          userName: null,
+          data: {
+            deliveryId: '2939-unrelated-pr',
+            repository: 'o/r',
+            payload: {
+              action: 'closed',
+              pull_request: {
+                merged: true,
+                html_url: unrelatedPr,
+                merge_commit_sha: 'sha-unrelated-merge',
+                head: { sha: 'sha-unrelated-head', ref: unrelatedHeadRef },
+                base: { ref: 'master' },
+              },
+            },
+          },
+        },
+      },
+    });
+    // The unrelated PR's head branch was pushed long BEFORE this run started
+    // (its work predates the run). The only post-run push is the base-branch
+    // merge push GitHub emits at merge time, which the ownership check must
+    // NOT count as head-branch work.
+    await testPrisma.domainEvent.create({
+      data: {
+        eventType: 'github_push',
+        projectId,
+        createdAt: new Date('2025-12-01T00:00:00Z'),
+        payload: {
+          type: 'github_push',
+          projectId,
+          userName: null,
+          data: {
+            deliveryId: '2939-prerun-head-push',
+            repository: 'o/r',
+            payload: {
+              ref: `refs/heads/${unrelatedHeadRef}`,
+              commits: [{ id: 'sha-unrelated-head' }],
+              head_commit: { id: 'sha-unrelated-head' },
+            },
+          },
+        },
+      },
+    });
+    await testPrisma.domainEvent.create({
+      data: {
+        eventType: 'github_push',
+        projectId,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        payload: {
+          type: 'github_push',
+          projectId,
+          userName: null,
+          data: {
+            deliveryId: '2939-merge-base-push',
+            repository: 'o/r',
+            payload: {
+              ref: 'refs/heads/master',
+              commits: [{ id: 'sha-unrelated-merge' }],
+              head_commit: { id: 'sha-unrelated-merge' },
+            },
+          },
+        },
+      },
+    });
+
+    // Scoped to this run → the merge is inside the window, but the PR's head
+    // branch had no push during the run → ownership unproven → fail.
+    const scoped = await evaluateProjectVerificationRules(projectId, {
+      task: taskCtx,
+      body: {},
+      run: { startedAt: runStartedAt },
+    });
+    expect(scoped.failed.map((f) => f.kind)).toContain('require_pr_merged');
+
+    // Now the run actually pushes work to the PR's head branch after starting
+    // → ownership proven → pass. (Models the legitimate flow where the run
+    // owns the PR.)
+    await testPrisma.domainEvent.create({
+      data: {
+        eventType: 'github_push',
+        projectId,
+        createdAt: new Date('2026-01-10T00:00:00Z'),
+        payload: {
+          type: 'github_push',
+          projectId,
+          userName: null,
+          data: {
+            deliveryId: '2939-inrun-head-push',
+            repository: 'o/r',
+            payload: {
+              ref: `refs/heads/${unrelatedHeadRef}`,
+              commits: [{ id: 'sha-real-work' }],
+              head_commit: { id: 'sha-real-work' },
+            },
+          },
+        },
+      },
+    });
+    const owned = await evaluateProjectVerificationRules(projectId, {
+      task: taskCtx,
+      body: {},
+      run: { startedAt: runStartedAt },
+    });
+    expect(owned.failed).toHaveLength(0);
 
     await testPrisma.domainEvent.deleteMany({ where: { projectId } });
   });
