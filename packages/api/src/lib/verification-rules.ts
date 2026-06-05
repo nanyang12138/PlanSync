@@ -174,7 +174,12 @@ export function evaluateRule(rule: VerificationRule, ctx: VerificationContext): 
       // MERGED (a `pull_request` event with action=closed, merged=true,
       // matching the task's prUrl — pre-computed into
       // `ctx.verified.prMerged`). No prUrl, or PR not merged ⇒ fail closed.
+      // #2929 / #2939: `ctx.verified.prMerged` also incorporates a branch
+      // alignment check when `body.branchName` is provided (see
+      // evaluateProjectVerificationRules). An agent cannot satisfy the gate
+      // by repointing task.prUrl to a PR on an unrelated branch.
       const prUrl = ctx.task.prUrl?.trim();
+      const branchName = ctx.body.branchName?.trim();
       const ok = ctx.verified?.prMerged === true;
       return {
         ruleId: rule.id,
@@ -183,7 +188,9 @@ export function evaluateRule(rule: VerificationRule, ctx: VerificationContext): 
         message: ok
           ? `verified merged PR: ${prUrl}`
           : prUrl
-            ? `require_pr_merged: PR ${prUrl} is not merged yet — merge it (and ensure the GitHub webhook is configured) before completing`
+            ? branchName
+              ? `require_pr_merged: PR ${prUrl} is not merged on branch "${branchName}" — merge a PR whose head branch matches the branchName you provided`
+              : `require_pr_merged: PR ${prUrl} is not merged yet — merge it (and ensure the GitHub webhook is configured) before completing`
             : 'require_pr_merged: task.prUrl must be set and the PR merged before complete (open a PR, PATCH the task, then merge)',
       };
     }
@@ -268,9 +275,24 @@ export async function evaluateProjectVerificationRules(
     // cutoff an agent could clear `require_pr_merged` by replaying an unrelated
     // already-merged PR from project history (mirrors the #2925 fix for
     // `require_commits_on_branch`).
-    verified.prMerged = prUrl
-      ? (await findPrMergeInfo(prisma, projectId, prUrl, ctx.run?.startedAt)).merged
-      : false;
+    //
+    // #2929 / #2939: additionally verify that the PR's head branch matches
+    // `body.branchName` when the agent provides one. This binds the PR to the
+    // branch the agent claims to be working on, making it substantially harder
+    // to satisfy the gate by repointing prUrl at an unrelated PR that happened
+    // to merge after run start on a different branch.
+    if (prUrl) {
+      const prInfo = await findPrMergeInfo(prisma, projectId, prUrl, ctx.run?.startedAt);
+      const branchName = ctx.body.branchName?.trim();
+      const branchMatch =
+        !branchName ||
+        !prInfo.headBranch ||
+        prInfo.headBranch === branchName ||
+        prInfo.headBranch === branchName.replace(/^refs\/heads\//, '');
+      verified.prMerged = prInfo.merged && branchMatch;
+    } else {
+      verified.prMerged = false;
+    }
   }
   if (applicable.some((r) => r.kind === 'require_commits_on_branch')) {
     const branch = ctx.body.branchName?.trim();

@@ -346,6 +346,8 @@ export async function deriveTaskCompletionState(
 interface PrMergeInfo {
   merged: boolean;
   shas: string[];
+  /** The PR's head branch (short name, e.g. "feature/foo"). Null when unknown. */
+  headBranch: string | null;
 }
 
 export async function findPrMergeInfo(
@@ -360,7 +362,12 @@ export async function findPrMergeInfo(
   // variant into the task — strip trailing extras so the comparison is
   // robust without doing a full URL canonicalisation pass.
   const normalized = normalizePrUrl(prUrl);
-  type PrRow = { merge_sha: string | null; head_sha: string | null; base_ref: string | null };
+  type PrRow = {
+    merge_sha: string | null;
+    head_sha: string | null;
+    base_ref: string | null;
+    head_ref: string | null;
+  };
   // #2932: optional `since` cutoff scopes the merged-PR event to merges
   // recorded AT OR AFTER the caller's reference time (the current run's
   // `startedAt`). `task.prUrl` is mutable, so without this an agent could,
@@ -379,7 +386,8 @@ export async function findPrMergeInfo(
     SELECT
       payload -> 'data' -> 'payload' -> 'pull_request' ->> 'merge_commit_sha' AS merge_sha,
       payload -> 'data' -> 'payload' -> 'pull_request' -> 'head' ->> 'sha'    AS head_sha,
-      payload -> 'data' -> 'payload' -> 'pull_request' -> 'base' ->> 'ref'    AS base_ref
+      payload -> 'data' -> 'payload' -> 'pull_request' -> 'base' ->> 'ref'    AS base_ref,
+      payload -> 'data' -> 'payload' -> 'pull_request' -> 'head' ->> 'ref'    AS head_ref
     FROM domain_events
     WHERE event_type = 'github_pull_request'
       AND project_id = ${projectId}
@@ -390,13 +398,14 @@ export async function findPrMergeInfo(
     LIMIT 1
   `;
   if (prRows.length === 0) {
-    return { merged: false, shas: [] };
+    return { merged: false, shas: [], headBranch: null };
   }
 
   const shas = new Set<string>();
   const mergeSha = prRows[0].merge_sha?.trim() || null;
   const headSha = prRows[0].head_sha?.trim() || null;
   const baseRef = prRows[0].base_ref?.trim() || null;
+  const headBranch = prRows[0].head_ref?.trim() || null;
   if (mergeSha) shas.add(mergeSha);
   if (headSha) shas.add(headSha);
 
@@ -444,7 +453,7 @@ export async function findPrMergeInfo(
     }
   }
 
-  return { merged: true, shas: Array.from(shas) };
+  return { merged: true, shas: Array.from(shas), headBranch };
 }
 
 /**

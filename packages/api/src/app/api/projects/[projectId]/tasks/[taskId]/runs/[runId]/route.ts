@@ -273,6 +273,19 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
         lowConfidence?: boolean;
       } | null = null;
 
+      // #2929 / #2939: use the prUrl captured in the task pack snapshot at
+      // run start as the source of truth for require_pr_merged. task.prUrl is
+      // mutable — an agent could PATCH it between run start and complete to
+      // point at a different (even recently merged) PR. Using the snapshot
+      // value prevents that substitution: if prUrl was set at run start, only
+      // that PR can satisfy the gate; if it was null at run start (agent
+      // hadn't opened a PR yet), fall back to the current value so
+      // legitimate mid-run prUrl updates still work.
+      const snapshotTask = (run.taskPackSnapshot as { task?: { prUrl?: string | null } } | null)
+        ?.task;
+      const snapshotPrUrl = snapshotTask?.prUrl ?? null;
+      const effectivePrUrl = snapshotPrUrl ?? run.task.prUrl;
+
       if (body.status === 'completed') {
         // Layer 2: deliverablesMet required for all executors
         if (!body.deliverablesMet || body.deliverablesMet.length === 0) {
@@ -292,7 +305,7 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
           task: {
             id: run.task.id,
             type: run.task.type,
-            prUrl: run.task.prUrl,
+            prUrl: effectivePrUrl,
             planDeliverableRefs: run.task.planDeliverableRefs ?? [],
           },
           body: {
@@ -655,7 +668,9 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
           projectId: params.projectId,
           task: {
             id: run.task.id,
-            prUrl: run.task.prUrl,
+            // #2929 / #2939: use snapshot-preferred prUrl (same rationale as
+            // the verification-rules call above).
+            prUrl: effectivePrUrl,
             planDeliverableRefs: run.task.planDeliverableRefs ?? [],
             // Scope the deliverable-evidence lookup to the task's
             // bound plan version so a same-slug deliverable on a
