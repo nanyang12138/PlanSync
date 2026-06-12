@@ -64,16 +64,53 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
       }
 
       const isTerminal = (TERMINAL_TASK_STATES as readonly string[]).includes(liveTask.status);
-      const t = await tx.task.update({
-        where: { id: params.taskId },
-        data: {
-          boundPlanVersion: activePlan.version,
-          ...(isTerminal ? {} : { status: 'todo' }),
-          // R-140: clear executionGate so a subsequent execution_start is not
-          // permanently blocked after rebind (mirrors drift_resolve action=rebind).
-          executionGate: null,
-        },
-      });
+
+      // #2915: the `status → todo` reset must not clobber a terminal state
+      // that a concurrent writer committed AFTER the `liveTask` read above.
+      // The advisory lock serializes us against `plan_activate` and
+      // `drift_resolve`, but the PATCH (`/tasks/:id`) and `execution_complete`
+      // (`/runs/:id`) paths do NOT take it, so either can flip the task to
+      // `done`/`cancelled` in the window between that read and this write.
+      // Without a guard the rebind would resurrect a finished task back to
+      // `todo`, silently overwriting the terminal status (data loss).
+      //
+      // Fix: only reset when the row is still non-terminal, expressed as a
+      // `status NOT IN (terminal)` predicate on the UPDATE itself. Under READ
+      // COMMITTED Postgres re-evaluates that predicate against the latest
+      // committed row (EvalPlanQual) after blocking on any in-flight writer's
+      // row lock, so a concurrent terminal transition makes the reset match 0
+      // rows. In that case we fall through to a version-only update that moves
+      // `boundPlanVersion` / clears `executionGate` but preserves the terminal
+      // status. The version + gate fields are safe to write unconditionally
+      // because both rebind and activate are serialized by the advisory lock.
+      //
+      // R-140: clearing executionGate keeps a subsequent execution_start from
+      // being permanently blocked after rebind (mirrors drift_resolve
+      // action=rebind).
+      if (!isTerminal) {
+        const reset = await tx.task.updateMany({
+          where: { id: params.taskId, status: { notIn: [...TERMINAL_TASK_STATES] } },
+          data: {
+            boundPlanVersion: activePlan.version,
+            status: 'todo',
+            executionGate: null,
+          },
+        });
+        if (reset.count === 0) {
+          // Lost the race: the task became terminal between the read and here.
+          // Move the version reference only, preserving the terminal status.
+          await tx.task.update({
+            where: { id: params.taskId },
+            data: { boundPlanVersion: activePlan.version, executionGate: null },
+          });
+        }
+      } else {
+        await tx.task.update({
+          where: { id: params.taskId },
+          data: { boundPlanVersion: activePlan.version, executionGate: null },
+        });
+      }
+      const t = await tx.task.findUniqueOrThrow({ where: { id: params.taskId } });
       await tx.executionRun.updateMany({
         where: { taskId: params.taskId, status: { in: ['paused', 'running'] } },
         data: { status: 'superseded', endedAt: new Date() },

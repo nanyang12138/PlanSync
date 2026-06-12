@@ -43,6 +43,29 @@ export type VerificationRuleKind = (typeof VERIFICATION_RULE_KINDS)[number];
 export type VerificationRuleScope = 'project' | 'task_type' | 'task';
 
 /**
+ * #2941: normalize a git branch identifier for comparison/storage by trimming
+ * whitespace and stripping the `refs/heads/` prefix. GitHub reports the short
+ * name (`cursor/fix-foo`) on `pull_request.head.ref`, while a caller-supplied
+ * `branchName` may arrive either way — so we canonicalize before comparing.
+ * Returns the empty string for a blank input.
+ */
+export function normalizeBranchRef(s: string): string {
+  return s.trim().replace(/^refs\/heads\//, '');
+}
+
+/**
+ * #2941: compare two git branch identifiers for equality, tolerating the
+ * `refs/heads/` prefix on either side. Comparison is exact beyond the
+ * normalization in `normalizeBranchRef` (branch names are case-sensitive on
+ * the git side).
+ */
+export function branchRefsEqual(a: string, b: string): boolean {
+  const na = normalizeBranchRef(a);
+  const nb = normalizeBranchRef(b);
+  return na.length > 0 && na === nb;
+}
+
+/**
  * Input fed to the evaluator. Mirrors the subset of
  * `completeExecutionRunSchema` body fields plus the underlying task row,
  * so the evaluator does not need to re-query Prisma per rule.
@@ -56,12 +79,38 @@ export interface VerificationContext {
     deliverablesMet?: string[];
   };
   /**
-   * #2925: the current execution run. `startedAt` scopes webhook evidence
-   * (currently `require_commits_on_branch`) to pushes recorded at or after
-   * the run began, so a stale branch name pushed before this run cannot
-   * satisfy the gate. Optional: when absent the evidence is unscoped.
+   * #2925 / #2932 / #2941: the current execution run.
+   *
+   * `startedAt` scopes webhook evidence to events recorded at or after the run
+   * began, so neither a stale branch name pushed before this run
+   * (`require_commits_on_branch`) nor a historically-merged PR repointed via
+   * the mutable `task.prUrl` (`require_pr_merged`) can satisfy the gate.
+   *
+   * `branchName` is the branch the run registered AT START (immutable before
+   * complete — see `createExecutionRunSchema`). When present it is the
+   * `require_pr_merged` ownership anchor: the merged PR's head branch must
+   * equal it, not merely be *a* branch that saw a push during the run window.
+   * This closes the #2941 race where two concurrent runs share the same time
+   * window — the startedAt cutoff alone cannot tell their PRs apart, but each
+   * run's recorded branch can. `null`/absent ⇒ no anchor recorded, fall back
+   * to the #2939 head-branch-push-in-window binding.
+   *
+   * #2943: the anchor is caller-supplied, so it is only meaningful as an
+   * ownership signal because the run-start route enforces branch-claim
+   * exclusivity (no two concurrently-`running` runs in a project may hold an
+   * equal branch). Without that, an executor could simply record a parallel
+   * run's branch here and repoint `task.prUrl` at the parallel PR — the
+   * equality below would then hold against borrowed work. See the start route
+   * (`POST .../runs`) for the exclusivity guard.
+   *
+   * #2945: `id` lets the no-anchor exclusivity check exclude THIS run when
+   * scanning the project for a concurrently-running run (see
+   * `evaluateProjectVerificationRules`). Optional so the pure-evaluator unit
+   * tests can still pass a synthetic `run` without a DB row.
+   *
+   * Optional: when the whole `run` is absent the evidence is unscoped.
    */
-  run?: { startedAt: Date };
+  run?: { id?: string; startedAt: Date; branchName?: string | null };
   /**
    * R-208: webhook-verified signals pre-computed by
    * `evaluateProjectVerificationRules` from the GitHub domain-event outbox.
@@ -72,7 +121,20 @@ export interface VerificationContext {
    * way (not verified ⇒ fail closed).
    */
   verified?: {
-    /** A merged `pull_request` event matching `task.prUrl` was found. */
+    /**
+     * A merged `pull_request` event matching `task.prUrl` was found AND (when
+     * a run is in scope) that PR is bound to the current run. Ownership binding
+     * is layered:
+     *   - #2939: the PR's head branch received pushed commits at/after
+     *     `run.startedAt` (rejects PRs whose work predates the run).
+     *   - #2941: when the run recorded its working branch at start
+     *     (`run.branchName`), the PR's head branch must additionally *equal*
+     *     that branch (rejects a parallel run's / teammate's PR that merged
+     *     inside the overlapping window — the window check alone cannot tell
+     *     concurrent runs' PRs apart).
+     * Together these prevent a mutable `task.prUrl` from being repointed at an
+     * unrelated PR to clear the gate.
+     */
     prMerged?: boolean;
     /** A `github_push` with ≥1 commit to `body.branchName` was found. */
     branchHasCommits?: boolean;
@@ -186,7 +248,13 @@ export function evaluateRule(rule: VerificationRule, ctx: VerificationContext): 
       // We now require webhook-verified evidence that the PR is actually
       // MERGED (a `pull_request` event with action=closed, merged=true,
       // matching the task's prUrl — pre-computed into
-      // `ctx.verified.prMerged`). No prUrl, or PR not merged ⇒ fail closed.
+      // `ctx.verified.prMerged`). #2939 / #2941: when a run is in scope that
+      // signal also requires the PR to be bound to the current run — its head
+      // branch received pushed commits during the run (#2939) AND, when the run
+      // recorded a working branch at start, the head branch equals it (#2941) —
+      // so a mutable `task.prUrl` repointed at an unrelated or parallel run's
+      // merged PR cannot clear the gate. No prUrl, PR not merged, or PR not
+      // bound to this run ⇒ fail closed.
       const prUrl = ctx.task.prUrl?.trim();
       const ok = ctx.verified?.prMerged === true;
       return {
@@ -196,7 +264,7 @@ export function evaluateRule(rule: VerificationRule, ctx: VerificationContext): 
         message: ok
           ? `verified merged PR: ${prUrl}`
           : prUrl
-            ? `require_pr_merged: PR ${prUrl} is not merged yet — merge it (and ensure the GitHub webhook is configured) before completing`
+            ? `require_pr_merged: PR ${prUrl} is not merged for this run yet — merge the PR for the branch you pushed in this run (and ensure the GitHub webhook is configured) before completing`
             : 'require_pr_merged: task.prUrl must be set and the PR merged before complete (open a PR, PATCH the task, then merge)',
       };
     }
@@ -255,6 +323,37 @@ export interface EvaluateAllResult {
 }
 
 /**
+ * #2945: did any execution run OTHER than `excludeRunId` in this project have a
+ * lifetime that overlaps the window `[runStartedAt, now]`?
+ *
+ * A run overlaps when it is still running (`endedAt` is null) or ended at/after
+ * `runStartedAt` — in either case it was alive at some point during the current
+ * run's window and could have pushed + merged a PR inside it. We match runs in
+ * ANY terminal state (running / completed / failed / stale): a finished
+ * concurrent run is exactly the one whose merged PR a branch-less run could
+ * borrow.
+ *
+ * Used by the `require_pr_merged` no-anchor path: the #2939 window-only binding
+ * is only sound when the current run had exclusive occupancy of its window;
+ * under concurrency a branch-less run cannot attribute a merged PR to itself.
+ */
+async function projectHadConcurrentRun(
+  projectId: string,
+  runStartedAt: Date,
+  excludeRunId?: string,
+): Promise<boolean> {
+  const overlapping = await prisma.executionRun.findFirst({
+    where: {
+      task: { projectId },
+      ...(excludeRunId ? { id: { not: excludeRunId } } : {}),
+      OR: [{ endedAt: null }, { endedAt: { gte: runStartedAt } }],
+    },
+    select: { id: true },
+  });
+  return overlapping !== null;
+}
+
+/**
  * Load every enabled rule for a project, filter by scope, and evaluate.
  * Returns both the per-rule trace (for logging / RunReview) and the
  * subset that failed (the 422 envelope payload).
@@ -275,7 +374,88 @@ export async function evaluateProjectVerificationRules(
   const verified: NonNullable<VerificationContext['verified']> = {};
   if (applicable.some((r) => r.kind === 'require_pr_merged')) {
     const prUrl = ctx.task.prUrl?.trim();
-    verified.prMerged = prUrl ? (await findPrMergeInfo(prisma, projectId, prUrl)).merged : false;
+    const since = ctx.run?.startedAt;
+    // #2932: scope the merged-PR evidence to this run's startedAt so a mutable
+    // `task.prUrl` repointed at any historically-merged PR cannot satisfy the
+    // gate. `task.prUrl` can be PATCHed right before complete; without the run
+    // cutoff an agent could clear `require_pr_merged` by replaying an unrelated
+    // already-merged PR from project history (mirrors the #2925 fix for
+    // `require_commits_on_branch`).
+    //
+    // #2939: the startedAt cutoff alone is NOT sufficient — it only proves the
+    // merge happened during the run window, not that the PR *belongs* to this
+    // run. Because `task.prUrl` is mutable, an agent that did no work could
+    // repoint it at ANY unrelated PR that merged after the run began (a
+    // parallel run's PR, a teammate's PR) and clear the gate. We therefore also
+    // bind PR ownership to the run: the merged PR's own head branch must have
+    // received pushed commits at/after the run started. That head-branch push
+    // (a GitHub-verified `github_push` to `refs/heads/<head.ref>`) is distinct
+    // from the base-branch merge push GitHub emits for every merge, so it only
+    // holds for a PR whose work was actually produced by the current run; an
+    // unrelated, already-built PR cannot satisfy it merely by being merged.
+    //
+    // #2941: the head-branch-push-in-window binding above is still not enough
+    // when two runs execute CONCURRENTLY. Their startedAt windows overlap, so a
+    // parallel run that pushes to and merges its own PR inside this run's window
+    // produces a head-branch push that satisfies the #2939 check — letting this
+    // run repoint `task.prUrl` at that PR right before complete (a TOCTOU on the
+    // mutable field) and clear the gate. The time window cannot tell the two
+    // runs' PRs apart; their *branches* can. So when the run recorded its
+    // working branch at start (`run.branchName`, immutable before complete) we
+    // additionally require the merged PR's head ref to equal that branch. A PR
+    // belonging to another run has a different head branch and is rejected,
+    // even if it merged inside the window. Runs that did not record a branch
+    // fall back to the #2939 window-only binding (no regression).
+    const runBranch = ctx.run?.branchName?.trim() || null;
+    let prMerged = false;
+    if (prUrl) {
+      const prInfo = await findPrMergeInfo(prisma, projectId, prUrl, since);
+      if (prInfo.merged) {
+        if (!since) {
+          // Unscoped legacy path (no run window in scope) — preserve prior
+          // behaviour. The R-192 `deriveTaskCompletionState` caller binds
+          // attribution by commit SHA instead and does not pass a run.
+          prMerged = true;
+        } else if (!prInfo.headRef) {
+          // Merged PR webhook payload omitted head.ref — we can't bind the PR
+          // to this run, so fail closed rather than trusting the bare merge.
+          prMerged = false;
+        } else if (runBranch && !branchRefsEqual(prInfo.headRef, runBranch)) {
+          // #2941: this run anchored to a specific branch and the merged PR's
+          // head branch is a different one — i.e. the PR belongs to some other
+          // run. Reject regardless of the in-window push so a repointed
+          // `task.prUrl` cannot borrow a parallel run's merged PR.
+          prMerged = false;
+        } else if (!runBranch && (await projectHadConcurrentRun(projectId, since, ctx.run?.id))) {
+          // #2945: the run recorded NO working branch at start, so the #2941
+          // head-branch equality check above could not run and we would
+          // otherwise fall through to the #2939 window-only binding. That
+          // fallback cannot tell concurrent runs' PRs apart — the exact gap
+          // #2941 closed for anchored runs. An executor can therefore omit the
+          // optional `branchName` at execution_start to bypass BOTH the #2943
+          // start-time branch-claim check AND the #2941 equality check, then
+          // repoint the mutable `task.prUrl` at a concurrent run's merged PR
+          // (whose honest head-branch push lands inside the shared window) and
+          // clear the gate on borrowed work.
+          //
+          // The window-only fallback is only sound when this run had EXCLUSIVE
+          // occupancy of its window. If any OTHER execution run in the project
+          // overlapped [run.startedAt, now], we cannot attribute the merged PR
+          // to this run, so fail closed. The operator must record `branchName`
+          // at start to get a precise per-run binding (which #2943 then keeps
+          // exclusive across concurrent runs).
+          prMerged = false;
+        } else {
+          // Either the run anchored to this PR's head branch (#2941), or no
+          // branch was recorded AND this run had exclusive occupancy of its
+          // window (#2939 back-compat, no concurrent run to borrow from). In
+          // both cases require the GitHub-verified head-branch push during the
+          // run window.
+          prMerged = await branchHasPushedCommits(prisma, projectId, prInfo.headRef, since);
+        }
+      }
+    }
+    verified.prMerged = prMerged;
   }
   if (applicable.some((r) => r.kind === 'require_commits_on_branch')) {
     const branch = ctx.body.branchName?.trim();

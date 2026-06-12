@@ -10,6 +10,7 @@ import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
 import { auditCrossProjectTaskIfNeeded } from '@/lib/task-scope';
 import { acquireProjectAdvisoryLock } from '@/lib/advisory-lock';
+import { branchRefsEqual } from '@/lib/verification-rules';
 
 type Params = { params: Promise<{ projectId: string; taskId: string }> };
 
@@ -242,6 +243,56 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
           });
         }
 
+        // #2943: enforce branch-claim exclusivity across concurrent runs.
+        //
+        // `branchName` is supplied by the executor at start and is later used
+        // by the `require_pr_merged` gate as the PR-ownership anchor (#2941):
+        // the merged PR's head branch must EQUAL the run's recorded branch.
+        // Because the value is caller-controlled, a malicious/lazy executor
+        // could otherwise record a *parallel* run's working branch at start,
+        // then repoint the mutable `task.prUrl` at that parallel run's merged
+        // PR right before complete — the head-branch equality would hold (it's
+        // the branch they copied) and the in-window push (produced by the
+        // honest parallel run) would satisfy the binding, clearing the gate
+        // with zero real work. The branch-equality check is only meaningful if
+        // a branch can be owned by at most ONE live run at a time.
+        //
+        // We hold the project advisory lock above, so all run-starts in this
+        // project serialize here: reject the start if any other currently
+        // `running` run in the same project has already claimed an equal
+        // branch (compared with the same `refs/heads/`-tolerant semantics the
+        // gate uses). Runs that record no branch fall back to the #2939
+        // window-only binding and never contend for a claim.
+        const claimedBranch = body.branchName?.trim();
+        if (claimedBranch) {
+          const runningWithBranch = await tx.executionRun.findMany({
+            where: {
+              status: 'running',
+              branchName: { not: null },
+              taskId: { not: params.taskId },
+              task: { projectId: params.projectId },
+            },
+            select: { id: true, taskId: true, executorName: true, branchName: true },
+          });
+          const conflict = runningWithBranch.find(
+            (r) => r.branchName != null && branchRefsEqual(r.branchName, claimedBranch),
+          );
+          if (conflict) {
+            throw new AppError(
+              ErrorCode.STATE_CONFLICT,
+              `Branch "${claimedBranch}" is already claimed by an active execution ` +
+                `(runId: ${conflict.id}, task: ${conflict.taskId}, executor: "${conflict.executorName}"). ` +
+                `A branch can only be the working branch of one live run at a time — ` +
+                `wait for that run to finish or go stale, or start this run on a different branch.`,
+              {
+                conflictingRunId: conflict.id,
+                conflictingTaskId: conflict.taskId,
+                branchName: claimedBranch,
+              },
+            );
+          }
+        }
+
         if (liveTask.status === 'todo') {
           // Atomic claim: transition from 'todo' → 'in_progress' in a single DB operation.
           // If two operators race on the same todo task, only one wins — the other gets count=0.
@@ -344,6 +395,15 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
             filesChanged: [],
             blockers: [],
             driftSignals: [],
+            // #2941: record the run's working branch up front (when the
+            // caller supplies it) so it can serve as an immutable ownership
+            // anchor for the `require_pr_merged` gate. Unlike `task.prUrl`,
+            // which is PATCH-able right before complete, this is fixed at
+            // start and cannot be repointed at a parallel run's PR later.
+            // #2943: the branch-claim exclusivity check above guarantees no
+            // other live run in this project already holds this branch, so the
+            // anchor cannot be a copy of a concurrent run's working branch.
+            branchName: body.branchName ?? null,
           },
         });
       });

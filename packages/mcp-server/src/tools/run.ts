@@ -71,6 +71,14 @@ const startArgsSchema = z
     taskId: z.string(),
     executorType: z.enum(['human', 'agent']),
     executorName: z.string(),
+    branchName: z
+      .string()
+      .optional()
+      .describe(
+        'Git branch this run will work on. Recorded at start as the run-owned ' +
+          'branch; the require_pr_merged gate binds the merged PR to it so a PR ' +
+          'from a parallel run cannot be reused to clear the gate.',
+      ),
   })
   .strict();
 
@@ -160,11 +168,18 @@ export function registerRunTool(
       executorType: z.enum(['human', 'agent']).optional().describe('Required for action=start.'),
       executorName: z.string().optional().describe('Required for action=start.'),
       status: z.enum(['completed', 'failed']).optional().describe('Required for action=complete.'),
+      branchName: z
+        .string()
+        .optional()
+        .describe(
+          'For action=start: the git branch this run will work on (recorded as ' +
+            'the run-owned branch for the require_pr_merged ownership check). ' +
+            'For action=complete: the branch where changes were committed.',
+        ),
       outputSummary: z.string().optional(),
       filesChanged: z.array(z.string()).optional(),
       blockers: z.array(z.string()).optional(),
       driftSignals: z.array(z.string()).optional(),
-      branchName: z.string().optional().describe('Git branch name where changes were committed.'),
       deliverablesMet: z
         .array(z.string())
         .optional()
@@ -193,8 +208,11 @@ export function registerRunTool(
       };
       switch (parsed.data.action) {
         case 'start': {
-          const { projectId, taskId, executorType, executorName } = parsed.data;
-          return handleExecutionStart({ projectId, taskId, executorType, executorName }, ctx);
+          const { projectId, taskId, executorType, executorName, branchName } = parsed.data;
+          return handleExecutionStart(
+            { projectId, taskId, executorType, executorName, branchName },
+            ctx,
+          );
         }
         case 'heartbeat': {
           const { projectId, taskId, runId } = parsed.data;

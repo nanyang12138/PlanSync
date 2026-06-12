@@ -21,7 +21,7 @@ if [ -z "${PG_BIN:-}" ]; then
   PG_BIN="/usr/lib/postgresql/16/bin"
 fi
 PG_PORT=${PG_PORT:-15432}
-PG_DATA="/tmp/plansync-pgdata-$(whoami)"
+PG_DATA="$(resolve_pg_data)"
 
 log_step() {
   echo "==> $*"
@@ -77,21 +77,27 @@ install_local_node_runtime() {
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/plansync-node-XXXXXX")"
   archive_path="$tmp_dir/$LOCAL_NODE_ARCHIVE"
 
-  # NFS-safe removal: retry up to 3 times for silly-rename lingering files
-  local retries=3
-  while [ "$retries" -gt 0 ] && [ -e "$LOCAL_NODE_DIR" ]; do
-    rm -rf "$LOCAL_NODE_DIR" 2>/dev/null || true
-    [ -e "$LOCAL_NODE_DIR" ] && sleep 1
-    retries=$((retries - 1))
-  done
-  mkdir -p "$LOCAL_RUNTIME_DIR"
-
   log_step "Installing local Node.js runtime (v${PLANSYNC_NODE_VERSION})"
   download_local_node_archive "$LOCAL_NODE_URL" "$archive_path"
-
   tar -xzf "$archive_path" -C "$tmp_dir"
+
+  mkdir -p "$LOCAL_RUNTIME_DIR"
+  # NFS-safe replace. A plain `rm -rf "$LOCAL_NODE_DIR"` FAILS when another
+  # process still holds node/npm open (a running MCP server, dev server, etc.):
+  # NFS silly-renames the busy binary to a .nfsXXXX file and refuses to remove
+  # the directory. The old retry-rm loop then gave up and `mv`'d the fresh
+  # install *inside* the leftover directory, producing a runtime with no
+  # node/npm at the expected paths — exactly the "npm: No such file or
+  # directory" breakage. Renaming the directory aside ALWAYS succeeds (open
+  # files travel with it, no silly-rename needed), so move the old runtime out
+  # of the way, drop the fresh one in place, then best-effort purge the
+  # leftovers (.nfs* files vanish once their holder exits).
+  if [ -e "$LOCAL_NODE_DIR" ]; then
+    mv "$LOCAL_NODE_DIR" "$LOCAL_NODE_DIR.stale-$$" 2>/dev/null \
+      || rm -rf "$LOCAL_NODE_DIR" 2>/dev/null || true
+  fi
   mv "$tmp_dir/$LOCAL_NODE_DIST" "$LOCAL_NODE_DIR"
-  rm -rf "$tmp_dir"
+  rm -rf "$tmp_dir" "$LOCAL_NODE_DIR".stale-* 2>/dev/null || true
 }
 
 local_node_runtime_exists() {
@@ -314,10 +320,46 @@ ensure_prisma_generated() {
   fi
 }
 
+# Stop the running Postgres instance and wait for the port to be free before
+# the caller does anything that depends on an exclusive data directory (rm/initdb).
+# Falls back to SIGKILL via postmaster.pid when pg_ctl cannot reach the server.
+_pg_force_stop() {
+  # -w: wait for server to fully exit before returning
+  pg_ctl -D "$PG_DATA" stop -m immediate -w > /dev/null 2>&1 || true
+  # If the data dir is already so corrupt that pg_ctl can't read postmaster.pid,
+  # kill the process directly using the PID we read ourselves.
+  local pid
+  pid="$(head -1 "$PG_DATA/postmaster.pid" 2>/dev/null || true)"
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    # Only SIGKILL if the PID is really a postgres process. A stale postmaster.pid
+    # (left after a crash on /tmp) may hold a PID the OS has since recycled to an
+    # unrelated process — killing that would be a wrong-process kill. ps -o comm=
+    # is portable across Linux (RHEL) and macOS.
+    case "$(ps -o comm= -p "$pid" 2>/dev/null)" in
+      *postgres*|*postmaster*) kill -9 "$pid" 2>/dev/null || true ;;
+    esac
+  fi
+  # Spin until the port is free (max 10 s) so rm/initdb never races the process.
+  local i=0
+  while pg_isready -p "$PG_PORT" -q 2>/dev/null && [ "$i" -lt 20 ]; do
+    sleep 0.5
+    i=$(( i + 1 ))
+  done
+}
+
 ensure_postgres_running() {
   local initialized_now=0
 
   export PATH="$LOCAL_NODE_DIR/bin:$PG_BIN:$PATH"
+
+  # Pre-flight: if the data directory exists but is missing the global cluster
+  # files (e.g. global/pg_filenode.map), the initdb was interrupted — wipe it
+  # now before attempting to start, so we never hand a broken cluster to pg_ctl.
+  if [ -d "$PG_DATA" ] && [ ! -f "$PG_DATA/global/pg_filenode.map" ]; then
+    log_step "⚠ Data directory corrupt (global files missing) — reinitializing"
+    _pg_force_stop
+    rm -rf "$PG_DATA"
+  fi
 
   if [ ! -d "$PG_DATA" ]; then
     log_step "Initializing PostgreSQL data directory"
@@ -327,12 +369,39 @@ ensure_postgres_running() {
 
   if ! pg_isready -p "$PG_PORT" -q 2>/dev/null; then
     log_step "Starting PostgreSQL on port $PG_PORT"
-    pg_ctl -D "$PG_DATA" -l "$PG_DATA/logfile" -o "-p $PG_PORT" start > /dev/null 2>&1
+    # -w: wait until the server is ready to accept connections
+    pg_ctl -D "$PG_DATA" -l "$PG_DATA/logfile" -o "-p $PG_PORT" start -w > /dev/null 2>&1
   fi
 
   if createdb -p "$PG_PORT" plansync_dev 2>/dev/null; then
     log_step "Creating database plansync_dev"
     initialized_now=1
+  fi
+
+  # Post-start health check: verify plansync_dev system catalogs are readable.
+  # Catches NFS write-interruption corruption that initdb survived but left
+  # incomplete — triggers a full re-init so prisma migrate deploy never sees
+  # "could not open file base/N/2601".
+  if ! psql -p "$PG_PORT" -d plansync_dev \
+       -c "SELECT 1 FROM pg_catalog.pg_aggregate LIMIT 1" > /dev/null 2>&1; then
+    # The catalog query failed — but before destroying anything, make sure the
+    # thing on $PG_PORT is OUR cluster. If something is answering on the port and
+    # pg_ctl reports our own postmaster.pid is NOT the one running, another process
+    # is squatting the port; wiping $PG_DATA would destroy good local data without
+    # fixing the conflict. Refuse and surface a clear error instead.
+    if pg_isready -p "$PG_PORT" -q 2>/dev/null \
+       && ! pg_ctl -D "$PG_DATA" status > /dev/null 2>&1; then
+      log_step "✗ PG_PORT $PG_PORT is held by another process (not our cluster) — refusing to wipe $PG_DATA."
+      log_step "  Set a unique PG_PORT in .env, e.g. PG_PORT=\$(expr 15000 + \$(id -u) % 1000)"
+    else
+      log_step "⚠ Database catalog corruption detected — reinitializing data directory"
+      _pg_force_stop
+      rm -rf "$PG_DATA"
+      initdb -D "$PG_DATA" > /dev/null 2>&1
+      pg_ctl -D "$PG_DATA" -l "$PG_DATA/logfile" -o "-p $PG_PORT" start -w > /dev/null 2>&1
+      createdb -p "$PG_PORT" plansync_dev > /dev/null 2>&1 || true
+      initialized_now=1
+    fi
   fi
 
   return "$initialized_now"

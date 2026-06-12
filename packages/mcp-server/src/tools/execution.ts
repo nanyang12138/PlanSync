@@ -330,6 +330,12 @@ export interface ExecutionStartArgs {
   taskId: string;
   executorType: 'human' | 'agent';
   executorName: string;
+  /**
+   * #2941: the git branch this run will work on, recorded at start as the
+   * run's immutable ownership anchor for the `require_pr_merged` gate.
+   * Optional — omitting it preserves the #2939 window-only binding.
+   */
+  branchName?: string;
 }
 
 export interface ExecutionHeartbeatArgs {
@@ -365,12 +371,15 @@ export async function handleExecutionStart(
   args: ExecutionStartArgs,
   ctx: ExecutionHandlerContext,
 ): Promise<ToolResult> {
-  const { projectId, taskId, executorType, executorName } = args;
+  const { projectId, taskId, executorType, executorName, branchName } = args;
   try {
     const result = await ctx.api.post(`/api/projects/${projectId}/tasks/${taskId}/runs`, {
       taskId,
       executorType,
       executorName,
+      // #2941: only include when supplied so the API's createExecutionRunSchema
+      // (and the run row) keep their backwards-compatible null default.
+      ...(branchName ? { branchName } : {}),
     });
     const runId = (result as { data?: { id?: string } })?.data?.id;
     if (runId) {
