@@ -59,19 +59,40 @@ function row(id: bigint, eventType: string, attempt = 0) {
 
 describe('R-162: processPendingOutboxEvents', () => {
   it('returns the empty result when no rows are pending', async () => {
+    registerOutboxHandler('plan_activated', () => {});
     mocks.domainEventFindMany.mockResolvedValue([]);
     const res = await processPendingOutboxEvents();
     expect(res).toEqual({ processed: 0, delivered: 0, failed: 0, skipped: 0 });
     expect(mocks.domainEventUpdate).not.toHaveBeenCalled();
   });
 
-  it('skips rows with no registered handler (leaves them undelivered)', async () => {
-    mocks.domainEventFindMany.mockResolvedValue([row(1n, 'plan_activated')]);
+  it('does not even query when no handlers are registered', async () => {
+    // With zero handlers there is nothing this consumer can deliver, so it
+    // must short-circuit BEFORE touching the DB — never pull a batch it
+    // would only skip.
     const res = await processPendingOutboxEvents();
-    expect(res).toEqual({ processed: 0, delivered: 0, failed: 0, skipped: 1 });
-    // Nothing claimed, nothing updated — the row stays for a later boot.
-    expect(mocks.domainEventUpdateMany).not.toHaveBeenCalled();
-    expect(mocks.domainEventUpdate).not.toHaveBeenCalled();
+    expect(res).toEqual({ processed: 0, delivered: 0, failed: 0, skipped: 0 });
+    expect(mocks.domainEventFindMany).not.toHaveBeenCalled();
+  });
+
+  it('R-192 starvation guard: pre-filters the query to registered event types only', async () => {
+    // The fix for head-of-line blocking. Query-only fact rows
+    // (github_pull_request / _review) have no handler and live at
+    // deliveredAt=null forever; if they entered the fixed id-ASC window
+    // they would starve github_push behind them. The consumer must scope
+    // the scan to event types it can actually deliver.
+    registerOutboxHandler('github_push', () => {});
+    mocks.domainEventFindMany.mockResolvedValue([]);
+
+    await processPendingOutboxEvents();
+
+    expect(mocks.domainEventFindMany).toHaveBeenCalledTimes(1);
+    const where = mocks.domainEventFindMany.mock.calls[0][0].where;
+    expect(where.deliveredAt).toBeNull();
+    expect(where.eventType).toEqual({ in: ['github_push'] });
+    // The never-handled fact types must NOT be in the scan set.
+    expect(where.eventType.in).not.toContain('github_pull_request');
+    expect(where.eventType.in).not.toContain('github_pull_request_review');
   });
 
   it('dispatches, marks delivered, and reports counts on the happy path', async () => {

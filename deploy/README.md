@@ -14,11 +14,22 @@ PlanSync runs as three logical components today, mapped onto **two processes**:
 | `plansync-web`    | served by the same Next.js process           | own Next.js / static service |
 | `plansync-worker` | `packages/api/scripts/run-worker.ts` (R-138) | same                         |
 
-The worker owns the heartbeat scanner (R-138) and the persistent webhook
-retry queue (R-139, opt-in via `PLANSYNC_WEBHOOK_QUEUE=true`). It is the
-single writer for those subsystems — running multiple worker replicas is safe
-(advisory lock + `SKIP LOCKED`) but pointless until R-162 lands the outbox
-consumer.
+The worker owns the heartbeat scanner (R-138), the persistent webhook
+retry queue (R-139, opt-in via `PLANSYNC_WEBHOOK_QUEUE=true`), and the
+transactional-outbox consumer (R-162, opt-in via
+`PLANSYNC_OUTBOX_CONSUMER=true`). It is the single writer for those
+subsystems — running multiple worker replicas is safe (advisory lock +
+`SKIP LOCKED`).
+
+**R-192 evidence pipeline:** the outbox consumer is what dispatches
+`github_push` events to the R-191 commit→deliverable linker, producing the
+`commit_deliverable_links` rows that R-192's completion gate reads. With
+`PLANSYNC_OUTBOX_CONSUMER` unset/false the consumer is dormant: push events
+accumulate undelivered, no links are written, and every git-gated task stays
+parked in `awaiting_evidence`. Set `PLANSYNC_OUTBOX_CONSUMER=true` on this
+worker to make the gate actually clear tasks. Note the in-API worker
+(`PLANSYNC_RUN_WORKER_IN_API`, used by `scripts/dev.sh`) runs ONLY the
+heartbeat scanner — the evidence pipeline requires this dedicated worker.
 
 ## docker-compose
 
