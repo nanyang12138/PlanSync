@@ -32,14 +32,20 @@
  *   - everything else (only title changed, deliverable unchanged, or
  *     the diff entry is `unchanged`/`added`) → 'low'.
  *
- *   - Task with no `deliverableLinks` rows → 'low' regardless of what the
- *     diff says. Before R-154 the engine biased toward 'breaking' for
- *     legacy tasks; that produced an alert on every plan activation for
- *     every task in the project even when nothing the task actually owned
- *     had changed. R-154 step 3 trades that conservatism for the explicit
- *     contract: "if the task has not declared what it depends on, do not
- *     interrupt it." The migration to populate `deliverableLinks` for
- *     existing tasks lives in `syncTaskDeliverableLinks` (R-153).
+ *   - Task with no `deliverableLinks` rows → 'medium' when the diff carries a
+ *     breaking change (a deliverable removed or its body rewritten), else
+ *     'low' (R-207). Before R-154 the engine biased toward 'breaking' for
+ *     ALL legacy tasks; that produced an alert on every plan activation for
+ *     every task in the project even when nothing material changed. R-154
+ *     step 3 over-corrected to unconditional 'low', which left the headline
+ *     "can never complete against a stale plan" promise off by default (new
+ *     tasks have no links). R-207 keeps R-154's anti-fatigue guarantee for
+ *     cosmetic changes (typo in goal, title rename, refUri move → still
+ *     'low') but gates a no-link task at 'medium' when the contract it might
+ *     depend on was genuinely broken — verify-before-complete rather than
+ *     silent pass-through. Owners who want zero drift interruptions for a
+ *     task still declare its links via `syncTaskDeliverableLinks` (R-153);
+ *     once declared, the precise per-link rules above apply instead.
  */
 
 import type { Severity } from './severity';
@@ -136,6 +142,24 @@ export function diffDeliverables(from: DeliverableLite[], to: DeliverableLite[])
 }
 
 /**
+ * Does this diff carry a *breaking* change at the plan level — a deliverable
+ * removed outright, or one whose `body` (the contract text an agent reads)
+ * was rewritten? refUri-only, title-only, `added` and `unchanged` entries are
+ * deliberately excluded: they are re-orient/cosmetic signals, not a broken
+ * contract. Used to decide whether a task that has NOT declared its
+ * dependencies should still be gated (R-207).
+ *
+ * Pure function; safe to call from any package.
+ */
+export function diffHasBreakingChange(diff: DeliverableDiff): boolean {
+  for (const entry of diff.values()) {
+    if (entry.kind === 'removed') return true;
+    if (entry.kind === 'modified' && entry.bodyChanged) return true;
+  }
+  return false;
+}
+
+/**
  * Classify the impact of a deliverable diff on a single task, given the
  * deliverable ids the task is linked to (via `TaskDeliverableLink`).
  *
@@ -146,11 +170,26 @@ export function severityForTaskByDeliverables(
   linkedDeliverableIds: string[],
   diff: DeliverableDiff,
 ): Severity {
-  // R-154 step 3: a task with no link rows is intentionally NOT alerted
-  // on plan changes. The whole point of the link table is that the owner
-  // explicitly declares which deliverables the task depends on; without a
-  // declaration the engine has no basis to pause the task.
-  if (linkedDeliverableIds.length === 0) return 'low';
+  // R-207: a task with no link rows used to return 'low' unconditionally
+  // (R-154 step 3). That left PlanSync's headline promise — "agents can
+  // never accidentally complete work bound to a stale plan" — false BY
+  // DEFAULT: every newly-created task starts with zero deliverable links,
+  // so a running no-link task could sail past the gate and complete() against
+  // a superseded plan.
+  //
+  // The fix threads the needle instead of resurrecting R-154's alert fatigue:
+  // a no-link task is escalated to 'medium' ONLY when the plan diff carries a
+  // genuinely breaking change (a deliverable removed, or its body rewritten).
+  // A typo fix in goal/scope, a title rename, or a refUri move produces no
+  // breaking diff entry, so those still resolve to 'low' and do NOT pause the
+  // project — R-154's anti-fatigue guarantee holds. But when the contract the
+  // task *might* depend on materially changed and the task never declared
+  // independence from it, we gate at 'medium' ("verify before completing")
+  // rather than let it through silently. 'medium' (not 'breaking') because
+  // without link rows we cannot prove the task is actually affected.
+  if (linkedDeliverableIds.length === 0) {
+    return diffHasBreakingChange(diff) ? 'medium' : 'low';
+  }
 
   let worst: Severity = 'low';
   for (const id of linkedDeliverableIds) {

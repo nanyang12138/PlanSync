@@ -69,3 +69,13 @@ detect_pg_bin() {
 
   return 1
 }
+
+# Resolve the PostgreSQL data directory.  Callers may override via
+# PLANSYNC_PG_DATA (environment or .env) — useful on cluster machines where
+# /tmp is network-backed or node-local (wiped on reboot / node switch).
+# Recommended override on shared hosts:
+#   PLANSYNC_PG_DATA=$HOME/.local/share/plansync/pgdata
+# Default: /tmp/plansync-pgdata-<user>  (fast writes, but not persistent)
+resolve_pg_data() {
+  printf '%s' "${PLANSYNC_PG_DATA:-/tmp/plansync-pgdata-$(whoami)}"
+}
