@@ -314,10 +314,40 @@ ensure_prisma_generated() {
   fi
 }
 
+# Stop the running Postgres instance and wait for the port to be free before
+# the caller does anything that depends on an exclusive data directory (rm/initdb).
+# Falls back to SIGKILL via postmaster.pid when pg_ctl cannot reach the server.
+_pg_force_stop() {
+  # -w: wait for server to fully exit before returning
+  pg_ctl -D "$PG_DATA" stop -m immediate -w > /dev/null 2>&1 || true
+  # If the data dir is already so corrupt that pg_ctl can't read postmaster.pid,
+  # kill the process directly using the PID we read ourselves.
+  local pid
+  pid="$(head -1 "$PG_DATA/postmaster.pid" 2>/dev/null || true)"
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+  # Spin until the port is free (max 10 s) so rm/initdb never races the process.
+  local i=0
+  while pg_isready -p "$PG_PORT" -q 2>/dev/null && [ "$i" -lt 20 ]; do
+    sleep 0.5
+    i=$(( i + 1 ))
+  done
+}
+
 ensure_postgres_running() {
   local initialized_now=0
 
   export PATH="$LOCAL_NODE_DIR/bin:$PG_BIN:$PATH"
+
+  # Pre-flight: if the data directory exists but is missing the global cluster
+  # files (e.g. global/pg_filenode.map), the initdb was interrupted — wipe it
+  # now before attempting to start, so we never hand a broken cluster to pg_ctl.
+  if [ -d "$PG_DATA" ] && [ ! -f "$PG_DATA/global/pg_filenode.map" ]; then
+    log_step "⚠ Data directory corrupt (global files missing) — reinitializing"
+    _pg_force_stop
+    rm -rf "$PG_DATA"
+  fi
 
   if [ ! -d "$PG_DATA" ]; then
     log_step "Initializing PostgreSQL data directory"
@@ -327,7 +357,8 @@ ensure_postgres_running() {
 
   if ! pg_isready -p "$PG_PORT" -q 2>/dev/null; then
     log_step "Starting PostgreSQL on port $PG_PORT"
-    pg_ctl -D "$PG_DATA" -l "$PG_DATA/logfile" -o "-p $PG_PORT" start > /dev/null 2>&1
+    # -w: wait until the server is ready to accept connections
+    pg_ctl -D "$PG_DATA" -l "$PG_DATA/logfile" -o "-p $PG_PORT" start -w > /dev/null 2>&1
   fi
 
   if createdb -p "$PG_PORT" plansync_dev 2>/dev/null; then
@@ -335,17 +366,17 @@ ensure_postgres_running() {
     initialized_now=1
   fi
 
-  # Detect catalog corruption (e.g. from an NFS write interruption or abrupt kill
-  # during initdb on /tmp).  A corrupt cluster silently starts but fails on the
-  # first real query — catch it here so callers never see the cryptic
-  # "could not open file base/N/2601" error from prisma migrate deploy.
+  # Post-start health check: verify plansync_dev system catalogs are readable.
+  # Catches NFS write-interruption corruption that initdb survived but left
+  # incomplete — triggers a full re-init so prisma migrate deploy never sees
+  # "could not open file base/N/2601".
   if ! psql -p "$PG_PORT" -d plansync_dev \
        -c "SELECT 1 FROM pg_catalog.pg_aggregate LIMIT 1" > /dev/null 2>&1; then
     log_step "⚠ Database catalog corruption detected — reinitializing data directory"
-    pg_ctl -D "$PG_DATA" stop -m immediate > /dev/null 2>&1 || true
+    _pg_force_stop
     rm -rf "$PG_DATA"
     initdb -D "$PG_DATA" > /dev/null 2>&1
-    pg_ctl -D "$PG_DATA" -l "$PG_DATA/logfile" -o "-p $PG_PORT" start > /dev/null 2>&1
+    pg_ctl -D "$PG_DATA" -l "$PG_DATA/logfile" -o "-p $PG_PORT" start -w > /dev/null 2>&1
     createdb -p "$PG_PORT" plansync_dev > /dev/null 2>&1 || true
     initialized_now=1
   fi
