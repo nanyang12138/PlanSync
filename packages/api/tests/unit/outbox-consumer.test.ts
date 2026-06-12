@@ -62,7 +62,14 @@ describe('R-162: processPendingOutboxEvents', () => {
     registerOutboxHandler('plan_activated', () => {});
     mocks.domainEventFindMany.mockResolvedValue([]);
     const res = await processPendingOutboxEvents();
-    expect(res).toEqual({ processed: 0, delivered: 0, failed: 0, skipped: 0 });
+    expect(res).toEqual({
+      processed: 0,
+      delivered: 0,
+      failed: 0,
+      deadLettered: 0,
+      skipped: 0,
+      scannedTypes: [],
+    });
     expect(mocks.domainEventUpdate).not.toHaveBeenCalled();
   });
 
@@ -71,7 +78,14 @@ describe('R-162: processPendingOutboxEvents', () => {
     // must short-circuit BEFORE touching the DB — never pull a batch it
     // would only skip.
     const res = await processPendingOutboxEvents();
-    expect(res).toEqual({ processed: 0, delivered: 0, failed: 0, skipped: 0 });
+    expect(res).toEqual({
+      processed: 0,
+      delivered: 0,
+      failed: 0,
+      deadLettered: 0,
+      skipped: 0,
+      scannedTypes: [],
+    });
     expect(mocks.domainEventFindMany).not.toHaveBeenCalled();
   });
 
@@ -106,7 +120,14 @@ describe('R-162: processPendingOutboxEvents', () => {
 
     const now = new Date('2026-05-29T12:00:00Z');
     const res = await processPendingOutboxEvents({ now });
-    expect(res).toEqual({ processed: 1, delivered: 1, failed: 0, skipped: 0 });
+    expect(res).toEqual({
+      processed: 1,
+      delivered: 1,
+      failed: 0,
+      deadLettered: 0,
+      skipped: 0,
+      scannedTypes: ['plan_activated'],
+    });
     expect(seen).toEqual([7n]);
     expect(mocks.domainEventUpdateMany).toHaveBeenCalledWith({
       where: { id: 7n, deliveredAt: null },
@@ -137,10 +158,56 @@ describe('R-162: processPendingOutboxEvents', () => {
     mocks.domainEventUpdateMany.mockResolvedValue({ count: 1 });
 
     const res = await processPendingOutboxEvents();
-    expect(res).toEqual({ processed: 1, delivered: 0, failed: 1, skipped: 0 });
-    // `attempt` was bumped via the claim, but deliveredAt was NOT set —
-    // the next tick will retry.
+    expect(res).toEqual({
+      processed: 1,
+      delivered: 0,
+      failed: 1,
+      deadLettered: 0,
+      skipped: 0,
+      scannedTypes: ['plan_activated'],
+    });
+    // `attempt` was bumped via the claim, but neither deliveredAt nor failedAt
+    // was set (attempt 1 < OUTBOX_MAX_ATTEMPTS) — the next tick will retry.
     expect(mocks.domainEventUpdate).not.toHaveBeenCalled();
+  });
+
+  it('R-208: dead-letters a row once it reaches OUTBOX_MAX_ATTEMPTS', async () => {
+    registerOutboxHandler('plan_activated', () => {
+      throw new Error('handler boom');
+    });
+    // attempt=3 means this dispatch is the 4th attempt (OUTBOX_MAX_ATTEMPTS).
+    mocks.domainEventFindMany.mockResolvedValue([row(12n, 'plan_activated', 3)]);
+    mocks.domainEventUpdateMany.mockResolvedValue({ count: 1 });
+    mocks.domainEventUpdate.mockResolvedValue({});
+
+    const now = new Date('2026-06-11T12:00:00Z');
+    const res = await processPendingOutboxEvents({ now });
+
+    expect(res).toEqual({
+      processed: 1,
+      delivered: 0,
+      failed: 0,
+      deadLettered: 1,
+      skipped: 0,
+      scannedTypes: ['plan_activated'],
+    });
+    // The row is marked failed (dead-lettered): failedAt + lastError set so it
+    // leaves the pending working set and is never retried.
+    expect(mocks.domainEventUpdate).toHaveBeenCalledWith({
+      where: { id: 12n },
+      data: { failedAt: now, lastError: 'handler boom' },
+    });
+  });
+
+  it('R-208: the scan query excludes delivered AND dead-lettered rows', async () => {
+    registerOutboxHandler('plan_activated', () => {});
+    mocks.domainEventFindMany.mockResolvedValue([]);
+
+    await processPendingOutboxEvents();
+
+    const where = mocks.domainEventFindMany.mock.calls[0][0].where;
+    expect(where.deliveredAt).toBeNull();
+    expect(where.failedAt).toBeNull();
   });
 
   it('rejects double-registration of a handler for the same eventType', () => {

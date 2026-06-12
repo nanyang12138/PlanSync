@@ -157,7 +157,14 @@ describe('R-192: github_push through the outbox consumer dispatch loop', () => {
     const now = new Date('2026-06-11T12:00:00Z');
     const res = await processPendingOutboxEvents({ now });
 
-    expect(res).toEqual({ processed: 1, delivered: 1, failed: 0, skipped: 0 });
+    expect(res).toEqual({
+      processed: 1,
+      delivered: 1,
+      failed: 0,
+      deadLettered: 0,
+      skipped: 0,
+      scannedTypes: ['github_push'],
+    });
     expect(mocks.linkCommitsFromPushPayload).toHaveBeenCalledWith({
       projectId: 'p1',
       payload: VALID_PUSH,
@@ -177,7 +184,14 @@ describe('R-192: github_push through the outbox consumer dispatch loop', () => {
 
     const res = await processPendingOutboxEvents();
 
-    expect(res).toEqual({ processed: 1, delivered: 0, failed: 1, skipped: 0 });
+    expect(res).toEqual({
+      processed: 1,
+      delivered: 0,
+      failed: 1,
+      deadLettered: 0,
+      skipped: 0,
+      scannedTypes: ['github_push'],
+    });
     // The attempt was bumped via the claim (updateMany), but deliveredAt
     // was NEVER set — this is the whole point of throwing instead of
     // returning. If this assertion ever flips, someone turned the

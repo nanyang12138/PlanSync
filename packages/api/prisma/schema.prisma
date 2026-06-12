@@ -837,13 +837,21 @@ model DomainEvent {
   createdAt   DateTime  @default(now()) @map("created_at")
   deliveredAt DateTime? @map("delivered_at")
   attempt     Int       @default(0)
+  // R-208: dead-letter. A handler that keeps throwing is retried until
+  // OUTBOX_MAX_ATTEMPTS, then the consumer sets failedAt + lastError and stops
+  // (mirrors the R-139 webhook-worker terminal state). A row is pending while
+  // both deliveredAt and failedAt are null; delivered when deliveredAt is set;
+  // dead-lettered when failedAt is set.
+  failedAt    DateTime? @map("failed_at")
+  lastError   String?   @map("last_error")
 
   // Backs the consumer's hot path:
-  //   SELECT ... WHERE delivered_at IS NULL ORDER BY id ASC FOR UPDATE SKIP LOCKED
-  // The migration creates this as a partial index (`WHERE delivered_at IS NULL`)
-  // so it only contains rows the worker actually needs to scan; prisma does not
-  // model partial indexes, so the @@index here is a no-op placeholder that the
-  // migration replaces with the real partial index.
+  //   SELECT ... WHERE delivered_at IS NULL AND failed_at IS NULL ORDER BY id ASC
+  // The migration creates this as a partial index
+  // (`WHERE delivered_at IS NULL AND failed_at IS NULL`) so it only contains
+  // rows the worker actually needs to scan; prisma does not model partial
+  // indexes, so the @@index here is a no-op placeholder that the migration
+  // replaces with the real partial index.
   @@index([deliveredAt, id])
   @@map("domain_events")
 }

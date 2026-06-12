@@ -49,6 +49,11 @@ import type { DomainEventType, DomainEventPayload } from '@plansync/shared';
 const SCAN_INTERVAL_MS = 1000;
 const DEFAULT_BATCH_LIMIT = 50;
 
+// R-208: dead-letter cap. After this many failed dispatch attempts the consumer
+// gives up on a row (sets failedAt + lastError) instead of retrying forever.
+// Mirrors R-139's WEBHOOK_MAX_ATTEMPTS so the two queues behave consistently.
+const OUTBOX_MAX_ATTEMPTS = 4;
+
 /**
  * Dispatch context handed to each registered handler. Carries the
  * already-validated envelope plus the row id so handlers can record
@@ -88,13 +93,31 @@ export type OutboxScanResult = {
   processed: number;
   /** Of `processed`, rows whose handler returned success. */
   delivered: number;
-  /** Of `processed`, rows whose handler threw — `attempt` was bumped. */
+  /** Of `processed`, rows whose handler threw and will be retried next tick. */
   failed: number;
+  /**
+   * R-208: of `processed`, rows whose handler threw on the OUTBOX_MAX_ATTEMPTS-th
+   * attempt — marked failed (failedAt + lastError) and no longer retried.
+   */
+  deadLettered: number;
   /** Rows seen but skipped (no handler registered for the eventType). */
   skipped: number;
+  /**
+   * R-208: distinct eventTypes present in this tick's candidate window.
+   * Observability only — lets operators confirm which event types the consumer
+   * is actually draining without grepping logs.
+   */
+  scannedTypes: string[];
 };
 
-const EMPTY_RESULT: OutboxScanResult = { processed: 0, delivered: 0, failed: 0, skipped: 0 };
+const EMPTY_RESULT: OutboxScanResult = {
+  processed: 0,
+  delivered: 0,
+  failed: 0,
+  deadLettered: 0,
+  skipped: 0,
+  scannedTypes: [],
+};
 
 export async function processPendingOutboxEvents(
   opts: { now?: Date; limit?: number } = {},
@@ -124,13 +147,22 @@ export async function processPendingOutboxEvents(
   if (registeredTypes.length === 0) return EMPTY_RESULT;
 
   const candidates = await prisma.domainEvent.findMany({
-    where: { deliveredAt: null, eventType: { in: registeredTypes } },
+    // R-208: exclude dead-lettered rows (failedAt set) from the working set —
+    // a row that gave up must not re-enter the scan window and starve others.
+    where: { deliveredAt: null, failedAt: null, eventType: { in: registeredTypes } },
     orderBy: { id: 'asc' },
     take: limit,
   });
   if (candidates.length === 0) return EMPTY_RESULT;
 
-  const result: OutboxScanResult = { processed: 0, delivered: 0, failed: 0, skipped: 0 };
+  const result: OutboxScanResult = {
+    processed: 0,
+    delivered: 0,
+    failed: 0,
+    deadLettered: 0,
+    skipped: 0,
+    scannedTypes: [...new Set(candidates.map((c) => c.eventType))],
+  };
 
   for (const row of candidates) {
     const handler = handlers.get(row.eventType as DomainEventType);
@@ -169,11 +201,42 @@ export async function processPendingOutboxEvents(
       });
       result.delivered += 1;
     } catch (err) {
-      logger.error(
-        { err, eventId: row.id.toString(), eventType: row.eventType },
-        'R-162: outbox handler threw; leaving row undelivered for retry',
-      );
-      result.failed += 1;
+      const message = err instanceof Error ? err.message : String(err);
+      // The conditional claim above incremented `attempt`, so this dispatch is
+      // attempt number `row.attempt + 1` (1-indexed).
+      const attemptsSoFar = row.attempt + 1;
+      if (attemptsSoFar >= OUTBOX_MAX_ATTEMPTS) {
+        // R-208: give up. Mark the row dead-lettered (failedAt + lastError) so
+        // it leaves the pending working set and the consumer stops retrying it
+        // — a permanently-broken event can no longer sit at the head of the
+        // id-ASC scan window and starve newer rows. Mirrors the R-139
+        // webhook-worker terminal state.
+        await prisma.domainEvent.update({
+          where: { id: row.id },
+          data: { failedAt: now, lastError: message.slice(0, 1000) },
+        });
+        logger.error(
+          {
+            err,
+            eventId: row.id.toString(),
+            eventType: row.eventType,
+            attempts: attemptsSoFar,
+          },
+          'R-208: outbox handler exhausted retries; dead-lettering row',
+        );
+        result.deadLettered += 1;
+      } else {
+        logger.error(
+          {
+            err,
+            eventId: row.id.toString(),
+            eventType: row.eventType,
+            attempts: attemptsSoFar,
+          },
+          'R-162: outbox handler threw; leaving row undelivered for retry',
+        );
+        result.failed += 1;
+      }
     }
   }
 
@@ -183,7 +246,9 @@ export async function processPendingOutboxEvents(
         processed: result.processed,
         delivered: result.delivered,
         failed: result.failed,
+        deadLettered: result.deadLettered,
         skipped: result.skipped,
+        scannedTypes: result.scannedTypes,
       },
       'R-162: outbox-consumer tick completed',
     );
