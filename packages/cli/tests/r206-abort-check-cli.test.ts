@@ -148,3 +148,47 @@ describe('abort-check.mjs — wire contract for Claude Code hook', () => {
     expect(r.stderr).toMatch(/unexpected HTTP 500/);
   });
 });
+
+describe('abort-check.mjs — anti-downgrade (PLANSYNC_EXEC_RUN_ID set)', () => {
+  it('exec session + 200 no_exec_context (key swapped down) → exit 1, fail-closed', async () => {
+    // The endpoint returns 200 {aborted:false, reason:'no_exec_context'} when
+    // the presented key is not exec-scoped. In an exec session (marker set)
+    // that means the exec-scoped key was swapped for a plain one — the gate
+    // is silently downgraded to a no-op. We must fail closed.
+    plan = { status: 200, body: '{"aborted":false,"reason":"no_exec_context"}' };
+    const r = await runScript({
+      PLANSYNC_API_URL: baseUrl,
+      PLANSYNC_API_KEY: 'test-key',
+      PLANSYNC_EXEC_RUN_ID: 'run_123',
+    });
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toMatch(/not exec-scoped/);
+    expect(r.stderr).toMatch(/failing closed/);
+  });
+
+  it('exec session + healthy 200 (properly scoped key, no reason) → exit 0', async () => {
+    plan = { status: 200, body: '{"aborted":false,"status":"running","executionGate":null}' };
+    const r = await runScript({
+      PLANSYNC_API_URL: baseUrl,
+      PLANSYNC_API_KEY: 'test-key',
+      PLANSYNC_EXEC_RUN_ID: 'run_123',
+    });
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe('');
+  });
+
+  it('NON-exec session + 200 no_exec_context → exit 0 (harmless no-op preserved)', async () => {
+    // A plain developer session (no marker) hitting the same no_exec_context
+    // response must still be a no-op — the downgrade check only fires when we
+    // KNOW we were launched as an exec run.
+    plan = { status: 200, body: '{"aborted":false,"reason":"no_exec_context"}' };
+    const r = await runScript({
+      PLANSYNC_API_URL: baseUrl,
+      PLANSYNC_API_KEY: 'test-key',
+      // PLANSYNC_EXEC_RUN_ID intentionally unset
+      PLANSYNC_EXEC_RUN_ID: '',
+    });
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe('');
+  });
+});
