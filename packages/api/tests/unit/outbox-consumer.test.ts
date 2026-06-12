@@ -129,24 +129,37 @@ describe('R-162: processPendingOutboxEvents', () => {
       scannedTypes: ['plan_activated'],
     });
     expect(seen).toEqual([7n]);
+    // R-208: claim is an exclusive CAS on attempt (+ deliveredAt/failedAt guard).
     expect(mocks.domainEventUpdateMany).toHaveBeenCalledWith({
-      where: { id: 7n, deliveredAt: null },
+      where: { id: 7n, deliveredAt: null, failedAt: null, attempt: 0 },
       data: { attempt: { increment: 1 } },
     });
-    expect(mocks.domainEventUpdate).toHaveBeenCalledWith({
-      where: { id: 7n },
-      data: { deliveredAt: now },
+    // Success is a guarded updateMany (not an unconditional update): sets
+    // deliveredAt and clears lastError, never overwriting a terminal row.
+    expect(mocks.domainEventUpdateMany).toHaveBeenCalledWith({
+      where: { id: 7n, deliveredAt: null, failedAt: null },
+      data: { deliveredAt: now, lastError: null },
     });
+    expect(mocks.domainEventUpdate).not.toHaveBeenCalled();
   });
 
-  it('respects the conditional claim: skips when another replica won the race', async () => {
+  it('R-208: exclusive CAS claim skips when another worker won the race', async () => {
     registerOutboxHandler('plan_activated', () => {});
-    mocks.domainEventFindMany.mockResolvedValue([row(9n, 'plan_activated')]);
-    // count: 0 ⇒ another worker already claimed this row.
+    mocks.domainEventFindMany.mockResolvedValue([row(9n, 'plan_activated', 2)]);
+    // count: 0 ⇒ the CAS lost: another worker already bumped attempt (or the
+    // row was delivered / dead-lettered) since our read.
     mocks.domainEventUpdateMany.mockResolvedValue({ count: 0 });
 
     const res = await processPendingOutboxEvents();
     expect(res.processed).toBe(0);
+    // The claim is a compare-and-swap: id + deliveredAt:null + failedAt:null +
+    // the exact attempt we read. Only one racer can match.
+    expect(mocks.domainEventUpdateMany).toHaveBeenCalledWith({
+      where: { id: 9n, deliveredAt: null, failedAt: null, attempt: 2 },
+      data: { attempt: { increment: 1 } },
+    });
+    // Lost the claim → only the claim updateMany ran, no terminal write.
+    expect(mocks.domainEventUpdateMany).toHaveBeenCalledTimes(1);
     expect(mocks.domainEventUpdate).not.toHaveBeenCalled();
   });
 
@@ -169,6 +182,12 @@ describe('R-162: processPendingOutboxEvents', () => {
     // `attempt` was bumped via the claim, but neither deliveredAt nor failedAt
     // was set (attempt 1 < OUTBOX_MAX_ATTEMPTS) — the next tick will retry.
     expect(mocks.domainEventUpdate).not.toHaveBeenCalled();
+    // R-208: the latest error is persisted every attempt (guarded updateMany),
+    // not only at dead-letter time.
+    expect(mocks.domainEventUpdateMany).toHaveBeenCalledWith({
+      where: { id: 11n, deliveredAt: null, failedAt: null },
+      data: { lastError: 'handler boom' },
+    });
   });
 
   it('R-208: dead-letters a row once it reaches OUTBOX_MAX_ATTEMPTS', async () => {
@@ -191,12 +210,14 @@ describe('R-162: processPendingOutboxEvents', () => {
       skipped: 0,
       scannedTypes: ['plan_activated'],
     });
-    // The row is marked failed (dead-lettered): failedAt + lastError set so it
-    // leaves the pending working set and is never retried.
-    expect(mocks.domainEventUpdate).toHaveBeenCalledWith({
-      where: { id: 12n },
+    // The row is marked failed (dead-lettered) via a guarded updateMany:
+    // failedAt + lastError set (and only if not already terminal) so it leaves
+    // the pending working set and is never retried.
+    expect(mocks.domainEventUpdateMany).toHaveBeenCalledWith({
+      where: { id: 12n, deliveredAt: null, failedAt: null },
       data: { failedAt: now, lastError: 'handler boom' },
     });
+    expect(mocks.domainEventUpdate).not.toHaveBeenCalled();
   });
 
   it('R-208: the scan query excludes delivered AND dead-lettered rows', async () => {

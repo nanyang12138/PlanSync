@@ -179,31 +179,47 @@ export async function processPendingOutboxEvents(
       continue;
     }
 
-    // R-162: conditional claim mirrors R-139 webhook-worker. If another
-    // replica already flipped this row's deliveredAt, count is 0 and we
-    // silently skip — the other replica owns this dispatch.
+    // R-208: exclusive optimistic-concurrency claim (compare-and-swap on
+    // `attempt`).
+    //
+    // The previous claim filtered only on `deliveredAt: null`, which is NOT
+    // exclusive: incrementing `attempt` does not change that predicate, so two
+    // workers racing the same row both re-evaluate the WHERE as still-matching
+    // under READ COMMITTED and BOTH get count 1 — both dispatch. With
+    // dead-letter that produces a contradictory terminal row (one worker writes
+    // failedAt while the other writes deliveredAt).
+    //
+    // Adding `attempt: row.attempt` turns the increment into the CAS token:
+    // only the worker whose read matches the current attempt wins; the loser's
+    // predicate no longer matches → count 0 → it skips. `failedAt: null`
+    // additionally prevents re-claiming a row another worker dead-lettered
+    // between our read and our claim.
     const claim = await prisma.domainEvent.updateMany({
-      where: { id: row.id, deliveredAt: null },
+      where: { id: row.id, deliveredAt: null, failedAt: null, attempt: row.attempt },
       data: { attempt: { increment: 1 } },
     });
     if (claim.count !== 1) continue;
     result.processed += 1;
 
+    // Every terminal / observability write below is a guarded `updateMany`
+    // (where deliveredAt IS NULL AND failedAt IS NULL), never an unconditional
+    // `update`, so a row can never end up with both deliveredAt and failedAt
+    // set — defence in depth on top of the exclusive claim.
     try {
       await handler({
         id: row.id,
         payload: row.payload as unknown as DomainEventPayload,
         priorAttempts: row.attempt,
       });
-      await prisma.domainEvent.update({
-        where: { id: row.id },
-        data: { deliveredAt: now },
+      await prisma.domainEvent.updateMany({
+        where: { id: row.id, deliveredAt: null, failedAt: null },
+        data: { deliveredAt: now, lastError: null },
       });
       result.delivered += 1;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      // The conditional claim above incremented `attempt`, so this dispatch is
-      // attempt number `row.attempt + 1` (1-indexed).
+      // The claim above incremented `attempt`, so this dispatch is attempt
+      // number `row.attempt + 1` (1-indexed).
       const attemptsSoFar = row.attempt + 1;
       if (attemptsSoFar >= OUTBOX_MAX_ATTEMPTS) {
         // R-208: give up. Mark the row dead-lettered (failedAt + lastError) so
@@ -211,8 +227,8 @@ export async function processPendingOutboxEvents(
         // — a permanently-broken event can no longer sit at the head of the
         // id-ASC scan window and starve newer rows. Mirrors the R-139
         // webhook-worker terminal state.
-        await prisma.domainEvent.update({
-          where: { id: row.id },
+        await prisma.domainEvent.updateMany({
+          where: { id: row.id, deliveredAt: null, failedAt: null },
           data: { failedAt: now, lastError: message.slice(0, 1000) },
         });
         logger.error(
@@ -226,6 +242,13 @@ export async function processPendingOutboxEvents(
         );
         result.deadLettered += 1;
       } else {
+        // Persist the latest error on every failed attempt (cleared on eventual
+        // success above) so operators can triage a retrying row without
+        // grepping logs; leave it pending for the next tick.
+        await prisma.domainEvent.updateMany({
+          where: { id: row.id, deliveredAt: null, failedAt: null },
+          data: { lastError: message.slice(0, 1000) },
+        });
         logger.error(
           {
             err,

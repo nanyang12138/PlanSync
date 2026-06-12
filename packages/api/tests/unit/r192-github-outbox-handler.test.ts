@@ -169,11 +169,13 @@ describe('R-192: github_push through the outbox consumer dispatch loop', () => {
       projectId: 'p1',
       payload: VALID_PUSH,
     });
-    // Marked delivered.
-    expect(mocks.domainEventUpdate).toHaveBeenCalledWith({
-      where: { id: 10n },
-      data: { deliveredAt: now },
+    // Marked delivered via the guarded updateMany (deliveredAt set, lastError
+    // cleared, only if not already terminal).
+    expect(mocks.domainEventUpdateMany).toHaveBeenCalledWith({
+      where: { id: 10n, deliveredAt: null, failedAt: null },
+      data: { deliveredAt: now, lastError: null },
     });
+    expect(mocks.domainEventUpdate).not.toHaveBeenCalled();
   });
 
   it('malformed row: handler throws → row is NOT marked delivered (stays for retry)', async () => {
