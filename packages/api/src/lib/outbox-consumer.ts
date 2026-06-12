@@ -102,8 +102,29 @@ export async function processPendingOutboxEvents(
   const now = opts.now ?? new Date();
   const limit = opts.limit ?? DEFAULT_BATCH_LIMIT;
 
+  // R-192: only scan event types we actually have a handler for.
+  //
+  // Some event types are *query-only facts*, not work items:
+  // `github_pull_request` / `github_pull_request_review` are written by the
+  // webhook receiver purely so `deriveTaskCompletionState` can read them
+  // back via SQL. No consumer ever "delivers" them, so their
+  // `deliveredAt` stays null forever by design.
+  //
+  // The candidate window is a fixed `take: limit` ordered by `id ASC`. If
+  // those never-delivered fact rows were allowed into the window they would
+  // re-fill the same lowest-id slots every tick and starve the
+  // `github_push` rows behind them (head-of-line blocking) — the consumer
+  // would spin without ever reaching the events it can actually process.
+  //
+  // Pre-filtering on the registered handler set keeps the window full of
+  // *deliverable* rows only. Fact rows remain queryable; they just never
+  // occupy a delivery slot. If a handler for one of them is registered
+  // later, its older rows naturally re-enter the scan — nothing is lost.
+  const registeredTypes = Array.from(handlers.keys());
+  if (registeredTypes.length === 0) return EMPTY_RESULT;
+
   const candidates = await prisma.domainEvent.findMany({
-    where: { deliveredAt: null },
+    where: { deliveredAt: null, eventType: { in: registeredTypes } },
     orderBy: { id: 'asc' },
     take: limit,
   });
@@ -114,9 +135,14 @@ export async function processPendingOutboxEvents(
   for (const row of candidates) {
     const handler = handlers.get(row.eventType as DomainEventType);
     if (!handler) {
-      // No handler registered for this eventType — leave the row
-      // undelivered so a later boot can pick it up once R-163-166 wires
-      // the missing sink. The `skipped` counter surfaces this in logs.
+      // Defensive only: the query already pre-filters to `registeredTypes`,
+      // so in practice this branch is unreachable in production (handlers
+      // are registered once at startup and never removed). It survives to
+      // cover the test-reset path (`_resetOutboxHandlersForTests`) and any
+      // future race where a handler set changes between query and dispatch.
+      // `skipped` therefore reads ~0 now; it is no longer the signal for
+      // "you forgot to register a handler" — that lives in a future
+      // health-check, not in the hot loop.
       result.skipped += 1;
       continue;
     }

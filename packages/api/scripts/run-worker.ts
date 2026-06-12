@@ -181,6 +181,13 @@ const { startWebhookWorker, stopWebhookWorker } = webhookWorkerModule;
 const outboxConsumerModule =
   require('../src/lib/outbox-consumer') as typeof import('../src/lib/outbox-consumer');
 const { startOutboxConsumer, stopOutboxConsumer } = outboxConsumerModule;
+// R-192 / P0-0: register the `github_push` → commit-deliverable linker
+// handler so the outbox consumer actually delivers push events into
+// `commit_deliverable_links` (without this the consumer skips every
+// github_push row and R-192's evidence gate never receives any evidence).
+const registerOutboxHandlersModule =
+  require('../src/lib/git/register-outbox-handlers') as typeof import('../src/lib/git/register-outbox-handlers');
+const { registerGithubOutboxHandlers } = registerOutboxHandlersModule;
 const loggerModule = require('../src/lib/logger') as typeof import('../src/lib/logger');
 const { logger } = loggerModule;
 /* eslint-enable @typescript-eslint/no-require-imports */
@@ -207,5 +214,10 @@ logger.info('PlanSync worker: starting heartbeat scanner');
 startHeartbeatScanner();
 logger.info('PlanSync worker: starting webhook queue worker (R-139)');
 startWebhookWorker();
+// Register outbox handlers BEFORE starting the consumer so the first
+// tick already has a github_push handler in the dispatch map. Safe to do
+// even when the consumer is disabled — the handler just sits unused.
+logger.info('PlanSync worker: registering outbox handlers (R-192 commit linker)');
+registerGithubOutboxHandlers();
 logger.info('PlanSync worker: starting outbox consumer (R-162)');
 startOutboxConsumer();
