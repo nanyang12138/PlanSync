@@ -325,7 +325,13 @@ _pg_force_stop() {
   local pid
   pid="$(head -1 "$PG_DATA/postmaster.pid" 2>/dev/null || true)"
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-    kill -9 "$pid" 2>/dev/null || true
+    # Only SIGKILL if the PID is really a postgres process. A stale postmaster.pid
+    # (left after a crash on /tmp) may hold a PID the OS has since recycled to an
+    # unrelated process — killing that would be a wrong-process kill. ps -o comm=
+    # is portable across Linux (RHEL) and macOS.
+    case "$(ps -o comm= -p "$pid" 2>/dev/null)" in
+      *postgres*|*postmaster*) kill -9 "$pid" 2>/dev/null || true ;;
+    esac
   fi
   # Spin until the port is free (max 10 s) so rm/initdb never races the process.
   local i=0
@@ -372,13 +378,24 @@ ensure_postgres_running() {
   # "could not open file base/N/2601".
   if ! psql -p "$PG_PORT" -d plansync_dev \
        -c "SELECT 1 FROM pg_catalog.pg_aggregate LIMIT 1" > /dev/null 2>&1; then
-    log_step "⚠ Database catalog corruption detected — reinitializing data directory"
-    _pg_force_stop
-    rm -rf "$PG_DATA"
-    initdb -D "$PG_DATA" > /dev/null 2>&1
-    pg_ctl -D "$PG_DATA" -l "$PG_DATA/logfile" -o "-p $PG_PORT" start -w > /dev/null 2>&1
-    createdb -p "$PG_PORT" plansync_dev > /dev/null 2>&1 || true
-    initialized_now=1
+    # The catalog query failed — but before destroying anything, make sure the
+    # thing on $PG_PORT is OUR cluster. If something is answering on the port and
+    # pg_ctl reports our own postmaster.pid is NOT the one running, another process
+    # is squatting the port; wiping $PG_DATA would destroy good local data without
+    # fixing the conflict. Refuse and surface a clear error instead.
+    if pg_isready -p "$PG_PORT" -q 2>/dev/null \
+       && ! pg_ctl -D "$PG_DATA" status > /dev/null 2>&1; then
+      log_step "✗ PG_PORT $PG_PORT is held by another process (not our cluster) — refusing to wipe $PG_DATA."
+      log_step "  Set a unique PG_PORT in .env, e.g. PG_PORT=\$(expr 15000 + \$(id -u) % 1000)"
+    else
+      log_step "⚠ Database catalog corruption detected — reinitializing data directory"
+      _pg_force_stop
+      rm -rf "$PG_DATA"
+      initdb -D "$PG_DATA" > /dev/null 2>&1
+      pg_ctl -D "$PG_DATA" -l "$PG_DATA/logfile" -o "-p $PG_PORT" start -w > /dev/null 2>&1
+      createdb -p "$PG_PORT" plansync_dev > /dev/null 2>&1 || true
+      initialized_now=1
+    fi
   fi
 
   return "$initialized_now"
