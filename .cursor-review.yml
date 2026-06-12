@@ -1,4 +1,4 @@
-model: gpt-5.5-extra-high
+model: gpt-5.5-high
 language: zh-CN
 review_focus:
   - correctness
