@@ -77,21 +77,27 @@ install_local_node_runtime() {
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/plansync-node-XXXXXX")"
   archive_path="$tmp_dir/$LOCAL_NODE_ARCHIVE"
 
-  # NFS-safe removal: retry up to 3 times for silly-rename lingering files
-  local retries=3
-  while [ "$retries" -gt 0 ] && [ -e "$LOCAL_NODE_DIR" ]; do
-    rm -rf "$LOCAL_NODE_DIR" 2>/dev/null || true
-    [ -e "$LOCAL_NODE_DIR" ] && sleep 1
-    retries=$((retries - 1))
-  done
-  mkdir -p "$LOCAL_RUNTIME_DIR"
-
   log_step "Installing local Node.js runtime (v${PLANSYNC_NODE_VERSION})"
   download_local_node_archive "$LOCAL_NODE_URL" "$archive_path"
-
   tar -xzf "$archive_path" -C "$tmp_dir"
+
+  mkdir -p "$LOCAL_RUNTIME_DIR"
+  # NFS-safe replace. A plain `rm -rf "$LOCAL_NODE_DIR"` FAILS when another
+  # process still holds node/npm open (a running MCP server, dev server, etc.):
+  # NFS silly-renames the busy binary to a .nfsXXXX file and refuses to remove
+  # the directory. The old retry-rm loop then gave up and `mv`'d the fresh
+  # install *inside* the leftover directory, producing a runtime with no
+  # node/npm at the expected paths — exactly the "npm: No such file or
+  # directory" breakage. Renaming the directory aside ALWAYS succeeds (open
+  # files travel with it, no silly-rename needed), so move the old runtime out
+  # of the way, drop the fresh one in place, then best-effort purge the
+  # leftovers (.nfs* files vanish once their holder exits).
+  if [ -e "$LOCAL_NODE_DIR" ]; then
+    mv "$LOCAL_NODE_DIR" "$LOCAL_NODE_DIR.stale-$$" 2>/dev/null \
+      || rm -rf "$LOCAL_NODE_DIR" 2>/dev/null || true
+  fi
   mv "$tmp_dir/$LOCAL_NODE_DIST" "$LOCAL_NODE_DIR"
-  rm -rf "$tmp_dir"
+  rm -rf "$tmp_dir" "$LOCAL_NODE_DIR".stale-* 2>/dev/null || true
 }
 
 local_node_runtime_exists() {

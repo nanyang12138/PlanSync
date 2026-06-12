@@ -8,6 +8,7 @@ data/server_host
 node_modules/
 .npm/
 .local-runtime/
+.local-runtime.stale-*/
 .cache/
 
 # Build outputs
