@@ -293,6 +293,58 @@ describe('H: Drift Engine', () => {
     }
   });
 
+  it('H6b: rebind of a non-terminal task resets it to todo AND emits a task_rebound activity (R-210)', async () => {
+    // A fresh in_progress task bound to v1 with an open drift.
+    const t = await testPrisma.task.create({
+      data: {
+        projectId,
+        title: 'R-210 in-progress task',
+        type: 'code',
+        priority: 'p1',
+        status: 'in_progress',
+        assigneeType: 'unassigned',
+        boundPlanVersion: 1,
+        agentConstraints: [],
+      },
+    });
+    const alert = await testPrisma.driftAlert.create({
+      data: {
+        projectId,
+        taskId: t.id,
+        type: 'version_mismatch',
+        severity: 'medium',
+        reason: 'test r210',
+        status: 'open',
+        currentPlanVersion: 2,
+        taskBoundVersion: 1,
+      },
+    });
+    const res = await driftPost(
+      makeReq(`/api/projects/${projectId}/drifts/${alert.id}`, {
+        method: 'POST',
+        userName: owner,
+        body: { action: 'rebind' },
+      }),
+      { params: Promise.resolve({ projectId, driftId: alert.id }) },
+    );
+    expect(res.status).toBe(200);
+
+    // The destructive reset happened...
+    const after = await testPrisma.task.findUnique({ where: { id: t.id } });
+    expect(after?.status).toBe('todo');
+    expect(after?.boundPlanVersion).toBe(2);
+
+    // ...and it is now visible in the activity feed (previously only a
+    // generic drift_resolved row was written for rebind).
+    const acts = await testPrisma.activity.findMany({
+      where: { projectId, type: 'task_rebound' },
+    });
+    const mine = acts.find((a) => (a.metadata as { taskId?: string } | null)?.taskId === t.id);
+    expect(mine).toBeTruthy();
+    expect((mine!.metadata as { wasReset?: boolean }).wasReset).toBe(true);
+    expect((mine!.metadata as { previousStatus?: string }).previousStatus).toBe('in_progress');
+  });
+
   it('H11: 首次激活 plan → 0 alerts', async () => {
     // Create a fresh project with no prior tasks
     const { projectId: freshProjectId } = await createTestProject('fresh-owner');

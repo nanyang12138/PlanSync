@@ -12,7 +12,7 @@ if [ -z "$PG_BIN" ]; then
   exit 1
 fi
 PG_PORT=${PG_PORT:-15432}
-PG_DATA="/tmp/plansync-pgdata-$(whoami)"
+PG_DATA="$(resolve_pg_data)"
 
 # shellcheck source=scripts/local-node-runtime.sh
 . "$SCRIPT_DIR/local-node-runtime.sh"

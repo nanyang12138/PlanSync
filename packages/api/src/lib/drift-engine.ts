@@ -143,9 +143,29 @@ export async function runDriftScan(
             title: true,
             body: true,
             refUri: true,
+            // #2923: needed to drop soft-deleted rows from the *new* version's
+            // live set (see `deprecatedIds` below). Not carried into
+            // DeliverableLite — only used to filter.
+            status: true,
           },
         })
       : [];
+
+  // #2923: a deliverable "deleted" in the new plan version is modelled as a
+  // PlanDeliverable row with status='deprecated' (the slug/body survive for
+  // the R-152 supersede / R-153 link / R-191 commit audit chains, mirroring
+  // syncDeliverableArrayMirror #1640). The old version's rows must stay as-is:
+  // by the time this scan runs, `supersedeDeliverables` (called just before us
+  // in the activate transaction) has already flipped every old-version row
+  // that shares a slug with the new version to 'deprecated' as a forward-link
+  // artifact — filtering those out would make carried-forward deliverables
+  // look added/removed and break per-link severity. So we only suppress
+  // deprecated rows on the NEW version, turning a deprecate-on-new into a
+  // 'removed' in diffDeliverables; without this it reads as 'unchanged' and
+  // the deletion slips through at 'low' (including the R-207 no-link gate).
+  const deprecatedIds = new Set(
+    allDeliverables.filter((d) => d.status === 'deprecated').map((d) => d.id),
+  );
 
   const deliverablesByPlanId = new Map<string, DeliverableLite[]>();
   for (const d of allDeliverables) {
@@ -164,7 +184,11 @@ export async function runDriftScan(
   const slugById = new Map<string, string>();
   for (const d of allDeliverables) slugById.set(d.id, d.slug);
 
-  const newPlanDeliverables = newPlan ? (deliverablesByPlanId.get(newPlan.id) ?? []) : [];
+  // #2923: drop soft-deleted rows from the new version's live set so a
+  // deprecate-on-new is seen as a removal (the old version is left whole).
+  const newPlanDeliverables = newPlan
+    ? (deliverablesByPlanId.get(newPlan.id) ?? []).filter((d) => !deprecatedIds.has(d.id))
+    : [];
 
   const diffByOldVersion = new Map<number, DeliverableDiff | null>();
   if (newPlan) {
@@ -195,11 +219,17 @@ export async function runDriftScan(
       if (changedSummary) {
         reason = `${baseLine} Linked deliverable changes: ${changedSummary} — ${structuralSeverity} for this task${runSuffix}.`;
       } else if (linkedIds.length === 0) {
-        // R-154 step 3 — no link rows ⇒ no basis to alert. We still emit
-        // the row at severity='low' so the activity log shows the version
-        // bump happened, but the gate/pause rules in `persistDriftAlerts`
-        // skip low-severity entries.
-        reason = `${baseLine} Task has no deliverable links; treating as ${structuralSeverity} (no alert-worthy impact).`;
+        // R-207 — no link rows. If the diff is cosmetic (no deliverable
+        // removed or body-rewritten) we stay at 'low' and the row only
+        // records the version bump for the activity log. If the diff carries
+        // a breaking change we gate at 'medium': the task never declared what
+        // it depends on, so we cannot prove it is unaffected — verify before
+        // completing rather than let it slip through (the old R-154 step-3
+        // unconditional 'low' is what left the headline gate off by default).
+        reason =
+          structuralSeverity === 'low'
+            ? `${baseLine} Task has no deliverable links and this version changed nothing breaking; treating as low (no alert-worthy impact).`
+            : `${baseLine} Task has no deliverable links, but this version made a breaking deliverable change (removed/body-rewritten). Gating at ${structuralSeverity} — verify the task is unaffected before completing, or declare its deliverable links to silence this.`;
       } else {
         reason = `${baseLine} Linked deliverables unchanged by this version — ${structuralSeverity} for this task${runSuffix}.`;
       }

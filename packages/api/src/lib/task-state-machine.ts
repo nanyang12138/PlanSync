@@ -346,12 +346,24 @@ export async function deriveTaskCompletionState(
 interface PrMergeInfo {
   merged: boolean;
   shas: string[];
+  /**
+   * #2939: the PR's source (head) branch ref as reported by the
+   * `pull_request` webhook (`pull_request.head.ref`, the short branch
+   * name e.g. `cursor/fix-foo`). `null` when the PR was not found, not
+   * merged, or the payload omitted it. The `require_pr_merged`
+   * verification rule uses this to bind PR ownership to the current run:
+   * it requires the head branch to have received pushed commits during
+   * the run, which a mutable `task.prUrl` repointed at an unrelated
+   * already-built PR cannot satisfy.
+   */
+  headRef: string | null;
 }
 
-async function findPrMergeInfo(
+export async function findPrMergeInfo(
   client: Prisma.TransactionClient | PrismaClient,
   projectId: string,
   prUrl: string,
+  since?: Date,
 ): Promise<PrMergeInfo> {
   // We compare against the raw GitHub payload at
   // `data.payload.pull_request.html_url`, which is the canonical URL
@@ -359,7 +371,23 @@ async function findPrMergeInfo(
   // variant into the task — strip trailing extras so the comparison is
   // robust without doing a full URL canonicalisation pass.
   const normalized = normalizePrUrl(prUrl);
-  type PrRow = { merge_sha: string | null; head_sha: string | null; base_ref: string | null };
+  type PrRow = {
+    merge_sha: string | null;
+    head_sha: string | null;
+    head_ref: string | null;
+    base_ref: string | null;
+  };
+  // #2932: optional `since` cutoff scopes the merged-PR event to merges
+  // recorded AT OR AFTER the caller's reference time (the current run's
+  // `startedAt`). `task.prUrl` is mutable, so without this an agent could,
+  // right before completing, PATCH the task's prUrl to ANY PR that was ever
+  // merged in this project and clear the `require_pr_merged` gate by replaying
+  // unrelated history. Scoping to the run start binds the merge evidence to
+  // the current run (mirrors the #2925 `branchHasPushedCommits` fix for the
+  // sibling rule). When `since` is omitted the cutoff is open (any merged PR
+  // counts), preserving behaviour for the R-192 `deriveTaskCompletionState`
+  // caller which constrains attribution by commit SHA instead.
+  //
   // We can't use Prisma's typed query here because `payload` is a free
   // Json column; a raw query keeps the Postgres-side JSON walk while
   // staying parameterised against SQL injection.
@@ -367,6 +395,7 @@ async function findPrMergeInfo(
     SELECT
       payload -> 'data' -> 'payload' -> 'pull_request' ->> 'merge_commit_sha' AS merge_sha,
       payload -> 'data' -> 'payload' -> 'pull_request' -> 'head' ->> 'sha'    AS head_sha,
+      payload -> 'data' -> 'payload' -> 'pull_request' -> 'head' ->> 'ref'    AS head_ref,
       payload -> 'data' -> 'payload' -> 'pull_request' -> 'base' ->> 'ref'    AS base_ref
     FROM domain_events
     WHERE event_type = 'github_pull_request'
@@ -374,15 +403,17 @@ async function findPrMergeInfo(
       AND payload -> 'data' -> 'payload' ->> 'action' = 'closed'
       AND (payload -> 'data' -> 'payload' -> 'pull_request' ->> 'merged')::boolean = true
       AND payload -> 'data' -> 'payload' -> 'pull_request' ->> 'html_url' = ${normalized}
+      AND created_at >= COALESCE(${since ?? null}::timestamptz, '-infinity'::timestamptz)
     LIMIT 1
   `;
   if (prRows.length === 0) {
-    return { merged: false, shas: [] };
+    return { merged: false, shas: [], headRef: null };
   }
 
   const shas = new Set<string>();
   const mergeSha = prRows[0].merge_sha?.trim() || null;
   const headSha = prRows[0].head_sha?.trim() || null;
+  const headRef = prRows[0].head_ref?.trim() || null;
   const baseRef = prRows[0].base_ref?.trim() || null;
   if (mergeSha) shas.add(mergeSha);
   if (headSha) shas.add(headSha);
@@ -431,7 +462,56 @@ async function findPrMergeInfo(
     }
   }
 
-  return { merged: true, shas: Array.from(shas) };
+  return { merged: true, shas: Array.from(shas), headRef };
+}
+
+/**
+ * R-208: does the GitHub outbox show at least one push of real commits to
+ * `branchName`? Backs the `require_commits_on_branch` verification rule so
+ * it verifies actual pushed work instead of merely trusting a branch name
+ * the agent typed into the complete body.
+ *
+ * Matches a `github_push` domain event whose `ref` is `refs/heads/<branch>`
+ * (GitHub's canonical push ref) OR exactly `<branch>` (defensive, for a
+ * caller that stored the short name) and whose `commits[]` array is
+ * non-empty. Returns false when no such event exists — fail-closed, so
+ * enabling the rule without a configured webhook blocks completion rather
+ * than rubber-stamping it. Mirrors the JSON-walk style of `findPrMergeInfo`
+ * (`payload -> 'data' -> 'payload' -> ...` is the raw GitHub webhook body).
+ *
+ * #2925: pass `since` (the current run's `startedAt`) to scope the evidence
+ * to pushes recorded AT OR AFTER the run began. Without it the gate matches
+ * ANY historical push to a branch of that name — so an agent could reuse a
+ * long-dead branch name (or a previous run's push) to satisfy the rule
+ * without doing the work. When `since` is omitted the cutoff is open (any
+ * push counts), preserving the original behaviour for callers that don't
+ * have a run timestamp.
+ */
+export async function branchHasPushedCommits(
+  client: Prisma.TransactionClient | PrismaClient,
+  projectId: string,
+  branchName: string,
+  since?: Date,
+): Promise<boolean> {
+  const branch = branchName.trim();
+  if (!branch) return false;
+  const fullRef = branch.startsWith('refs/heads/') ? branch : `refs/heads/${branch}`;
+  const rows = await client.$queryRaw<{ found: number }[]>`
+    SELECT 1 AS found
+    FROM domain_events
+    WHERE event_type = 'github_push'
+      AND project_id = ${projectId}
+      AND (
+        payload -> 'data' -> 'payload' ->> 'ref' = ${fullRef}
+        OR payload -> 'data' -> 'payload' ->> 'ref' = ${branch}
+      )
+      AND jsonb_array_length(
+        COALESCE(payload -> 'data' -> 'payload' -> 'commits', '[]'::jsonb)
+      ) > 0
+      AND created_at >= COALESCE(${since ?? null}::timestamptz, '-infinity'::timestamptz)
+    LIMIT 1
+  `;
+  return rows.length > 0;
 }
 
 /**

@@ -46,7 +46,17 @@ function getToolHandler(
   return undefined;
 }
 
-function getToolInputSchema(server: McpServer, name: string): { safeParse: (input: unknown) => { success: boolean; error?: { issues: Array<{ path: (string | number)[]; message: string }> } } } | undefined {
+function getToolInputSchema(
+  server: McpServer,
+  name: string,
+):
+  | {
+      safeParse: (input: unknown) => {
+        success: boolean;
+        error?: { issues: Array<{ path: (string | number)[]; message: string }> };
+      };
+    }
+  | undefined {
   // @ts-expect-error - internal SDK structure not in type definitions
   const tools = (server as any)._registeredTools ?? {};
   return tools[name]?.inputSchema;
@@ -367,6 +377,25 @@ describe('M: MCP Tools (Unit, mock ApiClient)', () => {
         expect.stringContaining('/claim'),
         expect.objectContaining({ assigneeType: 'agent' }),
       );
+    });
+
+    it('M34: plansync_task_show merges /pack drift alerts AND plain-GET execution runs (R-209)', async () => {
+      // /pack carries drift alerts but no runs; the plain task GET carries
+      // runs but no drift. task_show must hit both and merge so it returns
+      // exactly what its description promises.
+      mockGet.mockImplementation(async (path: string) => {
+        if (path.endsWith('/pack')) {
+          return { data: { task: { id: 't1' }, driftAlerts: [{ id: 'd1', severity: 'high' }] } };
+        }
+        return { data: { id: 't1', executionRuns: [{ id: 'run-1' }] } };
+      });
+      const res = await callTool(server, 'plansync_task_show', { projectId: 'p1', taskId: 't1' });
+      // Both endpoints were hit.
+      expect(mockGet).toHaveBeenCalledWith(expect.stringContaining('/tasks/t1/pack'));
+      expect(mockGet).toHaveBeenCalledWith(expect.stringMatching(/\/tasks\/t1$/));
+      const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+      expect(payload.data.driftAlerts).toHaveLength(1);
+      expect(payload.data.recentExecutionRuns).toEqual([{ id: 'run-1' }]);
     });
   });
 

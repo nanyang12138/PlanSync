@@ -1,0 +1,92 @@
+# PlanSync — Docker Compose for local / single-host deployments.
+#
+# Current topology (per R-202 / R-203, this PR is the R-203 starter):
+#   postgres ─┬─► plansync-api      Next.js (REST + SSE + React Web UI)
+#             └─► plansync-worker   heartbeat scanner + webhook retry queue
+#
+# Web UI is served from the same Next.js process as the API today; R-202
+# will split it into a third `plansync-web` service, at which point this
+# file gains a third service block. The README in this directory tracks
+# the migration plan.
+#
+# Usage:
+#   cp ../.env.example ../.env       # edit DATABASE_URL etc.
+#   docker compose -f deploy/docker-compose.yml up --build
+#
+# Notes:
+#   - No application Dockerfile is committed yet. Services run the node
+#     base image and execute npm scripts against a bind-mounted source
+#     tree. This is suitable for dev / CI / smoke validation — it is NOT
+#     a production image. Production deployments should build a slimmed
+#     image per service (deferred to R-203 follow-up).
+#   - DATABASE_URL is hardcoded to the in-network postgres service; if
+#     you want to point at an external database, override via
+#     `docker compose ... --env-file your.env`.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: plansync
+      POSTGRES_PASSWORD: plansync
+      POSTGRES_DB: plansync_dev
+    ports:
+      - '15432:5432'
+    volumes:
+      - plansync-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U plansync -d plansync_dev']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  plansync-api:
+    image: node:20-bookworm
+    working_dir: /repo
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://plansync:plansync@postgres:5432/plansync_dev
+      PORT: '3001'
+      NODE_ENV: production
+      # PLANSYNC_RUN_WORKER_IN_API defaults to false in compose; the
+      # dedicated worker service owns the scanner + webhook queue.
+      PLANSYNC_RUN_WORKER_IN_API: 'false'
+    ports:
+      - '3001:3001'
+    volumes:
+      - ..:/repo
+    # npm ci + prisma migrate + next start. `bash -lc` is used so the
+    # repo-local node runtime helper script (scripts/local-node-runtime.sh)
+    # can be sourced if present.
+    command: >
+      bash -lc "
+        npm ci &&
+        npx --workspace=@plansync/api prisma migrate deploy &&
+        npm run --workspace=@plansync/api build &&
+        npm run --workspace=@plansync/api start
+      "
+
+  plansync-worker:
+    image: node:20-bookworm
+    working_dir: /repo
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://plansync:plansync@postgres:5432/plansync_dev
+      NODE_ENV: production
+      # Opt into the durable webhook queue. Without this flag the worker
+      # process still runs but webhook-worker.ts is a no-op (R-139).
+      PLANSYNC_WEBHOOK_QUEUE: 'true'
+    volumes:
+      - ..:/repo
+    command: >
+      bash -lc "
+        npm ci &&
+        npm run --workspace=@plansync/api worker
+      "
+
+volumes:
+  plansync-pgdata:
