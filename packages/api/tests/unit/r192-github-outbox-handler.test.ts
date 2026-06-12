@@ -155,7 +155,7 @@ describe('R-192: github_push through the outbox consumer dispatch loop', () => {
     mocks.domainEventUpdate.mockResolvedValue({});
 
     const now = new Date('2026-06-11T12:00:00Z');
-    const res = await processPendingOutboxEvents({ now });
+    const res = await processPendingOutboxEvents({ now, tokenFactory: () => 'tok-fixed' });
 
     expect(res).toEqual({
       processed: 1,
@@ -169,11 +169,11 @@ describe('R-192: github_push through the outbox consumer dispatch loop', () => {
       projectId: 'p1',
       payload: VALID_PUSH,
     });
-    // Marked delivered via the guarded updateMany (deliveredAt set, lastError
-    // cleared, only if not already terminal).
+    // R-209: marked delivered via the guarded updateMany keyed on claimToken
+    // (deliveredAt set, lastError + lease cleared, only if we still own the row).
     expect(mocks.domainEventUpdateMany).toHaveBeenCalledWith({
-      where: { id: 10n, deliveredAt: null, failedAt: null },
-      data: { deliveredAt: now, lastError: null },
+      where: { id: 10n, claimToken: 'tok-fixed', deliveredAt: null, failedAt: null },
+      data: { deliveredAt: now, lastError: null, lockedUntil: null, claimToken: null },
     });
     expect(mocks.domainEventUpdate).not.toHaveBeenCalled();
   });

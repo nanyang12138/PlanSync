@@ -844,9 +844,26 @@ model DomainEvent {
   // dead-lettered when failedAt is set.
   failedAt    DateTime? @map("failed_at")
   lastError   String?   @map("last_error")
+  // R-209: lease / ownership for multi-worker safety. `attempt`-CAS alone
+  // serializes two workers racing the SAME read, but does NOT stop a second
+  // worker re-reading the row on a later tick while the first worker's handler
+  // is still in flight (deliveredAt/failedAt still null) — that produces a
+  // double dispatch. The lease closes that gap:
+  //   - On claim the worker stamps `lockedUntil = now + OUTBOX_LEASE_MS` and a
+  //     fresh `claimToken`. The scan skips rows whose lease is still in the
+  //     future, so an in-flight row is invisible to other workers.
+  //   - If the claiming worker crashes, the lease expires and the row re-enters
+  //     the scan window (recoverable — better than webhook-worker's permanent
+  //     `in_flight`).
+  //   - Every terminal write is guarded by `claimToken`, so a slow worker whose
+  //     lease expired and was taken over CANNOT write a stale deliveredAt after
+  //     the new owner already settled the row.
+  lockedUntil DateTime? @map("locked_until")
+  claimToken  String?   @map("claim_token")
 
   // Backs the consumer's hot path:
-  //   SELECT ... WHERE delivered_at IS NULL AND failed_at IS NULL ORDER BY id ASC
+  //   SELECT ... WHERE delivered_at IS NULL AND failed_at IS NULL
+  //     AND (locked_until IS NULL OR locked_until < now) ORDER BY id ASC
   // The migration creates this as a partial index
   // (`WHERE delivered_at IS NULL AND failed_at IS NULL`) so it only contains
   // rows the worker actually needs to scan; prisma does not model partial

@@ -22,26 +22,40 @@
  *     authoritative until R-161 migrates producers.
  *   - `stopOutboxConsumer()` — clear the timer.
  *
- * Concurrency:
- *   Multiple worker replicas can run safely. The per-row claim is a
- *   conditional `updateMany` filtered on `deliveredAt: null`; Postgres
- *   reports `count: 1` exactly once across competing workers, so only
- *   the winner of each row dispatches. No advisory lock required —
- *   identical pattern to `webhook-worker.ts` (R-139).
+ * Concurrency (R-208 + R-209):
+ *   Multiple worker replicas can run safely. Each row is claimed in two
+ *   layers:
+ *     1. CAS on `attempt` (R-208) — the claim `updateMany` filters on the
+ *        exact `attempt` it read and increments it, so two workers racing the
+ *        SAME read produce exactly one `count: 1`. (A plain `deliveredAt: null`
+ *        filter is NOT exclusive — incrementing attempt does not change that
+ *        predicate, so both racers would win.)
+ *     2. Visibility lease (R-209) — on claim the winner stamps
+ *        `lockedUntil = now + OUTBOX_LEASE_MS` and a fresh `claimToken`. The
+ *        scan skips rows whose lease is still in the future, so a row that is
+ *        in flight on one worker is invisible to the others until either the
+ *        handler settles it or the lease expires (worker crash recovery).
+ *        Every terminal write is guarded by `claimToken`, so a slow worker
+ *        whose lease lapsed and was taken over cannot write a stale terminal
+ *        state over the new owner's result.
+ *   No advisory lock required — same family as `webhook-worker.ts` (R-139),
+ *   but lease-with-expiry recovers crashed claims that R-139's permanent
+ *   `in_flight` flag would strand.
  *
  * Failure handling:
- *   A handler throw bumps the row's `attempt` counter but leaves
- *   `delivered_at` null so the next tick retries. There is no
- *   exponential back-off yet; R-163/R-164 will tighten this once the
- *   first real sinks land and we know what the realistic failure modes
- *   look like in practice. For now, "retry on every tick" is the
- *   correct posture for an additive scaffold.
+ *   A handler throw bumps the row's `attempt` counter, clears the lease, and
+ *   leaves `delivered_at` null so the next tick retries — until
+ *   `OUTBOX_MAX_ATTEMPTS`, after which the row is dead-lettered (failedAt +
+ *   lastError, R-208). There is no exponential back-off yet; R-163/R-164 will
+ *   tighten this once the first real sinks land and we know what the realistic
+ *   failure modes look like in practice.
  *
  * Telemetry:
  *   Each non-empty tick logs `{ processed, delivered, failed, skipped }`
  *   under the `R-162` tag so operators can confirm the consumer is
  *   draining the table.
  */
+import { randomUUID } from 'node:crypto';
 import { prisma } from './prisma';
 import { logger } from './logger';
 import type { DomainEventType, DomainEventPayload } from '@plansync/shared';
@@ -53,6 +67,14 @@ const DEFAULT_BATCH_LIMIT = 50;
 // gives up on a row (sets failedAt + lastError) instead of retrying forever.
 // Mirrors R-139's WEBHOOK_MAX_ATTEMPTS so the two queues behave consistently.
 const OUTBOX_MAX_ATTEMPTS = 4;
+
+// R-209: how long a claim owns a row before its lease is considered expired and
+// the row becomes re-claimable by another worker. Must comfortably exceed the
+// slowest realistic handler so a healthy worker is never pre-empted mid-flight;
+// kept short enough that a crashed worker's row recovers within a minute. The
+// in-process `scanning` guard already serializes ticks within one worker, so
+// this only matters across worker replicas.
+const OUTBOX_LEASE_MS = 60_000;
 
 /**
  * Dispatch context handed to each registered handler. Carries the
@@ -120,10 +142,15 @@ const EMPTY_RESULT: OutboxScanResult = {
 };
 
 export async function processPendingOutboxEvents(
-  opts: { now?: Date; limit?: number } = {},
+  opts: { now?: Date; limit?: number; tokenFactory?: () => string } = {},
 ): Promise<OutboxScanResult> {
   const now = opts.now ?? new Date();
   const limit = opts.limit ?? DEFAULT_BATCH_LIMIT;
+  // R-209: the lease this tick's claims will hold, and the token generator.
+  // `tokenFactory` is injectable so unit tests can assert deterministic tokens
+  // (production uses crypto.randomUUID, which is non-deterministic by design).
+  const leaseUntil = new Date(now.getTime() + OUTBOX_LEASE_MS);
+  const newToken = opts.tokenFactory ?? randomUUID;
 
   // R-192: only scan event types we actually have a handler for.
   //
@@ -149,7 +176,15 @@ export async function processPendingOutboxEvents(
   const candidates = await prisma.domainEvent.findMany({
     // R-208: exclude dead-lettered rows (failedAt set) from the working set —
     // a row that gave up must not re-enter the scan window and starve others.
-    where: { deliveredAt: null, failedAt: null, eventType: { in: registeredTypes } },
+    // R-209: also exclude rows whose lease is still live (lockedUntil in the
+    // future) — another worker is mid-flight on them. A null or already-expired
+    // lease is fair game (fresh row, or the previous claimant crashed).
+    where: {
+      deliveredAt: null,
+      failedAt: null,
+      eventType: { in: registeredTypes },
+      OR: [{ lockedUntil: null }, { lockedUntil: { lt: now } }],
+    },
     orderBy: { id: 'asc' },
     take: limit,
   });
@@ -179,43 +214,50 @@ export async function processPendingOutboxEvents(
       continue;
     }
 
-    // R-208: exclusive optimistic-concurrency claim (compare-and-swap on
-    // `attempt`).
+    // R-208 + R-209: exclusive claim = CAS on `attempt` AND lease acquisition.
     //
-    // The previous claim filtered only on `deliveredAt: null`, which is NOT
-    // exclusive: incrementing `attempt` does not change that predicate, so two
-    // workers racing the same row both re-evaluate the WHERE as still-matching
-    // under READ COMMITTED and BOTH get count 1 — both dispatch. With
-    // dead-letter that produces a contradictory terminal row (one worker writes
-    // failedAt while the other writes deliveredAt).
+    // R-208 (`attempt: row.attempt` + increment) makes two workers racing the
+    // SAME read mutually exclusive: only the one whose read matches the current
+    // attempt wins; the loser's predicate no longer matches → count 0 → skip.
     //
-    // Adding `attempt: row.attempt` turns the increment into the CAS token:
-    // only the worker whose read matches the current attempt wins; the loser's
-    // predicate no longer matches → count 0 → it skips. `failedAt: null`
-    // additionally prevents re-claiming a row another worker dead-lettered
-    // between our read and our claim.
+    // R-209 closes the *sequential* re-claim gap: a second worker re-reading
+    // the row on a LATER tick while our handler is still running. We stamp a
+    // fresh `claimToken` (this dispatch's ownership proof) and
+    // `lockedUntil = now + lease`. The OR clause means we only acquire a row
+    // whose lease is null or already expired, mirroring the scan filter so a
+    // racer cannot steal a still-live lease between scan and claim.
+    const token = newToken();
     const claim = await prisma.domainEvent.updateMany({
-      where: { id: row.id, deliveredAt: null, failedAt: null, attempt: row.attempt },
-      data: { attempt: { increment: 1 } },
+      where: {
+        id: row.id,
+        deliveredAt: null,
+        failedAt: null,
+        attempt: row.attempt,
+        OR: [{ lockedUntil: null }, { lockedUntil: { lt: now } }],
+      },
+      data: { attempt: { increment: 1 }, lockedUntil: leaseUntil, claimToken: token },
     });
     if (claim.count !== 1) continue;
     result.processed += 1;
 
     // Every terminal / observability write below is a guarded `updateMany`
-    // (where deliveredAt IS NULL AND failedAt IS NULL), never an unconditional
-    // `update`, so a row can never end up with both deliveredAt and failedAt
-    // set — defence in depth on top of the exclusive claim.
+    // keyed on `claimToken: token` (plus deliveredAt/failedAt null), never an
+    // unconditional `update`. If our lease expired mid-handler and another
+    // worker took the row over, its claim rewrote `claimToken`, so our write
+    // matches 0 rows — we neither corrupt the new owner's result nor
+    // double-count the stat. A row therefore can never end up with both
+    // deliveredAt and failedAt set, nor be settled twice.
     try {
       await handler({
         id: row.id,
         payload: row.payload as unknown as DomainEventPayload,
         priorAttempts: row.attempt,
       });
-      await prisma.domainEvent.updateMany({
-        where: { id: row.id, deliveredAt: null, failedAt: null },
-        data: { deliveredAt: now, lastError: null },
+      const settled = await prisma.domainEvent.updateMany({
+        where: { id: row.id, claimToken: token, deliveredAt: null, failedAt: null },
+        data: { deliveredAt: now, lastError: null, lockedUntil: null, claimToken: null },
       });
-      result.delivered += 1;
+      if (settled.count === 1) result.delivered += 1;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // The claim above incremented `attempt`, so this dispatch is attempt
@@ -226,39 +268,52 @@ export async function processPendingOutboxEvents(
         // it leaves the pending working set and the consumer stops retrying it
         // — a permanently-broken event can no longer sit at the head of the
         // id-ASC scan window and starve newer rows. Mirrors the R-139
-        // webhook-worker terminal state.
-        await prisma.domainEvent.updateMany({
-          where: { id: row.id, deliveredAt: null, failedAt: null },
-          data: { failedAt: now, lastError: message.slice(0, 1000) },
-        });
-        logger.error(
-          {
-            err,
-            eventId: row.id.toString(),
-            eventType: row.eventType,
-            attempts: attemptsSoFar,
+        // webhook-worker terminal state. R-209: guarded by claimToken + counted
+        // only when we actually wrote (count === 1), so a lease we already lost
+        // does not produce a phantom dead-letter stat.
+        const deadLettered = await prisma.domainEvent.updateMany({
+          where: { id: row.id, claimToken: token, deliveredAt: null, failedAt: null },
+          data: {
+            failedAt: now,
+            lastError: message.slice(0, 1000),
+            lockedUntil: null,
+            claimToken: null,
           },
-          'R-208: outbox handler exhausted retries; dead-lettering row',
-        );
-        result.deadLettered += 1;
+        });
+        if (deadLettered.count === 1) {
+          logger.error(
+            {
+              err,
+              eventId: row.id.toString(),
+              eventType: row.eventType,
+              attempts: attemptsSoFar,
+            },
+            'R-208: outbox handler exhausted retries; dead-lettering row',
+          );
+          result.deadLettered += 1;
+        }
       } else {
-        // Persist the latest error on every failed attempt (cleared on eventual
-        // success above) so operators can triage a retrying row without
-        // grepping logs; leave it pending for the next tick.
-        await prisma.domainEvent.updateMany({
-          where: { id: row.id, deliveredAt: null, failedAt: null },
-          data: { lastError: message.slice(0, 1000) },
+        // R-209: release the lease (lockedUntil/claimToken back to null) and
+        // persist the latest error so the row is immediately re-scannable next
+        // tick and operators can triage it without grepping logs. Guarded by
+        // claimToken + counted only on count === 1 so a lost lease does not log
+        // a phantom retry.
+        const released = await prisma.domainEvent.updateMany({
+          where: { id: row.id, claimToken: token, deliveredAt: null, failedAt: null },
+          data: { lastError: message.slice(0, 1000), lockedUntil: null, claimToken: null },
         });
-        logger.error(
-          {
-            err,
-            eventId: row.id.toString(),
-            eventType: row.eventType,
-            attempts: attemptsSoFar,
-          },
-          'R-162: outbox handler threw; leaving row undelivered for retry',
-        );
-        result.failed += 1;
+        if (released.count === 1) {
+          logger.error(
+            {
+              err,
+              eventId: row.id.toString(),
+              eventType: row.eventType,
+              attempts: attemptsSoFar,
+            },
+            'R-162: outbox handler threw; leaving row undelivered for retry',
+          );
+          result.failed += 1;
+        }
       }
     }
   }
