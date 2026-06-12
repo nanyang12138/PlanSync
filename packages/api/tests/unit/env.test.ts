@@ -76,6 +76,46 @@ describe('env validation — PLANSYNC_SECRET production guard (R-010)', () => {
   });
 });
 
+describe('env validation — AUTH_DISABLED production guard', () => {
+  // A strong secret so the superRefine block doesn't short-circuit on the
+  // PLANSYNC_SECRET check (it `return`s early when the secret is missing).
+  const strongSecret = 'a'.repeat(64);
+
+  it('accepts AUTH_DISABLED=true in development', () => {
+    const result = envSchema.safeParse({
+      ...baseValid,
+      NODE_ENV: 'development',
+      AUTH_DISABLED: 'true',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects AUTH_DISABLED=true in production', () => {
+    const result = envSchema.safeParse({
+      ...baseValid,
+      NODE_ENV: 'production',
+      PLANSYNC_SECRET: strongSecret,
+      AUTH_DISABLED: 'true',
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const issue = result.error.issues.find((i) => i.path[0] === 'AUTH_DISABLED');
+      expect(issue).toBeDefined();
+      expect(issue!.message).toMatch(/forbidden in production/);
+    }
+  });
+
+  it('accepts AUTH_DISABLED=false in production (with a strong secret)', () => {
+    const result = envSchema.safeParse({
+      ...baseValid,
+      NODE_ENV: 'production',
+      PLANSYNC_SECRET: strongSecret,
+      AUTH_DISABLED: 'false',
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
 describe('env validation — runtime env vars (R-035)', () => {
   it('accepts AI provider env vars (LLM_API_KEY / LLM_API_BASE / ANTHROPIC_API_KEY)', () => {
     const result = envSchema.safeParse({
