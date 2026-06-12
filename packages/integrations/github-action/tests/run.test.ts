@@ -164,7 +164,7 @@ describe('github-action run()', () => {
     expect(warnings.some((w) => w.includes('project-wide mode'))).toBe(false);
   });
 
-  it('R-094: branch-name input fetches tasks and scopes drifts to those with matching branchName', async () => {
+  it('R-094/R-207: branch-name uses the server-side filter and scopes drifts to the returned task(s)', async () => {
     configureInputs({
       'api-url': 'https://plansync.example.com',
       'api-key': 'ps_key_test',
@@ -172,21 +172,17 @@ describe('github-action run()', () => {
       'branch-name': 'feat/foo',
     });
 
-    // First HTTP call: GET /tasks?page=1 — returns a page smaller than pageSize
-    // so the loop stops after one fetch.
+    // First HTTP call: GET /tasks?branchName=feat/foo — the SERVER now filters,
+    // so it returns only the matching task(s). The action no longer matches
+    // client-side; it scopes to whatever the filtered query returns.
     fetchSpy.mockResolvedValueOnce(
       jsonResponse(200, {
-        data: [
-          { id: 't-match-1', branchName: 'feat/foo' },
-          { id: 't-other', branchName: 'feat/bar' },
-          { id: 't-null', branchName: null },
-        ],
+        data: [{ id: 't-match-1', branchName: 'feat/foo', boundPlanVersion: 2 }],
+        pagination: { page: 1, pageSize: 100, total: 1, totalPages: 1 },
       }),
     );
 
-    // Second HTTP call: GET /drifts — return one drift in scope (HIGH) and
-    // one drift on an unrelated branch (HIGH). Only the in-scope one should
-    // gate the build.
+    // Second HTTP call: GET /drifts — one in-scope HIGH drift, one out-of-scope.
     fetchSpy.mockResolvedValueOnce(
       jsonResponse(200, {
         data: [
@@ -212,7 +208,8 @@ describe('github-action run()', () => {
     await run();
 
     expect(fetchSpy).toHaveBeenCalledTimes(2);
-    expect(String(fetchSpy.mock.calls[0][0])).toContain('/tasks?page=1');
+    // R-207: the request now carries the server-side branchName filter.
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/tasks?branchName=feat%2Ffoo');
     expect(String(fetchSpy.mock.calls[1][0])).toContain('/drifts?status=open');
 
     expect(coreMock.setOutput).toHaveBeenCalledWith('drift-count', '1');
@@ -371,7 +368,9 @@ describe('github-action run()', () => {
 
     // 50 task fetches happened, then the action bailed out — no /drifts call.
     expect(fetchSpy).toHaveBeenCalledTimes(50);
-    expect(fetchSpy.mock.calls.every((c) => String(c[0]).includes('/tasks?page='))).toBe(true);
+    expect(fetchSpy.mock.calls.every((c) => String(c[0]).includes('/tasks?branchName='))).toBe(
+      true,
+    );
 
     const failed = String(coreMock.setFailed.mock.calls[0]?.[0] ?? '');
     expect(failed).toMatch(/scope would be incomplete/);
@@ -379,9 +378,11 @@ describe('github-action run()', () => {
 
   // ---- #187 / #217 — exact pageSize-multiple totals must NOT report truncated ----
 
-  it('#187/#217: branch task list of exactly TASK_PAGE_SIZE×N rows is not falsely truncated', async () => {
+  it('#187/#217: server-filtered branch task list of exactly TASK_PAGE_SIZE×N rows is not falsely truncated', async () => {
     // Server is a real PlanSync API: returns pagination.totalPages so the
     // action can trust it instead of relying on the partial-page heuristic.
+    // R-207: the server now filters by branchName, so every returned row is a
+    // genuine match — the action scopes to all of them.
     configureInputs({
       'api-url': 'https://plansync.example.com',
       'api-key': 'ps_key_test',
@@ -391,10 +392,10 @@ describe('github-action run()', () => {
     const TOTAL_PAGES = 3;
     const fullPage = Array.from({ length: 100 }, (_, i) => ({
       id: `t-${i}`,
-      branchName: 'feat/other',
+      branchName: 'feat/exact',
     }));
     // Pages 1..3, all exactly full, with totalPages: 3 → action must stop
-    // after page 3 and report scope complete (no setFailed).
+    // after page 3 and report scope complete (no truncation setFailed).
     for (let p = 1; p <= TOTAL_PAGES; p += 1) {
       fetchSpy.mockResolvedValueOnce(
         jsonResponse(200, {
@@ -403,9 +404,7 @@ describe('github-action run()', () => {
         }),
       );
     }
-    // /drifts call (irrelevant — branch matched 0 tasks → setFailed will
-    // come from the "no tasks found" branch, but we want to confirm we did
-    // NOT hit the truncation branch).
+    // /drifts: empty → the gate passes (scope is 300 tasks, no open drift).
     fetchSpy.mockResolvedValueOnce(
       jsonResponse(200, {
         data: [],
@@ -417,13 +416,16 @@ describe('github-action run()', () => {
     await run();
 
     // Only TOTAL_PAGES task fetches happened — no walk to the cap.
-    const taskCalls = fetchSpy.mock.calls.filter((c) => String(c[0]).includes('/tasks?page='));
+    const taskCalls = fetchSpy.mock.calls.filter((c) =>
+      String(c[0]).includes('/tasks?branchName='),
+    );
     expect(taskCalls).toHaveLength(TOTAL_PAGES);
 
-    const failed = String(coreMock.setFailed.mock.calls[0]?.[0] ?? '');
-    expect(failed).not.toMatch(/scope would be incomplete/);
-    // The "no tasks found" branch fires because no row matches `feat/exact`.
-    expect(failed).toMatch(/no tasks found with branchName="feat\/exact"/);
+    // Did NOT falsely truncate, and did NOT hit "no tasks found" — it scoped to
+    // the 300 returned tasks and proceeded to the (empty) drift check.
+    expect(coreMock.setFailed).not.toHaveBeenCalled();
+    expect(coreMock.setOutput).toHaveBeenCalledWith('drift-count', '0');
+    expect(coreMock.setOutput).toHaveBeenCalledWith('has-drift', 'false');
   });
 
   it('#187/#217: drift list of exactly DRIFT_PAGE_SIZE×N rows is not falsely truncated', async () => {
@@ -783,5 +785,183 @@ describe('github-action run()', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(50);
     const failed = String(coreMock.setFailed.mock.calls[0]?.[0] ?? '');
     expect(failed).toMatch(/refusing to gate on a partial view/);
+  });
+
+  // ---- R-207 / L3 — strict-sourcing + exemption ----
+
+  it('R-207: strict-sourcing refuses an unscoped (project-wide) PR', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'strict-sourcing': 'true',
+      // no branch-name, no task-ids, no pr-files
+    });
+
+    const { run } = await import('../index');
+    await run();
+
+    // Refused before any drift query — nothing to fetch.
+    expect(fetchSpy).not.toHaveBeenCalled();
+    const failed = String(coreMock.setFailed.mock.calls[0]?.[0] ?? '');
+    expect(failed).toMatch(/not scoped to any task/);
+  });
+
+  it('R-207: strict-sourcing fails when a scoped task is bound to a stale plan version', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'branch-name': 'feat/stale',
+      'strict-sourcing': 'true',
+    });
+    // GET /tasks?branchName=feat/stale → task bound to v1.
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(200, {
+        data: [{ id: 't-stale', branchName: 'feat/stale', boundPlanVersion: 1 }],
+        pagination: { page: 1, pageSize: 100, total: 1, totalPages: 1 },
+      }),
+    );
+    // GET /plans/active → active is v2.
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: { id: 'plan-1', version: 2 } }));
+
+    const { run } = await import('../index');
+    await run();
+
+    // Bailed at the version check — never reached /drifts.
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const failed = String(coreMock.setFailed.mock.calls[0]?.[0] ?? '');
+    expect(failed).toMatch(/stale plan version/);
+    const errors = coreMock.error.mock.calls.map((c) => String(c[0]));
+    expect(
+      errors.some((e) => e.includes('bound to plan v1') && e.includes('active plan is v2')),
+    ).toBe(true);
+  });
+
+  it('R-207: strict-sourcing passes when the scoped task is on the active plan version', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'branch-name': 'feat/ok',
+      'strict-sourcing': 'true',
+    });
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(200, {
+        data: [{ id: 't-ok', branchName: 'feat/ok', boundPlanVersion: 2 }],
+        pagination: { page: 1, pageSize: 100, total: 1, totalPages: 1 },
+      }),
+    );
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: { id: 'plan-1', version: 2 } }));
+    // /drifts → empty, gate passes.
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] }));
+
+    const { run } = await import('../index');
+    await run();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(coreMock.setFailed).not.toHaveBeenCalled();
+    expect(coreMock.setOutput).toHaveBeenCalledWith('drift-count', '0');
+  });
+
+  it('R-207: an exempt label skips the gate entirely (even with strict-sourcing on)', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'strict-sourcing': 'true',
+      'exempt-labels': 'plansync:exempt',
+      'github-token': 'ghs_token',
+      repo: 'acme/widgets',
+      'pr-number': '42',
+    });
+    // Catch-all: satisfies both the label read (.labels) and the R-193 PR-body
+    // GET/PATCH (.body) in the finally block.
+    fetchSpy.mockResolvedValue(
+      jsonResponse(200, { labels: [{ name: 'plansync:exempt' }], body: '' }),
+    );
+
+    const { run } = await import('../index');
+    await run();
+
+    const warnings = coreMock.warning.mock.calls.map((c) => String(c[0]));
+    expect(warnings.some((w) => w.includes('EXEMPTED via label "plansync:exempt"'))).toBe(true);
+    expect(coreMock.setFailed).not.toHaveBeenCalled();
+    expect(coreMock.setOutput).toHaveBeenCalledWith('drift-count', '0');
+    expect(coreMock.setOutput).toHaveBeenCalledWith('has-drift', 'false');
+  });
+
+  it('R-207: exempt-labels set without the github-token trio fails closed (gate still runs)', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'exempt-labels': 'plansync:exempt',
+      // no github-token/repo/pr-number → exemption unavailable
+      'task-ids': 't1',
+    });
+    // Gate runs: /drifts returns empty → passes, but the fail-closed warning fired.
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: [] }));
+
+    const { run } = await import('../index');
+    await run();
+
+    const warnings = coreMock.warning.mock.calls.map((c) => String(c[0]));
+    expect(warnings.some((w) => w.includes('exemption is unavailable'))).toBe(true);
+    // It did NOT skip — it ran the drift query.
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/drifts?status=open');
+  });
+
+  it('R-207: strict-sourcing fails closed when a scoped task has no boundPlanVersion', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'branch-name': 'feat/nover',
+      'strict-sourcing': 'true',
+    });
+    // Server returns the task but WITHOUT boundPlanVersion (e.g. a serializer
+    // bug). We must not wave it through.
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(200, {
+        data: [{ id: 't-nover', branchName: 'feat/nover' }],
+        pagination: { page: 1, pageSize: 100, total: 1, totalPages: 1 },
+      }),
+    );
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: { id: 'plan-1', version: 2 } }));
+
+    const { run } = await import('../index');
+    await run();
+
+    const failed = String(coreMock.setFailed.mock.calls[0]?.[0] ?? '');
+    expect(failed).toMatch(/no boundPlanVersion/);
+    expect(failed).toMatch(/fail-closed/);
+  });
+
+  it('R-207: client-side re-check drops server rows not on the requested branch', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'branch-name': 'feat/want',
+    });
+    // Server bug: ignored the branchName filter and returned a task on a
+    // DIFFERENT branch. The action must NOT scope to it.
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(200, {
+        data: [{ id: 't-wrong', branchName: 'feat/OTHER', boundPlanVersion: 2 }],
+        pagination: { page: 1, pageSize: 100, total: 1, totalPages: 1 },
+      }),
+    );
+
+    const { run } = await import('../index');
+    await run();
+
+    const warnings = coreMock.warning.mock.calls.map((c) => String(c[0]));
+    expect(warnings.some((w) => w.includes('not on branch "feat/want"'))).toBe(true);
+    // After dropping the non-matching row, scope is empty → fail loudly (never
+    // silently scope to the wrong task).
+    const failed = String(coreMock.setFailed.mock.calls[0]?.[0] ?? '');
+    expect(failed).toMatch(/no tasks found with branchName="feat\/want"/);
   });
 });

@@ -26,6 +26,14 @@ inputs:
     description: 'When `true`, disables the R-157 semantic deliverable gate and only runs the legacy open-drift-count check. Use this only as an emergency rollback.'
     required: false
     default: 'false'
+  strict-sourcing:
+    description: 'R-207 / L3. When `true`, every PR must map to a task bound to the CURRENT active plan version: project-wide (unscoped) runs are refused, a scope that matches zero tasks fails, and any scoped task on a stale plan version fails (rebind required). Default `false` keeps existing workflows wire-compatible. Pair with `branch-name` (or `task-ids`) for scoping, and configure the action as a required status check to make this unbypassable at merge.'
+    required: false
+    default: 'false'
+  exempt-labels:
+    description: 'R-207 / L3. Comma-separated PR labels that exempt a PR from the gate (e.g. `plansync:exempt` for dependabot / CI-config / the workflow file itself). Requires the `github-token`, `repo`, and `pr-number` trio to read labels; if those are absent the gate runs (fail-closed). Applying a label needs repo write access, so the exemption is auditable and not self-grantable in the workflow file.'
+    required: false
+    default: ''
   github-token:
     description: 'GitHub token (typically `${{ secrets.GITHUB_TOKEN }}`) used to PATCH the PR body with the R-193 `<!-- plansync-status -->` block. Optional — all three of `github-token`, `repo`, and `pr-number` must be set together to enable the body sync.'
     required: false

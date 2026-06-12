@@ -22,6 +22,8 @@ type DriftsResponse = { data?: DriftRow[]; pagination?: Pagination };
 type TaskRow = {
   id: string;
   branchName?: string | null;
+  // R-207 / L3: needed for the strict-sourcing version-binding check.
+  boundPlanVersion?: number;
 };
 
 type TasksResponse = { data?: TaskRow[]; pagination?: Pagination };
@@ -388,37 +390,108 @@ function isLastPage(
   return receivedRows < pageSize;
 }
 
-async function fetchTaskIdsForBranch(
+async function fetchTasksForBranch(
   apiUrl: string,
   projectId: string,
   headers: Record<string, string>,
   branchName: string,
-): Promise<{ matched: string[]; truncated: boolean }> {
-  const matched: string[] = [];
+): Promise<{ tasks: TaskRow[]; truncated: boolean; droppedNonMatching: number }> {
+  // R-207 / L3: the API now exposes a server-side `branchName` filter, so we
+  // fetch exactly this branch's task(s) instead of paginating the whole
+  // project and matching client-side (which capped at TASK_PAGE_CAP pages and
+  // could silently truncate on large projects — the very TODO this replaces).
+  // We still loop in case a branch legitimately carries more than one page of
+  // tasks, and keep the cap as a runaway guard.
+  //
+  // Hardening: we ALSO re-verify `branchName` client-side. The server filters,
+  // but a server bug (filter ignored / wrong column) must never cause us to
+  // scope the gate to a task that isn't actually on this PR's branch — we keep
+  // only exact matches and surface how many rows were dropped.
+  const tasks: TaskRow[] = [];
+  let droppedNonMatching = 0;
   let page = 1;
-  // The task list endpoint does not expose a branchName filter, so paginate
-  // and match client-side. Cap iterations to avoid runaway loops on a
-  // misbehaving server; `truncated` lets the caller fail the gate rather
-  // than silently use an incomplete scope.
+  const q = encodeURIComponent(branchName);
   for (let i = 0; i < TASK_PAGE_CAP; i += 1) {
-    const url = `${apiUrl}/api/projects/${projectId}/tasks?page=${page}&pageSize=${TASK_PAGE_SIZE}`;
+    const url = `${apiUrl}/api/projects/${projectId}/tasks?branchName=${q}&page=${page}&pageSize=${TASK_PAGE_SIZE}`;
     const res = await fetch(url, { headers });
     const json = (await res.json()) as TasksResponse & { error?: { message?: string } };
     if (!res.ok) {
       throw new Error(json?.error?.message || `HTTP ${res.status} ${res.statusText}`);
     }
-    const tasks = json.data ?? [];
-    for (const task of tasks) {
-      if (task.branchName && task.branchName === branchName) {
-        matched.push(task.id);
-      }
+    const rows = json.data ?? [];
+    for (const t of rows) {
+      if (t.branchName === branchName) tasks.push(t);
+      else droppedNonMatching += 1;
     }
-    if (isLastPage(json.pagination, TASK_PAGE_SIZE, page, tasks.length)) {
-      return { matched, truncated: false };
+    if (isLastPage(json.pagination, TASK_PAGE_SIZE, page, rows.length)) {
+      return { tasks, truncated: false, droppedNonMatching };
     }
     page += 1;
   }
-  return { matched, truncated: true };
+  return { tasks, truncated: true, droppedNonMatching };
+}
+
+// R-207 / L3: fetch a single task by id (for the explicit `task-ids` path's
+// strict-version check, where we don't already hold the task objects).
+async function fetchTaskById(
+  apiUrl: string,
+  projectId: string,
+  headers: Record<string, string>,
+  taskId: string,
+): Promise<TaskRow | null> {
+  const url = `${apiUrl}/api/projects/${projectId}/tasks/${encodeURIComponent(taskId)}`;
+  const res = await fetch(url, { headers });
+  if (res.status === 404) return null;
+  const json = (await res.json()) as { data?: TaskRow; error?: { message?: string } };
+  if (!res.ok) {
+    throw new Error(json?.error?.message || `HTTP ${res.status} ${res.statusText}`);
+  }
+  return json.data ?? null;
+}
+
+// R-207 / L3: active plan version only (lighter than fetchActivePlanFileGlobs,
+// which also pulls deliverables). Returns null when there is no active plan.
+async function fetchActivePlanVersion(
+  apiUrl: string,
+  projectId: string,
+  headers: Record<string, string>,
+): Promise<number | null> {
+  const url = `${apiUrl}/api/projects/${projectId}/plans/active`;
+  const res = await fetch(url, { headers });
+  if (res.status === 404) return null;
+  const json = (await res.json()) as { data?: PlanRow; error?: { message?: string } };
+  if (!res.ok) {
+    throw new Error(json?.error?.message || `HTTP ${res.status} ${res.statusText}`);
+  }
+  return json.data?.version ?? null;
+}
+
+// R-207 / L3: read PR labels for the auditable exemption mechanism. Reuses the
+// same GitHub REST shape as syncPrBody; `fetchImpl` is injectable for tests.
+async function fetchPrLabels(opts: {
+  token: string;
+  repo: string;
+  prNumber: number;
+  fetchImpl?: typeof fetch;
+}): Promise<string[]> {
+  const fetchFn = opts.fetchImpl ?? globalThis.fetch;
+  const url = `https://api.github.com/repos/${opts.repo}/pulls/${opts.prNumber}`;
+  const res = await fetchFn(url, {
+    headers: {
+      Authorization: `Bearer ${opts.token}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': 'plansync-github-action',
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(
+      `GitHub API GET ${url} returned ${res.status} ${res.statusText}: ${text.slice(0, 200)}`,
+    );
+  }
+  const json = (await res.json()) as { labels?: Array<{ name?: string }> };
+  return (json.labels ?? []).map((l) => l.name).filter((n): n is string => !!n);
 }
 
 const DRIFT_PAGE_CAP = 50;
@@ -509,6 +582,18 @@ export async function run() {
     core.setSecret(githubToken);
   }
 
+  // R-207 / L3: strict-sourcing. When true, every PR must map to a task bound
+  // to the CURRENT active plan version: project-wide (unscoped) runs are
+  // refused, a scope that matches zero tasks fails, and any scoped task on a
+  // stale plan version fails. Default false to keep existing workflows
+  // wire-compatible — opt in via the input (the shipped example sets it true).
+  const strictRaw = core.getInput('strict-sourcing').trim().toLowerCase();
+  const strictSourcing = strictRaw === 'true' || strictRaw === '1' || strictRaw === 'yes';
+  // R-207 / L3: comma-separated labels that exempt a PR from the gate (e.g.
+  // `plansync:exempt` for dependabot / the workflow file itself). Reuses the
+  // comma parser. Requires the github-token/repo/pr-number trio to read labels.
+  const exemptLabels = parseTaskIds(core.getInput('exempt-labels'));
+
   // Mask the api-key so it never appears in GitHub Actions logs even when
   // accidentally echoed (e.g. via `set -x`, child process stderr, or a
   // contributor adding `core.debug(headers)` later). `setSecret` is a no-op
@@ -547,6 +632,42 @@ export async function run() {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     };
+
+    // R-207 / L3: auditable exemption. Some PRs legitimately map to no task
+    // (the workflow file itself, dependabot, CI-config-only changes). A
+    // maintainer applies an exempt label; the gate then skips for that PR and
+    // logs it loudly. Label-gating (vs a workflow input) keeps it per-PR and
+    // auditable, and applying a label needs repo write access. Fail-closed: if
+    // the label set is configured but we cannot read the PR, the gate runs.
+    if (exemptLabels.length > 0) {
+      if (githubToken && repoInput && prNumberInput) {
+        try {
+          const labels = await fetchPrLabels({
+            token: githubToken,
+            repo: repoInput,
+            prNumber: Number.parseInt(prNumberInput, 10),
+          });
+          const hit = labels.find((l) => exemptLabels.includes(l));
+          if (hit) {
+            core.warning(
+              `PlanSync gate EXEMPTED via label "${hit}". Skipping drift + strict-sourcing checks for this PR.`,
+            );
+            core.setOutput('drift-count', '0');
+            core.setOutput('has-drift', 'false');
+            core.setOutput('semantic-gate', 'skipped');
+            return;
+          }
+        } catch (err) {
+          core.warning(
+            `PlanSync exemption check could not read PR labels (${err instanceof Error ? err.message : String(err)}); running the gate (fail-closed).`,
+          );
+        }
+      } else {
+        core.warning(
+          'PlanSync `exempt-labels` is set but `github-token`/`repo`/`pr-number` are not all provided; exemption is unavailable and the gate will run (fail-closed).',
+        );
+      }
+    }
 
     // R-157: semantic deliverable gate. Runs before the drift check so a
     // PR that does not touch any active deliverable fails fast with a
@@ -648,6 +769,9 @@ export async function run() {
     //      backwards compatibility with existing workflows that have not yet
     //      adopted scoping).
     let scopedTaskIds: Set<string> | null = null;
+    // R-207 / L3: when we already hold the scoped task objects (branch path),
+    // keep them so the strict-version check below doesn't refetch.
+    let scopedTaskObjects: TaskRow[] | null = null;
     const explicitTaskIds = parseTaskIds(taskIdsInput);
     // Helper: keep `status.scopedTaskIds` in lockstep with the Set so the
     // PR body block always reflects what was actually used to filter.
@@ -664,20 +788,28 @@ export async function run() {
       setScope(explicitTaskIds);
       core.info(`Scoping drift check to ${explicitTaskIds.length} explicit task id(s).`);
     } else if (branchName) {
-      const { matched, truncated } = await fetchTaskIdsForBranch(
+      const { tasks, truncated, droppedNonMatching } = await fetchTasksForBranch(
         apiUrl,
         projectId,
         headers,
         branchName,
       );
+      if (droppedNonMatching > 0) {
+        // The server returned rows whose branchName != the one we asked for —
+        // a server-side filter contract violation. We already dropped them
+        // (client-side re-check), but surface it loudly so the bug gets fixed.
+        core.warning(
+          `PlanSync drift-check: API returned ${droppedNonMatching} task(s) not on branch "${branchName}" for a branchName-filtered query; ignoring them (client-side re-check). This indicates a server-side filter bug.`,
+        );
+      }
       if (truncated) {
         status.truncatedTaskScan = true;
         core.setFailed(
-          `PlanSync drift-check refused to run: scanning more than ${TASK_PAGE_CAP * TASK_PAGE_SIZE} tasks for branch "${branchName}" — scope would be incomplete and could miss in-scope HIGH drifts. Pass \`task-ids\` explicitly or ask the API to expose a server-side branchName filter.`,
+          `PlanSync drift-check refused to run: more than ${TASK_PAGE_CAP * TASK_PAGE_SIZE} tasks on branch "${branchName}" — scope would be incomplete and could miss in-scope HIGH drifts.`,
         );
         return;
       }
-      if (matched.length === 0) {
+      if (tasks.length === 0) {
         // The caller explicitly asked us to scope to a branch; finding 0 tasks
         // is almost always a mis-configured workflow (wrong branch ref, stale
         // task records, etc.) rather than "this PR truly has no PlanSync work".
@@ -687,12 +819,76 @@ export async function run() {
         );
         return;
       }
-      setScope(matched);
-      core.info(`Scoping drift check to ${matched.length} task(s) on branch "${branchName}".`);
+      scopedTaskObjects = tasks;
+      const ids = tasks.map((t) => t.id);
+      setScope(ids);
+      core.info(`Scoping drift check to ${ids.length} task(s) on branch "${branchName}".`);
+    } else if (strictSourcing) {
+      // R-207 / L3: strict-sourcing forbids project-wide runs — an unscoped PR
+      // cannot be traced to a current-plan task, which is the whole point.
+      core.setFailed(
+        'PlanSync strict-sourcing: this PR is not scoped to any task (no `branch-name` or `task-ids`). Every change must trace to a current-plan task — provide branch-name/task-ids, or add an exempt label.',
+      );
+      return;
     } else {
       core.warning(
         'PlanSync drift-check is running in project-wide mode: any open drift in the project will gate this PR. Pass `task-ids` or `branch-name` to scope the check to this PR.',
       );
+    }
+
+    // R-207 / L3: strict version binding — every scoped task must be bound to
+    // the CURRENT active plan version. This is belt-and-suspenders beyond the
+    // drift gate: drift rows are generated on plan activation and the gate only
+    // fails on HIGH severity, but a deterministic version comparison catches
+    // ANY stale binding (incl. medium/low, or an edge case with no drift row)
+    // before the change can merge.
+    if (strictSourcing && scopedTaskIds !== null) {
+      const activeVersion =
+        status.planVersion ?? (await fetchActivePlanVersion(apiUrl, projectId, headers));
+      if (activeVersion == null) {
+        core.setFailed(
+          'PlanSync strict-sourcing: no active plan for this project — cannot verify task version binding.',
+        );
+        return;
+      }
+      let scopedTasks: TaskRow[];
+      if (scopedTaskObjects !== null) {
+        scopedTasks = scopedTaskObjects;
+      } else {
+        const ids = [...(scopedTaskIds as Set<string>)];
+        const fetched = await Promise.all(
+          ids.map((id) => fetchTaskById(apiUrl, projectId, headers, id)),
+        );
+        scopedTasks = fetched.filter((t): t is TaskRow => t !== null);
+        if (scopedTasks.length < ids.length) {
+          core.setFailed(
+            `PlanSync strict-sourcing: ${ids.length - scopedTasks.length} explicit task id(s) not found in project ${projectId}.`,
+          );
+          return;
+        }
+      }
+      // Fail-closed: a scoped task with no boundPlanVersion in the API response
+      // means we cannot verify its plan binding. Under strict-sourcing we must
+      // refuse rather than wave it through.
+      const missingVersion = scopedTasks.filter((t) => typeof t.boundPlanVersion !== 'number');
+      if (missingVersion.length > 0) {
+        core.setFailed(
+          `PlanSync strict-sourcing: ${missingVersion.length} scoped task(s) have no boundPlanVersion in the API response — cannot verify plan binding, refusing to pass (fail-closed): ${missingVersion.map((t) => t.id).join(', ')}.`,
+        );
+        return;
+      }
+      const stale = scopedTasks.filter((t) => t.boundPlanVersion !== activeVersion);
+      if (stale.length > 0) {
+        for (const t of stale) {
+          core.error(
+            `Task ${t.id} is bound to plan v${t.boundPlanVersion}, but the active plan is v${activeVersion}. Rebind before merging.`,
+          );
+        }
+        core.setFailed(
+          `PlanSync strict-sourcing: ${stale.length} scoped task(s) bound to a stale plan version. Rebind to v${activeVersion} (plansync_task_rebind) before this PR can merge.`,
+        );
+        return;
+      }
     }
 
     let allDrifts: DriftRow[];
