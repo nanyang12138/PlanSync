@@ -14,7 +14,7 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
   const params = await __nextCtx.params;
   try {
     const auth = await authenticate(req);
-    await requireProjectRole(auth, params.projectId);
+    const member = await requireProjectRole(auth, params.projectId);
 
     // R-135: scope by projectId so rebind cannot be invoked against a task in another project.
     const task = await prisma.task.findFirst({
@@ -27,6 +27,23 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
         'POST /tasks/:id/rebind',
       );
       throw new AppError(ErrorCode.NOT_FOUND, 'Task not found');
+    }
+
+    // Authorization: rebind is the thin shortcut for `drift_resolve
+    // action=rebind`, and it performs the same destructive writes (reset to
+    // `todo`, supersede in-flight runs, resolve open drift alerts). It must
+    // therefore enforce the SAME identity gate as `drift_resolve`
+    // (drifts/[driftId]/route.ts) — owner or the task's current assignee only.
+    // Without this, any project developer could blow away another member's
+    // running execution and silently clear their drift alerts, defeating the
+    // drift-protection guarantee.
+    const isOwner = member.projectRole === 'owner';
+    const isAssignee = task.assignee === auth.userName;
+    if (!isOwner && !isAssignee) {
+      throw new AppError(
+        ErrorCode.FORBIDDEN,
+        'Only project owners or the task assignee can rebind this task',
+      );
     }
 
     // R-004: rebind is "explicit restart" — reset non-terminal tasks to
