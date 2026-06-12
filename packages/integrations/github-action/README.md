@@ -77,6 +77,29 @@ requirement org-wide and prevent bypass by admins.
 > `labeled`/`unlabeled` in the trigger (as the example does) so applying or
 > removing an exempt label re-evaluates the gate.
 
+### Closing the self-modifying-workflow hole (read this)
+
+A required status check is keyed on the **job/check name**. If the workflow file
+lives in the same repo, a PR can edit `.github/workflows/plansync-drift-gate.yml`
+to turn the job into a no-op that still reports the same name green — and branch
+protection sees green. **The action code cannot prevent this**; it is a
+GitHub-configuration concern. Close it with one or more of:
+
+1. **Organization "required workflows" (rulesets)** — define the gate as an
+   org-level required workflow whose definition lives **outside** any single
+   repo, so a PR in the target repo cannot edit what actually runs. This is the
+   only fully robust option.
+2. **Restrict who can edit workflow files** — a ruleset rule (or CODEOWNERS on
+   `.github/workflows/**` requiring a maintainer review) so a contributor cannot
+   change the gate in their own PR.
+3. **Branch-protection "require review from Code Owners"** with
+   `.github/workflows/** @your-org/maintainers` in CODEOWNERS.
+
+> Note: this repo's `pr-guards` workflow currently only **labels** a PR
+> `do-not-merge` on a guard violation — that is advisory, not a hard merge
+> block. Treat the org-level required workflow (option 1) as the real hard
+> gate; the label is a convenience signal, not enforcement.
+
 ### Exemption setup
 
 Create a label named `plansync:exempt` (or whatever you pass to

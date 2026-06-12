@@ -21616,6 +21616,7 @@ function isLastPage(pagination, pageSize, page, receivedRows) {
 }
 async function fetchTasksForBranch(apiUrl, projectId, headers, branchName) {
   const tasks = [];
+  let droppedNonMatching = 0;
   let page = 1;
   const q = encodeURIComponent(branchName);
   for (let i = 0; i < TASK_PAGE_CAP; i += 1) {
@@ -21626,13 +21627,16 @@ async function fetchTasksForBranch(apiUrl, projectId, headers, branchName) {
       throw new Error(json?.error?.message || `HTTP ${res.status} ${res.statusText}`);
     }
     const rows = json.data ?? [];
-    tasks.push(...rows);
+    for (const t of rows) {
+      if (t.branchName === branchName) tasks.push(t);
+      else droppedNonMatching += 1;
+    }
     if (isLastPage(json.pagination, TASK_PAGE_SIZE, page, rows.length)) {
-      return { tasks, truncated: false };
+      return { tasks, truncated: false, droppedNonMatching };
     }
     page += 1;
   }
-  return { tasks, truncated: true };
+  return { tasks, truncated: true, droppedNonMatching };
 }
 async function fetchTaskById(apiUrl, projectId, headers, taskId) {
   const url = `${apiUrl}/api/projects/${projectId}/tasks/${encodeURIComponent(taskId)}`;
@@ -21861,7 +21865,17 @@ async function run() {
       setScope(explicitTaskIds);
       core.info(`Scoping drift check to ${explicitTaskIds.length} explicit task id(s).`);
     } else if (branchName) {
-      const { tasks, truncated } = await fetchTasksForBranch(apiUrl, projectId, headers, branchName);
+      const { tasks, truncated, droppedNonMatching } = await fetchTasksForBranch(
+        apiUrl,
+        projectId,
+        headers,
+        branchName
+      );
+      if (droppedNonMatching > 0) {
+        core.warning(
+          `PlanSync drift-check: API returned ${droppedNonMatching} task(s) not on branch "${branchName}" for a branchName-filtered query; ignoring them (client-side re-check). This indicates a server-side filter bug.`
+        );
+      }
       if (truncated) {
         status.truncatedTaskScan = true;
         core.setFailed(
@@ -21913,9 +21927,14 @@ async function run() {
           return;
         }
       }
-      const stale = scopedTasks.filter(
-        (t) => typeof t.boundPlanVersion === "number" && t.boundPlanVersion !== activeVersion
-      );
+      const missingVersion = scopedTasks.filter((t) => typeof t.boundPlanVersion !== "number");
+      if (missingVersion.length > 0) {
+        core.setFailed(
+          `PlanSync strict-sourcing: ${missingVersion.length} scoped task(s) have no boundPlanVersion in the API response \u2014 cannot verify plan binding, refusing to pass (fail-closed): ${missingVersion.map((t) => t.id).join(", ")}.`
+        );
+        return;
+      }
+      const stale = scopedTasks.filter((t) => t.boundPlanVersion !== activeVersion);
       if (stale.length > 0) {
         for (const t of stale) {
           core.error(

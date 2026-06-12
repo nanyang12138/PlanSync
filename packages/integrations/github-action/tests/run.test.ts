@@ -911,4 +911,57 @@ describe('github-action run()', () => {
     // It did NOT skip — it ran the drift query.
     expect(String(fetchSpy.mock.calls[0][0])).toContain('/drifts?status=open');
   });
+
+  it('R-207: strict-sourcing fails closed when a scoped task has no boundPlanVersion', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'branch-name': 'feat/nover',
+      'strict-sourcing': 'true',
+    });
+    // Server returns the task but WITHOUT boundPlanVersion (e.g. a serializer
+    // bug). We must not wave it through.
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(200, {
+        data: [{ id: 't-nover', branchName: 'feat/nover' }],
+        pagination: { page: 1, pageSize: 100, total: 1, totalPages: 1 },
+      }),
+    );
+    fetchSpy.mockResolvedValueOnce(jsonResponse(200, { data: { id: 'plan-1', version: 2 } }));
+
+    const { run } = await import('../index');
+    await run();
+
+    const failed = String(coreMock.setFailed.mock.calls[0]?.[0] ?? '');
+    expect(failed).toMatch(/no boundPlanVersion/);
+    expect(failed).toMatch(/fail-closed/);
+  });
+
+  it('R-207: client-side re-check drops server rows not on the requested branch', async () => {
+    configureInputs({
+      'api-url': 'https://plansync.example.com',
+      'api-key': 'ps_key_test',
+      project: 'proj-123',
+      'branch-name': 'feat/want',
+    });
+    // Server bug: ignored the branchName filter and returned a task on a
+    // DIFFERENT branch. The action must NOT scope to it.
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(200, {
+        data: [{ id: 't-wrong', branchName: 'feat/OTHER', boundPlanVersion: 2 }],
+        pagination: { page: 1, pageSize: 100, total: 1, totalPages: 1 },
+      }),
+    );
+
+    const { run } = await import('../index');
+    await run();
+
+    const warnings = coreMock.warning.mock.calls.map((c) => String(c[0]));
+    expect(warnings.some((w) => w.includes('not on branch "feat/want"'))).toBe(true);
+    // After dropping the non-matching row, scope is empty → fail loudly (never
+    // silently scope to the wrong task).
+    const failed = String(coreMock.setFailed.mock.calls[0]?.[0] ?? '');
+    expect(failed).toMatch(/no tasks found with branchName="feat\/want"/);
+  });
 });

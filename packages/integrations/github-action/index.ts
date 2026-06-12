@@ -395,14 +395,20 @@ async function fetchTasksForBranch(
   projectId: string,
   headers: Record<string, string>,
   branchName: string,
-): Promise<{ tasks: TaskRow[]; truncated: boolean }> {
+): Promise<{ tasks: TaskRow[]; truncated: boolean; droppedNonMatching: number }> {
   // R-207 / L3: the API now exposes a server-side `branchName` filter, so we
   // fetch exactly this branch's task(s) instead of paginating the whole
   // project and matching client-side (which capped at TASK_PAGE_CAP pages and
   // could silently truncate on large projects — the very TODO this replaces).
   // We still loop in case a branch legitimately carries more than one page of
   // tasks, and keep the cap as a runaway guard.
+  //
+  // Hardening: we ALSO re-verify `branchName` client-side. The server filters,
+  // but a server bug (filter ignored / wrong column) must never cause us to
+  // scope the gate to a task that isn't actually on this PR's branch — we keep
+  // only exact matches and surface how many rows were dropped.
   const tasks: TaskRow[] = [];
+  let droppedNonMatching = 0;
   let page = 1;
   const q = encodeURIComponent(branchName);
   for (let i = 0; i < TASK_PAGE_CAP; i += 1) {
@@ -413,13 +419,16 @@ async function fetchTasksForBranch(
       throw new Error(json?.error?.message || `HTTP ${res.status} ${res.statusText}`);
     }
     const rows = json.data ?? [];
-    tasks.push(...rows);
+    for (const t of rows) {
+      if (t.branchName === branchName) tasks.push(t);
+      else droppedNonMatching += 1;
+    }
     if (isLastPage(json.pagination, TASK_PAGE_SIZE, page, rows.length)) {
-      return { tasks, truncated: false };
+      return { tasks, truncated: false, droppedNonMatching };
     }
     page += 1;
   }
-  return { tasks, truncated: true };
+  return { tasks, truncated: true, droppedNonMatching };
 }
 
 // R-207 / L3: fetch a single task by id (for the explicit `task-ids` path's
@@ -779,12 +788,20 @@ export async function run() {
       setScope(explicitTaskIds);
       core.info(`Scoping drift check to ${explicitTaskIds.length} explicit task id(s).`);
     } else if (branchName) {
-      const { tasks, truncated } = await fetchTasksForBranch(
+      const { tasks, truncated, droppedNonMatching } = await fetchTasksForBranch(
         apiUrl,
         projectId,
         headers,
         branchName,
       );
+      if (droppedNonMatching > 0) {
+        // The server returned rows whose branchName != the one we asked for —
+        // a server-side filter contract violation. We already dropped them
+        // (client-side re-check), but surface it loudly so the bug gets fixed.
+        core.warning(
+          `PlanSync drift-check: API returned ${droppedNonMatching} task(s) not on branch "${branchName}" for a branchName-filtered query; ignoring them (client-side re-check). This indicates a server-side filter bug.`,
+        );
+      }
       if (truncated) {
         status.truncatedTaskScan = true;
         core.setFailed(
@@ -850,9 +867,17 @@ export async function run() {
           return;
         }
       }
-      const stale = scopedTasks.filter(
-        (t) => typeof t.boundPlanVersion === 'number' && t.boundPlanVersion !== activeVersion,
-      );
+      // Fail-closed: a scoped task with no boundPlanVersion in the API response
+      // means we cannot verify its plan binding. Under strict-sourcing we must
+      // refuse rather than wave it through.
+      const missingVersion = scopedTasks.filter((t) => typeof t.boundPlanVersion !== 'number');
+      if (missingVersion.length > 0) {
+        core.setFailed(
+          `PlanSync strict-sourcing: ${missingVersion.length} scoped task(s) have no boundPlanVersion in the API response — cannot verify plan binding, refusing to pass (fail-closed): ${missingVersion.map((t) => t.id).join(', ')}.`,
+        );
+        return;
+      }
+      const stale = scopedTasks.filter((t) => t.boundPlanVersion !== activeVersion);
       if (stale.length > 0) {
         for (const t of stale) {
           core.error(
