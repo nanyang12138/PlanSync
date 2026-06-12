@@ -7,7 +7,7 @@ if [ -z "$PG_BIN" ]; then
   exit 1
 fi
 export PATH="$PG_BIN:$PATH"
-PG_DATA="/tmp/plansync-pgdata-$(whoami)"
+PG_DATA="$(resolve_pg_data)"
 if [ -d "$PG_DATA" ]; then
   pg_ctl -D "$PG_DATA" stop 2>/dev/null && echo "✓ PostgreSQL stopped" || echo "PostgreSQL is not running"
 else

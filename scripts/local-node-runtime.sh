@@ -21,7 +21,7 @@ if [ -z "${PG_BIN:-}" ]; then
   PG_BIN="/usr/lib/postgresql/16/bin"
 fi
 PG_PORT=${PG_PORT:-15432}
-PG_DATA="/tmp/plansync-pgdata-$(whoami)"
+PG_DATA="$(resolve_pg_data)"
 
 log_step() {
   echo "==> $*"
@@ -332,6 +332,21 @@ ensure_postgres_running() {
 
   if createdb -p "$PG_PORT" plansync_dev 2>/dev/null; then
     log_step "Creating database plansync_dev"
+    initialized_now=1
+  fi
+
+  # Detect catalog corruption (e.g. from an NFS write interruption or abrupt kill
+  # during initdb on /tmp).  A corrupt cluster silently starts but fails on the
+  # first real query — catch it here so callers never see the cryptic
+  # "could not open file base/N/2601" error from prisma migrate deploy.
+  if ! psql -p "$PG_PORT" -d plansync_dev \
+       -c "SELECT 1 FROM pg_catalog.pg_aggregate LIMIT 1" > /dev/null 2>&1; then
+    log_step "⚠ Database catalog corruption detected — reinitializing data directory"
+    pg_ctl -D "$PG_DATA" stop -m immediate > /dev/null 2>&1 || true
+    rm -rf "$PG_DATA"
+    initdb -D "$PG_DATA" > /dev/null 2>&1
+    pg_ctl -D "$PG_DATA" -l "$PG_DATA/logfile" -o "-p $PG_PORT" start > /dev/null 2>&1
+    createdb -p "$PG_PORT" plansync_dev > /dev/null 2>&1 || true
     initialized_now=1
   fi
 
