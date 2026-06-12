@@ -121,6 +121,25 @@ export const envSchema = baseEnvSchema.superRefine((data, ctx) => {
         'Use it only on dev hosts. Unset the variable to start in production.',
     });
   }
+
+  // Refuse the no-auth mode in production. AUTH_DISABLED makes the server
+  // trust the caller-supplied `X-User-Name` header as identity (auth.ts) —
+  // no password, no API key — so anyone can impersonate any user, and the
+  // entire owner-only / assignee-match authorization chain (R-009 / R-013)
+  // collapses. It exists only for the local no-auth demo mode. Mirror the
+  // PLANSYNC_MASTER_LEGACY guard above: fail-closed at boot so an operator
+  // can never accidentally ship a header-spoofable production deployment.
+  if (data.AUTH_DISABLED) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['AUTH_DISABLED'],
+      message:
+        'AUTH_DISABLED=true is forbidden in production: identity would be taken ' +
+        'from the unauthenticated X-User-Name header, letting anyone impersonate ' +
+        'any user. Use it only on local demo/dev hosts. Unset the variable to ' +
+        'start in production.',
+    });
+  }
 });
 
 function validateEnv() {

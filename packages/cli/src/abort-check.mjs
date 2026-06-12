@@ -36,6 +36,14 @@ const env = process.env;
 const apiUrl = env.PLANSYNC_API_URL || 'http://localhost:3001';
 const apiKey = env.PLANSYNC_API_KEY || '';
 const user = env.PLANSYNC_USER || env.USER || '';
+// Anti-downgrade marker. `/exec` injects PLANSYNC_EXEC_RUN_ID into the
+// child process env (see exec-shared.mjs buildExecMcpEnv); the agent
+// running *inside* that session cannot unset it (a child Bash's env
+// edits don't propagate back to the parent that spawns this hook). So
+// its presence is a trustworthy "this session was launched as an exec
+// run" signal, independent of the API key. We use it below to detect a
+// key that has been swapped down to a non-exec-scoped one.
+const expectedRunId = env.PLANSYNC_EXEC_RUN_ID || '';
 
 // Without a key we cannot meaningfully check; fail closed so an
 // improperly-configured hook doesn't silently let agents through.
@@ -101,8 +109,31 @@ async function main() {
     try {
       const { status, body } = await requestOnce();
 
-      // 200 = healthy. Exit fast; no need to even parse the body.
+      // 200 = healthy. Normally we exit fast without parsing the body.
       if (status === 200) {
+        // Anti-downgrade (R-206): if this session was launched as an exec
+        // run (PLANSYNC_EXEC_RUN_ID set) but the endpoint answers
+        // `no_exec_context`, the API key in flight is NOT bound to this
+        // run — the only way that happens is the exec-scoped key was
+        // swapped for a plain one, silently turning this gate into a
+        // permanent no-op. That is precisely the bypass we must not wave
+        // through, so fail closed instead.
+        if (expectedRunId) {
+          let reason = '';
+          try {
+            const parsed = JSON.parse(body);
+            if (parsed && typeof parsed.reason === 'string') reason = parsed.reason;
+          } catch {
+            /* unparseable 200 body — treat as healthy and fall through */
+          }
+          if (reason === 'no_exec_context') {
+            process.stderr.write(
+              'plansync abort-check: exec session (PLANSYNC_EXEC_RUN_ID set) but the API key is ' +
+                'not exec-scoped — drift gate is downgraded to a no-op; failing closed\n',
+            );
+            process.exit(1);
+          }
+        }
         process.exit(0);
       }
 
