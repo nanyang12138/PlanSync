@@ -285,6 +285,23 @@ describe('R-181: verification rules gate', () => {
     expect(pushed.ok).toBe(true);
   });
 
+  it('evaluateRule(require_commits_on_branch) rejects mainline branches even with a verified push (#2930)', () => {
+    const rule = ruleRow('require_commits_on_branch');
+    const taskCtx = { id: taskId, type: 'code', prUrl: null, planDeliverableRefs: [] };
+    // Pushing to the shared mainline (master/main) must NOT satisfy the
+    // gate — even if the webhook signal says commits landed on it, that is
+    // not evidence of isolated task work (the "代理可提交 master" bypass).
+    for (const mainline of ['master', 'main', 'MAIN', 'refs/heads/master']) {
+      const result = evaluateRule(rule, {
+        task: taskCtx,
+        body: { branchName: mainline },
+        verified: { branchHasCommits: true },
+      });
+      expect(result.ok).toBe(false);
+      expect(result.message).toMatch(/mainline/i);
+    }
+  });
+
   it('evaluateProjectVerificationRules(require_pr_merged) reads the merged-PR webhook event (R-208)', async () => {
     await testPrisma.domainEvent.deleteMany({ where: { projectId } });
     await testPrisma.verificationRule.create({
@@ -984,6 +1001,81 @@ describe('R-181: verification rules gate', () => {
       run: { startedAt: runStartedAt },
     });
     expect(afterFresh.failed).toHaveLength(0);
+
+    await testPrisma.domainEvent.deleteMany({ where: { projectId } });
+  });
+
+  it('require_commits_on_branch rejects a real push to mainline — committing to master never satisfies the gate (#2930)', async () => {
+    await testPrisma.domainEvent.deleteMany({ where: { projectId } });
+    await testPrisma.verificationRule.create({
+      data: {
+        projectId,
+        kind: 'require_commits_on_branch',
+        scope: 'project',
+        enabled: true,
+        createdBy: owner,
+      },
+    });
+    const taskCtx = { id: taskId, type: 'code', prUrl: null, planDeliverableRefs: [] };
+
+    // A genuine push WITH commits to the shared mainline (master) — recorded
+    // well within any run window. Pre-#2930 this satisfied the rule because
+    // the query matched on project + branch ref alone; the agent could clear
+    // the gate by pushing a throwaway commit to master.
+    await testPrisma.domainEvent.create({
+      data: {
+        eventType: 'github_push',
+        projectId,
+        payload: {
+          type: 'github_push',
+          projectId,
+          userName: null,
+          data: {
+            deliveryId: '2930-master-push',
+            repository: 'o/r',
+            payload: {
+              ref: 'refs/heads/master',
+              commits: [{ id: 'm1' }],
+              head_commit: { id: 'm1' },
+            },
+          },
+        },
+      },
+    });
+
+    const masterResult = await evaluateProjectVerificationRules(projectId, {
+      task: taskCtx,
+      body: { branchName: 'master' },
+    });
+    expect(masterResult.failed.map((f) => f.kind)).toContain('require_commits_on_branch');
+
+    // A real push to a dedicated task branch still passes — the fix only
+    // closes the mainline bypass, it does not break legitimate branches.
+    await testPrisma.domainEvent.create({
+      data: {
+        eventType: 'github_push',
+        projectId,
+        payload: {
+          type: 'github_push',
+          projectId,
+          userName: null,
+          data: {
+            deliveryId: '2930-feature-push',
+            repository: 'o/r',
+            payload: {
+              ref: 'refs/heads/cursor/fix-2930',
+              commits: [{ id: 'f1' }],
+              head_commit: { id: 'f1' },
+            },
+          },
+        },
+      },
+    });
+    const featureResult = await evaluateProjectVerificationRules(projectId, {
+      task: taskCtx,
+      body: { branchName: 'cursor/fix-2930' },
+    });
+    expect(featureResult.failed).toHaveLength(0);
 
     await testPrisma.domainEvent.deleteMany({ where: { projectId } });
   });

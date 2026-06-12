@@ -487,6 +487,22 @@ export async function findPrMergeInfo(
  * push counts), preserving the original behaviour for callers that don't
  * have a run timestamp.
  */
+/**
+ * #2930: branch names that denote a repository's shared mainline. A
+ * `require_commits_on_branch` verification rule must never be satisfiable by
+ * a push to one of these — the mainline is shared by every task, so a push
+ * there is not evidence of isolated work and is the exact "提交 master" bypass
+ * the review finding flagged. Matched case-insensitively after stripping a
+ * leading `refs/heads/` so both the short name and the full git ref are
+ * caught.
+ */
+const MAINLINE_BRANCH_NAMES = new Set(['master', 'main']);
+
+export function isProtectedBranch(branchName: string): boolean {
+  const short = branchName.trim().replace(/^refs\/heads\//, '');
+  return MAINLINE_BRANCH_NAMES.has(short.toLowerCase());
+}
+
 export async function branchHasPushedCommits(
   client: Prisma.TransactionClient | PrismaClient,
   projectId: string,
@@ -495,6 +511,14 @@ export async function branchHasPushedCommits(
 ): Promise<boolean> {
   const branch = branchName.trim();
   if (!branch) return false;
+  // #2930: a `require_commits_on_branch` rule exists to prove the agent
+  // pushed real, ISOLATED task work. The shared mainline (`master` / `main`)
+  // is touched by every task and is precisely the gaming vector the finding
+  // calls out ("代理可提交 master ... 来满足规则"): an agent could push a
+  // throwaway commit to mainline (or simply name it as the branch) and clear
+  // the gate. Mainline pushes never count as task-branch evidence — fail
+  // closed before the query so the boolean signal is honest.
+  if (isProtectedBranch(branch)) return false;
   const fullRef = branch.startsWith('refs/heads/') ? branch : `refs/heads/${branch}`;
   const rows = await client.$queryRaw<{ found: number }[]>`
     SELECT 1 AS found

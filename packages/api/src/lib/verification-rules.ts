@@ -28,7 +28,7 @@
 
 import type { Task, VerificationRule } from '@prisma/client';
 import { prisma } from './prisma';
-import { findPrMergeInfo, branchHasPushedCommits } from './task-state-machine';
+import { findPrMergeInfo, branchHasPushedCommits, isProtectedBranch } from './task-state-machine';
 
 export const VERIFICATION_RULE_KINDS = [
   'require_files_changed',
@@ -214,6 +214,21 @@ export function evaluateRule(rule: VerificationRule, ctx: VerificationContext): 
       // `ctx.verified.branchHasCommits` by the async shell). No branch name,
       // or no matching push event ⇒ fail closed.
       const branch = ctx.body.branchName?.trim();
+      // #2930: reject the shared mainline (master/main) up front with a
+      // distinct message. Pushing a throwaway commit to the repo mainline
+      // (which every task shares) is not evidence of isolated task work, and
+      // letting `branchName: "master"` clear the gate is the exact bypass the
+      // review finding flagged. `branchHasPushedCommits` already fails closed
+      // for mainline refs, but checking here keeps the failure reason honest
+      // ("not a task branch") instead of the misleading "no pushed commits".
+      if (branch && isProtectedBranch(branch)) {
+        return {
+          ruleId: rule.id,
+          kind: rule.kind,
+          ok: false,
+          message: `require_commits_on_branch: pushes to the shared mainline branch "${branch}" do not count as task evidence — push your work to a dedicated task branch before completing`,
+        };
+      }
       const ok = ctx.verified?.branchHasCommits === true;
       return {
         ruleId: rule.id,
