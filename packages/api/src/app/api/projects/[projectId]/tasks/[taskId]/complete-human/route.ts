@@ -10,6 +10,7 @@ import { buildTaskPack } from '@/lib/task-pack';
 import { eventBus } from '@/lib/event-bus';
 import { auditCrossProjectTaskIfNeeded } from '@/lib/task-scope';
 import { deriveTaskCompletionState } from '@/lib/task-state-machine';
+import { evaluateProjectVerificationRules } from '@/lib/verification-rules';
 
 const schema = z.object({
   completionNote: z.string().min(1).max(5000),
@@ -79,6 +80,12 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
       );
     }
 
+    // Effective PR URL for this completion: a human may attach a PR in the
+    // same request (`body.prUrl`). The R-181 verification-rule gate
+    // (`require_pr_merged`) must evaluate against the PR being attached now,
+    // not only the previously-stored `task.prUrl`.
+    const effectivePrUrl = body.prUrl && body.prUrl.length > 0 ? body.prUrl : task.prUrl;
+
     // R-192 / closes #1476 — laundering bypass via
     // `awaiting_evidence → in_progress → POST /complete-human`.
     //
@@ -95,24 +102,25 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
     //
     // Signal that we are sitting on a previously-parked task:
     // `latestRun?.status === 'completed'` while the task is back in
-    // a non-terminal state (we are about to write `done` here, so
-    // the task is in `in_progress`/`todo` — and a "todo →
-    // in_progress → first-time complete-human" path has zero runs
-    // on file). `VALID_STATUS_TRANSITIONS` has no exit from `done`,
-    // so the only way to reach this combination is the parking +
-    // reopen sequence (`awaiting_evidence → in_progress` allowed
-    // for the assignee by #1429).
+    // a non-terminal state. `VALID_STATUS_TRANSITIONS` has no exit
+    // from `done`, so the only way to reach this combination is the
+    // parking + reopen sequence (`awaiting_evidence → in_progress`
+    // allowed for the assignee by #1429).
     //
     // When that signal fires we re-run `deriveTaskCompletionState`.
     // If the R-192 gate would still park the task (evidence still
     // missing), only the owner can override — matching the PATCH
     // route's `awaiting_evidence → done` owner-only invariant. The
-    // assignee may still self-complete once the evidence lands
-    // (gate returns `done`), and the owner can always close out a
-    // task whose evidence will never land. If the task has no
-    // `completed` run on file, this is a regular first-time
-    // self-complete and the pre-existing legacy path applies
-    // unchanged so non-git-integrated projects keep working.
+    // assignee may still self-complete once the evidence lands (gate
+    // returns `done`). A first-time self-complete (no `completed` run
+    // on file) is INTENTIONALLY NOT gated here: humans completing for
+    // the first time are trusted to attest to their own work, and the
+    // first-time-done behaviour is locked in by
+    // issue-1476-complete-human-r192-bypass.test.ts (the agent path is
+    // gated because an agent's self-report cannot be trusted; a human
+    // manual completion is itself the attestation). We use
+    // `effectivePrUrl` so a human who attaches the now-merged PR in
+    // this request can clear the gate and complete cleanly.
     if (!isOwner) {
       const latestRun = await prisma.executionRun.findFirst({
         where: { taskId: params.taskId },
@@ -124,7 +132,7 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
           projectId: params.projectId,
           task: {
             id: task.id,
-            prUrl: task.prUrl,
+            prUrl: effectivePrUrl,
             planDeliverableRefs: task.planDeliverableRefs ?? [],
             boundPlanVersion: task.boundPlanVersion,
           },
@@ -165,6 +173,64 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
       );
     }
 
+    // R-181: declarative verification-rule gate. The agent completion path
+    // (runs/[runId]/route.ts:291) runs this for EVERY completion, but the
+    // human path historically skipped it — so an owner-configured HARD gate
+    // (`require_pr_merged`, `require_files_changed`, ...) was enforced for
+    // agents yet trivially bypassed by a human clicking "complete". We now
+    // mirror the agent path's 422 envelope (R-184 contract: `gate: 'rule'`).
+    //
+    // The context is built from what the human endpoint actually carries:
+    //   - outputSummary   ← completionNote
+    //   - deliverablesMet ← the task's plan-deliverable refs (or the note)
+    //   - prUrl           ← effectivePrUrl (PR attached now, or the stored one)
+    // The endpoint does NOT carry `filesChanged` / `branchName`, so
+    // `require_files_changed` / `require_commits_on_branch` fail closed here BY
+    // DESIGN: those rules demand evidence a manual completion cannot supply, so
+    // a project mandating them must complete such work through the
+    // git-integrated agent flow rather than a manual mark-done. Projects with
+    // no rules configured pay nothing — `evaluateProjectVerificationRules`
+    // returns an empty result and this block is a no-op.
+    const humanDeliverablesMet =
+      task.planDeliverableRefs.length > 0 ? task.planDeliverableRefs : [body.completionNote];
+    const ruleResult = await evaluateProjectVerificationRules(params.projectId, {
+      task: {
+        id: task.id,
+        type: task.type,
+        prUrl: effectivePrUrl,
+        planDeliverableRefs: task.planDeliverableRefs ?? [],
+      },
+      body: {
+        outputSummary: body.completionNote,
+        filesChanged: [],
+        deliverablesMet: humanDeliverablesMet,
+      },
+      // No run scope: the human run is created only AFTER the gate passes, so
+      // `require_pr_merged` uses the unscoped legacy PR-merge binding (the same
+      // path R-192's `deriveTaskCompletionState` takes for human evidence).
+    });
+    if (ruleResult.failed.length > 0) {
+      return NextResponse.json(
+        {
+          error: {
+            code: 'VERIFICATION_RULE_FAILED',
+            message:
+              `Cannot complete: ${ruleResult.failed.length} verification rule(s) failed. ` +
+              `Owner can edit rules under project settings.`,
+            gate: 'rule',
+            details: {
+              failedRules: ruleResult.failed.map((r) => ({
+                ruleId: r.ruleId,
+                kind: r.kind,
+                message: r.message,
+              })),
+            },
+          },
+        },
+        { status: 422 },
+      );
+    }
+
     const taskPack = await buildTaskPack(params.taskId, params.projectId);
 
     await prisma.$transaction(async (tx) => {
@@ -178,8 +244,7 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
           status: 'completed',
           taskPackSnapshot: (taskPack ?? {}) as Prisma.InputJsonValue,
           outputSummary: body.completionNote,
-          deliverablesMet:
-            task.planDeliverableRefs.length > 0 ? task.planDeliverableRefs : [body.completionNote],
+          deliverablesMet: humanDeliverablesMet,
           filesChanged: [],
           blockers: [],
           driftSignals: [],
@@ -188,7 +253,10 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
         },
       });
 
-      // Mark task done and optionally update prUrl
+      // Mark task done and optionally update prUrl. First-time human
+      // self-complete is intentionally NOT R-192-gated (see the guard above
+      // and issue-1476-complete-human-r192-bypass.test.ts): a human manual
+      // completion is its own attestation, unlike an agent's self-report.
       await tx.task.update({
         where: { id: params.taskId },
         data: {
