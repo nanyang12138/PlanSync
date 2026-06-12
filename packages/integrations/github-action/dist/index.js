@@ -21614,28 +21614,65 @@ function isLastPage(pagination, pageSize, page, receivedRows) {
   }
   return receivedRows < pageSize;
 }
-async function fetchTaskIdsForBranch(apiUrl, projectId, headers, branchName) {
-  const matched = [];
+async function fetchTasksForBranch(apiUrl, projectId, headers, branchName) {
+  const tasks = [];
   let page = 1;
+  const q = encodeURIComponent(branchName);
   for (let i = 0; i < TASK_PAGE_CAP; i += 1) {
-    const url = `${apiUrl}/api/projects/${projectId}/tasks?page=${page}&pageSize=${TASK_PAGE_SIZE}`;
+    const url = `${apiUrl}/api/projects/${projectId}/tasks?branchName=${q}&page=${page}&pageSize=${TASK_PAGE_SIZE}`;
     const res = await fetch(url, { headers });
     const json = await res.json();
     if (!res.ok) {
       throw new Error(json?.error?.message || `HTTP ${res.status} ${res.statusText}`);
     }
-    const tasks = json.data ?? [];
-    for (const task of tasks) {
-      if (task.branchName && task.branchName === branchName) {
-        matched.push(task.id);
-      }
-    }
-    if (isLastPage(json.pagination, TASK_PAGE_SIZE, page, tasks.length)) {
-      return { matched, truncated: false };
+    const rows = json.data ?? [];
+    tasks.push(...rows);
+    if (isLastPage(json.pagination, TASK_PAGE_SIZE, page, rows.length)) {
+      return { tasks, truncated: false };
     }
     page += 1;
   }
-  return { matched, truncated: true };
+  return { tasks, truncated: true };
+}
+async function fetchTaskById(apiUrl, projectId, headers, taskId) {
+  const url = `${apiUrl}/api/projects/${projectId}/tasks/${encodeURIComponent(taskId)}`;
+  const res = await fetch(url, { headers });
+  if (res.status === 404) return null;
+  const json = await res.json();
+  if (!res.ok) {
+    throw new Error(json?.error?.message || `HTTP ${res.status} ${res.statusText}`);
+  }
+  return json.data ?? null;
+}
+async function fetchActivePlanVersion(apiUrl, projectId, headers) {
+  const url = `${apiUrl}/api/projects/${projectId}/plans/active`;
+  const res = await fetch(url, { headers });
+  if (res.status === 404) return null;
+  const json = await res.json();
+  if (!res.ok) {
+    throw new Error(json?.error?.message || `HTTP ${res.status} ${res.statusText}`);
+  }
+  return json.data?.version ?? null;
+}
+async function fetchPrLabels(opts) {
+  const fetchFn = opts.fetchImpl ?? globalThis.fetch;
+  const url = `https://api.github.com/repos/${opts.repo}/pulls/${opts.prNumber}`;
+  const res = await fetchFn(url, {
+    headers: {
+      Authorization: `Bearer ${opts.token}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "plansync-github-action"
+    }
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `GitHub API GET ${url} returned ${res.status} ${res.statusText}: ${text.slice(0, 200)}`
+    );
+  }
+  const json = await res.json();
+  return (json.labels ?? []).map((l) => l.name).filter((n) => !!n);
 }
 var DRIFT_PAGE_CAP = 50;
 var DRIFT_PAGE_SIZE = 100;
@@ -21693,6 +21730,9 @@ async function run() {
   if (githubToken) {
     core.setSecret(githubToken);
   }
+  const strictRaw = core.getInput("strict-sourcing").trim().toLowerCase();
+  const strictSourcing = strictRaw === "true" || strictRaw === "1" || strictRaw === "yes";
+  const exemptLabels = parseTaskIds(core.getInput("exempt-labels"));
   if (apiKey) {
     core.setSecret(apiKey);
   }
@@ -21717,6 +21757,35 @@ async function run() {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json"
     };
+    if (exemptLabels.length > 0) {
+      if (githubToken && repoInput && prNumberInput) {
+        try {
+          const labels = await fetchPrLabels({
+            token: githubToken,
+            repo: repoInput,
+            prNumber: Number.parseInt(prNumberInput, 10)
+          });
+          const hit = labels.find((l) => exemptLabels.includes(l));
+          if (hit) {
+            core.warning(
+              `PlanSync gate EXEMPTED via label "${hit}". Skipping drift + strict-sourcing checks for this PR.`
+            );
+            core.setOutput("drift-count", "0");
+            core.setOutput("has-drift", "false");
+            core.setOutput("semantic-gate", "skipped");
+            return;
+          }
+        } catch (err) {
+          core.warning(
+            `PlanSync exemption check could not read PR labels (${err instanceof Error ? err.message : String(err)}); running the gate (fail-closed).`
+          );
+        }
+      } else {
+        core.warning(
+          "PlanSync `exempt-labels` is set but `github-token`/`repo`/`pr-number` are not all provided; exemption is unavailable and the gate will run (fail-closed)."
+        );
+      }
+    }
     const prFiles = parsePrFiles(prFilesInput);
     let semanticGate = "skipped";
     if (legacyMode) {
@@ -21781,6 +21850,7 @@ async function run() {
     core.setOutput("semantic-gate", semanticGate);
     status.semanticGate = semanticGate;
     let scopedTaskIds = null;
+    let scopedTaskObjects = null;
     const explicitTaskIds = parseTaskIds(taskIdsInput);
     const setScope = (ids) => {
       scopedTaskIds = ids === null ? null : new Set(ids);
@@ -21791,31 +21861,72 @@ async function run() {
       setScope(explicitTaskIds);
       core.info(`Scoping drift check to ${explicitTaskIds.length} explicit task id(s).`);
     } else if (branchName) {
-      const { matched, truncated } = await fetchTaskIdsForBranch(
-        apiUrl,
-        projectId,
-        headers,
-        branchName
-      );
+      const { tasks, truncated } = await fetchTasksForBranch(apiUrl, projectId, headers, branchName);
       if (truncated) {
         status.truncatedTaskScan = true;
         core.setFailed(
-          `PlanSync drift-check refused to run: scanning more than ${TASK_PAGE_CAP * TASK_PAGE_SIZE} tasks for branch "${branchName}" \u2014 scope would be incomplete and could miss in-scope HIGH drifts. Pass \`task-ids\` explicitly or ask the API to expose a server-side branchName filter.`
+          `PlanSync drift-check refused to run: more than ${TASK_PAGE_CAP * TASK_PAGE_SIZE} tasks on branch "${branchName}" \u2014 scope would be incomplete and could miss in-scope HIGH drifts.`
         );
         return;
       }
-      if (matched.length === 0) {
+      if (tasks.length === 0) {
         core.setFailed(
           `PlanSync drift-check: no tasks found with branchName="${branchName}". Refusing to silently pass \u2014 verify the branch-name input or pass \`task-ids\` explicitly.`
         );
         return;
       }
-      setScope(matched);
-      core.info(`Scoping drift check to ${matched.length} task(s) on branch "${branchName}".`);
+      scopedTaskObjects = tasks;
+      const ids = tasks.map((t) => t.id);
+      setScope(ids);
+      core.info(`Scoping drift check to ${ids.length} task(s) on branch "${branchName}".`);
+    } else if (strictSourcing) {
+      core.setFailed(
+        "PlanSync strict-sourcing: this PR is not scoped to any task (no `branch-name` or `task-ids`). Every change must trace to a current-plan task \u2014 provide branch-name/task-ids, or add an exempt label."
+      );
+      return;
     } else {
       core.warning(
         "PlanSync drift-check is running in project-wide mode: any open drift in the project will gate this PR. Pass `task-ids` or `branch-name` to scope the check to this PR."
       );
+    }
+    if (strictSourcing && scopedTaskIds !== null) {
+      const activeVersion = status.planVersion ?? await fetchActivePlanVersion(apiUrl, projectId, headers);
+      if (activeVersion == null) {
+        core.setFailed(
+          "PlanSync strict-sourcing: no active plan for this project \u2014 cannot verify task version binding."
+        );
+        return;
+      }
+      let scopedTasks;
+      if (scopedTaskObjects !== null) {
+        scopedTasks = scopedTaskObjects;
+      } else {
+        const ids = [...scopedTaskIds];
+        const fetched = await Promise.all(
+          ids.map((id) => fetchTaskById(apiUrl, projectId, headers, id))
+        );
+        scopedTasks = fetched.filter((t) => t !== null);
+        if (scopedTasks.length < ids.length) {
+          core.setFailed(
+            `PlanSync strict-sourcing: ${ids.length - scopedTasks.length} explicit task id(s) not found in project ${projectId}.`
+          );
+          return;
+        }
+      }
+      const stale = scopedTasks.filter(
+        (t) => typeof t.boundPlanVersion === "number" && t.boundPlanVersion !== activeVersion
+      );
+      if (stale.length > 0) {
+        for (const t of stale) {
+          core.error(
+            `Task ${t.id} is bound to plan v${t.boundPlanVersion}, but the active plan is v${activeVersion}. Rebind before merging.`
+          );
+        }
+        core.setFailed(
+          `PlanSync strict-sourcing: ${stale.length} scoped task(s) bound to a stale plan version. Rebind to v${activeVersion} (plansync_task_rebind) before this PR can merge.`
+        );
+        return;
+      }
     }
     let allDrifts;
     try {

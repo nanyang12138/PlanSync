@@ -96,6 +96,57 @@ describe('R-042: list query param zod validation', () => {
     expect(res.status).toBe(400);
   });
 
+  // R-207 / L3: server-side branchName filter (enables the drift-gate action
+  // to fetch exactly the PR's task in one call instead of paginating).
+  it('GET /tasks?branchName=feat/x → 200 returns only that branch’s task', async () => {
+    await testPrisma.task.create({
+      data: {
+        projectId,
+        title: 'r042 branch task',
+        type: 'code',
+        priority: 'p1',
+        status: 'todo',
+        boundPlanVersion: 1,
+        branchName: 'feat/r207-branch',
+      },
+    });
+    const res = await tasksGet(
+      makeReq(`/api/projects/${projectId}/tasks`, {
+        userName: owner,
+        searchParams: { branchName: 'feat/r207-branch' },
+      }),
+      { params: Promise.resolve({ projectId }) },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0].branchName).toBe('feat/r207-branch');
+  });
+
+  it('GET /tasks?branchName=nope → 200 with empty result', async () => {
+    const res = await tasksGet(
+      makeReq(`/api/projects/${projectId}/tasks`, {
+        userName: owner,
+        searchParams: { branchName: 'no-such-branch' },
+      }),
+      { params: Promise.resolve({ projectId }) },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toHaveLength(0);
+  });
+
+  it('GET /tasks?branchName=   (whitespace only) → 400', async () => {
+    const res = await tasksGet(
+      makeReq(`/api/projects/${projectId}/tasks`, {
+        userName: owner,
+        searchParams: { branchName: '   ' },
+      }),
+      { params: Promise.resolve({ projectId }) },
+    );
+    expect(res.status).toBe(400);
+  });
+
   it('GET /drifts?status=foo → 400 VALIDATION_ERROR', async () => {
     const res = await driftsGet(
       makeReq(`/api/projects/${projectId}/drifts`, {

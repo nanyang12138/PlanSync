@@ -25,6 +25,13 @@ type Params = { params: Promise<{ projectId: string }> };
 const taskListQuerySchema = paginationSchema.extend({
   status: taskStatusSchema.optional(),
   assignee: z.string().trim().min(1).optional(),
+  // R-207 / L3: server-side branchName filter. The GitHub Action drift-gate
+  // previously had to paginate the whole task list and match `branchName`
+  // client-side, capped at TASK_PAGE_CAP pages — large projects silently
+  // truncated and could miss in-scope HIGH drifts (github-action index.ts:676
+  // left a TODO asking for exactly this). Exposing the filter lets CI fetch
+  // precisely the PR's task(s) in one call.
+  branchName: z.string().trim().min(1).optional(),
 });
 
 export async function GET(req: NextRequest, __nextCtx: Params) {
@@ -37,6 +44,7 @@ export async function GET(req: NextRequest, __nextCtx: Params) {
       pageSize = 20,
       status,
       assignee,
+      branchName,
     } = validateSearchParams(req, taskListQuerySchema);
     const skip = (page - 1) * pageSize;
 
@@ -44,6 +52,7 @@ export async function GET(req: NextRequest, __nextCtx: Params) {
       projectId: params.projectId,
       ...(status ? { status } : {}),
       ...(assignee ? { assignee } : {}),
+      ...(branchName ? { branchName } : {}),
     };
 
     const [tasks, total] = await Promise.all([
