@@ -1,0 +1,58 @@
+# Example workflow: PlanSync drift + strict-sourcing gate on every PR.
+#
+# Copy this into `.github/workflows/plansync-drift-gate.yml` in your repo.
+# (It lives under the action's `examples/` here so it does NOT auto-run inside
+# the PlanSync repo itself.)
+#
+# To make the gate UNBYPASSABLE, also add the job below as a REQUIRED status
+# check — see the "Required check" section of the action README. The workflow
+# only runs the check; GitHub branch protection / rulesets are what forbid
+# merging a PR whose check failed.
+name: PlanSync Drift Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+# Least-privilege: read the repo, write the PR body (R-193 status block) and
+# read labels (R-207 exemption). No other scopes.
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  plansync-drift-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Collect the PR's changed files for the R-157 semantic gate.
+      - id: changed
+        uses: tj-actions/changed-files@v45
+
+      - name: PlanSync drift + strict-sourcing gate
+        uses: your-org/plansync/packages/integrations/github-action@main
+        with:
+          api-url: ${{ secrets.PLANSYNC_API_URL }}
+          api-key: ${{ secrets.PLANSYNC_API_KEY }}
+          project: ${{ vars.PLANSYNC_PROJECT_ID }}
+
+          # Scope the gate to THIS PR's task(s). `branch-name` is matched
+          # server-side against task.branchName (R-207).
+          branch-name: ${{ github.head_ref }}
+          pr-files: ${{ steps.changed.outputs.all_changed_files }}
+
+          # R-207: enforce that every PR maps to a task bound to the CURRENT
+          # active plan version. Unscoped PRs, zero-task PRs, and PRs whose
+          # task is on a stale plan version all fail.
+          strict-sourcing: 'true'
+
+          # R-207: PRs carrying this label bypass the gate (dependabot, the
+          # workflow file itself, CI-only changes). Applying a label needs repo
+          # write access, so the exemption is auditable.
+          exempt-labels: 'plansync:exempt'
+
+          # Enables the R-193 PR-body status block AND the R-207 label read.
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repo: ${{ github.repository }}
+          pr-number: ${{ github.event.pull_request.number }}
