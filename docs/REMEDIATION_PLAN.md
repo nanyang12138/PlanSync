@@ -2836,17 +2836,19 @@
 
 #### R-162 [CRITICAL] 新增 plansync-worker 进程：消费 outbox 扇出到旧 sinks
 
-- **status**: pending
+- **status**: in_progress
 - **batch**: B14
-- **depends_on**: R-161, R-138
+- **depends_on**: R-138
+- **note**: 原 `depends_on: R-161` 形成循环 — R-161 (`eventBus.publish → outbox.emit`) 已被 blocked 等 R-162 落地。本条改为仅依赖 R-138（done）。当前 PR 落地 scaffold：`packages/api/src/lib/outbox-consumer.ts` + `processPendingOutboxEvents` + `register/start/stopOutboxConsumer` lifecycle + conditional updateMany claim (多副本安全) + per-eventType handler 注册接口。run-worker.ts 已 wire 但默认关闭，opt-in via `PLANSYNC_OUTBOX_CONSUMER=true`。LISTEN/NOTIFY 与 exponential retry 留给 R-163/R-164 首批真实 sink 落地后再加（避免空 scaffold 过度工程化）。
 - **effort**: large
-- **files**: `packages/api/scripts/run-worker.ts`, 新增 `outbox-consumer.ts`
+- **files**: `packages/api/src/lib/outbox-consumer.ts`, `packages/api/scripts/run-worker.ts`, `packages/api/tests/unit/outbox-consumer.test.ts`
 - **fix_steps**:
-  1. worker 用 `LISTEN domain_events_new`（trigger NOTIFY on insert）+ fallback 1s 轮询
-  2. FOR UPDATE SKIP LOCKED 取 batch，按 eventType dispatch
-  3. 成功后 UPDATE deliveredAt=now()
-  4. 失败 → attempt++，exponential 重试
-- **verification**: 多副本 API → 单 worker fanout；杀 worker → 重启后未交付事件继续派发
+  1. ~~LISTEN domain_events_new~~ → 推迟，先用 1s polling（R-163 SSE relay 落地时再加 trigger NOTIFY）
+  2. 条件 updateMany claim（多副本安全，等价 SKIP LOCKED 语义）✅
+  3. 成功后 UPDATE deliveredAt=now() ✅
+  4. 失败 → attempt++ ✅；exponential retry 留给 R-164 webhook sink 一起设计（已知失败模式后再定 backoff schedule）
+  5. opt-in 启动 (`PLANSYNC_OUTBOX_CONSUMER=true`)，默认关闭保持 legacy publish 路径权威 ✅
+- **verification**: ✅ vitest 7/7 (`outbox-consumer.test.ts`)：empty / no-handler skip / happy path / race claim / handler throw / 重复注册 reject / env flag。多副本端到端 + LISTEN/NOTIFY 集成测试 → R-163 落地时补
 
 ---
 
