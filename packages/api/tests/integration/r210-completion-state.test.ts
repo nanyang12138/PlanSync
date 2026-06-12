@@ -139,9 +139,38 @@ describe('R-210: GET /tasks/:id/completion-state', () => {
     }
   });
 
-  it('404 for a task that does not belong to this project', async () => {
+  it('404 for a non-existent task id', async () => {
     const { res, body } = await getState('does-not-exist');
     expect(res.status).toBe(404);
     expect(body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('404 (cross-project) for a task id that belongs to ANOTHER project', async () => {
+    // Distinct from the non-existent-id case: here the task genuinely exists,
+    // just in a different project. findFirst({ id, projectId }) must still miss
+    // (projectId scope) AND this exercises the cross-project audit branch that
+    // the non-existent path never reaches.
+    const { projectId: otherProjectId } = await createTestProject('r210-other-owner');
+    try {
+      const { version: otherVersion } = await createActivePlan(otherProjectId, 'r210-other-owner');
+      const otherTask = await testPrisma.task.create({
+        data: {
+          projectId: otherProjectId,
+          title: 'task in another project',
+          type: 'code',
+          priority: 'p1',
+          status: 'in_progress',
+          boundPlanVersion: otherVersion,
+          agentConstraints: [],
+        },
+      });
+
+      // Query it through THIS project's id — must not leak across the boundary.
+      const { res, body } = await getState(otherTask.id);
+      expect(res.status).toBe(404);
+      expect(body.error.code).toBe('NOT_FOUND');
+    } finally {
+      await cleanupProject(otherProjectId);
+    }
   });
 });
