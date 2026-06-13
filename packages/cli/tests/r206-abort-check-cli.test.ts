@@ -2,13 +2,23 @@
  * R-206 L2: tests for `packages/cli/src/abort-check.mjs`.
  *
  * The script is invoked from a Claude Code PreToolUse hook on every tool
- * call, so the wire-level contract that matters here is:
+ * call. Claude Code's PreToolUse contract only BLOCKS the tool when the hook
+ * exits with code **2** — any other non-zero code is a non-blocking warning
+ * that lets the tool run anyway. The wire-level contract that matters here is
+ * therefore context-dependent:
  *
- *   - HTTP 200 from /api/exec/abort-check → script exits 0
- *   - HTTP 409 → script exits 1 and writes the abort reason to stderr
- *     (so Claude Code can surface it in the interrupt notice)
- *   - Persistent network failure → script exits 1 (fail-closed, so a
- *     broken API can't silently bypass the gate)
+ *   EXEC session (PLANSYNC_EXEC_RUN_ID set — a real /exec run to protect):
+ *     - HTTP 200 healthy                       → exit 0
+ *     - HTTP 409 (aborted)                     → exit 2 + reason on stderr
+ *     - 200 no_exec_context (key swapped down) → exit 2 (fail-closed)
+ *     - persistent network failure / 5xx       → exit 2 (fail-closed)
+ *     - missing PLANSYNC_API_KEY               → exit 2 (fail-closed)
+ *
+ *   NON-exec session (no marker — an ordinary developer in the repo):
+ *     - there is no run to gate, and this hook fires before EVERY tool call,
+ *       so it MUST be a harmless no-op: it never blocks (exit 0), even on a
+ *       config/transport failure. Bricking every tool call in a normal repo
+ *       session because the PlanSync API is down is not acceptable.
  *
  * We test by spawning the script as a child process against a tiny local
  * http server we control on a random port. No mocking of node internals.
@@ -23,6 +33,8 @@ import type { AddressInfo } from 'node:net';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const SCRIPT_PATH = join(__dirname, '..', 'src', 'abort-check.mjs');
+
+const RUN_ID = 'run_123'; // marks an exec session in the tests below
 
 interface RunResult {
   exitCode: number;
@@ -89,106 +101,101 @@ beforeEach(() => {
   plan = { status: 200, body: '{"aborted":false}' };
 });
 
-describe('abort-check.mjs — wire contract for Claude Code hook', () => {
-  it('200 response → exit 0, no stderr', async () => {
-    plan = { status: 200, body: '{"aborted":false,"status":"running"}' };
-    const r = await runScript({ PLANSYNC_API_URL: baseUrl, PLANSYNC_API_KEY: 'test-key' });
+describe('abort-check.mjs — EXEC session (PLANSYNC_EXEC_RUN_ID set) blocks with exit 2', () => {
+  const execEnv = (extra: NodeJS.ProcessEnv = {}) => ({
+    PLANSYNC_API_URL: baseUrl,
+    PLANSYNC_API_KEY: 'test-key',
+    PLANSYNC_EXEC_RUN_ID: RUN_ID,
+    ...extra,
+  });
+
+  it('200 healthy → exit 0, no stderr', async () => {
+    plan = { status: 200, body: '{"aborted":false,"status":"running","executionGate":null}' };
+    const r = await runScript(execEnv());
     expect(r.exitCode).toBe(0);
     expect(r.stderr).toBe('');
   });
 
-  it('409 with reason=task_gated → exit 1 + stderr includes the reason and gate', async () => {
+  it('409 reason=task_gated → exit 2 (BLOCKS) + stderr includes reason and gate', async () => {
     plan = {
       status: 409,
       body: '{"aborted":true,"reason":"task_gated","executionGate":"drift_high"}',
     };
-    const r = await runScript({ PLANSYNC_API_URL: baseUrl, PLANSYNC_API_KEY: 'test-key' });
-    expect(r.exitCode).toBe(1);
+    const r = await runScript(execEnv());
+    expect(r.exitCode).toBe(2);
     expect(r.stderr).toMatch(/PlanSync execution aborted/);
     expect(r.stderr).toMatch(/task_gated/);
     expect(r.stderr).toMatch(/drift_high/);
   });
 
-  it('409 with reason=run_paused → exit 1 + stderr includes reason', async () => {
+  it('409 reason=run_paused → exit 2 (BLOCKS) + stderr includes reason', async () => {
     plan = { status: 409, body: '{"aborted":true,"reason":"run_paused"}' };
-    const r = await runScript({ PLANSYNC_API_URL: baseUrl, PLANSYNC_API_KEY: 'test-key' });
-    expect(r.exitCode).toBe(1);
+    const r = await runScript(execEnv());
+    expect(r.exitCode).toBe(2);
     expect(r.stderr).toMatch(/run_paused/);
   });
 
-  it('persistent network failure → exit 1 (fail-closed)', async () => {
-    // Always destroy the socket — beyond the 3-attempt retry budget.
+  it('persistent network failure → exit 2 (fail-closed BLOCK)', async () => {
     plan = { status: 200, body: '{}', failures: 99 };
-    const r = await runScript({ PLANSYNC_API_URL: baseUrl, PLANSYNC_API_KEY: 'test-key' });
-    expect(r.exitCode).toBe(1);
+    const r = await runScript(execEnv());
+    expect(r.exitCode).toBe(2);
     expect(r.stderr).toMatch(/abort-check: API unreachable/);
   });
 
-  it('transient failure recovers within the retry budget (2 failures, then 200) → exit 0', async () => {
+  it('transient failure recovers within retry budget (2 failures, then 200) → exit 0', async () => {
     plan = { status: 200, body: '{"aborted":false}', failures: 2 };
-    const r = await runScript({ PLANSYNC_API_URL: baseUrl, PLANSYNC_API_KEY: 'test-key' });
+    const r = await runScript(execEnv());
     expect(r.exitCode).toBe(0);
   });
 
-  it('missing PLANSYNC_API_KEY → exit 1, helpful stderr (fail-closed)', async () => {
-    const r = await runScript({
-      PLANSYNC_API_URL: baseUrl,
-      // Override anything inherited from the parent process env so we
-      // genuinely test the empty-key branch.
-      PLANSYNC_API_KEY: '',
-    });
-    expect(r.exitCode).toBe(1);
+  it('missing PLANSYNC_API_KEY → exit 2 (fail-closed BLOCK) + helpful stderr', async () => {
+    const r = await runScript(execEnv({ PLANSYNC_API_KEY: '' }));
+    expect(r.exitCode).toBe(2);
     expect(r.stderr).toMatch(/PLANSYNC_API_KEY is not set/);
   });
 
-  it('5xx → exit 1 (treated as transient and retried, then fail-closed)', async () => {
+  it('5xx → exit 2 (treated as transient, retried, then fail-closed BLOCK)', async () => {
     plan = { status: 500, body: 'oops' };
-    const r = await runScript({ PLANSYNC_API_URL: baseUrl, PLANSYNC_API_KEY: 'test-key' });
-    expect(r.exitCode).toBe(1);
+    const r = await runScript(execEnv());
+    expect(r.exitCode).toBe(2);
     expect(r.stderr).toMatch(/unexpected HTTP 500/);
   });
-});
 
-describe('abort-check.mjs — anti-downgrade (PLANSYNC_EXEC_RUN_ID set)', () => {
-  it('exec session + 200 no_exec_context (key swapped down) → exit 1, fail-closed', async () => {
-    // The endpoint returns 200 {aborted:false, reason:'no_exec_context'} when
-    // the presented key is not exec-scoped. In an exec session (marker set)
-    // that means the exec-scoped key was swapped for a plain one — the gate
-    // is silently downgraded to a no-op. We must fail closed.
+  it('200 no_exec_context (exec-scoped key swapped down) → exit 2 (fail-closed BLOCK)', async () => {
+    // In an exec session, a no_exec_context answer means the exec-scoped key was
+    // swapped for a plain one — the gate is silently downgraded to a no-op. Fail closed.
     plan = { status: 200, body: '{"aborted":false,"reason":"no_exec_context"}' };
-    const r = await runScript({
-      PLANSYNC_API_URL: baseUrl,
-      PLANSYNC_API_KEY: 'test-key',
-      PLANSYNC_EXEC_RUN_ID: 'run_123',
-    });
-    expect(r.exitCode).toBe(1);
+    const r = await runScript(execEnv());
+    expect(r.exitCode).toBe(2);
     expect(r.stderr).toMatch(/not exec-scoped/);
     expect(r.stderr).toMatch(/failing closed/);
   });
+});
 
-  it('exec session + healthy 200 (properly scoped key, no reason) → exit 0', async () => {
-    plan = { status: 200, body: '{"aborted":false,"status":"running","executionGate":null}' };
-    const r = await runScript({
-      PLANSYNC_API_URL: baseUrl,
-      PLANSYNC_API_KEY: 'test-key',
-      PLANSYNC_EXEC_RUN_ID: 'run_123',
-    });
+describe('abort-check.mjs — NON-exec session (no marker) is a harmless no-op (never blocks)', () => {
+  const plainEnv = (extra: NodeJS.ProcessEnv = {}) => ({
+    PLANSYNC_API_URL: baseUrl,
+    PLANSYNC_API_KEY: 'test-key',
+    PLANSYNC_EXEC_RUN_ID: '', // explicitly NOT an exec session
+    ...extra,
+  });
+
+  it('200 no_exec_context → exit 0', async () => {
+    plan = { status: 200, body: '{"aborted":false,"reason":"no_exec_context"}' };
+    const r = await runScript(plainEnv());
     expect(r.exitCode).toBe(0);
     expect(r.stderr).toBe('');
   });
 
-  it('NON-exec session + 200 no_exec_context → exit 0 (harmless no-op preserved)', async () => {
-    // A plain developer session (no marker) hitting the same no_exec_context
-    // response must still be a no-op — the downgrade check only fires when we
-    // KNOW we were launched as an exec run.
-    plan = { status: 200, body: '{"aborted":false,"reason":"no_exec_context"}' };
-    const r = await runScript({
-      PLANSYNC_API_URL: baseUrl,
-      PLANSYNC_API_KEY: 'test-key',
-      // PLANSYNC_EXEC_RUN_ID intentionally unset
-      PLANSYNC_EXEC_RUN_ID: '',
-    });
+  it('persistent network failure → exit 0 (does NOT brick an ordinary session)', async () => {
+    plan = { status: 200, body: '{}', failures: 99 };
+    const r = await runScript(plainEnv());
     expect(r.exitCode).toBe(0);
-    expect(r.stderr).toBe('');
+  });
+
+  it('missing PLANSYNC_API_KEY → exit 0 (warns on stderr but never blocks)', async () => {
+    const r = await runScript(plainEnv({ PLANSYNC_API_KEY: '' }));
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toMatch(/PLANSYNC_API_KEY is not set/);
   });
 });

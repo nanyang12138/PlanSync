@@ -25,9 +25,20 @@
  *   PLANSYNC_USER          x-user-name header (matches the rest of the CLI)
  *
  * Exit codes:
- *   0  — API said the run is healthy; tool may proceed.
- *   1  — aborted (drift / paused / not_found), persistent API failure, or
- *        config error (e.g. missing PLANSYNC_API_KEY). The IDE interrupts.
+ *   0  — API said the run is healthy, OR this is not an exec session (nothing
+ *        to gate); the tool may proceed.
+ *   2  — aborted (drift / paused / not_found), persistent API failure, or
+ *        config error *inside an exec run*. Claude Code interrupts the tool.
+ *
+ * IMPORTANT (R-206): Claude Code's PreToolUse contract only BLOCKS the tool
+ * when the hook exits with code **2**. Any other non-zero code is a
+ * *non-blocking* warning — the tool still runs. We previously exited 1 on
+ * abort, which silently downgraded the whole L2 gate to a no-op (the warning
+ * showed, the tool ran anyway). We now exit 2 to actually interrupt. Because
+ * this hook fires before EVERY tool call in the repo, we only escalate to a
+ * blocking exit when PLANSYNC_EXEC_RUN_ID marks this as an exec session;
+ * outside /exec there is no run to protect, so a config/transport failure
+ * must exit 0 rather than brick every tool call in an ordinary session.
  */
 import * as http from 'http';
 import * as https from 'https';
@@ -45,11 +56,17 @@ const user = env.PLANSYNC_USER || env.USER || '';
 // key that has been swapped down to a non-exec-scoped one.
 const expectedRunId = env.PLANSYNC_EXEC_RUN_ID || '';
 
-// Without a key we cannot meaningfully check; fail closed so an
-// improperly-configured hook doesn't silently let agents through.
+// PreToolUse blocking semantics: exit 2 = block the tool; anything else
+// non-zero = non-blocking warning (tool runs anyway). We only want to block
+// inside an exec run — outside /exec there is no run to gate, so failing
+// closed there would brick every tool call in an ordinary repo session.
+const BLOCK_EXIT = expectedRunId ? 2 : 0;
+
+// Without a key we cannot meaningfully check; fail closed (inside an exec run)
+// so an improperly-configured hook doesn't silently let agents through.
 if (!apiKey) {
   process.stderr.write('plansync abort-check: PLANSYNC_API_KEY is not set\n');
-  process.exit(1);
+  process.exit(BLOCK_EXIT);
 }
 
 const MAX_ATTEMPTS = 3;
@@ -131,7 +148,7 @@ async function main() {
               'plansync abort-check: exec session (PLANSYNC_EXEC_RUN_ID set) but the API key is ' +
                 'not exec-scoped — drift gate is downgraded to a no-op; failing closed\n',
             );
-            process.exit(1);
+            process.exit(BLOCK_EXIT);
           }
         }
         process.exit(0);
@@ -149,7 +166,7 @@ async function main() {
           /* ignore — fall back to generic reason */
         }
         process.stderr.write(`PlanSync execution aborted: ${reason}\n`);
-        process.exit(1);
+        process.exit(BLOCK_EXIT);
       }
 
       // Any other status (401, 5xx, etc.) — treat as transient and retry.
@@ -167,7 +184,7 @@ async function main() {
   // bypass the gate.
   const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
   process.stderr.write(`plansync abort-check: API unreachable (${msg}) — failing closed\n`);
-  process.exit(1);
+  process.exit(BLOCK_EXIT);
 }
 
 void main();
