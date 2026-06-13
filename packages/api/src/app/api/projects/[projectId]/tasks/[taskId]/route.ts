@@ -131,7 +131,24 @@ export async function PATCH(req: NextRequest, __nextCtx: Params) {
       //   3. The current assignee finishes a human task themselves — but
       //      only for human-typed tasks (agent tasks always need a run).
       if (body.status === 'done') {
-        const isOwner = authed.projectRole === 'owner';
+        // R-211 — separation of duties: an exec-scoped caller is, by
+        // construction, the executor of this task's run (the key is minted
+        // per run via /exec-sessions/issue-token and carries `execRunId`).
+        // Every escape hatch in this done-branch trusts `isOwner` as an
+        // *administrative human* judgement that evidence landed out-of-band.
+        // But `projectRole` is read verbatim from ProjectMember.role
+        // (auth.ts:554) and nothing caps an exec key's role, so a member
+        // registered as `role: owner` that is also the assignee could,
+        // through its own run's key, claim owner authority and rubber-stamp
+        // `done` — defeating the very R-192 gate its run just failed. We
+        // strip the owner privilege from exec-scoped callers here so they
+        // fall under the same evidence-based non-owner protections below
+        // (the `awaiting_evidence` guard, the latest-run / lift-detection
+        // shortcuts, and the agent-needs-a-completed-run rule). The
+        // legitimate owner override stays available from a normal (non-exec)
+        // session; the executor's own path to `done` is execution_complete,
+        // which re-runs the gate against fresh evidence.
+        const isOwner = authed.projectRole === 'owner' && !auth.execRunId;
 
         // R-192 / closes #1227 #1306 — `awaiting_evidence` is the gate's
         // parked state: a run *already* completed and R-192 explicitly
