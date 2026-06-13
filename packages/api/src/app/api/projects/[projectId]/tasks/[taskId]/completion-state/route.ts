@@ -103,6 +103,52 @@ export async function GET(req: NextRequest, __nextCtx: Params) {
       where: { projectId: params.projectId, failedAt: { not: null } },
     });
 
+    // PR1 (advisory-review-ingest): surface the most recent code-review
+    // advisory for this task so the owner sees it at the decision point
+    // WITHOUT opening the editor. This is display-only and never gates —
+    // mirrors the rest of this endpoint's contract.
+    //
+    // `fromLatestRun` is the v1 staleness signal: false means the advisory
+    // came from an earlier run than the task's most recent one (the work was
+    // re-run since). True git-head staleness (comparing reviewedRef.headSha
+    // against the live branch head) needs webhook data and is deferred — we
+    // do NOT claim it here rather than assert something we can't verify.
+    const latestRun = await prisma.executionRun.findFirst({
+      where: { taskId: task.id },
+      orderBy: { startedAt: 'desc' },
+      select: { id: true },
+    });
+    const latestReviewRow = await prisma.runReview.findFirst({
+      where: { kind: 'code_review_advisory', run: { taskId: task.id } },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, runId: true, feedback: true, metadata: true, createdAt: true },
+    });
+    let latestAdvisoryReview: {
+      runReviewId: string;
+      runId: string;
+      fromLatestRun: boolean;
+      source: unknown;
+      summary: string | null;
+      counts: unknown;
+      reviewedRef: unknown;
+      truncated: unknown;
+      createdAt: Date;
+    } | null = null;
+    if (latestReviewRow) {
+      const meta = (latestReviewRow.metadata ?? {}) as Record<string, unknown>;
+      latestAdvisoryReview = {
+        runReviewId: latestReviewRow.id,
+        runId: latestReviewRow.runId,
+        fromLatestRun: latestRun ? latestReviewRow.runId === latestRun.id : true,
+        source: meta.source ?? null,
+        summary: latestReviewRow.feedback,
+        counts: meta.counts ?? null,
+        reviewedRef: meta.reviewedRef ?? null,
+        truncated: meta.truncated ?? false,
+        createdAt: latestReviewRow.createdAt,
+      };
+    }
+
     const hasMissing = (code: TaskCompletionMissingCode) =>
       derived.missing.some((m) => m.code === code);
 
@@ -124,6 +170,7 @@ export async function GET(req: NextRequest, __nextCtx: Params) {
         prMerged,
         deliverableEvidence,
         outboxDeadLetters,
+        latestAdvisoryReview,
       },
     });
   } catch (error) {

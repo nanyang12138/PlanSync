@@ -4,7 +4,12 @@ import { prisma } from '@/lib/prisma';
 import { authenticate, requireProjectRole } from '@/lib/auth';
 import { handleApiError } from '@/lib/errors';
 import { validateBody } from '@/lib/validate';
-import { completeExecutionRunSchema, AppError, ErrorCode } from '@plansync/shared';
+import {
+  completeExecutionRunSchema,
+  sanitizeAdvisoryReviews,
+  AppError,
+  ErrorCode,
+} from '@plansync/shared';
 import { createActivity } from '@/lib/activity';
 import { eventBus } from '@/lib/event-bus';
 import { dispatchWebhooks } from '@/lib/webhook';
@@ -272,6 +277,21 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
         feedback: string;
         lowConfidence?: boolean;
       } | null = null;
+
+      // PR1 (advisory-review-ingest): summaries of any structured code-review
+      // advisories the exec environment submitted in this `complete` call.
+      // Populated after finalize succeeds; surfaced in the 200 response
+      // alongside (but independent of) the AI `advisory` above. NEVER blocks.
+      let advisoryReviewSummaries: Array<{
+        runReviewId?: string;
+        source: string;
+        summary?: string;
+        counts: Record<string, number>;
+        findingCount: number;
+        reviewedRef?: unknown;
+        truncated: boolean;
+      }> = [];
+      let advisoryReviewWarnings: string[] = [];
 
       if (body.status === 'completed') {
         // Layer 2: deliverablesMet required for all executors
@@ -609,7 +629,15 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
         }
       }
 
-      const { deliverablesMet, ...bodyWithoutDeliverablesMet } = body;
+      // `advisoryReviews` is handled separately (sanitized + written as
+      // RunReview rows below); strip it here so it never leaks into the
+      // ExecutionRun update — the run table has no such column.
+      const {
+        deliverablesMet,
+        advisoryReviews: _advisoryReviews,
+        ...bodyWithoutDeliverablesMet
+      } = body;
+      void _advisoryReviews;
       // Atomic finalize: even after all the soft checks above, the run row could
       // have been touched between SELECT and UPDATE (e.g. owner force-supersede,
       // future plan-activate pause). Re-assert status='running' and version
@@ -638,6 +666,59 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
           SET deliverables_met = ${deliverablesMet}
           WHERE id = ${params.runId}
         `;
+      }
+
+      // PR1 (advisory-review-ingest): persist any structured code-review
+      // advisories the exec environment submitted. `sanitizeAdvisoryReviews`
+      // is pure and never throws — it drops malformed entries and truncates
+      // oversized ones into `warnings` — so a bad payload can never reach the
+      // strict path and 400/422 the (already-finalized) run. Each RunReview
+      // write is best-effort: a Prisma failure here is logged and skipped, it
+      // does NOT roll back the completion. This is "always advisory" in code.
+      {
+        const sanitized = sanitizeAdvisoryReviews(body.advisoryReviews);
+        advisoryReviewWarnings = sanitized.warnings;
+        for (const review of sanitized.reviews) {
+          let runReviewId: string | undefined;
+          try {
+            const created = await prisma.runReview.create({
+              data: {
+                runId: params.runId,
+                kind: 'code_review_advisory',
+                // No single 0-100 score for a code review — the signal is the
+                // findings/counts. `feedback` mirrors the human-readable
+                // summary so existing RunReview readers get something useful.
+                score: null,
+                feedback: review.summary ?? null,
+                metadata: {
+                  source: review.source,
+                  reviewedRef: review.reviewedRef ?? null,
+                  summary: review.summary ?? null,
+                  findings: review.findings,
+                  counts: review.counts,
+                  truncated: review.truncated,
+                } as Prisma.InputJsonValue,
+              },
+            });
+            runReviewId = created.id;
+          } catch (reviewErr) {
+            const reviewMsg = reviewErr instanceof Error ? reviewErr.message : String(reviewErr);
+            console.error(
+              `[advisory-review] RunReview write failed for run ${params.runId} — advisory dropped, completion unaffected:`,
+              reviewMsg,
+            );
+            advisoryReviewWarnings.push('An advisory review failed to persist and was dropped.');
+          }
+          advisoryReviewSummaries.push({
+            runReviewId,
+            source: review.source,
+            summary: review.summary,
+            counts: review.counts,
+            findingCount: review.findings.length,
+            reviewedRef: review.reviewedRef,
+            truncated: review.truncated,
+          });
+        }
       }
 
       // R-192: derive task status from git + verification signals
@@ -764,6 +845,17 @@ export async function POST(req: NextRequest, __nextCtx: Params) {
       const responseBody: Record<string, unknown> = { data: { ...updated, ...responseExtras } };
       if (advisory) {
         responseBody.advisory = advisory;
+      }
+      // PR1: echo back what advisory reviews were accepted (and any warnings
+      // from sanitization) so the CLI / exec agent can confirm receipt and
+      // surface "N findings recorded" without a follow-up read. Empty arrays
+      // are omitted to preserve the legacy response shape for callers that
+      // never send advisory reviews.
+      if (advisoryReviewSummaries.length > 0) {
+        responseBody.advisoryReviews = advisoryReviewSummaries;
+      }
+      if (advisoryReviewWarnings.length > 0) {
+        responseBody.advisoryReviewWarnings = advisoryReviewWarnings;
       }
       return NextResponse.json(responseBody);
     }
