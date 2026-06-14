@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>PlanSync 全流程演示</title>
+<link rel="stylesheet" href="player.css">
+<style>
+body{margin:0;background:#0d1117}
+#player{width:100%}
+.steps{padding:10px 20px;font-size:12px;color:#7d8590;font-family:sans-serif;line-height:2.1;border-top:1px solid #21262d}
+code{background:#161b22;padding:2px 5px;border-radius:3px;color:#79c0ff}
+.n{display:inline-block;width:22px;height:22px;line-height:22px;text-align:center;border-radius:50%;background:#21262d;color:#f0883e;font-weight:bold;margin:0 4px;font-size:11px}
+b{color:#e6edf3}
+</style>
+</head>
+<body>
+<div id="player"></div>
+<div class="steps">
+<span class="n">A</span><b>Owner</b> 从零创建项目 <code>PayFlow</code> → plan v1 (<code>pay/card-form</code> deliverable) → 任务分派给 alice(human) 和 bob(agent)
+<span class="n">B</span><b>双栏</b> alice + bob 查看任务 (<code>/tasks</code>) → 两个任务都 <code>▶ In Progress</code>
+<span class="n">C</span><b>Owner</b> 一句话激活 v2 (移除 <code>pay/card-form</code>) → TUI AI 自动创建→审批→激活 → <code>⚠ 2 drift HIGH</code>
+<span class="n">D</span><b>双栏</b> alice 尝试完成 → <b>L1 强制</b>:"executionGate: drift_high — 必须先解决 drift" → rebind → 两任务完成 → <code>[PayFlow · v2]</code>
+</div>
+<script src="player.js"></script>
+<script>
+AsciinemaPlayer.create('demo.cast',document.getElementById('player'),{
+  autoPlay:true,idleTimeLimit:10,theme:'asciinema',fit:'width',terminalFontSize:'9px'
+});
+</script>
+</body>
+</html>

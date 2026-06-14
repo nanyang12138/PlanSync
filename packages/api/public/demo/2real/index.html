@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>PlanSync — 双栏真实TUI</title>
+<link rel="stylesheet" href="player.css">
+<style>
+body{margin:0;background:#0d1117}
+#player{width:100%}
+.info{padding:10px 16px;font-size:12px;color:#7d8590;font-family:sans-serif;line-height:1.9;border-top:1px solid #21262d}
+code{background:#161b22;padding:2px 5px;border-radius:3px;color:#79c0ff}
+.tag{display:inline-block;padding:1px 8px;border-radius:12px;font-size:11px;margin:0 3px;font-weight:600}
+.l{background:#1a3a1a;color:#3fb950}.r{background:#1a2a3a;color:#58a6ff}.e{background:#3a1a1a;color:#f85149}
+</style>
+</head>
+<body>
+<div id="player"></div>
+<div class="info">
+<span class="tag l">左(devbob2)</span> 开发者 · <code>bin/plansync</code> · 任务执行中 · v1 bound &nbsp;|&nbsp;
+<span class="tag r">右(nanyang2)</span> Owner · 发布 v2 (breaking: 移除 <code>pay/card-form</code>) &nbsp;|&nbsp;
+<span class="tag e">SSE推送</span> 两边 TUI <b>同时</b>收到 <code>⚠ 1 drift — HIGH</code> · 状态栏 v1→v2 实时切换 · L1 服务端自动 paused
+</div>
+<script src="player.js"></script>
+<script>
+AsciinemaPlayer.create('demo.cast',document.getElementById('player'),{
+  autoPlay:true,idleTimeLimit:5,theme:'asciinema',fit:'width',terminalFontSize:'9px'
+});
+</script>
+</body>
+</html>

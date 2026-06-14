@@ -1,0 +1,29 @@
+{
+  "workspace_path": "/proj/gfx_gct_lec_user0/users/nanyang2/PlanSync",
+  "client": "claude-code",
+  "channel": {
+    "channel_url": "https://teams.microsoft.com/l/channel/19%3AcKYV1oG03ZwjpNcMFol-wcpdlKQcueOKbiophIkFemo1%40thread.skype/AIBot?groupId=8cb63df5-9adf-4519-b30b-abaf73c04b43\u0026tenantId=3dd8961f-e488-4e60-8e11-a82d994e183d\u0026ngc=true",
+    "channel_url_hash": "547ebd008590",
+    "team_id": "8cb63df5-9adf-4519-b30b-abaf73c04b43",
+    "tenant_id": "3dd8961f-e488-4e60-8e11-a82d994e183d",
+    "channel_id": "19:cKYV1oG03ZwjpNcMFol-wcpdlKQcueOKbiophIkFemo1@thread.skype",
+    "setup_state": "pending"
+  },
+  "poll_interval": "10s",
+  "debounce_quiet": "3s",
+  "debounce_max_wait": "30s",
+  "lease_default": "24h",
+  "idle_default": "168h",
+  "ask_timeout_default": "15m",
+  "terminal_question_retention": "24h",
+  "max_open_questions_total": 100,
+  "max_open_questions_per_source": 10,
+  "display_source_max": 24,
+  "notify_rate_per_hour_per_source": 30,
+  "notify_rate_burst_per_source": 5,
+  "reply_loop_limit": {
+    "count": 10,
+    "window": "60s"
+  },
+  "notify_email": "Nan.Yang@amd.com"
+}

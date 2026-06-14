@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>PlanSync Demo</title>
+<link rel="stylesheet" href="player.css">
+<style>
+body { margin:0; background:#0d1117; }
+#player { width:100%; }
+.info { padding:10px 16px; font-size:12px; color:#7d8590; font-family:sans-serif; }
+code { background:#161b22; padding:2px 5px; border-radius:3px; color:#79c0ff; }
+</style>
+</head>
+<body>
+<div id="player"></div>
+<div class="info">
+<b style="color:#f0883e">右(owner)</b>:建项目 → v1计划 + <code>pay/card-form</code> → 激活 → 派任务给bob &nbsp;|&nbsp;
+<b style="color:#f0883e">左(bob)</b>:注册run → ♥ heartbeat工作中 →
+<b style="color:#f0883e">右(owner)</b>:发breaking v2 移除<code>pay/card-form</code> →
+<b style="color:#f0883e">左(bob)</b>:🛑 Run paused → Cannot complete → ⛔ 必须停手 →
+<b style="color:#f0883e">右(owner)</b>:<code>rebind</code>解决漂移
+</div>
+<script src="player.js"></script>
+<script>
+AsciinemaPlayer.create('demo.cast', document.getElementById('player'), {
+  autoPlay: true,
+  idleTimeLimit: 2.5,
+  theme: 'asciinema',
+  fit: 'width',
+  terminalFontSize: '9px'
+});
+</script>
+</body>
+</html>

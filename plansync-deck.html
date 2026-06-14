@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PlanSync — 可被信任的 Agentic Workflow</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reset.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+<style>
+  :root {
+    --red: #ED1C24; --red-soft: #ff5a60; --red-glow: rgba(237,28,36,0.5);
+    --bg: #08090c; --bg-elev: #0f1115; --bg-elev2: #15181e;
+    --surface: rgba(255,255,255,0.025); --surface-hover: rgba(255,255,255,0.04);
+    --border: rgba(255,255,255,0.08); --border-strong: rgba(255,255,255,0.14);
+    --text: #f4f5f7; --text-2: #9ba1ac; --text-3: #5f6672;
+    --blue: #5b9dff; --green: #4ade80; --amber: #fbbf24; --purple: #c084fc; --cyan: #38d9c9;
+  }
+  .reveal-viewport {
+    background:
+      radial-gradient(900px 600px at 85% -5%, rgba(237,28,36,0.10), transparent 55%),
+      radial-gradient(800px 600px at 10% 105%, rgba(91,157,255,0.06), transparent 55%),
+      var(--bg);
+  }
+  .reveal { font-family: 'Inter','PingFang SC',-apple-system,sans-serif; font-weight:400; color:var(--text); -webkit-font-smoothing:antialiased; }
+  .reveal .slides section { text-align:left; height:100%; padding:0; }
+  .grid-bg::after {
+    content:''; position:absolute; inset:0;
+    background-image: radial-gradient(rgba(255,255,255,0.022) 1px, transparent 1px);
+    background-size:32px 32px; pointer-events:none; z-index:0;
+  }
+  .reveal h1,.reveal h2,.reveal h3 { font-family:'Space Grotesk','Inter',sans-serif; }
+  .reveal h1 { font-weight:700; letter-spacing:-0.03em; color:#fff; line-height:1.05; }
+  .reveal h2 { font-weight:600; letter-spacing:-0.02em; color:#fff; }
+  .reveal p,.reveal li { line-height:1.6; }
+  .mono { font-family:'JetBrains Mono',monospace; }
+
+  /* ICONS (Lucide-style line set, single stroke, currentColor) */
+  .ico { width:17px; height:17px; display:block; stroke:currentColor; stroke-width:1.8; fill:none; stroke-linecap:round; stroke-linejoin:round; }
+  .ico-sm { width:16px; height:16px; }
+
+  .eyebrow { display:inline-flex; align-items:center; gap:9px; font-size:0.62rem; font-weight:600; letter-spacing:0.18em; text-transform:uppercase; color:var(--text-2); margin-bottom:22px; }
+  .eyebrow .num { color:var(--red-soft); font-family:'JetBrains Mono',monospace; font-weight:600; }
+  .eyebrow .bar { width:26px; height:1px; background:var(--border-strong); }
+  .eyebrow .en { color:var(--text-3); font-weight:500; letter-spacing:0.12em; }
+  .eyebrow .stage { color:var(--text-3); font-weight:500; letter-spacing:0.08em; }
+
+  .slide { position:relative; z-index:1; height:720px; padding:54px 70px; display:flex; flex-direction:column; box-sizing:border-box; }
+  .slide-title { font-size:2.0rem; margin:0 0 26px 0; color:#fff; line-height:1.12; letter-spacing:-0.025em; }
+  .slide-title .accent { color:var(--red-soft); }
+  .slide-title .sub { display:block; font-size:0.86rem; font-weight:400; color:var(--text-2); margin-top:11px; letter-spacing:0; font-family:'Inter',sans-serif; }
+
+  /* COVER */
+  .cover { justify-content:center; background: radial-gradient(1000px 700px at 80% 0%, rgba(237,28,36,0.14), transparent 55%), radial-gradient(700px 500px at 0% 100%, rgba(91,157,255,0.07), transparent 55%); }
+  .cover .badge { display:inline-flex; align-items:center; gap:9px; padding:7px 16px; border-radius:100px; border:1px solid rgba(237,28,36,0.32); background:rgba(237,28,36,0.08); color:var(--red-soft); font-size:0.62rem; font-weight:600; letter-spacing:0.14em; text-transform:uppercase; width:fit-content; margin-bottom:30px; }
+  .cover .badge .dot { width:6px; height:6px; border-radius:50%; background:var(--red); box-shadow:0 0 10px var(--red-glow); animation:pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  .cover h1 { font-size:5.6rem; margin:0; line-height:0.95; background:linear-gradient(180deg,#fff 30%,#b8bcc4 100%); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+  .cover h1 .sync { color:var(--red); -webkit-text-fill-color:var(--red); }
+  .cover .lede { font-size:1.12rem; color:var(--text); margin:24px 0 4px 0; font-weight:600; letter-spacing:-0.01em; }
+  .cover .lede2 { font-size:0.86rem; color:var(--text-2); margin:0 0 22px 0; font-weight:400; letter-spacing:0.01em; }
+  .cover .tagline { font-size:0.92rem; color:var(--text-2); max-width:620px; line-height:1.6; margin:0 0 16px 0; padding-left:18px; border-left:2px solid var(--red); }
+  .cover .tagline .en { display:block; color:var(--text-3); font-size:0.8rem; margin-top:8px; }
+  .cover .pills { display:flex; gap:10px; flex-wrap:wrap; margin-top:22px; }
+  .pill { padding:7px 15px; border-radius:8px; font-size:0.62rem; font-weight:600; letter-spacing:0.03em; border:1px solid var(--border); background:var(--surface); color:var(--text-2); backdrop-filter:blur(8px); }
+  .pill .k { color:var(--text); }
+
+  /* CARDS */
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:20px 22px; backdrop-filter:blur(12px); position:relative; transition:border-color 0.2s; }
+  .card.glow-red { border-color:rgba(237,28,36,0.25); }
+  .card.glow-red::before { content:''; position:absolute; top:0; left:22px; right:22px; height:1px; background:linear-gradient(90deg,transparent,var(--red),transparent); opacity:0.6; }
+  .card-top { display:flex; align-items:center; gap:11px; margin-bottom:11px; }
+  .card-ico { width:34px; height:34px; border-radius:9px; display:flex; align-items:center; justify-content:center; flex-shrink:0; background:var(--bg-elev2); border:1px solid var(--border); color:var(--text); }
+  .card-title { font-size:0.86rem; font-weight:650; color:#fff; font-family:'Space Grotesk',sans-serif; }
+  .card-title .en { display:block; font-size:0.6rem; font-weight:500; color:var(--text-3); letter-spacing:0.06em; margin-top:2px; }
+  .card-body { font-size:0.74rem; color:var(--text-2); line-height:1.62; }
+  .card-body strong { color:var(--text); font-weight:600; }
+  .card-body code,.mono-inline { font-family:'JetBrains Mono',monospace; font-size:0.92em; color:var(--red-soft); background:rgba(237,28,36,0.08); padding:1px 6px; border-radius:4px; }
+
+  .grid { display:grid; gap:15px; }
+  .g2 { grid-template-columns:1fr 1fr; } .g3 { grid-template-columns:repeat(3,1fr); } .g4 { grid-template-columns:repeat(4,1fr); }
+  .col { display:flex; flex-direction:column; gap:13px; }
+  .split { display:grid; grid-template-columns:1fr 1fr; gap:30px; align-items:start; }
+  .split-55 { display:grid; grid-template-columns:1.12fr 0.88fr; gap:28px; align-items:start; }
+  .flex-fill { flex:1; }
+
+  /* BROWSER FRAME */
+  .browser { border-radius:12px; overflow:hidden; border:1px solid var(--border-strong); background:#fff; box-shadow:0 1px 0 rgba(255,255,255,0.05) inset, 0 40px 80px -20px rgba(0,0,0,0.7), 0 0 60px -20px rgba(237,28,36,0.25); position:relative; }
+  .browser-bar { height:34px; background:#e8eaed; display:flex; align-items:center; gap:7px; padding:0 14px; border-bottom:1px solid #d4d7dc; }
+  .browser-bar .dot { width:11px; height:11px; border-radius:50%; }
+  .browser-bar .d1{background:#ff5f57} .browser-bar .d2{background:#febc2e} .browser-bar .d3{background:#28c840}
+  .browser-bar .url { margin-left:14px; flex:1; height:20px; border-radius:6px; background:#fff; border:1px solid #d4d7dc; font-size:10px; color:#8a8f98; display:flex; align-items:center; padding:0 10px; font-family:'JetBrains Mono',monospace; }
+  .browser-shot { display:block; width:100%; }
+  .browser-shot.crop { max-height:420px; object-fit:cover; object-position:top; }
+  .browser-shot.crop-tall { max-height:470px; object-fit:cover; object-position:top; }
+  .shot-caption { font-size:0.66rem; color:var(--text-3); margin-top:13px; display:flex; align-items:center; gap:8px; }
+  .shot-caption .tick { color:var(--green); }
+
+  /* TIMELINE */
+  .timeline { position:relative; padding-left:26px; display:flex; flex-direction:column; gap:13px; }
+  .timeline::before { content:''; position:absolute; left:5px; top:6px; bottom:6px; width:2px; background:linear-gradient(to bottom,var(--red) 0%,rgba(237,28,36,0.1) 100%); }
+  .tl { position:relative; }
+  .tl .node { position:absolute; left:-26px; top:4px; width:12px; height:12px; border-radius:50%; background:var(--red); box-shadow:0 0 10px var(--red-glow); }
+  .tl .node.amber{background:var(--amber);box-shadow:0 0 10px rgba(251,191,36,0.5)} .tl .node.dead{background:#3a3f48;box-shadow:none}
+  .tl .time { font-size:0.6rem; color:var(--red-soft); font-family:'JetBrains Mono',monospace; font-weight:600; letter-spacing:0.05em; }
+  .tl .txt { font-size:0.78rem; color:var(--text); margin-top:3px; line-height:1.5; }
+  .tl .txt strong{color:#fff} .tl .txt .strike{color:var(--text-3);text-decoration:line-through} .tl .txt .warn{color:var(--amber)} .tl .txt .bad{color:var(--red-soft);font-weight:600}
+
+  .quote { font-family:'Space Grotesk',sans-serif; font-size:1.2rem; font-weight:400; color:#fff; line-height:1.45; border-left:3px solid var(--red); padding:4px 0 4px 22px; margin:0; }
+  .quote em { color:var(--red-soft); font-style:normal; font-weight:600; }
+  .quote .en { display:block; font-family:'Inter',sans-serif; font-size:0.78rem; color:var(--text-3); font-weight:400; margin-top:10px; line-height:1.5; }
+
+  /* TABLE */
+  .ctable { width:100%; border-collapse:collapse; font-size:0.74rem; }
+  .ctable th { padding:12px 15px; text-align:left; font-weight:600; color:var(--text-2); font-size:0.6rem; letter-spacing:0.1em; text-transform:uppercase; border-bottom:1px solid var(--border-strong); font-family:'Space Grotesk',sans-serif; }
+  .ctable th.us { color:var(--red-soft); }
+  .ctable td { padding:11px 15px; border-bottom:1px solid var(--border); color:var(--text); vertical-align:middle; }
+  .ctable tr:last-child td { border-bottom:none; }
+  .ctable .label { color:var(--text-2); font-size:0.72rem; }
+  .ctable .yes { color:var(--green); font-weight:600; } .ctable .no { color:var(--amber); font-weight:600; } .ctable .us-col { background:rgba(237,28,36,0.05); }
+
+  /* TERMINAL */
+  .term { border-radius:12px; overflow:hidden; border:1px solid var(--border-strong); background:#0a0c10; font-family:'JetBrains Mono',monospace; font-size:0.64rem; box-shadow:0 30px 60px -25px rgba(0,0,0,0.8); }
+  .term-bar { height:32px; background:#13161b; display:flex; align-items:center; gap:7px; padding:0 14px; border-bottom:1px solid var(--border); }
+  .term-bar .dot{width:10px;height:10px;border-radius:50%} .term-bar .t{margin-left:12px;color:var(--text-3);font-size:0.58rem}
+  .term-body { padding:15px 17px; line-height:1.85; }
+  .c-cyan{color:var(--cyan)} .c-dim{color:var(--text-3)} .c-key{color:var(--text-2)} .c-val{color:var(--text)}
+  .c-grn{color:var(--green)} .c-wht{color:#fff} .c-amb{color:var(--amber);font-weight:600} .c-red{color:var(--red-soft);font-weight:600} .c-blu{color:var(--blue)}
+
+  /* STATS */
+  .stat { border:1px solid var(--border); background:var(--surface); border-radius:14px; padding:24px 20px; text-align:center; backdrop-filter:blur(10px); position:relative; overflow:hidden; }
+  .stat::after { content:''; position:absolute; bottom:0; left:50%; transform:translateX(-50%); width:60%; height:1px; background:linear-gradient(90deg,transparent,var(--red),transparent); opacity:0.4; }
+  .stat .n { font-family:'Space Grotesk',sans-serif; font-size:2.7rem; font-weight:700; line-height:1; background:linear-gradient(180deg,#fff,#c4c8cf); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; font-variant-numeric:tabular-nums; }
+  .stat .n.red { background:linear-gradient(180deg,var(--red-soft),var(--red)); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+  .stat .l { font-size:0.64rem; color:var(--text-2); margin-top:9px; line-height:1.45; }
+  .stat .l .en { display:block; color:var(--text-3); font-size:0.56rem; margin-top:3px; }
+
+  /* FEATURE LIST */
+  .flist { display:flex; flex-direction:column; gap:10px; }
+  .flist .fi { display:flex; gap:13px; align-items:flex-start; padding:12px 16px; border-radius:11px; border:1px solid var(--border); background:var(--surface); }
+  .flist .fi .ic { width:30px; height:30px; border-radius:8px; flex-shrink:0; display:flex; align-items:center; justify-content:center; background:var(--bg-elev2); border:1px solid var(--border); color:var(--red-soft); }
+  .flist .fi .ft { font-size:0.76rem; color:var(--text); line-height:1.5; }
+  .flist .fi .ft strong { color:#fff; font-weight:600; }
+
+  /* ARCH */
+  .arch { display:flex; flex-direction:column; gap:12px; width:100%; }
+  .arch-tier .tlabel { font-size:0.56rem; color:var(--text-3); text-transform:uppercase; letter-spacing:0.14em; font-weight:600; margin-bottom:8px; font-family:'Space Grotesk',sans-serif; }
+  .arch-row { display:flex; gap:11px; }
+  .abox { flex:1; border-radius:11px; padding:12px 15px; border:1px solid var(--border); background:var(--surface); text-align:center; }
+  .abox .an { font-size:0.76rem; font-weight:650; color:#fff; font-family:'Space Grotesk',sans-serif; }
+  .abox .ad { font-size:0.58rem; color:var(--text-2); margin-top:4px; line-height:1.4; }
+  .abox.red{border-color:rgba(237,28,36,0.3);background:rgba(237,28,36,0.05)} .abox.red .an{color:var(--red-soft)}
+  .abox.blue{border-color:rgba(91,157,255,0.3);background:rgba(91,157,255,0.05)} .abox.blue .an{color:var(--blue)}
+  .abox.green{border-color:rgba(74,222,128,0.3);background:rgba(74,222,128,0.05)} .abox.green .an{color:var(--green)}
+  .abox.amber{border-color:rgba(251,191,36,0.3);background:rgba(251,191,36,0.05)} .abox.amber .an{color:var(--amber)}
+  .abox.purple{border-color:rgba(192,132,252,0.3);background:rgba(192,132,252,0.05)} .abox.purple .an{color:var(--purple)}
+  .arch-link { text-align:center; color:var(--text-3); font-size:0.6rem; font-family:'JetBrains Mono',monospace; letter-spacing:0.05em; }
+  .statstrip { display:flex; gap:10px; margin-top:14px; }
+  .statstrip .ss { flex:1; border:1px solid var(--border); background:var(--surface); border-radius:10px; padding:10px 14px; text-align:center; }
+  .statstrip .ss .ssn { font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:1.25rem; color:#fff; }
+  .statstrip .ss .ssl { font-size:0.58rem; color:var(--text-3); margin-top:2px; letter-spacing:0.04em; }
+
+  /* CLOSING */
+  .closing { justify-content:center; align-items:center; text-align:center; background:radial-gradient(800px 600px at 50% 30%, rgba(237,28,36,0.16), transparent 60%); }
+  .closing h1 { font-size:3.4rem; margin:0 0 10px 0; background:linear-gradient(180deg,#fff,#b8bcc4); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+  .closing h1 .s{color:var(--red);-webkit-text-fill-color:var(--red)}
+  .closing .sub { font-size:0.84rem; color:var(--text-2); margin-bottom:30px; letter-spacing:0.02em; }
+  .closing .big { font-family:'Space Grotesk',sans-serif; font-size:1.5rem; color:#fff; line-height:1.45; max-width:720px; margin:0 0 10px 0; }
+  .closing .big em { color:var(--red-soft); font-style:normal; font-weight:600; }
+  .closing .big-en { font-size:0.84rem; color:var(--text-3); max-width:640px; margin:0 0 34px 0; line-height:1.55; }
+  .chain { display:flex; gap:14px; align-items:center; justify-content:center; margin-bottom:32px; }
+  .chain .node { border:1px solid var(--border); background:var(--surface); border-radius:11px; padding:13px 20px; min-width:135px; backdrop-filter:blur(10px); }
+  .chain .node .ct { font-size:0.58rem; color:var(--text-3); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:4px; }
+  .chain .node .cn { font-size:0.8rem; color:#fff; font-weight:600; font-family:'Space Grotesk',sans-serif; }
+  .chain .arr { color:var(--red); font-size:1.1rem; }
+
+  .reveal .progress { height:2px; color:var(--red); } .reveal .progress span { background:var(--red); }
+  .reveal .slide-number { background:transparent; color:var(--text-3); font-family:'JetBrains Mono',monospace; font-size:11px; }
+  .reveal .controls { color:var(--red); }
+  .text-dim{color:var(--text-2)} .text-3{color:var(--text-3)} .mt-a{margin-top:auto}
+
+  .anchor-note { display:flex; align-items:center; gap:10px; font-size:0.68rem; color:var(--text-2); background:rgba(91,157,255,0.05); border:1px solid rgba(91,157,255,0.18); border-radius:10px; padding:11px 16px; }
+  .anchor-note .ai { color:var(--blue); font-weight:600; font-family:'Space Grotesk',sans-serif; flex-shrink:0; }
+  .anchor-note.red { background:rgba(237,28,36,0.05); border-color:rgba(237,28,36,0.2); }
+  .anchor-note.red .ai { color:var(--red-soft); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .cover .badge .dot { animation:none; }
+    .reveal .slides section .fragment { transition:none; }
+  }
+</style>
+</head>
+<body>
+<div class="reveal">
+<div class="slides">
+
+<!-- ========== 1 · COVER ========== -->
+<section data-background-color="#08090c">
+  <div class="slide cover grid-bg">
+    <div class="badge"><span class="dot"></span> AMD AI Hackathon · CDC 2026</div>
+    <h1>Plan<span class="sync">Sync</span></h1>
+    <p class="lede">多个 AI agent 之间,唯一<span style="color:var(--red-soft)">可信、可被强制</span>的那份真相。</p>
+    <p class="lede2">The single, enforceable source of truth between multiple AI agents — and the humans working alongside them.</p>
+    <p class="tagline">每个团队都在让 agent 干活——而且是<strong style="color:var(--text)">多个 agent、和人一起、跨会话并行</strong>。当计划在变、没人盯着时,谁来保证它们没在朝错误的方向狂奔?
+      <span class="en">Teams aren't running one agent — they're running many, alongside humans, across sessions. When the plan shifts and no one's watching, who keeps them from sprinting the wrong way?</span>
+    </p>
+    <div class="pills">
+      <span class="pill"><span class="k">Agentic Workflow</span> · 人 + AI</span>
+      <span class="pill"><span class="k">58</span> MCP Tools · Genie 原生</span>
+      <span class="pill"><span class="k">Drift</span> 强制中断</span>
+      <span class="pill"><span class="k">Evidence</span> 严格溯源</span>
+    </div>
+    <div style="position:absolute;left:70px;bottom:44px;line-height:1.5">
+      <div style="color:var(--text);font-weight:600;font-family:'Space Grotesk',sans-serif;font-size:0.82rem">Nan Yang · Tina Zhang</div>
+      <div style="color:var(--text-3);font-size:0.72rem;margin-top:2px">GFX Infra - Shanghai · AMD</div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== 2 · THE PROBLEM ========== -->
+<section data-background-color="#08090c">
+  <div class="slide grid-bg">
+    <div class="eyebrow"><span class="bar"></span><span class="num">01</span> 问题所在 <span class="en">/ THE PROBLEM</span></div>
+    <h2 class="slide-title">Agent 跑得越快,<span class="accent">跑错方向的代价越大</span><span class="sub">The faster agents run, the more a wrong direction costs.</span></h2>
+    <div class="split">
+      <div class="timeline">
+        <div class="tl fragment"><div class="node"></div><div class="time">09:00</div><div class="txt"><strong>Owner</strong> 改 spec:鉴权从 session 切到 PKCE OAuth2</div></div>
+        <div class="tl fragment"><div class="node"></div><div class="time">09:01</div><div class="txt"><strong>Agent-Alice</strong> 收到变更,按新版本写 /auth/callback</div></div>
+        <div class="tl fragment"><div class="node dead"></div><div class="time">09:01</div><div class="txt"><span class="strike">Agent-Bob 仍按旧 session 方案写 /auth/login</span> <span class="warn">⚠ 无通知</span></div></div>
+        <div class="tl fragment"><div class="node dead"></div><div class="time">09:02</div><div class="txt"><span class="strike">Engineer-Dave 仍按旧方案写 middleware</span> <span class="warn">⚠ 无通知</span></div></div>
+        <div class="tl fragment"><div class="node amber"></div><div class="time">17:00</div><div class="txt"><span class="bad">Merge day。冲突。架构不兼容。数小时工时归零。</span></div></div>
+      </div>
+      <div class="col">
+        <blockquote class="quote">AI 协作里最致命的 Bug<br>不在代码里——在那份<br><em>没人知道已经过时</em>的计划里。
+          <span class="en">The deadliest bug in AI collaboration isn't in the code — it's in the plan nobody knew was already stale.</span>
+        </blockquote>
+        <div class="card glow-red">
+          <div class="card-top"><div class="card-ico" style="color:var(--red-soft)"><svg class="ico" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></div><div class="card-title" style="color:var(--red-soft)">根本原因 <span class="en">Root cause</span></div></div>
+          <div class="card-body">AI Agent 是<strong>无状态执行器</strong>:它不会主动检查计划变没变,也没有机制告诉它"该停下来"。<br><br>JIRA / Notion 是给<strong>人读的</strong>,不是 agent 工作流能消费、能强制的协议。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== 3 · MEET PLANSYNC (reveal · dashboard) ========== -->
+<section data-background-color="#08090c">
+  <div class="slide grid-bg">
+    <div class="eyebrow"><span class="bar"></span><span class="num">02</span> 揭幕 <span class="en">/ MEET PLANSYNC</span></div>
+    <h2 class="slide-title">于是,所有人和 agent 共享<span class="accent">同一份真相</span><span class="sub">One shared, versioned source of truth — for every human and every agent.</span></h2>
+    <div class="split-55">
+      <div>
+        <div class="browser">
+          <div class="browser-bar"><span class="dot d1"></span><span class="dot d2"></span><span class="dot d3"></span><span class="url">localhost:3001 / dashboard</span></div>
+          <img class="browser-shot" src="docs/img/dashboard-crop.png" alt="PlanSync Dashboard">
+        </div>
+        <div class="shot-caption"><span class="tick">●</span> 真实产品界面 · 一眼看全局:项目 / 任务 / 漂移 &nbsp;<span style="color:var(--text-3)">— Real product UI, not a mockup</span></div>
+      </div>
+      <div class="col">
+        <div class="card" style="border-color:rgba(91,157,255,0.25)">
+          <div class="card-top"><div class="card-ico" style="color:var(--blue)"><svg class="ico" viewBox="0 0 24 24"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg></div><div class="card-title">一处看全局 <span class="en">Single pane</span></div></div>
+          <div class="card-body">项目、任务、<strong>未决漂移</strong>同屏。状态不再散落在各自的会话里。</div>
+        </div>
+        <div class="card" style="border-color:rgba(74,222,128,0.25)">
+          <div class="card-top"><div class="card-ico" style="color:var(--green)"><svg class="ico" viewBox="0 0 24 24"><path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/></svg></div><div class="card-title">计划带版本号 <span class="en">Versioned plans</span></div></div>
+          <div class="card-body">每个项目挂着一个 <code>vN</code> 计划——人和 agent 引用的是同一个版本。</div>
+        </div>
+        <div class="card glow-red">
+          <div class="card-top"><div class="card-ico" style="color:var(--red-soft)"><svg class="ico" viewBox="0 0 24 24"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg></div><div class="card-title">漂移实时可见 <span class="en">Drift, live</span></div></div>
+          <div class="card-body"><strong style="color:var(--red-soft)">3 drifts</strong> 不是事后报表——是计划一变就实时亮起的状态。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== 4 · VERSIONED PLANS (plan-diff) ========== -->
+<section data-background-color="#08090c">
+  <div class="slide grid-bg">
+    <div class="eyebrow"><span class="bar"></span><span class="num">03</span> 版本化计划 <span class="en">/ VERSIONED PLANS</span></div>
+    <h2 class="slide-title">计划会变——所以它<span class="accent">带版本、要评审</span><span class="sub">Plans change — so they're versioned, diffed, and reviewed before they go live.</span></h2>
+    <div class="split-55">
+      <div>
+        <div class="browser">
+          <div class="browser-bar"><span class="dot d1"></span><span class="dot d2"></span><span class="dot d3"></span><span class="url">localhost:3001 / plans / version-history</span></div>
+          <img class="browser-shot crop-tall" src="docs/img/plan-diff.png" alt="Plan Diff v1 → v2">
+        </div>
+        <div class="shot-caption"><span class="tick">●</span> 真实产品界面 · v1 → v2 自动 diff,标注变更与受影响任务</div>
+      </div>
+      <div class="col">
+        <div class="card"><div class="card-top"><div class="card-ico"><svg class="ico" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></div><div class="card-title">不可变版本链 <span class="en">Immutable chain</span></div></div><div class="card-body mono" style="font-size:0.62rem;color:var(--text-2)">draft → proposed → active<br>→ superseded → reactivated</div><div class="card-body" style="margin-top:8px">每次变更都是新版本,<strong>一键回滚</strong>到任意历史。</div></div>
+        <div class="card"><div class="card-top"><div class="card-ico"><svg class="ico" viewBox="0 0 24 24"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" x2="6" y1="9" y2="21"/></svg></div><div class="card-title">评审工作流 <span class="en">Review gate</span></div></div><div class="card-body">propose → reviewer 审批 → activate,每个 reviewer 可指定 focus。</div></div>
+        <div class="card glow-red"><div class="card-top"><div class="card-ico" style="color:var(--red-soft)"><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg></div><div class="card-title">变更即可见 <span class="en">Diff is the signal</span></div></div><div class="card-body">"<strong style="color:var(--amber)">3 tasks may need to be updated</strong>"——产品自己算出谁受影响。</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== 5 · TASKS DRIFT (drift-alert) ========== -->
+<section data-background-color="#08090c">
+  <div class="slide grid-bg">
+    <div class="eyebrow"><span class="bar"></span><span class="num">04</span> 漂移 <span class="en">/ DRIFT</span></div>
+    <h2 class="slide-title">任务死绑在版本上——计划一动,<span class="accent">它立刻漂移</span><span class="sub">Every task binds to a plan version; the moment the plan moves, the task drifts.</span></h2>
+    <div class="split-55">
+      <div>
+        <div class="browser">
+          <div class="browser-bar"><span class="dot d1"></span><span class="dot d2"></span><span class="dot d3"></span><span class="url">localhost:3001 / task / drift-alert</span></div>
+          <img class="browser-shot crop-tall" src="docs/img/drift-alert.png" alt="Drift Alert on a running task">
+        </div>
+        <div class="shot-caption"><span class="tick">●</span> 真实产品界面 · 正在执行的任务(v1)被标记漂移 → rebind / cancel / no_impact</div>
+      </div>
+      <div class="col">
+        <div class="card"><div class="card-top"><div class="card-ico"><svg class="ico" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></div><div class="card-title">任务-版本绑定 <span class="en">Task ↔ version</span></div></div><div class="card-body"><code>Bound v1 · Active v2</code>——<strong>version mismatch</strong> 就是漂移的支点。</div></div>
+        <div class="card glow-red"><div class="card-top"><div class="card-ico" style="color:var(--red-soft)"><svg class="ico" viewBox="0 0 24 24"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></svg></div><div class="card-title">严重度看交付物 diff <span class="en">Severity = deliverable diff</span></div></div><div class="card-body">删除/重写绑定的<strong>交付物</strong> = breaking = <span style="color:var(--red-soft)">HIGH</span>;改 goal / 描述等 prose <strong>不触发</strong>。正在执行的 run 会被<strong>额外硬暂停</strong>。判定是<strong style="color:#fff">纯函数 · 可重放</strong>(看交付物行 ID,不是文本哈希)——杀掉了"改个错别字就暂停全部任务"的误报海啸。</div></div>
+        <div class="card"><div class="card-top"><div class="card-ico"><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg></div><div class="card-title">三种处置 <span class="en">Resolve, don't ignore</span></div></div><div class="card-body"><strong>Rebind</strong> 对齐新版本续跑 · <strong>No Impact</strong> 不受影响 · <strong>Cancel</strong> 释放。必须人来选。</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== 6 · THE MONEY SHOT (live demo · matches drift-interrupt.sh) ========== -->
+<section data-background-color="#08090c">
+  <div class="slide grid-bg">
+    <div class="eyebrow"><span class="bar"></span><span class="num">05</span> Live Demo · The Money Shot</div>
+    <h2 class="slide-title">计划在脚下变了,<span class="accent">agent 想交也交不了</span><span class="sub">The plan shifts underfoot — and the agent literally cannot finish stale work.</span></h2>
+    <div class="split-55">
+      <div>
+        <div class="term">
+          <div class="term-bar"><span class="dot" style="background:#ff5f57"></span><span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span><span class="t">scripts/demo/drift-interrupt.sh</span></div>
+          <div class="term-body">
+<span class="c-dim">▶ PHASE 2 · alice 激活 v2(移除 bob 正在做的交付物 pay/card-form)</span><br>
+<span class="c-grn">activate v2 →</span> <span class="c-val">{version:2, status:"active"}</span><br>
+<br>
+<span class="c-dim">▶ PHASE 3 · THE MONEY SHOT</span><br>
+<span class="c-key">drift →</span> <span class="c-amb">{severity:"high", executionGate:"drift_high"}</span><br>
+<span class="c-key">bob 的 run →</span> <span class="c-amb">引擎自动暂停 (running → paused)</span><br>
+<span class="fragment"><br>
+<span class="c-dim">&gt;&gt; bob 不知情,照常发心跳:</span><br>
+<span class="c-red">  ✗ RUN_PAUSED</span> <span class="c-dim">"a newer plan version superseded this run"</span></span>
+<span class="fragment"><br>
+<br>
+<span class="c-dim">&gt;&gt; bob 强行 complete:</span><br>
+<span class="c-red">  ✗ RUN_PAUSED</span> <span class="c-dim">"Cannot complete a paused run."</span></span>
+          </div>
+        </div>
+      </div>
+      <div class="col">
+        <blockquote class="quote">"The agent literally<br>cannot finish<br><em>stale work.</em>"
+          <span class="en">不是提醒,不是告警——是服务端物理上拒绝一次过时的完成。</span>
+        </blockquote>
+        <div class="card glow-red">
+          <div class="card-body" style="font-size:0.76rem">这个判定在<strong style="color:#fff">服务端 (L1)</strong>,<strong style="color:#fff">不在 agent 机器上</strong>。所以换个会话、换个 agent 来问,得到的还是同一个"拒绝"——<strong style="color:#fff">跨会话的一致,是服务端强制的天然结果</strong>。</div>
+        </div>
+        <div class="card">
+          <div class="card-body" style="font-size:0.72rem">bob 之后任何一次 PlanSync 调用都会被 MCP 预检短路成 <code>RUN_ABORTED</code>,直到漂移被解决。可一键复现:<code>drift-interrupt.sh</code>。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== 7 · THREE LAYERS + HONEST BOUNDARIES ========== -->
+<section data-background-color="#08090c">
+  <div class="slide grid-bg">
+    <div class="eyebrow"><span class="bar"></span><span class="num">06</span> 强制 <span class="en">/ ENFORCEMENT</span></div>
+    <h2 class="slide-title">刚才那个"交不了",由<span class="accent">三层强制</span>兜底——并诚实说清边界<span class="sub">Three enforcement layers behind that refusal — and we're honest about each one's limits.</span></h2>
+    <div class="card" style="padding:8px 8px">
+      <table class="ctable">
+        <thead><tr><th style="width:9%">层</th><th style="width:24%">在哪运行 · Where</th><th>挡住什么 · Blocks</th><th style="width:22%" class="us">防篡改? · Tamper-proof</th></tr></thead>
+        <tbody>
+          <tr><td class="label" style="color:var(--red-soft);font-weight:600">L1</td><td>服务端 (API + MCP)</td><td>把漂移的 run 记成 complete;对暂停中的 run 发心跳</td><td class="yes us-col">✓ 是 — 跑在服务端</td></tr>
+          <tr><td class="label" style="color:var(--amber);font-weight:600">L2</td><td>客户端 (Claude Code)</td><td>闸门设上后的「下一次工具调用」——mid-session 硬中断;hook 以 <span class="mono-inline">exit 2</span> 打断 ai-loop(<span class="mono-inline">exit 1</span> 曾静默失效 · R-206)</td><td class="no us-col">△ 否 — 跑在 agent 机器上</td></tr>
+          <tr><td class="label" style="color:var(--blue);font-weight:600">L3</td><td>CI (GitHub Action)</td><td>合并 PR:关联任务 HIGH 漂移 / 超出交付物范围</td><td class="yes us-col">✓ 是 — 跑在 CI</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="grid g2 mt-a" style="margin-top:20px">
+      <div class="card" style="border-color:rgba(74,222,128,0.22)">
+        <div class="card-body" style="font-size:0.74rem"><strong style="color:var(--green)">硬保证 · Hard guarantee</strong> · L1 在服务端:agent 在自己机器上能改任何东西,<strong style="color:#fff">仍无法让服务器接受一次漂移的完成</strong>。这条不可绕过。</div>
+      </div>
+      <div class="card" style="border-color:rgba(251,191,36,0.22)">
+        <div class="card-body" style="font-size:0.74rem"><strong style="color:var(--amber)">诚实边界 · Honest boundary</strong> · L2 是客户端 hook,本质防君子不防对抗者。<strong style="color:#fff">敢讲清这一点,才是真可信</strong>——它由 L1+L3 兜底。</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== 7.5 · COORDINATION & ACCOUNTABILITY ========== -->
+<section data-background-color="#08090c">
+  <div class="slide grid-bg">
+    <div class="eyebrow"><span class="bar"></span><span class="num">07</span> 协调 + 问责 <span class="en">/ COORDINATION &amp; ACCOUNTABILITY</span></div>
+    <h2 class="slide-title">多个 agent,同一份计划——<span class="accent">互不踩踏,且各自担责</span><span class="sub">Many agents on one plan: collisions are prevented, and no agent can rubber-stamp its own work.</span></h2>
+    <div class="split">
+      <div class="col">
+        <div style="font-family:'Space Grotesk',sans-serif;font-size:0.74rem;font-weight:650;color:#fff;margin-bottom:2px">防碰撞 <span style="color:var(--text-3);font-weight:500;font-size:0.62rem;letter-spacing:0.04em">/ Collision-proof</span></div>
+        <div class="flist">
+          <div class="fi"><div class="ic"><svg class="ico ico-sm" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><div class="ft"><strong>单任务单 run 互斥</strong>:两个 agent 抢同一任务,数据库层只放行一个——部分唯一索引 + 事务内 CAS,另一个拿到 <span class="mono-inline">STATE_CONFLICT</span></div></div>
+          <div class="fi"><div class="ic"><svg class="ico ico-sm" viewBox="0 0 24 24"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg></div><div class="ft"><strong>plansync_who</strong>:一眼看到谁在跑哪个任务、<strong style="color:#fff">绑的哪个版本</strong>——并行执行的版本错位一眼可见</div></div>
+          <div class="fi"><div class="ic"><svg class="ico ico-sm" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg></div><div class="ft"><strong>RUN_STALE_VERSION</strong>:owner 一 rebind,正在飞的 agent <strong style="color:#fff">下一次心跳</strong>就被告知版本失配、必须重启</div></div>
+        </div>
+      </div>
+      <div class="col">
+        <div style="font-family:'Space Grotesk',sans-serif;font-size:0.74rem;font-weight:650;color:var(--red-soft);margin-bottom:2px">问责 <span style="color:var(--text-3);font-weight:500;font-size:0.62rem;letter-spacing:0.04em">/ Accountable · 不可自我盖章</span></div>
+        <div class="flist">
+          <div class="fi"><div class="ic" style="color:var(--red-soft)"><svg class="ico ico-sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></svg></div><div class="ft"><strong>职责分离</strong>:agent 一进执行会话,owner 特权立刻被<strong style="color:#fff">剥离</strong>——它无法把自己的活儿一键标记完成,只能走证据门</div></div>
+          <div class="fi"><div class="ic" style="color:var(--red-soft)"><svg class="ico ico-sm" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></svg></div><div class="ft"><strong>exec-key 即用即焚</strong>:每个 run 发一把<strong style="color:#fff">短命密钥</strong>,run 一结束即吊销 + 清缓存——会话关了,这个 agent 就无法在记录之外偷偷动手</div></div>
+        </div>
+      </div>
+    </div>
+    <div class="anchor-note red mt-a" style="margin-top:20px">
+      <span class="ai">为何抄不走</span>
+      <span>P2 早上那场 17:00 的撞车,就是这样<strong style="color:#fff">从根上不会发生</strong>——版本一变,撞上的那个 agent 当场被停,而不是憋到 merge day。抄得走界面,抄不走的是底层几十条堵竞态的不变量(<span class="mono-inline">R-048 / 152 / 205 / 206 / 211…</span>)——平时看不见,出事时救命。</span>
+    </div>
+  </div>
+</section>
+
+<!-- ========== 8 · EVIDENCE / STRICT SOURCING ========== -->
+<section data-background-color="#08090c">
+  <div class="slide grid-bg">
+    <div class="eyebrow"><span class="bar"></span><span class="num">08</span> 证据溯源 <span class="en">/ STRICT SOURCING</span></div>
+    <h2 class="slide-title">不信 agent 说"做完了"——<span class="accent">要 git 证明</span><span class="sub">Don't trust the agent's "done" — make it prove it with git.</span></h2>
+    <div class="split">
+      <div class="col">
+        <div class="flist">
+          <div class="fi"><div class="ic"><svg class="ico ico-sm" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="m9 15 2 2 4-4"/></svg></div><div class="ft"><strong>声明 ≠ 完成</strong>:agent 报 done,服务端去 git 核 <code>require_pr_merged</code> / <code>require_commits_on_branch</code>——证据严格 scope 到本次 run,没到就停在 <code>awaiting_evidence</code></div></div>
+          <div class="fi"><div class="ic"><svg class="ico ico-sm" viewBox="0 0 24 24"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></svg></div><div class="ft"><strong>github_push 证据管道</strong>:合并/提交事件由 git 侧(HMAC 校验)推送进来,而非 agent 自报</div></div>
+          <div class="fi"><div class="ic"><svg class="ico ico-sm" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg></div><div class="ft"><strong>分支独占 + 防降级</strong>:run 启动时锁定分支归属,关掉了多条静默绕过路径</div></div>
+          <div class="fi"><div class="ic"><svg class="ico ico-sm" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div><div class="ft"><strong>顾问性代码评审(advisory)</strong>:complete 时可摄入结构化评审存档、给 owner 决策——和 AI 校验一样<strong style="color:#fff">只建议、永不挡</strong>;硬门仍只有规则闸门 + 证据门</div></div>
+        </div>
+        <div class="anchor-note red">
+          <span class="ai">为何更值钱</span>
+          <span>"用事实证明"是"信模型的话"的<strong style="color:#fff">反面</strong>。模型越强越会说漂亮话,ground-truth 校验只会越重要。</span>
+        </div>
+      </div>
+      <div class="col">
+        <div class="term">
+          <div class="term-bar"><span class="dot" style="background:#ff5f57"></span><span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span><span class="t">complete · server-side verify</span></div>
+          <div class="term-body">
+<span class="c-dim"># agent 自报做完,附 deliverablesMet</span><br>
+<span class="c-blu">run complete</span> <span class="c-key">deliverablesMet:</span><span class="c-val">["login done"]</span><br>
+<br>
+<span class="c-dim"># 服务端不拦 run —— 但去 git 侧核证据</span><br>
+<span class="c-grn">✓ run completed</span> <span class="c-dim">活儿没丢</span>
+<span class="fragment"><br>
+<span class="c-amb">⚠ task → awaiting_evidence</span><br>
+<span class="c-key">  missing:</span> <span class="c-red">[ pr_merged ]</span> <span class="c-dim">"做完" ≠ "真完成"</span></span>
+<span class="fragment"><br>
+<br>
+<span class="c-dim">&gt;&gt; 只读追问"为啥还没 done"(R-210):</span><br>
+<span class="c-blu">GET …/completion-state</span> <span class="c-key">→</span> <span class="c-val">gateApplied:true</span> <span class="c-red">prMerged:false</span></span>
+<span class="fragment"><br>
+<br>
+<span class="c-dim">&gt;&gt; PR 合并、commit 链入交付物后,再查一次:</span><br>
+<span class="c-blu">completion-state →</span> <span class="c-grn">prMerged:true</span> <span class="c-grn">status:done</span> <span class="c-dim">证据落地才认</span></span>
+          </div>
+        </div>
+        <div class="card" style="padding:12px 16px">
+          <div class="card-body" style="font-size:0.68rem"><strong style="color:var(--green)">已发布 · 合入 master</strong> · R-192 证据门 → <code>awaiting_evidence</code> · R-210 只读解释端点 (#2962) · 顾问评审 only-advisory (#2966) · R-207 merge gate · R-208 分支归属真检查</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== 9 · WE BUILT PLANSYNC WITH PLANSYNC (dogfood) ========== -->
+<section data-background-color="#08090c">
+  <div class="slide grid-bg">
+    <div class="eyebrow"><span class="bar"></span><span class="num">09</span> 自举证明 <span class="en">/ WE DOGFOODED IT</span></div>
+    <h2 class="slide-title">我们用 PlanSync <span class="accent">造了 PlanSync</span><span class="sub">We built PlanSync with PlanSync — the most demanding test of the tool is the tool itself.</span></h2>
+    <div class="grid g4">
+      <div class="stat fragment fade-up"><div class="n">2</div><div class="l">人小队 · 第 2–3 周交付<br><span class="en">2-person team, weeks 2–3</span></div></div>
+      <div class="stat fragment fade-up"><div class="n red">100%</div><div class="l">代码由 Claude Code 生成<br><span class="en">All code generated by Claude Code</span></div></div>
+      <div class="stat fragment fade-up"><div class="n">8</div><div class="l">次计划变更 · 全部评审激活<br><span class="en">Plan revisions, all reviewed &amp; activated</span></div></div>
+      <div class="stat fragment fade-up"><div class="n red">0</div><div class="l">次漂移被忽略<br><span class="en">Drifts silently ignored</span></div></div>
+    </div>
+    <div class="anchor-note red mt-a" style="margin-top:24px">
+      <span class="ai">为什么这页最重要</span>
+      <span>护城河不是介绍出来的——是我们自己在造这个工具时<strong style="color:#fff">真切尝到的甜头</strong>。8 次改计划、多个 agent 并行,一次漂移都没漏掉。<span style="color:var(--text-3)">The moat isn't a pitch; it's what kept us aligned while building it.</span></span>
+    </div>
+  </div>
+</section>
+
+<!-- ========== 10 · ARCHITECTURE ========== -->
+<section data-background-color="#08090c">
+  <div class="slide grid-bg">
+    <div class="eyebrow"><span class="bar"></span><span class="num">10</span> 架构 <span class="en">/ ARCHITECTURE</span></div>
+    <h2 class="slide-title">一套后端,<span class="accent">三种界面</span><span class="sub">One backend, three surfaces — running on the interfaces agents already speak.</span></h2>
+    <div class="card flex-fill" style="display:flex;align-items:center">
+      <div class="arch">
+        <div class="arch-tier"><div class="tlabel">接入层 — Three Surfaces</div>
+          <div class="arch-row">
+            <div class="abox blue"><div class="an">Web UI</div><div class="ad">Next.js · 规划 / 看板</div></div>
+            <div class="abox purple"><div class="an">CLI REPL</div><div class="ad">raw-mode · 键盘优先</div></div>
+            <div class="abox green"><div class="an">MCP Server · 58 tools</div><div class="ad">Claude Code · Cursor · Genie 原生 · /exec 子会话</div></div>
+          </div>
+        </div>
+        <div class="arch-link">↑ SSE 实时推送 · HTTPS 请求 ↓</div>
+        <div class="arch-tier"><div class="tlabel">核心层 — Next.js API · REST + SSE · Auth (scrypt)</div>
+          <div class="arch-row">
+            <div class="abox red"><div class="an">Drift Engine</div><div class="ad">激活即扫描 · 分级中断</div></div>
+            <div class="abox amber"><div class="an">Heartbeat Scanner</div><div class="ad">30s ping · 5min 回收</div></div>
+            <div class="abox blue"><div class="an">Evidence / Verify</div><div class="ad">git 证据溯源 · 规则闸门</div></div>
+          </div>
+        </div>
+        <div class="arch-link">↓</div>
+        <div class="arch-tier">
+          <div class="arch-row">
+            <div class="abox" style="flex:2.2"><div class="an">PostgreSQL · via Prisma</div><div class="ad">计划版本链 · 任务 · 执行记录 · 漂移告警 · 证据</div></div>
+            <div class="abox red" style="flex:1"><div class="an">GitHub Action</div><div class="ad">PR 漂移闸门 (L3)</div></div>
+          </div>
+        </div>
+        <div class="statstrip">
+          <div class="ss"><div class="ssn">58</div><div class="ssl">MCP TOOLS</div></div>
+          <div class="ss"><div class="ssn">67</div><div class="ssl">API ROUTES</div></div>
+          <div class="ss"><div class="ssn">L1·L2·L3</div><div class="ssl">ENFORCEMENT</div></div>
+          <div class="ss"><div class="ssn">3</div><div class="ssl">SURFACES</div></div>
+        </div>
+      </div>
+    </div>
+    <div class="anchor-note mt-a" style="margin-top:14px">
+      <span class="ai">AI 锦上添花</span>
+      <span>语义 Diff / 冲突预测 / 完成打分 由 AMD 内部 LLM 驱动——<strong style="color:#fff">定位为辅助,非护城河</strong>。强制内核(drift 判定 / 闸门 / 证据门 / 状态机)是<strong style="color:#fff">确定性纯函数,不调用 LLM</strong>:把这些 AI 增强<strong style="color:#fff">全关掉</strong>,这些保证照样 100% 生效。AI 只决定建议得多漂亮,从不决定拦不拦。</span>
+    </div>
+  </div>
+</section>
+
+<!-- ========== 11 · BUILT FOR AMD ========== -->
+<section data-background-color="#08090c">
+  <div class="slide grid-bg">
+    <div class="eyebrow"><span class="bar"></span><span class="num">11</span> AMD 深度集成 <span class="en">/ BUILT FOR AMD</span></div>
+    <h2 class="slide-title">不是通用产品改造版 —<br><span class="accent">从 AMD 工程基础设施上长出来的工具</span><span class="sub">Not a generic tool ported in — grown on AMD's own engineering infrastructure.</span></h2>
+    <div class="grid g2 flex-fill" style="align-content:center">
+      <div class="card glow-red"><div class="card-top"><div class="card-ico" style="color:var(--red-soft)"><svg class="ico" viewBox="0 0 24 24"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg></div><div class="card-title">Genie 原生支持 <span class="en">Genie-native</span></div></div><div class="card-body">默认 host 即 Genie,内部主机零额外安装。<code>--host genie</code> 直接接入,/exec 派发自动用 Genie 全 IDE 工具链。</div></div>
+      <div class="card"><div class="card-top"><div class="card-ico"><svg class="ico" viewBox="0 0 24 24"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg></div><div class="card-title">AMD 内部 LLM <span class="en">Internal LLM</span></div></div><div class="card-body">辅助类 AI 功能由 <strong>AMD 内部 LLM API</strong> 驱动(Anthropic 格式兼容),Anthropic 作兜底,无 key 时自动 no-op。</div></div>
+      <div class="card"><div class="card-top"><div class="card-ico"><svg class="ico" viewBox="0 0 24 24"><rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg></div><div class="card-title">NFS 集群优化 <span class="en">NFS-ready</span></div></div><div class="card-body">PG 数据放 /tmp 避 NFS 锁 · npm 缓存重定向 · Node 本地运行时 · MCP esbuild 单文件打包(免 tsc、启动快)。集群开箱即用。</div></div>
+      <div class="card"><div class="card-top"><div class="card-ico"><svg class="ico" viewBox="0 0 24 24"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg></div><div class="card-title">amd.com 通知 <span class="en">amd.com mail</span></div></div><div class="card-body"><code>EMAIL_DOMAIN=amd.com</code> 自动发漂移通知;远程经 <code>ps-connect</code> 一条 SSH 命令直接在服务器上启动。</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== 12 · CLOSING ========== -->
+<section data-background-color="#08090c">
+  <div class="slide closing grid-bg">
+    <h1>Plan<span class="s">Sync</span></h1>
+    <div class="sub">可被信任的 Agentic Workflow · AMD AI Hackathon CDC 2026<br>Nan Yang · Tina Zhang &nbsp;·&nbsp; GFX Infra - Shanghai · AMD</div>
+    <blockquote class="big">模型装不下这份状态,也不能被信任去自我强制——<br><em>所以我们把它做进了底座。</em></blockquote>
+    <div class="big-en">A model can't hold this state across sessions — and can't be trusted to enforce it on itself. So we built it into the substrate. Model capability is a rising tide that lifts every competitor; the moat is the part that gets <em>more</em> needed as models improve.</div>
+    <div class="chain">
+      <div class="node"><div class="ct">共享状态 · Shared state</div><div class="cn">权威来源</div></div>
+      <span class="arr">→</span>
+      <div class="node"><div class="ct">漂移检测 · Drift</div><div class="cn">实时协调</div></div>
+      <span class="arr">→</span>
+      <div class="node"><div class="ct">强制 + 溯源 · Enforce</div><div class="cn">不可绕过</div></div>
+    </div>
+    <div class="pills" style="justify-content:center">
+      <span class="pill"><span class="k">Agentic Workflow</span></span>
+      <span class="pill"><span class="k">58</span> MCP Tools · Genie</span>
+      <span class="pill"><span class="k">Evidence</span> 严格溯源</span>
+      <span class="pill"><span class="k">NFS</span> Ready</span>
+    </div>
+  </div>
+</section>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+<script>
+Reveal.initialize({ hash:true, slideNumber:'c/t', transition:'fade', transitionSpeed:'fast', backgroundTransition:'fade', controls:true, progress:true, center:false, width:1280, height:720, margin:0 });
+</script>
+</body>
+</html>

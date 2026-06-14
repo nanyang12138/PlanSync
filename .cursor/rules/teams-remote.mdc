@@ -1,0 +1,20 @@
+---
+description: Refresh teams-remote active-client marker on session start
+alwaysApply: true
+---
+
+<!-- teams-remote: managed (do not edit between markers) -->
+## teams-remote
+
+When this rule is loaded, run `teams-remote update-marker` once to register
+Cursor as the active client for this project's teams-remote connection.
+This ensures phone-side Teams messages route to Cursor instead of any
+other editor that previously refreshed the marker.
+
+### Pushing files to Teams (via email)
+
+When you generate a file the user might want to view on their phone,
+call `teams-remote attach <abs-path>` to email it as an attachment to
+the user's @amd.com inbox. A confirmation message also shows up in
+the Teams thread. 3 MB per file; path must be inside the workspace.
+<!-- /teams-remote: managed -->

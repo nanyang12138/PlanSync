@@ -7,6 +7,29 @@ import type { NextRequest } from 'next/server';
 // runtime-agnostic edge module.
 import { REQUEST_ID_HEADER, resolveRequestId } from './lib/request-context-edge';
 
+// CSP applied to every response. 'unsafe-inline' on script-src is required by
+// Next.js App Router's inline hydration scripts; tighten to a nonce-based policy
+// once the app adopts the Next.js nonce pattern.
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com https://js.braintreegateway.com",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: https:",
+  "connect-src 'self' https://api.stripe.com https://payments.braintree-api.com",
+  "frame-src 'none'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+].join('; ');
+
+function addSecurityHeaders(res: NextResponse): void {
+  res.headers.set('Content-Security-Policy', CONTENT_SECURITY_POLICY);
+  res.headers.set('X-Content-Type-Options', 'nosniff');
+  res.headers.set('X-Frame-Options', 'DENY');
+  res.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+}
+
 const ALLOWED_ORIGINS = [
   'http://localhost:3000',
   'http://localhost:3001',
@@ -54,6 +77,7 @@ export function middleware(request: NextRequest) {
   if (!authDisabled && !apiKey && !isPublic && !isApiRoute) {
     const redirect = NextResponse.redirect(new URL('/login', request.url));
     redirect.headers.set(REQUEST_ID_HEADER, reqId);
+    addSecurityHeaders(redirect);
     return redirect;
   }
 
@@ -64,6 +88,7 @@ export function middleware(request: NextRequest) {
   // Echo the request id back to the caller so clients (and downstream
   // observability) can correlate a single API call with its server logs.
   response.headers.set(REQUEST_ID_HEADER, reqId);
+  addSecurityHeaders(response);
 
   // Auto-set legacy cookie on first visit in AUTH_DISABLED mode
   if (authDisabled && !apiKey && !request.cookies.get('plansync-user')?.value) {
