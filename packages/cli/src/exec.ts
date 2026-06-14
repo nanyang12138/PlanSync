@@ -484,7 +484,13 @@ export async function launchExec(
   rawOff();
   const child = spawn(cfg.genieOrClaude, spawnArgs, {
     stdio: 'inherit',
-    env: scopedKey ? { ...process.env, PLANSYNC_API_KEY: scopedKey } : { ...process.env },
+    env: {
+      ...process.env,
+      ...(scopedKey ? { PLANSYNC_API_KEY: scopedKey } : {}),
+      PLANSYNC_EXEC_RUN_ID: runId,
+      PLANSYNC_EXEC_TASK_ID: taskId,
+      PLANSYNC_EXEC_SESSION_ID: sessionId,
+    },
     cwd: projectRoot,
   });
 
@@ -535,9 +541,13 @@ async function launchExecDirect(
     scopedKey ?? undefined,
   );
   const cwd = process.cwd();
-  const childEnv: NodeJS.ProcessEnv = scopedKey
-    ? { ...process.env, PLANSYNC_API_KEY: scopedKey }
-    : { ...process.env };
+  const childEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...(scopedKey ? { PLANSYNC_API_KEY: scopedKey } : {}),
+    PLANSYNC_EXEC_RUN_ID: runId,
+    PLANSYNC_EXEC_TASK_ID: taskId,
+    PLANSYNC_EXEC_SESSION_ID: sessionId,
+  };
 
   console.log(`\n${c.blue}→ Launching Genie for task ${taskId} (Run: ${runId})${c.reset}`);
   console.log(
@@ -1117,9 +1127,13 @@ export async function launchAutoExec(
     sessionId,
     scopedKey ?? undefined,
   );
-  const childEnv: NodeJS.ProcessEnv = scopedKey
-    ? { ...process.env, PLANSYNC_API_KEY: scopedKey }
-    : { ...process.env };
+  const childEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...(scopedKey ? { PLANSYNC_API_KEY: scopedKey } : {}),
+    PLANSYNC_EXEC_RUN_ID: runId,
+    PLANSYNC_EXEC_TASK_ID: taskId,
+    PLANSYNC_EXEC_SESSION_ID: sessionId,
+  };
 
   const metaPath = path.join(worktreeDir, '.exec-meta.json');
   fs.writeFileSync(
