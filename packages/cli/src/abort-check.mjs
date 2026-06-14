@@ -71,9 +71,10 @@ if (!apiKey) {
 
 const MAX_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 100;
-// Hard request timeout — we'd rather fail-closed in 250 ms than block
-// the tool call indefinitely on a stuck connection.
-const REQUEST_TIMEOUT_MS = 250;
+// Hard request timeout. Auth cache needs ~2s on the first call (scrypt);
+// subsequent calls hit the 5-min cache and respond in < 10ms.
+// 3000ms accommodates the first-call cold-start without blocking too long.
+const REQUEST_TIMEOUT_MS = 3000;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
