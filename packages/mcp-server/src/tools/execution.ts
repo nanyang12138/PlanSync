@@ -9,6 +9,20 @@ type DriftAlert = { id: string; severity: string; reason: string };
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
 
+function unwrapApiData<T>(response: T | { data?: T }): T | { data?: T } {
+  if (!response || typeof response !== 'object') return response;
+  const maybeEnvelope = response as { data?: unknown };
+  if (
+    'data' in maybeEnvelope &&
+    maybeEnvelope.data !== null &&
+    maybeEnvelope.data !== undefined &&
+    typeof maybeEnvelope.data === 'object'
+  ) {
+    return maybeEnvelope.data as T;
+  }
+  return response;
+}
+
 /**
  * Recognise the API error codes that mean "this run cannot make further
  * progress on the agent's side" and convert them into a process-wide abort
@@ -458,7 +472,8 @@ export function registerExecutionTools(
       }
 
       try {
-        const taskPack = await api.get(`/api/projects/${projectId}/tasks/${taskId}/pack`);
+        const taskPackResponse = await api.get(`/api/projects/${projectId}/tasks/${taskId}/pack`);
+        const taskPack = unwrapApiData(taskPackResponse);
 
         // R-020: do not start the heartbeat when the task has unresolved
         // drift alerts. Starting the heartbeat against a drifted task would
@@ -467,8 +482,7 @@ export function registerExecutionTools(
         // the next tool call. Surface the drift up front so the agent stops
         // and asks the owner to resolve before any work begins.
         const drifts =
-          (taskPack as { data?: { driftAlerts?: DriftAlert[] } } | null | undefined)?.data
-            ?.driftAlerts ?? [];
+          (taskPack as { driftAlerts?: DriftAlert[] } | null | undefined)?.driftAlerts ?? [];
 
         if (drifts.length === 0) {
           execStateManager?.bindRun({ runId, projectId, taskId });

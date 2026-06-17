@@ -73,6 +73,17 @@ export function AiChatPanel({ projectId }: AiChatPanelProps) {
         return;
       }
 
+      if (res.status === 401) {
+        setMessages([
+          ...nextMessages,
+          {
+            role: 'assistant',
+            content: 'Session expired — please refresh the page and log in again.',
+          },
+        ]);
+        return;
+      }
+
       const data = await res.json();
       setMessages([
         ...nextMessages,

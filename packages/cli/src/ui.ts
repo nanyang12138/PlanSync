@@ -472,6 +472,9 @@ export function printHelp(toolCount: number) {
   console.log(`  ${c.cyan}/status${c.reset}              Refresh project status`);
   console.log(`  ${c.cyan}/tasks${c.reset}               Show task list`);
   console.log(`  ${c.cyan}/project [id]${c.reset}        Switch project (interactive if no arg)`);
+  console.log(
+    `  ${c.cyan}/resync${c.reset}              Re-sync session: restart MCP, clear drift/abort latch`,
+  );
   console.log(`  ${c.cyan}/resume${c.reset}              Restore a previous session`);
   console.log(`  ${c.cyan}/clear${c.reset}               Clear conversation history`);
   console.log(`  ${c.cyan}/exec <taskId>${c.reset}       Execute a task in Genie`);

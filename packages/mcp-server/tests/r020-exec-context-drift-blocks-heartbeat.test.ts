@@ -124,6 +124,15 @@ describe('R-020: exec_context blocks heartbeat when task has open drifts', () =>
 
     expect(result.execMode).toBe(true);
     expect(result.blocked).toBe('drift_unresolved');
+    expect(result.taskPack).toEqual({
+      task: { id: 'task-r020' },
+      plan: { version: 2 },
+      driftAlerts: [
+        { id: 'd1', severity: 'high', reason: 'plan v1 → v2 changed deliverables' },
+        { id: 'd2', severity: 'medium', reason: 'constraint added' },
+      ],
+    });
+    expect(result.taskPack).not.toHaveProperty('data');
     expect(result.driftAlerts).toHaveLength(2);
     expect(result.driftAlerts?.[0]?.id).toBe('d1');
     expect(result.message).toContain('DRIFT DETECTED');

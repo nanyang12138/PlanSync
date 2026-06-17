@@ -249,7 +249,15 @@ async function main() {
     );
     spawnArgs = ['--', '--full-auto', execPrompt];
   } else {
-    spawnArgs = ['-p', execPrompt, '--session-id', sessionId, '--mcp-config', mcpConfigJson];
+    spawnArgs = [
+      '-p',
+      execPrompt,
+      '--session-id',
+      sessionId,
+      '--mcp-config',
+      mcpConfigJson,
+      '--dangerously-skip-permissions',
+    ];
   }
 
   const child = spawn(execBin, spawnArgs, {

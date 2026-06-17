@@ -39,4 +39,18 @@ describe('buildAutonomousPrompt — Genie autonomous-mode prompt (#1436)', () =>
     const prompt = buildAutonomousPrompt(worktree);
     expect(prompt).toContain(worktree);
   });
+
+  it('embeds the unwrapped task pack snapshot when one is provided', () => {
+    const prompt = buildAutonomousPrompt('/tmp/plansync-test/.plansync-exec/run-1', {
+      data: {
+        task: { id: 'task-1', title: 'Implement vault token checkout' },
+        plan: { version: 2 },
+      },
+    });
+
+    expect(prompt).toContain('Task Pack Snapshot:');
+    expect(prompt).toContain('"title": "Implement vault token checkout"');
+    expect(prompt).toContain('"version": 2');
+    expect(prompt).not.toMatch(/"data"\s*:/);
+  });
 });

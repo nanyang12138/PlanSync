@@ -140,6 +140,60 @@ export function getTerminalColumns(stream: NodeJS.WriteStream = process.stdout):
 }
 
 /**
+ * Parse an ANSI-coded string (as produced by `buildPrompt`, which embeds raw
+ * SGR escapes from the `c` color helper) into styled segments suitable for
+ * Ink `<Text>` props. This matters for layout: when raw ANSI escapes are passed
+ * to Ink as string content, Ink miscounts them toward the rendered width, which
+ * inflates the prompt width and forces moderate commands to wrap onto an
+ * indented continuation line. Rendering each segment as an Ink `<Text>` with
+ * plain text + color props lets Ink measure the true visible width, so the
+ * prompt + command flow inline and wrap only at the real terminal edge.
+ */
+export interface PromptSegment {
+  text: string;
+  color?: string;
+  dim?: boolean;
+  bold?: boolean;
+}
+export function ansiToSegments(s: string): PromptSegment[] {
+  const segs: PromptSegment[] = [];
+  let color: string | undefined;
+  let dim = false;
+  let bold = false;
+  let buf = '';
+  const flush = () => {
+    if (buf) segs.push({ text: buf, color, dim, bold });
+    buf = '';
+  };
+  // eslint-disable-next-line no-control-regex
+  const re = /\x1b\[([0-9;]*)m/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s)) !== null) {
+    buf += s.slice(last, m.index);
+    flush();
+    const codes = m[1] === '' ? [0] : m[1].split(';').map(Number);
+    for (const code of codes) {
+      if (code === 0) {
+        color = undefined;
+        dim = false;
+        bold = false;
+      } else if (code === 1) bold = true;
+      else if (code === 2) dim = true;
+      else if (code === 34) color = 'blue';
+      else if (code === 36) color = 'cyan';
+      else if (code === 32) color = 'green';
+      else if (code === 33) color = 'yellow';
+      else if (code === 31) color = 'red';
+    }
+    last = re.lastIndex;
+  }
+  buf += s.slice(last);
+  flush();
+  return segs;
+}
+
+/**
  * R-072: compute the next `selIdx` value when the user presses the ↓ key.
  *
  * Behaviour the prompt must guarantee:
@@ -545,21 +599,32 @@ function PromptUI({ promptStr: initialPrompt, commands, history, events }: Promp
       {/* Top separator — full terminal width, like Claude Code */}
       <Text dimColor>{'─'.repeat(sepDashes)}</Text>
 
-      {/* Input line */}
+      {/* Input line.
+          Rendered as a SINGLE Text with nested Text spans (not a row Box of
+          separate Texts). A row Box wraps each Text as its own flex item, which
+          pushed a longer command onto an indented continuation line below the
+          prompt. One Text flows prompt+command inline and wraps naturally at
+          the terminal width (continuation returns to column 0). */}
       {disabled ? (
-        <Box>
-          <Text dimColor>{promptStr}</Text>
+        <Text>
+          {ansiToSegments(promptStr).map((seg, i) => (
+            <Text key={i} color={seg.color} dimColor={seg.dim} bold={seg.bold}>
+              {seg.text}
+            </Text>
+          ))}
           <Text dimColor>{lastSubmitted || '…'}</Text>
-        </Box>
+        </Text>
       ) : (
-        <Box>
-          <Text color="blueBright" bold>
-            {promptStr}
-          </Text>
-          <Text>{before}</Text>
+        <Text>
+          {ansiToSegments(promptStr).map((seg, i) => (
+            <Text key={i} color={seg.color} dimColor={seg.dim} bold={seg.bold}>
+              {seg.text}
+            </Text>
+          ))}
+          {before}
           <Text inverse>{atCursor}</Text>
-          <Text>{after}</Text>
-        </Box>
+          {after}
+        </Text>
       )}
 
       {/* Bottom separator — full terminal width */}
@@ -780,6 +845,16 @@ export class InkSession {
     if (this.instance) {
       this.instance.unmount();
       this.instance = null;
+    }
+    // Restore cooked mode so rawReadLine's readline interface works correctly.
+    // Ink sets raw mode; after unmount we must turn it off or buffered input
+    // (e.g. the worker-mode Enter keystroke) never reaches readline.
+    try {
+      if (process.stdin.isTTY && (process.stdin as NodeJS.ReadStream).isRaw) {
+        (process.stdin as NodeJS.ReadStream).setRawMode(false);
+      }
+    } catch {
+      /* non-TTY stdin — ignore */
     }
   }
 

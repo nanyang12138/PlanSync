@@ -194,7 +194,8 @@ describe('R-019: plansync_exec_context fatal vs transient classification', () =>
 
     expect(result.execMode).toBe(true);
     expect(result.runId).toBe('run1');
-    expect(result.taskPack).toBeDefined();
+    expect(result.taskPack).toEqual({ task: { id: 'task1' }, plan: { version: 1 } });
+    expect(result.taskPack).not.toHaveProperty('data');
     expect(result.error).toBeUndefined();
     expect(result.transient).toBeUndefined();
   });
