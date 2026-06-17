@@ -17,6 +17,7 @@ interface InputAPI {
   rawReadLine(prompt: string): Promise<string>;
 }
 import { launchCode, launchExec, launchAutoExec } from './exec.js';
+import { openDriftAlerts } from './exec-shared.mjs';
 import { createWorkerInterruptHandler, type WorkerChildHandle } from './worker-interrupt.js';
 
 // ─── API helpers ──────────────────────────────────────────────────────────────
@@ -53,7 +54,7 @@ function httpFetch(method: string, path: string, body?: unknown): Promise<RawRes
       },
     );
     req.on('error', reject);
-    req.setTimeout(10000, () => {
+    req.setTimeout(20000, () => {
       req.destroy();
       reject(new Error('API timeout'));
     });
@@ -139,17 +140,28 @@ export function derivePhase(project: Record<string, unknown> | null | undefined)
   return 'planning';
 }
 
+export function workerOpenDriftCount(taskPackOrEnvelope: unknown): number {
+  return openDriftAlerts(taskPackOrEnvelope).length;
+}
+
+export function shouldRetainWorkerSelectionAfterRun(taskPackOrEnvelope: unknown): boolean {
+  return workerOpenDriftCount(taskPackOrEnvelope) > 0;
+}
+
 export async function fetchStatus(): Promise<ProjectStatus> {
   if (!cfg.project) return emptyStatus();
   try {
-    const [projRes, driftsRes, tasksSettled, plansSettled] = await Promise.allSettled([
-      apiGet<{ data?: Record<string, unknown> }>(`/api/projects/${cfg.project}`),
+    // Sequential to prime the auth cache on the first call; subsequent calls
+    // hit the 5-min scrypt cache and complete in <50ms each.
+    const proj = await apiGet<{ data?: Record<string, unknown> }>(
+      `/api/projects/${cfg.project}`,
+    ).catch(() => null);
+    const [driftsRes, tasksSettled, plansSettled] = await Promise.allSettled([
       apiGet<{ data?: unknown[] }>(`/api/projects/${cfg.project}/drifts?status=open`),
       apiGet<{ data?: unknown[] }>(`/api/projects/${cfg.project}/tasks?pageSize=100`),
       apiGet<{ data?: unknown[] }>(`/api/projects/${cfg.project}/plans`),
     ]);
 
-    const proj = projRes.status === 'fulfilled' ? projRes.value : null;
     const drifts = driftsRes.status === 'fulfilled' ? driftsRes.value : { data: [] };
     const tasksRes = tasksSettled.status === 'fulfilled' ? tasksSettled.value : { data: [] };
     const plansRes = plansSettled.status === 'fulfilled' ? plansSettled.value : { data: [] };
@@ -555,6 +567,48 @@ export async function handleSlashCommand(
     return 'handled';
   }
 
+  // `/resync` — restart the MCP server for the CURRENT project without the
+  // project picker. The MCP server's run-abort latch is intentionally
+  // one-shot per process (see mcp-server/src/abort-signal.ts): once a run is
+  // paused by drift, every PlanSync tool call short-circuits with RUN_ABORTED
+  // until the process is restarted. `/status` only refreshes the banner (a
+  // CLI-side REST read) and does NOT clear that latch, so after a drift
+  // hard-interrupt the AI still can't act. `/resync` is the deliberate
+  // recovery verb: it tears down and respawns the MCP server (clearing the
+  // latch) so you can resolve the drift (rebind) and continue — without the
+  // semantic surprise of making the read-only `/status` heavyweight.
+  if (cmd === '/resync') {
+    if (!cfg.project) {
+      ctx.rawInput.unmountForMenu();
+      console.log(
+        `\n${c.yellow}No project selected. Use /project to select one first.${c.reset}\n`,
+      );
+      return 'handled';
+    }
+    process.stdout.write(`${c.dim}Re-syncing session (restarting MCP)...${c.reset}\r`);
+    ctx.mcp.stop();
+    try {
+      await ctx.mcp.start(cfg.mcpServer);
+    } catch {
+      /* ignore — banner/tool count below reflects whatever came back up */
+    }
+    const s = await fetchStatus();
+    ctx.setStatus(s);
+    process.stdout.write(' '.repeat(40) + '\r');
+    ctx.rawInput.unmountForMenu();
+    console.log(
+      `\n  ${c.green}✔ Session re-synced${c.reset} ${c.dim}— MCP restarted; any drift/abort latch cleared.${c.reset}`,
+    );
+    if (s.driftAlerts.length > 0) {
+      console.log(
+        `  ${c.yellow}⚠ ${s.driftAlerts.length} open drift alert(s)${c.reset} ${c.dim}— resolve before continuing (rebind / no_impact / cancel).${c.reset}`,
+      );
+    }
+    console.log('');
+    banner(s, ctx.mcp.getAnthropicTools().length, cfg.user, ctx.getNotifLog());
+    return 'handled';
+  }
+
   if (cmd === '/code') {
     ctx.rawInput.pause();
     const codeChild = launchCode();
@@ -718,7 +772,10 @@ export async function handleSlashCommand(
     );
     console.log('');
     console.log(`  ${c.dim}[Enter/a] all  [1,2,3] specific numbers  [n] cancel${c.reset}`);
-    const answer = await ctx.rawInput.rawReadLine(`\n  Execute [Enter = all]: `);
+    // Auto-select all when PLANSYNC_WORKER_AUTO is set (for scripted/demo use)
+    const answer = process.env.PLANSYNC_WORKER_AUTO
+      ? ''
+      : await ctx.rawInput.rawReadLine(`\n  Execute [Enter = all]: `);
     const trimmed = answer.trim().toLowerCase();
 
     let selectedIds: string[] = [];
@@ -814,9 +871,9 @@ export async function handleSlashCommand(
           }
 
           // buildTaskPack only returns open drifts (status filtered server-side),
-          // so any non-empty driftAlerts means we must skip.
-          const pack = taskPack as { driftAlerts?: Array<unknown> } | null;
-          const openDriftCount = pack?.driftAlerts?.length ?? 0;
+          // so any non-empty driftAlerts means we must skip. Accept both the
+          // bare pack and the REST/MCP `{ data: pack }` envelope.
+          const openDriftCount = workerOpenDriftCount(taskPack);
           if (openDriftCount > 0) {
             console.log(
               `  ${c.yellow}⚠ Skipping — ${openDriftCount} unresolved drift alert(s)${c.reset}`,
@@ -869,6 +926,28 @@ export async function handleSlashCommand(
               currentChild = child;
             },
           });
+
+          let postRunTaskPack: unknown = null;
+          try {
+            const packResult = await ctx.mcp.callTool('plansync_task_pack', {
+              projectId: cfg.project,
+              taskId: task.id,
+            });
+            postRunTaskPack = JSON.parse(packResult);
+          } catch (err: unknown) {
+            console.log(
+              `  ${c.yellow}⚠ Could not verify post-run drift state; keeping task selected for the next poll: ${err instanceof Error ? err.message : String(err)}${c.reset}`,
+            );
+            continue;
+          }
+
+          if (shouldRetainWorkerSelectionAfterRun(postRunTaskPack)) {
+            console.log(
+              `  ${c.yellow}⚠ Waiting for rebind — task remains selected and will start a fresh run after drift is resolved.${c.reset}`,
+            );
+            continue;
+          }
+
           selectedSet.delete(task.id);
           if (selectedSet.size === 0) {
             stopWorker = true;

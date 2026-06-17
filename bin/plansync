@@ -231,7 +231,7 @@ _load_env "$HOME/.config/plansync/env"
 export PLANSYNC_API_URL="${PLANSYNC_API_URL:-$(plansync_api_url 3001)}"
 export PLANSYNC_API_KEY="${PLANSYNC_API_KEY:-}"
 export PLANSYNC_USER="${PLANSYNC_USER_ARG:-${PLANSYNC_USER:-${USER}}}"
-export PLANSYNC_PROJECT="${PLANSYNC_PROJ}"
+export PLANSYNC_PROJECT="${PLANSYNC_PROJ:-${PLANSYNC_PROJECT:-}}"
 
 MCP_SERVER="$PROJECT_DIR/packages/mcp-server/dist/index.js"
 
