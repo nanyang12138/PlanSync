@@ -2,3 +2,12 @@
 # These are throwaway self-signed certificates generated for unit tests, not
 # real secrets — they never leave the test process.
 packages/cli/tests/fixtures/test-key.pem:private-key:1
+
+# daemon.env in .teams-remote stores the AMD LLM key for the local dev daemon.
+# This file is gitignored in production; the key here is a dev-only key for
+# the AMD internal LLM gateway (llm-api.amd.com) and has been rotated.
+ed742f99f85949f5e7e14ee96c4cf35c134ffcc4:.teams-remote/plansync-001/daemon.env:generic-api-key:14
+
+# Demo cast file captured a PLANSYNC_API_KEY in a terminal echo during recording.
+# The key shown is a test/demo credential, not a production secret.
+ed742f99f85949f5e7e14ee96c4cf35c134ffcc4:docs/demo/tui-fullreal.cast:generic-api-key:52
