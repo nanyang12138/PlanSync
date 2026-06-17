@@ -101,7 +101,7 @@ function postJson<T>(urlStr: string, body: unknown): Promise<T> {
         });
       },
     );
-    req.setTimeout(10_000, () => req.destroy(new Error('request timeout')));
+    req.setTimeout(60_000, () => req.destroy(new Error('request timeout')));
     req.on('error', reject);
     req.write(bodyStr);
     req.end();
@@ -552,7 +552,7 @@ async function launchExecDirect(
   }
 
   const phase1Prompt = options.autonomous
-    ? buildAutonomousPrompt(cwd)
+    ? buildAutonomousPrompt(cwd, taskPack)
     : [
         'start',
         '',
@@ -965,8 +965,19 @@ function preserveAndRemoveWorktree(
 
 // ─── Autonomous execution prompt ─────────────────────────────────────────────
 
-export function buildAutonomousPrompt(worktreeDir: string): string {
+export function buildAutonomousPrompt(worktreeDir: string, taskPack?: unknown): string {
   const projectRoot = path.resolve(worktreeDir, '../../');
+  const unwrappedTaskPack = taskPack === undefined ? undefined : _unwrapTaskPack(taskPack);
+  const taskPackBlock =
+    unwrappedTaskPack === undefined
+      ? []
+      : [
+          '',
+          'Task Pack Snapshot:',
+          JSON.stringify(unwrappedTaskPack, null, 2),
+          '',
+          'Use this snapshot as launch context, but still call plansync_exec_context first to confirm the live run state.',
+        ];
   return [
     'You are in AUTONOMOUS execution mode. Do NOT wait for user approval.',
     '',
@@ -995,6 +1006,7 @@ export function buildAutonomousPrompt(worktreeDir: string): string {
     '    always use plansync_run({action:"complete", status:"completed", ...}) so this prompt keeps working)',
     '   GOOD: "Implemented POST /auth/login with JWT; 12/12 tests pass (npm test)"',
     '   BAD: "all done", "completed", "requirements met" → REJECTED by verifier',
+    ...taskPackBlock,
     '',
     'FORBIDDEN: plansync_plan_create, plansync_plan_propose, plansync_plan_activate, plansync_plan_reactivate',
   ].join('\n');
@@ -1160,7 +1172,7 @@ export async function launchAutoExec(
   }
 
   const phase1Prompt = options.autonomous
-    ? buildAutonomousPrompt(worktreeDir)
+    ? buildAutonomousPrompt(worktreeDir, _taskPack)
     : [
         'start',
         '',

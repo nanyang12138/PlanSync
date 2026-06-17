@@ -65,6 +65,11 @@ const SLASH_CMDS: SlashCmd[] = [
   { cmd: '/status', desc: 'Refresh project status', group: 'Project' },
   { cmd: '/tasks', desc: 'Show task list', group: 'Project' },
   { cmd: '/project', desc: 'Switch project', group: 'Project' },
+  {
+    cmd: '/resync',
+    desc: 'Re-sync session (restart MCP, clear drift/abort latch)',
+    group: 'Project',
+  },
   { cmd: '/exec', desc: 'Execute a task in Genie', group: 'Execution' },
   { cmd: '/worker', desc: 'Auto-execute agent tasks (worker mode)', group: 'Execution' },
   { cmd: '/code', desc: 'Open Genie coding mode', group: 'Execution' },

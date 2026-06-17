@@ -17,14 +17,20 @@ export function registerStatusTools(server: McpServer, api: ApiClient, config: M
     'Get project alignment status: active plan version, task breakdown, drift alerts, recent activity. Call at session start.',
     { projectId: z.string() },
     async (args) => {
-      const [project, drifts, activities] = await Promise.all([
+      const [project, drifts, activities, dashboard] = await Promise.all([
         api.get<{ data: Record<string, unknown> }>(`/api/projects/${args.projectId}`),
         api.get<{ data: unknown[] }>(`/api/projects/${args.projectId}/drifts?status=open`),
         api.get<{ data: unknown[] }>(`/api/projects/${args.projectId}/activities?pageSize=5`),
+        api
+          .get<{ data: Record<string, unknown> }>(`/api/projects/${args.projectId}/dashboard`)
+          .catch(() => ({ data: {} })),
       ]);
 
+      const dashData = dashboard.data as Record<string, unknown>;
       const status = {
         project: project.data,
+        activePlan: dashData.activePlan ?? null,
+        tasks: dashData.tasks ?? [],
         openDriftAlerts: (drifts.data || []).length,
         driftAlerts: drifts.data,
         recentActivities: activities.data,

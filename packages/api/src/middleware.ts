@@ -24,7 +24,9 @@ export function middleware(request: NextRequest) {
   const isLoginPage = pathname === '/login';
   const isLoginApi = pathname === '/api/auth/login';
   const isLogoutApi = pathname === '/api/auth/logout';
-  const isPublic = isLoginPage || isLoginApi || isLogoutApi;
+  // Static demo pages under public/demo are shareable, no-login walkthroughs.
+  const isDemoPage = pathname.startsWith('/demo/') || pathname === '/demo';
+  const isPublic = isLoginPage || isLoginApi || isLogoutApi || isDemoPage;
   const isApiRoute = pathname.startsWith('/api/');
 
   const requestHeaders = new Headers(request.headers);
